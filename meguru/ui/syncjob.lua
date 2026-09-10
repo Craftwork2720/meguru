@@ -13,8 +13,10 @@ The work itself is not reimplemented: `Sync.prepare` builds the plan,
 file is entirely about the tick.
 --]]
 
+local Blitbuffer = require("ffi/blitbuffer")
 local Button = require("ui/widget/button")
 local CenterContainer = require("ui/widget/container/centercontainer")
+local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local InfoMessage = require("ui/widget/infomessage")
@@ -38,12 +40,20 @@ local SyncJob = {}
 --- would resize the frame under the reader's finger every few pages. The walk
 --- has no known page total, so there is no progress bar to draw — a percentage
 --- here would be invented.
+---
+--- `face` is not optional and has no default. `TextWidget` defines no `init`,
+--- so nothing ever turns a font *name* into a face — it takes a resolved
+--- `FontFaceObj` and uses it directly, and `Font:getAdjustedFace(nil)` dies on
+--- `face.is_real_bold` the first time the widget is measured. Passing no face
+--- therefore crash-loops the whole reader the moment this dialog is painted.
+--- `"infofont"` is the size `InfoMessage` uses for body text; the sibling
+--- `Button` supplies its own default face, which is why only this one crashed.
 local function buildDialog(on_cancel)
     local width = math.floor(Screen:getWidth() * 0.9)
     local status = TextWidget:new{
         text = "",
+        face = Font:getFace("infofont"),
         max_width = width - 4 * Size.padding.default,
-        max_lines = 1,
     }
     local button = Button:new{
         text = _("Cancel"),
@@ -52,16 +62,22 @@ local function buildDialog(on_cancel)
     local frame = FrameContainer:new{
         padding = Size.padding.default,
         margin = Size.margin.default,
-        background = "white",
+        -- A Blitbuffer colour, not its name. The frame tests
+        -- `Blitbuffer.isColor8(self.background)` to choose a painter, so a plain
+        -- `"white"` string falls through to the RGB32 painter, which calls
+        -- `background:getColorRGB32()` — a method strings do not have.
+        background = Blitbuffer.COLOR_WHITE,
         VerticalGroup:new{
             align = "center",
             status,
             button,
         },
     }
+    -- Sized by the CenterContainer's `dimen`, which is what `WidgetContainer`
+    -- actually reads: `InputContainer:new{ width = …, height = … }` looks like it
+    -- sizes the dialog and does not, so those two fields are left off rather than
+    -- sitting here inviting someone to adjust them.
     local dialog = InputContainer:new{
-        width = Screen:getWidth(),
-        height = Screen:getHeight(),
         CenterContainer:new{
             dimen = Geom:new{ w = Screen:getWidth(), h = Screen:getHeight() },
             frame,

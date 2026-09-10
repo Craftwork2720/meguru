@@ -27,7 +27,7 @@ These are fixed and shape most of the design:
   the only place this code runs.
 - **No test framework and no linter.** Verification is manual, in a running
   KOReader. The two scripts under `tools/` (see Development) are the automated
-  guards, and they cover three failure modes between them.
+  guards, and they cover four failure modes between them.
 - **Reuse KOReader's own machinery** rather than rebuilding it: `LuaSettings`,
   `DocSettings`, `DocumentRegistry`, the `lua-ljsqlite3` binding, and the
   built-in `plugins/opds.koplugin` for Atom parsing and the browser UI. That
@@ -365,7 +365,7 @@ python tools/scan_sql.py    # semicolons inside SQL comments
 ```
 
 There is no Lua interpreter on the development machine, so `check.py` stands in
-for one. It runs three passes:
+for one. It runs four passes:
 
 1. **Block balance** — `function`/`if`/`for`/`while`/`do` against `end`/`until`,
    over comment- and string-stripped source.
@@ -375,15 +375,24 @@ for one. It runs three passes:
 3. **Unbound module tables** — `Geom:new{...}` where `Geom` is never bound in the
    file. KOReader declares no global of this shape, so the name is nil when the
    line runs.
+4. **Lowercase calls not yet bound** — `handToReader(host, file)` where the only
+   binding is a `local function` *below* the call. **Position is the whole
+   pass**: a `local` enters scope from its own statement onwards, so a call above
+   it resolves the name as a global and finds nil, while the binding is sitting
+   right there in the file for any position-blind check to find. `ui/open.lua`
+   shipped exactly that, from three call sites, with a comment nearby correctly
+   describing the rule it was breaking.
 
-None of the three is a parser. They are the failure modes that have actually
+None of the four is a parser. They are the failure modes that have actually
 bitten this codebase, and that a reader cannot reliably catch by eye: a name or
 member that is fine at load time and only explodes when a branch runs, on the
 device, in the reader's hands. **The checker passes vacuously if its stripping or
 its patterns are wrong**, so each pass was self-tested by injecting the real
 failure and confirming the checker reports it — including at the right line. Do
-the same before trusting a green run; two of the three passes were written
-wrongly the first time and passed on the very bug they existed to catch.
+the same before trusting a green run; three of the four passes were written
+wrongly the first time and passed on the very bug they existed to catch — pass 4
+included, whose first draft bound a name anywhere in the file and so found
+nothing.
 
 `scan_sql.py` is narrow on purpose: it only looks for a `;` inside a SQL comment
 in a Lua string. That one shape is a hard crash with an error message that names

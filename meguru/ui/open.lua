@@ -378,6 +378,28 @@ end
 
 -- Opening from the catalog ------------------------------------------------------
 
+--- Open a marker in whichever UI host we have: a reader swaps documents, the
+--- file browser opens a file. `host` is a plugin instance, whose `.ui` is the
+--- actual application.
+---
+--- Above every caller, and it has to be. `local function` brings the name into
+--- scope only from its own statement onwards, so the same function placed after
+--- its callers resolves to a *global* there — which is nil, and which fails at
+--- the call with "attempt to call global 'handToReader' (a nil value)" rather
+--- than at load. This file already had the comment saying so and the function
+--- below its callers anyway; the comment was right and the position was not.
+local function handToReader(host, file)
+    if not (host and host.ui) then
+        return false
+    end
+    if host.ui.document then
+        host.ui:switchDocument(file)
+    else
+        host.ui:openFile(file)
+    end
+    return true
+end
+
 --- Open a catalog item from a library view.
 ---
 --- Two cases, and the second is the reason this exists at all. An item that has
@@ -526,25 +548,6 @@ function Open.chooseMarkerDir(on_chosen)
 end
 
 -- Opening ---------------------------------------------------------------------
-
---- Open a marker in whichever UI host we have: a reader swaps documents, the
---- file browser opens a file. `host` is a plugin instance, whose `.ui` is the
---- actual application.
----
---- Declared before its callers, and not `local function` further down: a local
---- only enters scope *after* its declaration, so a function defined earlier
---- would resolve this name as a global and silently find nil.
-local function handToReader(host, file)
-    if not (host and host.ui) then
-        return false
-    end
-    if host.ui.document then
-        host.ui:switchDocument(file)
-    else
-        host.ui:openFile(file)
-    end
-    return true
-end
 
 --- The OPDS-PSE stream among an entry's acquisitions.
 ---

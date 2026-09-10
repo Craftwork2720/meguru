@@ -279,6 +279,93 @@ def check_globals(path, text):
 
 
 # --------------------------------------------------------------------------
+# Check 4: a lowercase call to a name that is not yet bound at that point.
+# --------------------------------------------------------------------------
+
+# Check 3 covers `Geom:new{...}`: a capitalized module table, never bound. It
+# does not cover the same failure spelled with a lowercase name and a `(` --
+# `handToReader(host, file)`, which `ui/open.lua` called from three places while
+# its `local function` sat a hundred lines *below* them. A `local` enters scope
+# only from its own statement onwards, so those call sites resolved the name as
+# a global and found nil. It loaded, the plugin appeared, and the crash waited
+# for a book to be opened and its neighbour requested.
+#
+# **Position is the whole check.** A pass that only asked "is this name bound
+# anywhere in the file" passes on that bug, because the binding is right there
+# -- just later. So bindings are collected with line numbers and a call is only
+# excused by a binding at or above it.
+CALL = re.compile(r"(?<![:.\w])([a-z_][A-Za-z0-9_]*)\s*\(")
+
+# Every parameter list in the file. Load-bearing: `on_done(ok, err)` is a call
+# on a parameter, and a pass that ignored parameters would report every callback
+# in the codebase and be switched off inside a day.
+FUNC_PARAMS = re.compile(r"\bfunction\b[^(]*\(([^)]*)\)")
+
+# The lowercase counterparts of check 3's bindings, plus a bare `function f()`
+# -- which assigns a global, and so genuinely does bind the name.
+LOWER_BINDINGS = (
+    re.compile(r"\blocal\s+([A-Za-z0-9_, \t]+?)\s*(?:=|$)", re.M),
+    re.compile(r"\blocal\s+function\s+([A-Za-z0-9_]+)"),
+    re.compile(r"^\s*function\s+([a-z_][A-Za-z0-9_]*)\s*\(", re.M),
+)
+
+# Lua's own globals, plus the keywords that can sit before a `(`. No KOReader
+# name belongs here: one added to silence a true positive turns the pass off,
+# so a real global gets its own entry with the evidence next to it.
+LUA_GLOBALS = {
+    "assert", "collectgarbage", "dofile", "error", "getfenv", "getmetatable",
+    "ipairs", "load", "loadfile", "loadstring", "module", "next", "pairs",
+    "pcall", "print", "rawequal", "rawget", "rawset", "require", "select",
+    "setfenv", "setmetatable", "tonumber", "tostring", "type", "unpack",
+    "xpcall",
+    "and", "break", "do", "else", "elseif", "end", "false", "for", "function",
+    "if", "in", "local", "nil", "not", "or", "repeat", "return", "then",
+    "true", "until", "while",
+}
+
+IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def check_lowercase_calls(path, text):
+    """Report a lowercase call to a name not bound at or above that line."""
+    lines = text.split("\n")
+
+    def lineno(offset):
+        return text.count("\n", 0, offset) + 1
+
+    bindings = {}
+
+    def bind(name, line):
+        name = name.strip()
+        if not IDENT.match(name):
+            return
+        if name not in bindings or line < bindings[name]:
+            bindings[name] = line
+
+    for rx in LOWER_BINDINGS:
+        for m in rx.finditer(text):
+            for name in m.group(1).split(","):
+                bind(name, lineno(m.start()))
+    for m in FUNC_PARAMS.finditer(text):
+        for name in m.group(1).split(","):
+            bind(name, lineno(m.start()))
+
+    errors = []
+    for line_no, line in enumerate(lines, 1):
+        for m in CALL.finditer(line):
+            name = m.group(1)
+            if name in LUA_GLOBALS:
+                continue
+            if name in bindings and bindings[name] <= line_no:
+                continue
+            errors.append(
+                f"{path}:{line_no}: {name}(...) is not bound at this point -- "
+                f"a `local` below it would resolve as a global here"
+            )
+    return errors
+
+
+# --------------------------------------------------------------------------
 
 def main():
     members, by_stem = module_members()
@@ -291,6 +378,7 @@ def main():
         all_errors += check_balance(rel, text)
         all_errors += check_members(rel, text, raw, members, by_stem)
         all_errors += check_globals(rel, text)
+        all_errors += check_lowercase_calls(rel, text)
 
     if all_errors:
         for e in all_errors:
