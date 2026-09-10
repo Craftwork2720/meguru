@@ -23,6 +23,7 @@ than in the page size.
 local Blitbuffer = require("ffi/blitbuffer")
 local Document = require("document/document")
 local DrawContext = require("ffi/drawcontext")
+local Geom = require("ui/geometry")
 local RenderImage = require("ui/renderimage")
 local Screen = require("device").screen
 local Device = require("device")

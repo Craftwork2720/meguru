@@ -26,7 +26,8 @@ These are fixed and shape most of the design:
 - **Lua 5.1 / LuaJIT.** No `//`, no bitwise operators, no `goto`. The device is
   the only place this code runs.
 - **No test framework and no linter.** Verification is manual, in a running
-  KOReader. `tools/check.py` (see below) is the one automated guard.
+  KOReader. The two scripts under `tools/` (see Development) are the automated
+  guards, and they cover three failure modes between them.
 - **Reuse KOReader's own machinery** rather than rebuilding it: `LuaSettings`,
   `DocSettings`, `DocumentRegistry`, the `lua-ljsqlite3` binding, and the
   built-in `plugins/opds.koplugin` for Atom parsing and the browser UI. That
@@ -102,6 +103,16 @@ Three tables — `servers`, `series`, `items`, plus a small `meta` key/value. Th
 DDL is the `SCHEMA` literal in `meguru/store.lua`, commented column by column
 where the reason for a column is not obvious from its name; it is not duplicated
 here. The parts that matter to anyone touching this code:
+
+**Never hand a SQL script to `db:exec`.** ljsqlite3's `conn:exec` splits its
+argument on **every** `;` with no understanding of SQL, so a semicolon inside a
+`--` comment cuts a statement in half and `sqlite3_prepare_v2` reports the
+fragment as `incomplete input` — an error naming no file, no line and no
+statement. That is not hypothetical: it is what killed the very first run of this
+schema, because two column comments contained a semicolon. Multi-statement SQL
+goes through `execScript` in `store.lua`, which skips over comments and quoted
+literals; single statements go through `Store.exec` / `Store.prepare`.
+`tools/scan_sql.py` gates the trap.
 
 **`items.item_key` is the identity.** One pure function derives it, used by both
 discovery and every sync. If those two paths ever diverge, each sync duplicates
@@ -285,30 +296,74 @@ Two invariants when touching these rows:
 ## Development
 
 ```
-python tools/check.py
+python tools/check.py       # structure of the Lua
+python tools/scan_sql.py    # semicolons inside SQL comments
 ```
 
-There is no Lua interpreter on the development machine, so this checker stands in
-for one. It runs two passes:
+There is no Lua interpreter on the development machine, so `check.py` stands in
+for one. It runs three passes:
 
 1. **Block balance** — `function`/`if`/`for`/`while`/`do` against `end`/`until`,
    over comment- and string-stripped source.
 2. **Cross-module member references** — every `Module.member` where `Module` came
    from a `require("meguru/...")` binding is checked against the members that
    module actually defines.
+3. **Unbound module tables** — `Geom:new{...}` where `Geom` is never bound in the
+   file. KOReader declares no global of this shape, so the name is nil when the
+   line runs.
 
-Neither pass is a parser. They are the two failure modes that have actually bitten
-this codebase, and that a reader cannot reliably catch by eye: a member reference
-that is invisible at load time and only explodes on the device, in the reader's
-hands. **The checker passes vacuously if its stripping is wrong**, so it was
-self-tested by injecting a typo and a missing `end`; if you change it, do the
-same before trusting a green run.
+None of the three is a parser. They are the failure modes that have actually
+bitten this codebase, and that a reader cannot reliably catch by eye: a name or
+member that is fine at load time and only explodes when a branch runs, on the
+device, in the reader's hands. **The checker passes vacuously if its stripping or
+its patterns are wrong**, so each pass was self-tested by injecting the real
+failure and confirming the checker reports it — including at the right line. Do
+the same before trusting a green run; two of the three passes were written
+wrongly the first time and passed on the very bug they existed to catch.
+
+`scan_sql.py` is narrow on purpose: it only looks for a `;` inside a SQL comment
+in a Lua string. That one shape is a hard crash with an error message that names
+nothing — see the `db:exec` rule above.
 
 ### Verifying on the device
 
-No automated tests, so verification is a running KOReader. Install by copying this
-directory to `<koreader>/plugins/meguru.koplugin/`. Run with `-d` or read
+No automated tests, so verification is a running KOReader. Run with `-d` or read
 `crash.log`, filtering on `Meguru:`.
+
+**Installation must be a directory named `meguru.koplugin`.** `pluginloader.lua`
+`_discover()` ignores any directory whose name does not end in `.koplugin` and
+strips the suffix to get the plugin name, so `plugins/meguru/` is invisible and
+`plugins/meguru.koplugin/` is what loads. On this machine it is a junction, not a
+copy, so the repository stays the single source of truth:
+
+```
+cmd /c mklink /J "<koreader>\plugins\meguru.koplugin" "C:\dev\projects\meguru"
+```
+
+A copy works too, but then the copy is what runs and edits to the repository do
+nothing until it is refreshed.
+
+**Read the whole log, not just the crash.** KOReader catches non-fatal errors
+inside `pcall` and logs them as `warning: UNHANDLED EXCEPTION!` plus the message,
+then carries on. So a line like that *before* the fatal crash is a **second,
+independent bug**, and the crash below it is not necessarily the first thing that
+went wrong. Both of the first two device failures were of this shape: the fatal
+one named its file and line, and the one above it named neither.
+
+When a message names nothing, the string is worth chasing to its source rather
+than guessing — it is often a vendor library's, and the string next to it in the
+binary explains the rest:
+
+```
+grep -rn "<message>" <koreader>/            # which file, if it is Lua
+grep -a -o -E "[ -~]{6,}" libs/libwrap-mupdf.so | grep -i "<message>"
+```
+
+That is how `argument error: missing file type` was traced to
+`Mupdf.openDocumentFromText` and its non-optional second argument: the adjacent
+string in the wrapper is `cannot find document handler for file type: '%s'`,
+which says a *wrong* type fails loudly and differently, and makes supplying a
+guessed type safe. Two messages, no debugger, no device round-trip.
 
 Each step must pass before the next:
 
@@ -345,11 +400,15 @@ Each step must pass before the next:
 
 ## Known open items
 
-- **`Settings.DEFAULTS.rotate_wide = 1`** means wide-page rotation is on by
-  default for every Meguru book. The old plugin's standalone row defaulted to
-  off. Unconfirmed whether that is intended.
 - **Kavita granularity** is resolved in PROTOCOL.md (entry ↔ stream is 1:1).
   `driver/komga.lua` and `driver/generic.lua` are not written yet; see Layout.
+
+Settled and worth not re-litigating: `Settings.DEFAULTS.rotate_wide = 1` is
+correct. The old plugin's fallback *row* carries `default_value = 0`, which looks
+like a conflict, but that value only applies when the pagenumbercrop plugin is
+absent — the book itself is seeded by `perBookGeometryDefaults`, whose classic
+default is right-turning (`meguru_marker.lua:373-386`). The new plugin seeds 1,
+which matches what a fresh book actually got.
 
 ## Security notes
 

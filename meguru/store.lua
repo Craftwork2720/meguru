@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS series (
     -- Item count from the last *complete* sync. Not for display: it is the
     -- denominator of the implausible-shrink gate in sync.lua.
     item_count           INTEGER NOT NULL DEFAULT 0,
-    new_since            INTEGER,     -- watermark; items newer than this are "new"
+    new_since            INTEGER,     -- watermark: items newer than this are "new"
     synced_at            INTEGER,     -- last *successful* sync
     last_sync_attempt_at INTEGER,     -- every attempt, success or not
     sync_fail_count      INTEGER NOT NULL DEFAULT 0,
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS items (
     last_read       INTEGER,          -- server-reported, cosmetic
     first_seen_at   INTEGER NOT NULL,
     last_seen_at    INTEGER NOT NULL, -- generation marker for the removal sweep
-    removed_at      INTEGER,          -- soft delete; the row is kept for progress history
+    removed_at      INTEGER,          -- soft delete: the row is kept for progress history
     marker_path     TEXT,             -- last marker written for this item, if any
     UNIQUE(series_id, item_key)
 );
@@ -107,6 +107,84 @@ local function normalize(value)
     return value
 end
 
+--- Split a SQL script into individual statements.
+---
+--- `db:exec` cannot do this job. It splits the script on every `;` with no
+--- understanding of SQL, so a semicolon inside a `--` comment cuts a statement
+--- in half; the fragment before the cut then ends mid-comment, and SQLite
+--- reports that as `incomplete input` — an error naming no file, no line and no
+--- statement. That is not hypothetical: it is exactly what happened the first
+--- time this schema ran, because two of its column comments contain a semicolon.
+---
+--- So comments and quoted literals are skipped over here rather than trusted not
+--- to contain a separator. Comments are *dropped* from the output, which is what
+--- makes the result safe to hand to `prepare` unchanged.
+local function splitStatements(sql)
+    local statements, buf = {}, {}
+    local i, n = 1, #sql
+    while i <= n do
+        local c = sql:sub(i, i)
+        local two = sql:sub(i, i + 1)
+        if two == "--" then
+            local nl = sql:find("\n", i + 2, true)
+            i = nl and nl + 1 or n + 1
+        elseif two == "/*" then
+            local close = sql:find("*/", i + 2, true)
+            i = close and close + 2 or n + 1
+        elseif c == "'" or c == '"' or c == "`" then
+            -- Copied verbatim, so a separator inside a literal stays content.
+            -- A doubled quote is SQL's escape for a literal quote.
+            local j = i + 1
+            while j <= n do
+                local cj = sql:sub(j, j)
+                if cj ~= c then
+                    j = j + 1
+                elseif sql:sub(j + 1, j + 1) == c then
+                    j = j + 2
+                else
+                    break
+                end
+            end
+            buf[#buf + 1] = sql:sub(i, j)
+            i = j + 1
+        elseif c == ";" then
+            statements[#statements + 1] = table.concat(buf)
+            buf = {}
+            i = i + 1
+        else
+            buf[#buf + 1] = c
+            i = i + 1
+        end
+    end
+    statements[#statements + 1] = table.concat(buf)
+    return statements
+end
+
+--- Run every statement in `sql` for its effect.
+---
+--- `prepare` is called directly rather than through `db:exec` so the statement
+--- reaches SQLite exactly as `splitStatements` produced it. A failure carries the
+--- offending statement with it: the raw `incomplete input` above cost a round of
+--- diagnosis precisely because it did not.
+local function execScript(db, sql)
+    for _, statement in ipairs(splitStatements(sql)) do
+        local trimmed = statement:match("^%s*(.-)%s*$")
+        if #trimmed > 0 then
+            local stmt = db:prepare(trimmed)
+            -- Via a closure: `stmt` is ffi cdata and its method lookup goes
+            -- through the metatype, which `pcall(stmt.step, stmt)` would depend
+            -- on. Same reasoning as `Store.exec`.
+            local ok, err = pcall(function() stmt:step() end)
+            stmt:close()
+            if not ok then
+                error(string.format(
+                    "meguru: schema statement failed: %s\n  %s",
+                    tostring(err), trimmed), 0)
+            end
+        end
+    end
+end
+
 local function open()
     local db = SQ3.open(Paths.dbFile())
 
@@ -123,7 +201,7 @@ local function open()
         db:exec("PRAGMA journal_mode=TRUNCATE;")
     end
 
-    db:exec(SCHEMA)
+    execScript(db, SCHEMA)
     Store.migrate(db)
     return db
 end

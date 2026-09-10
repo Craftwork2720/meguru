@@ -2,7 +2,7 @@
 """Static checks for the meguru plugin, standing in for the Lua interpreter
 this machine does not have.
 
-Neither check is a parser. They are the two failure modes that have actually
+None of the checks is a parser. They are the failure modes that have actually
 bitten this codebase, and that a reader cannot reliably catch by eye:
 
   1. block balance -- a missing or extra `end`/`until`. Lua reports these as a
@@ -11,6 +11,9 @@ bitten this codebase, and that a reader cannot reliably catch by eye:
   2. cross-module member references -- `Defaults.FOO` where defaults.lua never
      assigns `Defaults.FOO`. This is invisible at load time and only explodes
      when the branch is reached, on the device, in the reader's hands.
+  3. module tables that were never bound -- `Geom:new{...}` with no
+     `local Geom = require("ui/geometry")`. The plugin loads and appears fine,
+     then crashes the moment the branch runs.
 
 Run: python tools/check.py
 """
@@ -67,7 +70,13 @@ def strip(source, keep_strings=False):
             close = "]" + m.group(1) + "]"
             end = source.find(close, m.end())
             end = n if end < 0 else end + len(close)
-            out.append(" STR ")
+            # Content is dropped but its newlines are re-emitted. A schema or
+            # SQL block spans dozens of lines, and collapsing it would shift
+            # every line number after it -- so a reported error would point at
+            # the wrong place. It did: a missing `end` was reported well off its
+            # real line, which is worse than useless in a file this size.
+            out.append(source[i:end] if keep_strings
+                       else " STR " + "\n" * source.count("\n", i, end))
             i = end
             continue
 
@@ -206,6 +215,70 @@ def check_members(path, text, raw, members, by_stem):
 
 
 # --------------------------------------------------------------------------
+# Check 3: module tables that were never bound.
+# --------------------------------------------------------------------------
+
+# A capitalized identifier used as a module table: `Geom:new{...}` or
+# `Geom.foo`. KOReader defines no global of this shape -- `ui/geometry.lua`
+# ends `return Geom`, and every module in `frontend/` is reached through a
+# require -- so a bare one is a name that resolves to nil at the moment the
+# line runs. That is exactly how this codebase shipped a crash on the open
+# path: `document.lua` used `Geom` twice without requiring `ui/geometry`.
+#
+# Nil-at-load is the easy case, because the whole plugin fails loudly. This
+# one is worse: the module loads, the plugin appears, and the crash waits for
+# a book to be opened. Nothing else here catches it -- check 2 only covers
+# `meguru/...` requires.
+#
+# Keyed on the `:`/`.` itself, not on a `(` after the method name. An earlier
+# draft required `Ident:method(`, which misses the most common call shape in
+# this codebase -- `Geom:new{ w = ..., h = ... }` passes a table, so there is a
+# `{` where that pattern wanted a `(`. It matched nothing, reported nothing,
+# and passed on the exact bug it was written for.
+MODULE_USE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)\s*[:.]\s*[A-Za-z_]")
+
+# Ways a name becomes bound in a file: `local X`, `local X = ...`,
+# `local function X`, `X = ...` as a statement, and `function X.member()`.
+#
+# re.M is load-bearing on the first two. Without it `^`/`$` anchor to the whole
+# file, so a bare `local Mupdf` -- declared, documented, and assigned inside
+# the `do` block below it -- matches nothing and is reported as unbound. That
+# was a false positive on two files the first time this pass ran.
+BINDINGS = (
+    re.compile(r"\blocal\s+([A-Za-z0-9_, \t]+?)\s*(?:=|$)", re.M),
+    re.compile(r"^\s*([A-Z][A-Za-z0-9_]*)\s*=", re.M),
+    re.compile(r"\blocal\s+function\s+([A-Za-z0-9_]+)"),
+    re.compile(r"\bfunction\s+([A-Z][A-Za-z0-9_]*)[.:]"),
+)
+
+# Deliberately empty. Add a name here only with evidence from the runtime that
+# the identifier is a genuine global -- the point of the check is that it is
+# not one, and a name added to silence a true positive turns the pass off.
+GLOBAL_ALLOWLIST = set()
+
+
+def check_globals(path, text):
+    """Report a capitalized module table used without ever being bound."""
+    bound = set()
+    for rx in BINDINGS:
+        for m in rx.finditer(text):
+            # `local a, b` binds both; the first pattern may capture a group.
+            for name in m.group(1).split(","):
+                bound.add(name.strip())
+    errors = []
+    for lineno, line in enumerate(text.split("\n"), 1):
+        for m in MODULE_USE.finditer(line):
+            name = m.group(1)
+            if name in bound or name in GLOBAL_ALLOWLIST:
+                continue
+            errors.append(
+                f"{path}:{lineno}: {name} is never bound in this file -- "
+                f"missing `local {name} = require(...)`?"
+            )
+    return errors
+
+
+# --------------------------------------------------------------------------
 
 def main():
     members, by_stem = module_members()
@@ -217,6 +290,7 @@ def main():
         rel = lua.relative_to(ROOT)
         all_errors += check_balance(rel, text)
         all_errors += check_members(rel, text, raw, members, by_stem)
+        all_errors += check_globals(rel, text)
 
     if all_errors:
         for e in all_errors:

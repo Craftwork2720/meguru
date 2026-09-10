@@ -111,6 +111,48 @@ local function isJpegBytes(data)
     return type(data) == "string" and #data >= 3 and data:sub(1, 3) == JPEG_MAGIC
 end
 
+local PNG_MAGIC = "\137PNG\r\n\26\n" -- 89 50 4E 47 0D 0A 1A 0A
+
+--- The document type to hand MuPDF for a streamed page's bytes.
+---
+--- `openDocumentFromText(text, magic)` — `magic` is not optional, even though it
+--- reads as a hint. Passing nil raises `argument error: missing file type` from
+--- libwrap-mupdf: a message that names no call site, arrives as a non-fatal
+--- UNHANDLED EXCEPTION before whatever crashes next, and is easy to read as
+--- noise. It is not noise; it means the page never got decoded.
+---
+--- A type that is present but wrong is a *different* error — the wrapper says
+--- `cannot find document handler for file type: '<x>'`, naming the value. So a
+--- sniff that guesses badly is loud rather than silent, which is what makes
+--- guessing here safe.
+---
+--- Only types the wrapper's own handler table lists are claimed — every one
+--- below is in it (`grep -a -o 'image/[a-z0-9+.-]*' libs/libwrap-mupdf.so` on
+--- the runtime); `image/webp` is not, so a WEBP page deliberately falls through
+--- to the RenderImage fallback instead of claiming a handler this build lacks.
+local function documentMagic(data)
+    if type(data) ~= "string" or #data < 12 then
+        return nil
+    end
+    if data:sub(1, 3) == JPEG_MAGIC then
+        return "image/jpeg"
+    end
+    if data:sub(1, 8) == PNG_MAGIC then
+        return "image/png"
+    end
+    if data:sub(1, 4) == "GIF8" then
+        return "image/gif"
+    end
+    if data:sub(1, 2) == "BM" then
+        return "image/bmp"
+    end
+    local tiff = data:sub(1, 4)
+    if tiff == "II*\0" or tiff == "MM\0*" then
+        return "image/tiff"
+    end
+    return nil
+end
+
 -- Render one page (`pageno`, 1-based) of an ALREADY-OPEN MuPDF `doc` into a
 -- whole-page BlitBuffer whose long edge is at most the native cap — the core
 -- both the streamed-bytes decode and the local-cbz render share. `doc` is
@@ -189,7 +231,11 @@ local function decodeNativeMupdf(data)
     if not Mupdf then
         return nil
     end
-    local ok_doc, doc = pcall(Mupdf.openDocumentFromText, data, nil)
+    local magic = documentMagic(data)
+    if not magic then
+        return nil
+    end
+    local ok_doc, doc = pcall(Mupdf.openDocumentFromText, data, magic)
     if not ok_doc or not doc then
         logger.dbg("Meguru: MuPDF cannot open page bytes:", tostring(doc))
         return nil
