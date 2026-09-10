@@ -142,19 +142,24 @@ ON CONFLICT(server_id, remote_id) DO UPDATE SET
 RETURNING id, new_since
 ]]
 
---- Returns `{ id, new_since }` and **nothing else** — `RETURNING` names those
---- two columns deliberately, so callers get the identity and the watermark that
---- an upsert cannot recompute, without a second read of a row they usually do
---- not need. Anything else off this table (`remote_id`, `name`, the counters)
---- comes from `series(id)`.
+--- Returns the whole series row.
 ---
---- Not merely a convention: reading `series.remote_id` off this return is a nil
---- concatenation, and it has already cost one device round-trip when a status
---- line did exactly that.
+--- This used to return the `RETURNING` slice — `{ id, new_since }` — on the
+--- theory that callers rarely need the rest. The theory was wrong twice over,
+--- and both mistakes were invisible in different ways: a status line read
+--- `series.remote_id` off it and took down an open with a nil concatenation, and
+--- later a comparison against the same nil made a lookup quietly find nothing
+--- and fall back to a worse answer, with no error anywhere. A partial row that
+--- callers reach into is a trap that only shows up at runtime, so the row is
+--- read in full and the trap is gone.
 function Catalog.upsertSeries(server_id, series)
-    return Store.first(UPSERT_SERIES,
+    local stored = Store.first(UPSERT_SERIES,
         server_id, series.remote_id, series.name, series.name_sort,
         series.cover_url, Store.now())
+    if not stored then
+        return nil
+    end
+    return Catalog.series(stored.id)
 end
 
 function Catalog.series(id)

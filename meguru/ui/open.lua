@@ -278,31 +278,43 @@ end
 --- not the furthest item *read*. Asking the feed the reader is already looking at
 --- costs nothing: `OPDSBrowser` fetched it to draw the list on screen.
 ---
---- **The feed must be this series' own.** An entry opened from `on-deck` or
---- `recently-added` is served by an aggregate listing other series too, and
---- parsing that as if it were a series feed would produce items belonging to
---- them — the "never silently sync the wrong series" failure, arriving by a side
---- door. `driver.discover` is the existing answer to "which series is this
---- entry", so the whole feed is checked with it and rejected unless every entry
---- claims the series being opened. Rejecting costs only the fresher answer; the
---- caller falls back to the catalog.
+--- **Entries that do not claim this series are dropped, not fatal.** An entry
+--- opened from `on-deck` or `recently-added` comes from a feed listing other
+--- series too, and parsing that as if it were a series feed would file their
+--- items under this series — the "never silently sync the wrong series" failure
+--- arriving by a side door. `driver.discover` is the existing answer to "which
+--- series is this entry", and it is what separates them.
+---
+--- Rejecting the whole feed when *any* entry fails that test was the first
+--- version of this function, and it was wrong: a Kavita series feed also carries
+--- entries with no stream link at all — a special, a cover-only row — which
+--- `discover` cannot place, so a single one of them meant the fresh path never
+--- ran and the stale catalog always won. That is this function's own bug wearing
+--- a different hat, and it is why opening volume 1 offered volume 4 (the last one
+--- *meguru* had opened, the only rows the catalog refreshes) instead of volume 7
+--- (the one the server says is read). Filtering is also the stronger guard:
+--- foreign entries never reach the parser at all.
 ---
 --- Returns a catalog row, because the caller opens it as one. The target is
 --- upserted on the way, which is the same write `registerBook` makes for the
 --- book actually being opened, from the same feed, for the same series.
 local function freshResumeTarget(driver, feed, feed_url, ctx, series)
-    local entries = feed and feed.entry or {}
-    if #entries == 0 then
-        return nil
-    end
-    for _, entry in ipairs(entries) do
+    local mine = {}
+    for _, entry in ipairs(feed and feed.entry or {}) do
         local found = driver.discover(entry, nil, ctx)
-        if not found or found.series_remote_id ~= series.remote_id then
-            return nil
+        if found and found.series_remote_id == series.remote_id then
+            mine[#mine + 1] = entry
         end
     end
+    if #mine == 0 then
+        logger.info("Meguru: no entry in this feed belongs to series",
+            series.remote_id, "- resume point falls back to the catalog")
+        return nil
+    end
 
-    local parsed = driver.parseCatalogPage(feed, feed_url, ctx)
+    -- Handed on as a feed in its own right: `parseCatalogPage` reads
+    -- `feed.entry` and nothing else, so a one-field table is all it needs.
+    local parsed = driver.parseCatalogPage({ entry = mine }, feed_url, ctx)
     local best
     for _, parsed_item in ipairs(parsed or {}) do
         if type(parsed_item.last_read) == "number" and parsed_item.last_read > 0 then
@@ -310,8 +322,13 @@ local function freshResumeTarget(driver, feed, feed_url, ctx, series)
         end
     end
     if not best then
+        logger.info("Meguru: nothing in series", series.remote_id,
+            "is marked read in this feed - resume point falls back to the catalog")
         return nil
     end
+
+    logger.info("Meguru: the feed says", best.display_title or best.title,
+        "is the furthest read in series", series.remote_id)
 
     Catalog.numberPositions(parsed)
     Catalog.upsertItem(series.id, best, Catalog.nextTimestamp())
@@ -404,13 +421,14 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
 
     local registered = {
         server = server,
-        series = Catalog.series(series.id),
+        -- `upsertSeries` returns the whole row, so this needs no second read.
+        series = series,
         item   = Catalog.itemByKey(series.id, item.item_key),
         -- Where the reader actually is in this series, asked of the feed the
         -- browser just fetched rather than of the catalog, which only knows what
-        -- the last sync saw. Nil when that feed is not this series' own, or when
-        -- nothing in it has been read — `offerResume` then falls back to the
-        -- catalog, which is the honest answer for a series never read anywhere.
+        -- the last sync saw. Nil when nothing in that feed has been read, or when
+        -- no entry of it belongs to this series — `offerResume` then falls back
+        -- to the catalog, which is the honest answer for a series never read.
         resume = freshResumeTarget(driver, feed, feed_url, ctx, series),
     }
     -- Said out loud because every way this can fail says so, and the success was
@@ -418,14 +436,10 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
     -- the log. Note what it counts: **one** item. The siblings arrive from a sync,
     -- never from this path.
     --
-    -- Read off `registered.series`, not off the local `series`: `upsertSeries`
-    -- returns only `{ id, new_since }`, so the local has no `remote_id` — and
-    -- concatenating it aborted the whole open, *after* both rows had committed.
-    -- Every field goes through `tostring` for the same reason: a status line
-    -- must never be able to take down the operation it exists to report on.
-    local stored = registered.series
+    -- Every field goes through `tostring`: a status line must never be able to
+    -- take down the operation it exists to report on, which it once did here.
     logger.info("Meguru: catalogued", item.display_title or item.title,
-        "(series " .. tostring(stored and stored.remote_id)
+        "(series " .. tostring(series.remote_id)
         .. ", kind " .. tostring(kind)
         .. ", key " .. tostring(item.item_key) .. ")")
     return registered
@@ -505,18 +519,22 @@ end
 
 --- Offer a starting point, then open. Calls `opts.open()` either way.
 ---
---- **Only ever asked for a book that has never been opened here.** A book opened
---- before carries KOReader's own position, which is finer-grained than anything
---- the server knows, and asking on top of it would be noise. That single
---- condition is what keeps the question rare — it also silences the flows that
---- come through here routinely: a next chapter reached from the reader has no
---- progress of its own, and the furthest-read item lies *behind* it, so neither
---- button qualifies and no dialog is built at all.
+--- **Asked whenever there is a choice, and only then** — a book whose series has
+--- something further along in it, or a book never opened here whose server page
+--- is worth resuming at. Whether the book has been read here decides the
+--- *wording*, not whether to ask: "continue where I left off" and "continue here
+--- (page N)" are the same button doing what each situation means, and a reader
+--- who has read volume 3 here and got to volume 5 elsewhere gets asked about
+--- precisely that.
 ---
---- Buttons appear only when they have something to say, so the usual shape is
---- two buttons, rarely three. The caller passes the open step rather than being
---- called back into because the two entry points hand the marker on differently
---- — the browser goes through the built-in plugin's own opener.
+--- The flows that come through here routinely stay silent without any extra
+--- rule: a next chapter reached from the reader has no progress of its own and
+--- the furthest-read item lies *behind* it, so nothing qualifies and no dialog is
+--- built at all.
+---
+--- The caller passes the open step rather than being called back into because the
+--- two entry points hand the marker on differently — the browser goes through the
+--- built-in plugin's own opener.
 ---
 --- `opts.target` is the caller's fresh answer when it has one, and the catalog's
 --- is the fallback when it does not. They are not equivalent and the difference
@@ -530,16 +548,21 @@ end
 --- @param opts { count, file, target, open, open_item }
 function Open.offerResume(host, server, series, item, opts)
     local file, open = opts.file, opts.open
-    if not neverOpened(file) then
-        open()
-        return
-    end
+
+    -- Has this book been read here before? Two things follow, and they are not
+    -- the same thing: the page the server reports is only worth *offering* when
+    -- there is no local position to prefer, and "continue" names something
+    -- different in each case.
+    local opened_before = not neverOpened(file)
 
     -- A page worth offering: past the first, and inside the book. The old
     -- plugin's guard, unchanged (`meguru_hook.lua:996`).
-    local page = item and tonumber(item.last_read)
-    if not (page and page > 1 and opts.count and page <= opts.count) then
-        page = nil
+    local page
+    if not opened_before then
+        page = item and tonumber(item.last_read)
+        if not (page and page > 1 and opts.count and page <= opts.count) then
+            page = nil
+        end
     end
 
     -- Somewhere further along in the series to go instead. Never the item
@@ -553,7 +576,13 @@ function Open.offerResume(host, server, series, item, opts)
         target = nil
     end
 
-    if not page and not target then
+    -- Asked whenever there is a choice to make, and only then. Deliberately
+    -- **not** gated on the book being new: a reader who has read volume 3 here
+    -- and got to volume 5 elsewhere is exactly the case worth asking about, and
+    -- their local position is then one of the answers rather than a reason not
+    -- to ask. With nothing further along, there is no question to put — the book
+    -- opens where it was left.
+    if not target and not page then
         open()
         return
     end
@@ -577,7 +606,21 @@ function Open.offerResume(host, server, series, item, opts)
             },
         },
     }
-    if page then
+    if opened_before then
+        -- Their own position, which KOReader restores unaided — so this button's
+        -- entire job is to *not* override it. It is the answer to "or open the
+        -- one I clicked, where I had got to in it", and without it that choice
+        -- would be unreachable: the other two both move somewhere else.
+        buttons[#buttons + 1] = {
+            {
+                text = _("Continue where I left off"),
+                callback = function()
+                    UIManager:close(dialog)
+                    open()
+                end,
+            },
+        }
+    elseif page then
         buttons[#buttons + 1] = {
             {
                 text = T(_("Continue here (page %1)"), page),
@@ -679,10 +722,33 @@ end
 ---
 --- Falls back to the catalog on any failure. A slightly stale answer beats a
 --- dialog that never opens.
+--- Fresh answers already fetched, keyed by series id, with when they were taken.
+---
+--- The file-open path asks on every open now, including for books being resumed,
+--- so an unmemoised lookup would be one feed fetch per tap on a book: a few
+--- hundred milliseconds in front of a dialog, and up to `Net.RESUME_*` against a
+--- server that has stopped answering. Short-lived on purpose — this exists to
+--- stop a burst of opens paying repeatedly, not to cache a fact that goes stale.
+--- A failure is never memoised, so a series that could not be reached is retried
+--- on the next open rather than written off for the rest of the session.
+local recent_targets = {}
+local RESUME_MEMO_SECONDS = 45
+
 local function currentResumeTarget(server, series)
+    local memo = series and recent_targets[series.id]
+    if memo and (os.time() - memo.at) < RESUME_MEMO_SECONDS then
+        return memo.target
+    end
+
     local driver = server and server.kind and Base.forKind(server.kind)
     local conn = server and Sources.connection(server.name)
-    if driver and conn and NetworkMgr:isConnected() then
+    local why = "no driver for this server's kind"
+    if not conn then
+        why = "no saved catalog for this server"
+    elseif not NetworkMgr:isConnected() then
+        why = "no connection"
+    elseif driver then
+        why = "the feed could not be fetched"
         local ctx = { lang = Catalog.serverLang(server.name) }
         local url = driver.catalogURL(conn.url, series.remote_id, ctx)
         local ok, feed = pcall(Net.fetchFeed, url, {
@@ -692,11 +758,23 @@ local function currentResumeTarget(server, series)
         })
         if ok and feed then
             local ok_fresh, target = pcall(freshResumeTarget, driver, feed, url, ctx, series)
-            if ok_fresh and target then
+            if ok_fresh then
+                -- Memoised even when nil: "this series has nothing read" is an
+                -- answer, and re-fetching to hear it again is the cost this
+                -- guards against.
+                recent_targets[series.id] = { target = target, at = os.time() }
                 return target
             end
+            why = "the feed could not be read"
         end
     end
+
+    -- The catalog only knows what the last sync saw, plus whichever chapters
+    -- were opened since, so this answer can lag badly — which is the whole
+    -- reason the fresh read above exists. Which of the two produced the answer
+    -- is otherwise invisible, and the two need opposite fixes.
+    logger.info("Meguru: resume point from the catalog, not the feed (",
+        why, ")")
     local found = Catalog.resumeTarget(series.id)
     return found and found.item or nil
 end
@@ -746,10 +824,11 @@ end
 ---
 --- `proceed(file)` opens `file`, or the one this was called for when given none.
 function Open.offerResumeForFile(file, host, proceed)
-    if not neverOpened(file) then
-        proceed()
-        return
-    end
+    -- No early "is it new?" test here, deliberately. This path is where a book
+    -- already being read has to be askable about — clicking volume 3 while the
+    -- server says volume 5 — so whether it has been opened is one of the
+    -- answers `offerResume` weighs, not a reason to skip it. It is also what
+    -- `neverOpened` inside `offerResume` decides the *wording* of.
 
     -- pcall: a marker this plugin did not write, or a database that will not
     -- open, must cost the reader a dialog, never the book.

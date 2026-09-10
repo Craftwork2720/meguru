@@ -174,13 +174,21 @@ uses, where nothing needs reading.)
 
 **The server's own progress is a separate thing, and it seeds a first open.**
 `items.last_read` is the page the *server* says the reader stopped on. It is not
-a mirror of local progress and never overrides it: `ui/open.lua`'s
-`offerResume` asks only for a marker that has **no sidecar yet**, because after
-one open KOReader's own position is finer-grained than anything the server knows.
-When it does ask, it offers up to three things — start at page 1, start at the
-server's page, or jump to a later chapter the server says is further along
-("furthest in reading order", deliberately not "most recent", so re-reading an
-early chapter cannot move the answer backwards).
+a mirror of local progress and never overrides it: `ui/open.lua`'s `offerResume`
+asks whenever there is a choice, and offers up to three things — start at page 1,
+continue (where the local position is, or the server's page when there is none),
+or jump to a later chapter the server says is further along ("furthest in reading
+order", deliberately not "most recent", so re-reading an early chapter cannot
+move the answer backwards).
+
+**Whether the book has been read here decides the wording, not whether to ask.**
+Gating the question on "never opened here" — which is how this started — made the
+one case worth asking about unreachable: a reader who has read volume 3 on this
+device and got to volume 5 elsewhere got no question at all, because their local
+position was treated as a reason not to ask rather than as one of the answers.
+The gate is now "is there anything to offer instead", and a book already being
+read with nothing further along in its series opens where it was left, silently,
+because there is genuinely nothing to decide.
 
 **The catalog is the wrong place to ask, and the feed is the right one.** It has
 to be said plainly because the obvious implementation is wrong in a way that only
@@ -196,8 +204,17 @@ fallback for when there is no such feed. The two are not interchangeable.
 
 That fresh path also carries the "never silently sync the wrong series" guard:
 an entry opened from `on-deck` or `recently-added` comes from a feed listing other
-series too, so the feed is accepted only when **every** entry `driver.discover`s
-to the series being opened.
+series too, so entries are kept only when `driver.discover` places them in the
+series being opened, and the parser sees nothing else. **Filter, never reject the
+whole feed** — that was the first version and it was wrong. A Kavita series feed
+also carries entries with no stream link (a special, a cover-only row) that
+`discover` cannot place, so one of them was enough to send every open back to the
+stale catalog, producing exactly the symptom the fresh read exists to remove:
+opening volume 1 offered volume 4, the last one meguru itself had opened.
+
+When the fresh read is unavailable, each path says so in the log with its reason.
+That matters more than it looks: a stale answer and a fresh one present
+identically — as a chapter button — and they need opposite fixes.
 
 **The file-manager open is wrapped, because it is the only place left that can
 ask.** `hook.lua` wraps `ReaderUI.showReader` — the same runtime-wrap technique it
