@@ -294,9 +294,9 @@ end
 local UPSERT_ITEM = string.format([[
 INSERT INTO items (series_id, item_key, item_key_source, feed_index,
                    ordinal, ordinal_source, title, display_title, volume_label,
-                   template, detail_url, page_count, last_read,
+                   cover_url, template, detail_url, page_count, last_read,
                    first_seen_at, last_seen_at, removed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
 ON CONFLICT(series_id, item_key) DO UPDATE SET
     feed_index      = excluded.feed_index,
     ordinal         = CASE WHEN %s THEN excluded.ordinal ELSE items.ordinal END,
@@ -307,6 +307,7 @@ ON CONFLICT(series_id, item_key) DO UPDATE SET
     -- A sync that could not resolve a template must not blank the one stored
     -- from a previous, better-informed sync.
     volume_label    = COALESCE(excluded.volume_label, items.volume_label),
+    cover_url       = COALESCE(excluded.cover_url, items.cover_url),
     template        = COALESCE(excluded.template, items.template),
     detail_url      = COALESCE(excluded.detail_url, items.detail_url),
     page_count      = COALESCE(excluded.page_count, items.page_count),
@@ -348,8 +349,8 @@ function Catalog.upsertItems(series_id, items, now)
     for _, item in ipairs(items) do
         stmt:bind(series_id, item.item_key, item.item_key_source, item.feed_index,
             item.ordinal, item.ordinal_source, item.title, item.display_title,
-            item.volume_label, item.template, item.detail_url, item.page_count,
-            item.last_read, now, now)
+            item.volume_label, item.cover_url, item.template, item.detail_url,
+            item.page_count, item.last_read, now, now)
         stmt:step()
         stmt:clearbind():reset()
     end

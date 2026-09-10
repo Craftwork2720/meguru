@@ -14,6 +14,13 @@ bitten this codebase, and that a reader cannot reliably catch by eye:
   3. module tables that were never bound -- `Geom:new{...}` with no
      `local Geom = require("ui/geometry")`. The plugin loads and appears fine,
      then crashes the moment the branch runs.
+  4. lowercase calls to a name bound only *below* them -- `handToReader(x)` with
+     a `local function handToReader` further down the file. A `local` enters
+     scope from its own statement onwards, so the call site resolves a global and
+     finds nil. Loads fine, crashes when the branch runs.
+  5. the item upsert's column list, `?` placeholders and `bind` arguments agree.
+     Four separate edits have to stay in step and Lua checks none of them, so a
+     mismatch is a runtime error on the first sync, on the device.
 
 Run: python tools/check.py
 """
@@ -366,6 +373,83 @@ def check_lowercase_calls(path, text):
 
 
 # --------------------------------------------------------------------------
+# Check 5: the item upsert's columns, placeholders and binds stay in step.
+# --------------------------------------------------------------------------
+
+# `Catalog.upsertItems` is the one statement every sync and every open writes
+# through, and it is spread over four places that must agree: the INSERT column
+# list, the `?` placeholders in VALUES, the positional `stmt:bind(...)` call, and
+# the `DO UPDATE SET` list. Lua checks none of them, and getting one wrong is not
+# a load-time error -- it is "NOT NULL constraint failed" or "table items has no
+# column named X" on the first sync, on the device.
+#
+# This one has not bitten yet. It was written the moment adding a column meant
+# editing all four by hand, with no interpreter on this machine to confirm it --
+# the hand-check is the check, so it is worth keeping.
+#
+# Scope is deliberately one statement, named. A general "every bind matches its
+# SQL" pass would need to pair each `prepare` with its `bind` across files, and
+# that is a different, much larger, and much more false-positive-prone job than
+# the one failure this exists to prevent.
+UPSERT_ITEM = re.compile(r"local UPSERT_ITEM = .*?\[\[(.*?)\]\]", re.S)
+
+
+def check_item_upsert():
+    """Report a disagreement inside the item upsert, or a column it cannot have."""
+    catalog = (SRC / "catalog.lua").read_text(encoding="utf-8")
+    store = (SRC / "store.lua").read_text(encoding="utf-8")
+    errors = []
+
+    lit = UPSERT_ITEM.search(catalog)
+    if not lit:
+        return ["tools/check.py: UPSERT_ITEM not found in catalog.lua -- "
+                "this check has gone stale"]
+    sql = lit.group(1)
+
+    m = re.search(r"INSERT INTO items \((.*?)\)\s*VALUES \((.*?)\)", sql, re.S)
+    if not m:
+        return ["tools/check.py: could not read the INSERT from UPSERT_ITEM -- "
+                "this check has gone stale"]
+    cols = [c.strip() for c in m.group(1).split(",") if c.strip()]
+    values = [v.strip() for v in m.group(2).split(",") if v.strip()]
+    holders = [v for v in values if v == "?"]
+    literals = [v for v in values if v != "?"]
+
+    bind = re.search(r"stmt:bind\((.*?)\)\s*\n", catalog, re.S)
+    if not bind:
+        return ["tools/check.py: could not read stmt:bind -- "
+                "this check has gone stale"]
+    args = [a.strip() for a in bind.group(1).split(",") if a.strip()]
+
+    # A literal in VALUES (there is one: `removed_at` is written as NULL, since
+    # a row written by an upsert is by definition not removed) takes a column
+    # but no placeholder and no argument.
+    expected = len(cols) - len(literals)
+    if not (expected == len(holders) == len(args)):
+        errors.append(
+            f"catalog.lua: UPSERT_ITEM is out of step -- {len(cols)} columns "
+            f"with {len(literals)} literal(s) need {expected}, but VALUES has "
+            f"{len(holders)} placeholder(s) and bind has {len(args)} argument(s)")
+
+    # Every DO UPDATE SET target must be a column `items` actually has, or the
+    # statement dies with "no such column" the first time a row already exists.
+    ddl = re.search(r"CREATE TABLE IF NOT EXISTS items \((.*?)\n\);", store, re.S)
+    if not ddl:
+        errors.append("tools/check.py: could not read the items DDL -- "
+                      "this check has gone stale")
+        return errors
+    declared = set(re.findall(r"^\s*([a-z_]+)\s+(?:INTEGER|TEXT|REAL|BLOB)",
+                              ddl.group(1), re.M))
+    targets = re.findall(r"^\s{4}([a-z_]+)\s*=", sql, re.M)
+    for name in targets:
+        if name not in declared:
+            errors.append(
+                f"catalog.lua: UPSERT_ITEM sets `{name}`, which is not a column "
+                f"of items")
+    return errors
+
+
+# --------------------------------------------------------------------------
 
 def main():
     members, by_stem = module_members()
@@ -379,6 +463,8 @@ def main():
         all_errors += check_members(rel, text, raw, members, by_stem)
         all_errors += check_globals(rel, text)
         all_errors += check_lowercase_calls(rel, text)
+
+    all_errors += check_item_upsert()
 
     if all_errors:
         for e in all_errors:

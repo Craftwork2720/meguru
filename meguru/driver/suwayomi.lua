@@ -160,6 +160,20 @@ end
 ---
 --- `template` and `page_count` stay nil — that is the lazy path, and the engine
 --- resolves them on first open.
+--- No `cover_url`, deliberately, and it is the one thing Kavita's driver does
+--- that this one cannot. A Kavita series entry carries its own `image` links; a
+--- Suwayomi *chapter-list* entry carries only `rel=subsection` — no image at
+--- all. A chapter's own artwork exists solely in its metadata feed, reachable
+--- only by fetching that feed per chapter, which is one HTTP request each and
+--- precisely what the sync rules forbid spending.
+---
+--- So chapters fall back to the series cover, on purpose. Should that ever be
+--- wanted differently, it is one line here: `cover_url =
+--- Base.coverFromEntry(entry, base_url)` — the metadata feed's entry *does*
+--- carry `<link rel="http://opds-spec.org/image" …/page/0>`, which Suwayomi
+--- titles "chapter cover". Because `ui/open.lua`'s `driverItemFor` reaches
+--- drivers through this same function, covers would then fill in as chapters
+--- are opened, at no extra request and no extra sync cost.
 function Suwayomi.parseCatalogPage(feed, base_url, ctx)
     local items = {}
     for _, entry in ipairs(feed and feed.entry or {}) do

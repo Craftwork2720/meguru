@@ -1306,14 +1306,23 @@ function MeguruDocument:getCoverPageImage()
     if self.local_cbz then
         return self:_localCoverPageImage()
     end
-    -- The cover link comes from the catalog, not the marker: it belongs to the
-    -- series, not to the book, so it has one home rather than a copy in every
-    -- marker. Without a catalog the fallback below — page 1 of the stream,
-    -- which on OPDS-PSE servers is usually the cover — still applies.
-    local _, series = self:_catalog()
-    local cover_url = series and series.cover_url
-    if type(cover_url) ~= "string" or cover_url == "" then
-        cover_url = nil
+    -- Both cover links come from the catalog, not the marker: a cover belongs
+    -- to a book and to a series, and the catalog is where each of those lives,
+    -- so neither is copied into every marker. Without a catalog the fallback
+    -- below — page 1 of the stream, which on OPDS-PSE servers is usually the
+    -- cover — still applies.
+    --
+    -- The book's own artwork wins. Most feeds publish only a series image, so
+    -- for them this changes nothing; Kavita publishes one per volume, and
+    -- preferring the series there is what made every book of a series render
+    -- with the same picture.
+    local item, series = self:_catalog()
+    local cover_url
+    for _, candidate in ipairs{ item and item.cover_url, series and series.cover_url } do
+        if type(candidate) == "string" and candidate ~= "" then
+            cover_url = candidate
+            break
+        end
     end
 
     local data

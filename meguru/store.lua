@@ -18,7 +18,8 @@ local Paths = require("meguru/paths")
 
 local Store = {}
 
-local SCHEMA_VERSION = 1
+-- 2: `items.cover_url` -- a book's own artwork, distinct from its series'.
+local SCHEMA_VERSION = 2
 
 local SCHEMA = [[
 CREATE TABLE IF NOT EXISTS servers (
@@ -83,6 +84,15 @@ CREATE TABLE IF NOT EXISTS items (
     last_seen_at    INTEGER NOT NULL, -- generation marker for the removal sweep
     removed_at      INTEGER,          -- soft delete: the row is kept for progress history
     marker_path     TEXT,             -- last marker written for this item, if any
+    -- The book's own artwork, where its feed publishes one. Kavita does, on
+    -- every entry of a series feed. Suwayomi's chapter list does not (see the
+    -- driver). A book with none falls back to the series cover and then to the
+    -- first page of its stream, so this only ever *improves* the picture.
+    --
+    -- Last in the table on purpose: `ALTER TABLE ADD COLUMN` appends, so a
+    -- database migrated to v2 and a fresh one then have the same column order
+    -- and the same `.schema` output.
+    cover_url       TEXT,
     UNIQUE(series_id, item_key)
 );
 
@@ -206,8 +216,47 @@ local function open()
     return db
 end
 
+--- Add one column to an existing table, unless it is already there.
+---
+--- Returns false when the ALTER failed, so the caller can leave the schema
+--- version alone and try again on the next start.
+---
+--- The existence check is not politeness. `CREATE TABLE IF NOT EXISTS` in
+--- `SCHEMA` has already given a *fresh* database every current column, while
+--- `user_version` on that same new file is still 0 — so an unguarded ALTER
+--- fails with "duplicate column name" and logs a warning on the first start of
+--- every new install. That is the kind of noise that teaches a reader to skim
+--- the log, which is the last thing this codebase can afford.
+---
+--- `pragma_table_info` is a table-valued function, so this is one statement
+--- rather than a row loop over `PRAGMA table_info`. It needs SQLite 3.16+, and
+--- the runtime here is 3.53.
+local function addColumn(db, table_name, column, declaration)
+    local present = tonumber(db:rowexec(string.format(
+        "SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = '%s';",
+        table_name, column))) or 0
+    if present > 0 then
+        return true
+    end
+    local ok, err = pcall(db.exec, db, string.format(
+        "ALTER TABLE %s ADD COLUMN %s %s;", table_name, column, declaration))
+    if not ok then
+        logger.warn(string.format("meguru: migration: %s.%s:",
+            table_name, column), err)
+        return false
+    end
+    return true
+end
+
 --- Look at `PRAGMA user_version` and bring the database up to SCHEMA_VERSION.
 --- A fresh database gets its version stamped without any migration running.
+---
+--- Each step is guarded by its own version and wrapped, so a failure is logged
+--- and the remaining steps still run: a database the reader can still open
+--- beats a plugin that refuses to start. The version is stamped only once every
+--- step has succeeded, so a failed migration is retried on the next start
+--- instead of being frozen in — stamping regardless would leave a database that
+--- is one column short and will never grow it.
 function Store.migrate(db)
     local version = tonumber(db:rowexec("PRAGMA user_version;")) or 0
     if version == SCHEMA_VERSION then
@@ -219,12 +268,18 @@ function Store.migrate(db)
             version, SCHEMA_VERSION))
     end
 
-    -- No migrations yet: v1 is the initial schema, applied by CREATE TABLE
-    -- IF NOT EXISTS above. Future steps go here as `if version < N then ...`
-    -- blocks, each in a pcall so a half-applied change is logged rather than
-    -- fatal, mirroring vocabbuilder.koplugin/db.lua.
+    local complete = true
 
-    db:exec(string.format("PRAGMA user_version=%d;", SCHEMA_VERSION))
+    if version < 2 then
+        -- A book's own artwork. Existing rows stay NULL and gain one on their
+        -- next sync, which is harmless: a NULL here falls back to the series
+        -- cover, so nothing regresses while the library fills in.
+        complete = addColumn(db, "items", "cover_url", "TEXT")
+    end
+
+    if complete then
+        db:exec(string.format("PRAGMA user_version=%d;", SCHEMA_VERSION))
+    end
 end
 
 --- The shared connection, opened on first use. Raises on failure.

@@ -97,6 +97,10 @@ function Kavita.parseCatalogPage(feed, base_url, _ctx)
                 template        = template,
                 page_count      = count,
                 last_read       = last_read,
+                -- Every entry of a Kavita series feed carries its own `image`
+                -- and `image/thumbnail`, so a volume's cover costs the sync
+                -- nothing. Without it all of them render as the series.
+                cover_url       = Base.coverFromEntry(entry, base_url),
             })
         end
     end

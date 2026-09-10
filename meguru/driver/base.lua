@@ -186,6 +186,26 @@ function Base.coverFromFeed(feed, entry, base_url)
     return Base.absolute(base_url, link.href)
 end
 
+--- Artwork belonging to one item, as an absolute URL.
+---
+--- Deliberately not a fallback of `coverFromFeed` above, and not shared with it.
+--- That one asks the *feed* first, because a feed-level image is the series'
+--- artwork and the series row is what it fills. An item wants its own image even
+--- when the feed could offer a better one — which is the entire point, since
+--- every book of a series otherwise renders with the same cover.
+---
+--- The two rels are ordered the other way round from `coverFromFeed`, too. The
+--- consumer here is a list thumbnail, and `image/thumbnail` exists in OPDS for
+--- precisely that; a series cover is fetched once, while an item cover is
+--- fetched once per book, so the cheap one is the one to ask for.
+function Base.coverFromEntry(entry, base_url)
+    local link = Base.link(entry, OPDS_THUMBNAIL_REL, OPDS_IMAGE_REL)
+    if not link then
+        return nil
+    end
+    return Base.absolute(base_url, link.href)
+end
+
 --- The page stream an entry advertises directly, if it carries one.
 --- Not every server does: Suwayomi's chapter entries only link to a metadata
 --- feed, which is what `resolveStream` exists to handle.
@@ -215,6 +235,7 @@ function Base.item(fields)
         title           = title,
         display_title   = display ~= "" and display or title,
         volume_label    = fields.volume_label or label,
+        cover_url       = fields.cover_url,
         template        = fields.template,
         detail_url      = fields.detail_url,
         page_count      = fields.page_count,

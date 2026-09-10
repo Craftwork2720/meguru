@@ -27,7 +27,7 @@ These are fixed and shape most of the design:
   the only place this code runs.
 - **No test framework and no linter.** Verification is manual, in a running
   KOReader. The two scripts under `tools/` (see Development) are the automated
-  guards, and they cover four failure modes between them.
+  guards, and they cover five failure modes between them.
 - **Reuse KOReader's own machinery** rather than rebuilding it: `LuaSettings`,
   `DocSettings`, `DocumentRegistry`, the `lua-ljsqlite3` binding, and the
   built-in `plugins/opds.koplugin` for Atom parsing and the browser UI. That
@@ -148,6 +148,20 @@ The single definition is load-bearing. While numbering lived in the sync's
 `dedupe` alone, the open path — which calls a driver directly and so never
 passes through `dedupe` — inserted a nil and died on the constraint, *after* the
 series row had already been written, so the failure left a series with no items.
+
+**A cover belongs to a book *and* to a series, and the catalog holds both.**
+`series.cover_url` is the series' artwork; `items.cover_url` is the book's own,
+written only by a driver whose feed publishes one. Kavita's series feed does, on
+every entry, so every volume gets its own at sync time for free. Suwayomi's
+chapter list does not — its entries carry only `rel=subsection` — and the
+chapter's own artwork lives solely in its metadata feed, one request per chapter,
+which the sync rules forbid spending. So `driver/suwayomi.lua` sets none and its
+chapters show the series cover, deliberately.
+
+`MeguruDocument:getCoverPageImage` resolves a book as **item → series → page 1 of
+its stream**, so a NULL item cover is not a missing cover, it is the next best
+one, and the last step is the reason a book is never cover-less. Neither link
+goes into the marker: the marker carries only what opens the stream offline.
 
 **Reading progress is not mirrored into the catalog.** It is read lazily per
 series: `DocSettings:hasSidecarFile(marker_path)` is the free "never opened"
@@ -365,7 +379,7 @@ python tools/scan_sql.py    # semicolons inside SQL comments
 ```
 
 There is no Lua interpreter on the development machine, so `check.py` stands in
-for one. It runs four passes:
+for one. It runs five passes:
 
 1. **Block balance** — `function`/`if`/`for`/`while`/`do` against `end`/`until`,
    over comment- and string-stripped source.
@@ -382,14 +396,23 @@ for one. It runs four passes:
    right there in the file for any position-blind check to find. `ui/open.lua`
    shipped exactly that, from three call sites, with a comment nearby correctly
    describing the rule it was breaking.
+5. **The item upsert stays in step** — `Catalog.upsertItems` is the one statement
+   every sync and every open writes through, and it is spread over four places
+   that must agree: the `INSERT` column list, the `?` placeholders, the
+   positional `stmt:bind(...)`, and the `DO UPDATE SET` list. Lua checks none of
+   them, and a mismatch is not a load-time error — it is `NOT NULL constraint
+   failed` or `no such column` on the first sync, on the device. Scope is one
+   statement, named on purpose: a general "every bind matches its SQL" pass would
+   have to pair each `prepare` with its `bind` across files, which is a much
+   larger and much more false-positive-prone job than the failure this prevents.
 
-None of the four is a parser. They are the failure modes that have actually
+None of the five is a parser. They are the failure modes that have actually
 bitten this codebase, and that a reader cannot reliably catch by eye: a name or
 member that is fine at load time and only explodes when a branch runs, on the
 device, in the reader's hands. **The checker passes vacuously if its stripping or
 its patterns are wrong**, so each pass was self-tested by injecting the real
 failure and confirming the checker reports it — including at the right line. Do
-the same before trusting a green run; three of the four passes were written
+the same before trusting a green run; four of the five passes were written
 wrongly the first time and passed on the very bug they existed to catch — pass 4
 included, whose first draft bound a name anywhere in the file and so found
 nothing.
