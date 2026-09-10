@@ -123,16 +123,31 @@ hashing a URL would mean a key rotation duplicates every book.
 | Server | `item_key` |
 |---|---|
 | Kavita | the `chapterId` query parameter of the stream URL |
-| Suwayomi | the chapter number from `/chapter/{n}/page/` |
+| Suwayomi | the chapter's `<id>` URN (`urn:suwayomi:chapter:16851`) |
 
-Suwayomi's key is a chapter *number*, not a stable id — numbers are renumbered
-when metadata is refreshed and can repeat across scanlators. The consciously
-chosen failure mode is that a renumber **updates a row in place** rather than
-duplicating a chapter.
+Suwayomi's chapter *number* is not an identity: the same chapter shows three
+different numbers across title, path and feed, because the path segment is a list
+position and the title is renumbered on a metadata refresh. The `<id>` is stable,
+and the one trap in it is recorded in PROTOCOL.md — the chapter-list feed and the
+chapter's own metadata feed emit different ids for the same chapter
+(`…:16851` vs `…:16851:metadata`), so `chapterKeyFromId` strips the suffix. Without
+that strip, every book opened would insert a second, never-reconcilable row for
+its chapter alongside the one sync created.
 
 **`items.ordinal` never degrades.** If the stored `ordinal_source` is `chapter`
 or `volume` and a later sync can only offer `feed`, the old value stays.
 Promotion only.
+
+**`items.feed_index` is `NOT NULL` and the engine owns it.** Drivers never set
+it, because only the engine knows what the whole of a series is, so
+`Catalog.numberPositions` is the single place the rule lives: a sync numbers the
+deduped walk (positions with no gaps), an open numbers the page it was opened
+from (provisional, and overwritten by the next sync, which binds
+`feed_index = excluded.feed_index` with no COALESCE for exactly that reason).
+The single definition is load-bearing. While numbering lived in the sync's
+`dedupe` alone, the open path — which calls a driver directly and so never
+passes through `dedupe` — inserted a nil and died on the constraint, *after* the
+series row had already been written, so the failure left a series with no items.
 
 **Reading progress is not mirrored into the catalog.** It is read lazily per
 series: `DocSettings:hasSidecarFile(marker_path)` is the free "never opened"
@@ -211,9 +226,22 @@ A **cancelled** walk is deliberately exempt from `recordSyncFailure`'s backoff �
 otherwise a few impatient taps push the next automatic attempt out by most of a
 day.
 
-Sync is triggered by a lazy TTL on opening a series, gated on
-`NetworkMgr:isConnected()`, plus an explicit manual action. **Never in the
-plugin's `init()`**: at that point there is neither connectivity nor a UI.
+Sync is triggered three ways, all gated on `NetworkMgr:isConnected()`:
+
+- a lazy TTL on opening a series (the series view),
+- an explicit manual action ("check for new chapters"),
+- **on demand, from the reader, when a neighbour the catalog does not have is
+  asked for** — `Reader.openNeighbor`. This is the one that matters in practice:
+  opening a book from the OPDS browser records that book and nothing else, so a
+  series starts with one item in it and no next chapter at all. The reader menu
+  grows a "Find the next chapter" row in exactly that state, and the sync it
+  starts is **attempted once**: a successful walk that still turns up no
+  neighbour is an answer, and re-walking the same feed would not change it.
+  A module-level guard in `ui/reader.lua` joins a second request to the walk
+  already running rather than starting a second one.
+
+**Never in the plugin's `init()`**: at that point there is neither connectivity
+nor a UI.
 
 ## Drivers
 
@@ -244,12 +272,25 @@ reached from an aggregate may not carry a recoverable series id, and an aggregat
 is not a series. **Never silently sync the wrong series** — that failure class is
 documented in the old plugin's `meguru_hook.lua:837-850`.
 
-Driver selection is by `servers.kind`, set by an author sniff with a **user
-override in the menu**. A sniff is a heuristic, and one wrong classification
-makes a server unsyncable for good, which is why the override exists and why
-`Catalog.clearServerKind` clears `kind_source` along with `kind` — `upsertServer`
-treats `kind_source = 'manual'` as final specifically so a browsing session
-cannot undo the user's choice.
+Driver selection is by `servers.kind`, decided in this order: the **user
+override in the menu**, the session's author sniff, the kind the server was last
+recorded with, and — only when all three are silent — `Base.kindFor`, which asks
+each driver's `discover` whether the entry is its own and takes the answer only
+when exactly one driver claims it.
+
+That last step is not decoration. A server whose feeds sign themselves with an
+`<author>` no driver recognises used to be a soft failure, because the old plugin
+only *stored* `server_kind`; here the driver is what knows a series' canonical
+feed, so an unknown kind means every book off that server is uncatalogued — no
+next chapter, no new-chapter counts, forever. `kind_source` records which of the
+four decided (`manual` / `author` / `inferred`), and `Catalog.clearServerKind`
+clears it along with `kind` — `upsertServer` treats `kind_source = 'manual'` as
+final specifically so a browsing session cannot undo the user's choice.
+
+A wrong classification is worse than none, which is why the inference refuses an
+ambiguous entry, and why the manual override exists at all: a wrong kind picks
+the wrong driver, and every later sync then re-keys the series against feeds that
+do not describe it.
 
 ## Reading options
 
@@ -292,6 +333,29 @@ Two invariants when touching these rows:
   `Menu`. They do not support the same row fields.
 - `C_` is **not** a global. Every core file declares `local C_ = _.pgettext`; a
   plugin file that omits it gets a nil call only when a row is built.
+
+Two more, about the browser rather than the lifecycle.
+
+**`OPDSParser:parse` returns the document wrapped under its own root element.**
+`createFlatXTable` starts from `{}` and assigns the root's children under the
+root's *name*, so an Atom feed comes back as
+`{ feed = { entry = {...}, author = {...} } }` with nothing at the top level.
+Reading `.entry` or `.author` off the raw parse result therefore finds nothing —
+and silently, because "a feed with no entries" and "a feed that was never
+unwrapped" are the same nil. `Net.feedFrom` is the one unwrap, used by both
+`Net.parseFeed` and `ui/open.lua`; the built-in browser compensates in
+`genItemTableFromCatalog` with `local feed = catalog.feed or catalog`. The
+asymmetry is what made this survive: `net.lua` unwrapped, so **sync** worked,
+while `open.lua` did not, so **opening a book** never catalogued anything — flat
+marker, no series folder, no next chapter, and an author sniff that never once
+succeeded on a feed that does carry `<author><name>Kavita</name></author>`.
+
+**`OPDSBrowser:parseFeed` parses more than browsable feeds.**
+`genItemTableFromCatalog` parses the catalog's OpenSearch descriptor through that
+same method, on the same navigation, immediately *after* the real feed. So a
+feed-retention rule of "record it if it has entries, clear it otherwise" recorded
+the series feed and cleared it again in the same breath. `ui/open.lua`'s
+`noteFeed` ignores a parse that is not a feed of entries.
 
 ## Development
 

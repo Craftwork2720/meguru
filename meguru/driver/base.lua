@@ -74,9 +74,9 @@ end
 --- own signatures, so adding a server adds its own name rather than editing a
 --- list somewhere else.
 ---
---- A hint, never a gate. An unrecognised author leaves `servers.kind` NULL, the
---- book still opens, and the user can set the kind by hand — which is the
---- escape hatch for a server whose author this does not know.
+--- A hint, never a gate — `kindFor` below is what keeps an unrecognised author
+--- from being the end of the story, and the user can always set the kind by
+--- hand.
 function Base.kindFromAuthor(author)
     local name, uri = "", ""
     if type(author) == "string" then
@@ -98,6 +98,39 @@ function Base.kindFromAuthor(author)
         end
     end
     return nil
+end
+
+--- The driver that recognises this entry as its own, or nil.
+---
+--- The last resort for a server that signs its feeds with an `<author>` no
+--- driver knows, which is not the soft failure it looks like: the driver is what
+--- knows a series' canonical feed, so a server with no kind produces books that
+--- can never be catalogued — no next or previous chapter, ever, with nothing in
+--- the marker to say why. The old plugin could shrug at an unknown author
+--- because it only *stored* `server_kind`; here it decides whether the book has
+--- an identity at all.
+---
+--- Each driver's `discover` is already the function that answers "is this mine?",
+--- from the entry and its stream rather than from a name, so this asks the
+--- drivers directly instead of keeping a second set of signatures in step with
+--- the first.
+---
+--- Only an *unambiguous* answer counts. If two drivers claim the entry the server
+--- stays unknown, because a wrong kind is worse than none: it picks the wrong
+--- driver, and every later sync re-keys the series against feeds that do not
+--- describe it. The menu's manual override is the way out of both.
+function Base.kindFor(entry, stream, ctx)
+    local claimed
+    for _, kind in ipairs(Base.kinds()) do
+        local ok, found = pcall(registry[kind].discover, entry, stream, ctx)
+        if ok and type(found) == "table" and found.series_remote_id then
+            if claimed then
+                return nil
+            end
+            claimed = kind
+        end
+    end
+    return claimed
 end
 
 --- Strip a trailing suffix from a feed title, or return it unchanged.
@@ -212,6 +245,10 @@ end
 --                      "series"    a series-list entry
 --                      "aggregate" a chapter-level aggregate, where the series
 --                                  may not be recoverable at all
+--     Also the evidence `kindFor` uses to name a server whose <author> matched
+--     nothing, so it must answer strictly: a driver returning a series id for
+--     another server's entry makes that server unattributable rather than
+--     misattributed, which is the safer of the two.
 --   catalogURL(base_url, remote_id, ctx)  -> string
 --   parseCatalogPage(feed, base_url, ctx) -> { item, ... }
 --   seriesName(feed, entry, ctx)          -> string

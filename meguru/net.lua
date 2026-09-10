@@ -128,6 +128,33 @@ function Net.get(url_str, opts)
     return 200, headers, table.concat(sink)
 end
 
+--- The document inside a raw `opdsparser` result.
+---
+--- The parser builds a table named after the document's *root element*, so an
+--- Atom feed comes back as `{ feed = { entry = {...}, author = {...} } }` and
+--- nothing is at the top level. Callers that read `.entry`, `.title` or
+--- `.author` off the raw result therefore find nil everywhere and see a feed
+--- with no entries — which is a silent failure, since an "empty" feed and a
+--- feed that was never unwrapped look identical.
+---
+--- `genItemTableFromCatalog` in the built-in browser compensates the same way
+--- (`local feed = catalog.feed or catalog`), which is the authority for this
+--- shape. `open.lua` reads the browser's parse result directly and so needs it
+--- too; `parseFeed` below reads a fetched body. One definition, because two
+--- modules must not disagree about what a feed looks like.
+---
+--- A document whose root element is not `<feed>` — an OpenSearch descriptor — is
+--- returned unchanged, which is what lets a caller tell the two apart.
+function Net.feedFrom(root)
+    if type(root) ~= "table" then
+        return nil
+    end
+    if type(root.feed) == "table" then
+        return root.feed
+    end
+    return root
+end
+
 --- Parse an Atom feed body into the flat table shape the built-in OPDS parser
 --- produces: `feed.entry` is an array, `entry.link` is an array of
 --- `{ rel, href, type, ... }`, and OPDS-PSE attributes sit on the link keyed by
@@ -150,10 +177,7 @@ function Net.parseFeed(body)
     if not ok_parse or type(root) ~= "table" then
         return nil
     end
-    local feed = root
-    if type(root.feed) == "table" and type(root.feed.entry) == "table" then
-        feed = root.feed
-    end
+    local feed = Net.feedFrom(root)
     if type(feed.entry) ~= "table" then
         return nil -- parsed, but not a list of entries
     end

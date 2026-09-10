@@ -95,12 +95,19 @@ Navigation: `root → /library/series → /series/{mangaId}/chapters → per-cha
 |---|---|---|
 | `/` (root) | no | `library/series`, `sources`, `categories`, `genres`, `statuses`, `languages`, `explore`, `library-updates`, `history` |
 | `/library/series` | **no** — 11 entries is the whole library | the canonical series list |
-| `/series/{id}/chapters` | no | all chapters in one response |
+| `/series/{id}/chapters` | no | all chapters in one response; `thr:count` on the active facet is the total |
 | `/series/{id}/chapter/{n}/metadata` | no | a **feed with one entry** carrying the stream |
 | `/history`, `/library-updates` | yes, 100/page, `rel=next` | chapter-level aggregates |
 
 Every URL carries `?lang=`, including `rel=next` links — follow `rel=next`
 verbatim and never rebuild the URL.
+
+The chapters feed names no `rel=next` and states `?pageNumber=1` in its own
+`rel=self`, which invites the reading that a large series is truncated to one
+page. It is not, at the sizes seen: a 67-chapter series returned all 67 entries,
+and the active `filter=all` facet's `thr:count="67"` agreed (the `unread` 23 plus
+`read` 44 facets sum to the same total, which is a second, independent check).
+So a sync of this feed needs no pagination, and `complete` is honest without it.
 
 ### `entry.id` is a stable identity, and the chapter number is not
 

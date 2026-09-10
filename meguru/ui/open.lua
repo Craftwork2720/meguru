@@ -33,6 +33,7 @@ local Catalog = require("meguru/catalog")
 local FS = require("meguru/fs")
 local Marker = require("meguru/marker")
 local Naming = require("meguru/naming")
+local Net = require("meguru/net")
 local PSE = require("meguru/pse")
 local Settings = require("meguru/settings")
 local Sources = require("meguru/sources")
@@ -85,16 +86,44 @@ end
 --- Keep the raw Atom of the feed the browser just parsed.
 ---
 --- Called from the `parseFeed` wrap, which the browser runs on every navigation,
---- so this is the feed `showDownloads` will later be acting on. A parse that
---- produced nothing clears the record rather than leaving a stale one: an entry
---- matched against the wrong feed is worse than no match.
+--- so this is the feed `showDownloads` will later be acting on.
+---
+--- **The search descriptor is the case that is easy to get wrong.** The browser
+--- does not only parse browsable feeds through this method:
+--- `OPDSBrowser:genItemTableFromCatalog` parses the catalog's OpenSearch
+--- descriptor through it too, on the same navigation, immediately *after* the
+--- real feed. So a rule of "record it if it has entries, clear it otherwise"
+--- recorded the series feed and then cleared it again microseconds later — which
+--- is why the record was empty for every catalog, every time, and why every book
+--- came out with no catalog identity. The failure is silent by construction: the
+--- book opens and reads either way, so the only symptom is a next chapter that
+--- never appears.
+---
+--- A navigable feed that genuinely has no entries still clears, which is what the
+--- original rule was reaching for: an entry matched against the wrong feed is
+--- worse than no match.
 function Open.noteFeed(browser, feed_url, catalog)
     local name = catalogTitle(browser)
+    -- The parser hands back the document wrapped under its own root element, so
+    -- the entries are on `.feed.entry` and the feed-level `.author` on
+    -- `.feed.author`. Reading the raw result finds neither — which is what this
+    -- spent a while doing, to the effect that no feed was ever retained and every
+    -- book came out uncatalogued, with the author sniff silently failing too.
+    local feed = Net.feedFrom(catalog)
+    logger.dbg("Meguru: feed parsed", feed_url, "(catalog=" .. tostring(name)
+        .. ", entries=" .. tostring(feed and #(feed.entry or {}) or "not a table") .. ")")
     if not name then
         return
     end
-    if type(catalog) == "table" and type(catalog.entry) == "table" then
-        last_feed[name] = { url = feed_url, feed = catalog }
+    if type(feed) ~= "table" then
+        last_feed[name] = nil
+    elseif type(feed.OpenSearchDescription) == "table" then
+        -- A search descriptor, not a feed of entries; leave whatever the
+        -- navigation just retained. The browser parses one through the same
+        -- method on every navigation, immediately after the real feed.
+        return
+    elseif type(feed.entry) == "table" then
+        last_feed[name] = { url = feed_url, feed = feed }
     else
         last_feed[name] = nil
     end
@@ -103,12 +132,17 @@ end
 --- Record the server software of a just-parsed feed, from the name it signs
 --- itself with. Best-effort: an unrecognised author simply leaves the kind
 --- unknown, which is survivable (the marker still opens).
+---
+--- Read off the *unwrapped* feed, like the entries: `<author>` is a child of
+--- `<feed>`, so on the raw parse result this found nil every time and the sniff
+--- never once succeeded — which is the opposite of best-effort.
 function Open.noteCatalogAuthor(browser, catalog)
     local name = catalogTitle(browser)
     if not name or sniffed[name] then
         return
     end
-    local kind = Base.kindFromAuthor(catalog and catalog.author)
+    local feed = Net.feedFrom(catalog)
+    local kind = Base.kindFromAuthor(feed and feed.author)
     if kind then
         sniffed[name] = kind
         logger.dbg("Meguru: catalog", name, "looks like", kind)
@@ -130,9 +164,12 @@ function Open.serverKindFor(browser)
     end
     local server = Catalog.serverByName(name)
     if server and server.kind_source == "manual" then
-        return server.kind
+        return server.kind, server.kind_source
     end
-    return sniffed[name] or (server and server.kind)
+    if sniffed[name] then
+        return sniffed[name], "author"
+    end
+    return server and server.kind, server and server.kind_source
 end
 
 --- The language the user is browsing this server in.
@@ -201,6 +238,13 @@ local function driverItemFor(driver, feed, feed_url, stream, ctx)
     if type(items) ~= "table" then
         return nil
     end
+    -- Drivers leave `feed_index` to the engine, and this path reaches them
+    -- without going through the sync that would otherwise number the page. It
+    -- did not number it, and the column is NOT NULL: every open died at the
+    -- insert on the constraint, after the series row had already been written.
+    -- Provisional — a metadata-feed page is one entry deep, so the position
+    -- means nothing until the next sync overwrites it.
+    Catalog.numberPositions(items)
     local wanted = stream and stream.href
     for _, item in ipairs(items) do
         if wanted and item.template == wanted then
@@ -210,6 +254,21 @@ local function driverItemFor(driver, feed, feed_url, stream, ctx)
     return #items == 1 and items[1] or nil
 end
 
+--- Log why registration bailed, then return nil.
+---
+--- Every bail below is a supported outcome, not a failure — the marker alone
+--- opens and reads — so none of them used to say anything, and the only trace
+--- was the generic "no catalog identity" at the call site, which names no
+--- cause. That is not enough to work from: a failed author sniff, an
+--- unconfigured catalog title and a driver that cannot name the series are all
+--- indistinguishable from the marker afterwards, and each needs a different
+--- fix. One line each costs less than the device round-trip it saves.
+local function why(reason, detail)
+    logger.info("Meguru: not catalogued:", reason,
+        detail ~= nil and ("(" .. tostring(detail) .. ")") or "")
+    return nil
+end
+
 --- Register the server, series and item of an opened book, returning the item's
 --- catalog row.
 ---
@@ -217,40 +276,61 @@ end
 --- That is a supported outcome, not a failure: the marker alone opens and reads,
 --- and the book merely has no neighbours and no new-chapter count until
 --- something else brings its series into the catalog.
-local function registerBook(browser, server_name, kind, raw_entry, stream, ctx)
-    local driver = kind and Base.forKind(kind)
+---
+--- Note the order: the server row is written before the driver is resolved, and
+--- that is the point of the ordering rather than an accident. The kind override
+--- in the menu lists `Catalog.servers()`, so a server with no row cannot be
+--- corrected — and while the row was written only after a driver was found, a
+--- failed author sniff left a server with no row, no way to set its kind, and a
+--- menu advising "use Meguru this series on a book", i.e. the very step that had
+--- just failed. A sniff failing was therefore not the soft failure its comment
+--- claimed, but a server permanently stranded.
+---
+--- The row is now written on the strength of the configured catalog alone, which
+--- is enough to describe a server: name, host and redacted root all come from
+--- `settings/opds.lua`. `upsertServer` keeps an existing manual kind, so this
+--- cannot undo a choice the user already made.
+local function registerBook(browser, server_name, kind, kind_source, raw_entry, stream, ctx)
     local conn = Sources.connection(server_name)
-    if not (driver and conn) then
-        return nil
-    end
-
-    local found = driver.discover(raw_entry, stream.href, ctx)
-    if not found or not found.series_remote_id then
-        logger.info("Meguru: could not identify the series of",
-            tostring(raw_entry and raw_entry.title), "- marker stays flat")
-        return nil
-    end
-
-    local record = last_feed[server_name]
-    local feed, feed_url = record and record.feed, record and record.url
-    if type(feed) ~= "table" then
-        return nil
+    if not conn then
+        return why("no catalog entry with this title",
+            "in settings/opds.lua: " .. tostring(server_name))
     end
 
     local server = Catalog.upsertServer({
         name         = server_name,
         kind         = kind,
-        kind_source  = kind and "author" or nil,
+        kind_source  = kind and (kind_source or "author") or nil,
         host         = Sources.host(conn.url),
         root_url     = Sources.redactedRoot(conn.url),
     })
     if not server then
-        return nil
+        return why("could not record the server row")
+    end
+
+    local driver = kind and Base.forKind(kind)
+    if not driver then
+        return why("no driver for this server's kind -- set it in the Meguru "
+            .. "server-type menu", "kind=" .. tostring(kind))
+    end
+
+    local found = driver.discover(raw_entry, stream.href, ctx)
+    if not found or not found.series_remote_id then
+        return why("driver could not identify the series",
+            tostring(raw_entry and raw_entry.title))
+    end
+
+    local record = last_feed[server_name]
+    local feed, feed_url = record and record.feed, record and record.url
+    if type(feed) ~= "table" then
+        return why("no feed retained for this catalog",
+            "nothing was parsed since the hook was installed")
     end
 
     local series_name = driver.seriesName(feed, raw_entry, ctx)
     if type(series_name) ~= "string" or series_name == "" then
-        return nil
+        return why("driver could not name the series",
+            tostring(raw_entry and raw_entry.title))
     end
     local series = Catalog.upsertSeries(server.id, {
         remote_id  = found.series_remote_id,
@@ -263,20 +343,37 @@ local function registerBook(browser, server_name, kind, raw_entry, stream, ctx)
         cover_url  = Base.coverFromFeed(feed, raw_entry, feed_url or stream.href),
     })
     if not series then
-        return nil
+        return why("could not record the series row", series_name)
     end
 
     local item = driverItemFor(driver, feed, feed_url, stream, ctx)
     if not item then
-        return nil
+        return why("driver could not build the item from the retained feed",
+            tostring(#(feed.entry or {})) .. " entry(ies) in it")
     end
     Catalog.upsertItem(series.id, item, Catalog.nextTimestamp())
 
-    return {
+    local registered = {
         server = server,
         series = Catalog.series(series.id),
         item   = Catalog.itemByKey(series.id, item.item_key),
     }
+    -- Said out loud because every way this can fail says so, and the success was
+    -- the only silent outcome — which makes "is it catalogued?" unanswerable from
+    -- the log. Note what it counts: **one** item. The siblings arrive from a sync,
+    -- never from this path.
+    --
+    -- Read off `registered.series`, not off the local `series`: `upsertSeries`
+    -- returns only `{ id, new_since }`, so the local has no `remote_id` — and
+    -- concatenating it aborted the whole open, *after* both rows had committed.
+    -- Every field goes through `tostring` for the same reason: a status line
+    -- must never be able to take down the operation it exists to report on.
+    local stored = registered.series
+    logger.info("Meguru: catalogued", item.display_title or item.title,
+        "(series " .. tostring(stored and stored.remote_id)
+        .. ", kind " .. tostring(kind)
+        .. ", key " .. tostring(item.item_key) .. ")")
+    return registered
 end
 
 -- Opening from the catalog ------------------------------------------------------
@@ -471,7 +568,7 @@ function Open.openAsBook(browser, item, stream, marker_dir)
     if not server_name then
         return
     end
-    local kind = Open.serverKindFor(browser)
+    local kind, kind_source = Open.serverKindFor(browser)
     local lang = langFromBrowser(browser)
     if lang then
         Catalog.setServerLang(server_name, lang)
@@ -479,9 +576,38 @@ function Open.openAsBook(browser, item, stream, marker_dir)
     local ctx = { lang = lang }
 
     local raw_entry = rawEntryFor(browser, stream)
-    local registered = raw_entry
-        and registerBook(browser, server_name, kind, raw_entry, stream, ctx)
-        or nil
+    if raw_entry and not kind then
+        -- Nobody has said what this catalog is: its feeds carry no `<author>` a
+        -- driver knows, and the user has not set the kind by hand. Ask the
+        -- drivers instead, which is the last chance to give this book a series —
+        -- without one it can never have a next chapter.
+        kind = Base.kindFor(raw_entry, stream.href, ctx)
+        if kind then
+            kind_source = "inferred"
+            logger.info("Meguru: catalog", server_name,
+                "signs itself with no known author; detected", kind,
+                "from the entry — set it by hand in Meguru servers if that is wrong")
+        end
+    end
+
+    local registered
+    if raw_entry then
+        registered = registerBook(browser, server_name, kind, kind_source, raw_entry, stream, ctx)
+    else
+        -- Distinct from every bail inside `registerBook`: nothing there was even
+        -- reached. Either the parse hook never saw a feed for this catalog, or
+        -- none of its entries carries the stream being opened — which is what a
+        -- feed the user navigated away from looks like. The retained feed is
+        -- named because a bare "nothing retained" cannot tell a hook that never
+        -- ran apart from a feed that was recorded and then replaced underneath
+        -- the open, and those two need opposite fixes.
+        local record = last_feed[server_name]
+        local retained = record
+            and (#(record.feed.entry or {}) .. " entry(ies) from " .. tostring(record.url))
+            or "nothing"
+        logger.info("Meguru: not catalogued: no retained entry matches this stream",
+            "(catalog=" .. tostring(server_name) .. ", retained=" .. retained .. ")")
+    end
 
     local desc = Marker.new{
         server_name      = server_name,

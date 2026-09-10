@@ -142,6 +142,15 @@ ON CONFLICT(server_id, remote_id) DO UPDATE SET
 RETURNING id, new_since
 ]]
 
+--- Returns `{ id, new_since }` and **nothing else** — `RETURNING` names those
+--- two columns deliberately, so callers get the identity and the watermark that
+--- an upsert cannot recompute, without a second read of a row they usually do
+--- not need. Anything else off this table (`remote_id`, `name`, the counters)
+--- comes from `series(id)`.
+---
+--- Not merely a convention: reading `series.remote_id` off this return is a nil
+--- concatenation, and it has already cost one device round-trip when a status
+--- line did exactly that.
 function Catalog.upsertSeries(server_id, series)
     return Store.first(UPSERT_SERIES,
         server_id, series.remote_id, series.name, series.name_sort,
@@ -304,6 +313,26 @@ ON CONFLICT(series_id, item_key) DO UPDATE SET
     last_read       = COALESCE(excluded.last_read, items.last_read),
     last_seen_at    = excluded.last_seen_at,
     removed_at      = NULL;]], ADVANCE_ORDINAL, ADVANCE_ORDINAL)
+
+--- Number a list of items 1..N in place, so each carries its position.
+---
+--- `feed_index` is NOT NULL and drivers deliberately never set it — the engine
+--- numbers items, because only the engine knows what the whole of a series is.
+--- That makes this the one place the rule can live. It used to live in the
+--- sync's `dedupe` alone, and the open path — which builds an item by calling
+--- the driver directly and so never passes through `dedupe` — inserted a nil
+--- and died on the constraint, after the series row had already been written.
+--- Two implementations of one rule is how that happens; there is now one.
+---
+--- The caller owns what a position means. A sync numbers the deduped walk, so
+--- the reading order has no gaps; an open numbers the page it was opened from,
+--- which the next sync overwrites unconditionally.
+function Catalog.numberPositions(items)
+    for index, item in ipairs(items) do
+        item.feed_index = index
+    end
+    return items
+end
 
 --- Insert or update a batch of items discovered by a sync, compiling the
 --- upsert once. A long series runs to hundreds of chapters, so the difference

@@ -202,26 +202,48 @@ end
 
 -- Reader -----------------------------------------------------------------------
 
---- `{ previous, next, position, total }` for the open book, or nil when its
---- series was never catalogued — a marker with no database behind it still
---- reads, it just has no next or previous.
+--- `context, neighbours` for the book on screen. Both are nil for a marker with
+--- no database behind it, which still reads — it just has no next or previous.
+--- The context alone is what tells "this series is unknown" (nothing can be
+--- done) apart from "this series is known but not synced" (its neighbours are
+--- one walk away).
 local function neighbors(ui)
     local doc = ui and ui.document
     if not (doc and type(doc.catalogContext) == "function") then
-        return nil
+        return nil, nil
     end
     local context = doc:catalogContext()
     if not (context and context.server) then
-        return nil
+        return nil, nil
     end
-    return Catalog.neighbors(context.series.id, context.item.item_key)
+    return context, Catalog.neighbors(context.series.id, context.item.item_key)
 end
 
---- One "open the next/previous item in this series" row, or nothing at all
---- when the series has no such neighbour.
-local function addNeighborRow(plugin, rows, found, which, title_of)
+--- One "open the next/previous item in this series" row.
+---
+--- With no neighbour to name the row still belongs here, as a search rather than
+--- an open: opening a book from the OPDS browser records that book alone, so a
+--- series starts out with exactly one item in it and no neighbours at all. This
+--- row is then the only way to ask for the next chapter, which is what
+--- `Reader.openNeighbor` answers by syncing the series first.
+local function addNeighborRow(plugin, rows, context, found, which, title_of)
     local item = found and found[which]
     if not item then
+        if not context then
+            return
+        end
+        rows[#rows + 1] = {
+            text = which == "next"
+                and _("Find the next chapter")
+                or _("Find the previous chapter"),
+            callback = function()
+                -- Deferred: the sync opens the chapter itself, possibly
+                -- replacing this document, and this handler belongs to it.
+                UIManager:nextTick(function()
+                    pcall(Reader.openNeighbor, plugin, which)
+                end)
+            end,
+        }
         return
     end
     rows[#rows + 1] = {
@@ -246,15 +268,15 @@ function Menu.addReaderItems(plugin, menu_items)
 
     -- One query for the whole submenu: the rows below, and whether the
     -- auto-open toggle has anything to govern.
-    local found = neighbors(ui)
+    local context, found = neighbors(ui)
 
     local rows = {}
-    addNeighborRow(plugin, rows, found, "next", function(item)
+    addNeighborRow(plugin, rows, context, found, "next", function(item)
         return item.display_title
             and T(_("Open next in series: %1"), item.display_title)
             or _("Open next in series")
     end)
-    addNeighborRow(plugin, rows, found, "previous", function(item)
+    addNeighborRow(plugin, rows, context, found, "previous", function(item)
         return item.display_title
             and T(_("Open previous in series: %1"), item.display_title)
             or _("Open previous in series")

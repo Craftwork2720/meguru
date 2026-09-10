@@ -60,8 +60,18 @@ function Hook.install()
     if type(orig_parseFeed) == "function" then
         OPDSBrowser.parseFeed = function(browser, item_url, ...)
             local catalog = orig_parseFeed(browser, item_url, ...)
-            pcall(Open.noteFeed, browser, item_url, catalog)
-            pcall(Open.noteCatalogAuthor, browser, catalog)
+            -- pcall'd so a surprise in the parsed shape costs the built-in
+            -- browser nothing — but not *silently*: a swallowed error here is
+            -- indistinguishable from a feed that was never retained, which is
+            -- exactly the state this hook exists to prevent.
+            local ok_note, err = pcall(Open.noteFeed, browser, item_url, catalog)
+            if not ok_note then
+                logger.warn("Meguru: could not retain the feed:", err)
+            end
+            local ok_author, err_author = pcall(Open.noteCatalogAuthor, browser, catalog)
+            if not ok_author then
+                logger.warn("Meguru: could not sniff the catalog author:", err_author)
+            end
             return catalog
         end
         logger.info("Meguru: hooked OPDSBrowser:parseFeed (feed retention, kind sniffing)")

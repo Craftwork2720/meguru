@@ -50,7 +50,17 @@ local function chapterKeyFromId(id)
     end
     return key ~= "" and key or nil
 end
-local SERIES_IN_PATH = "/series/(%d+)/"
+-- The trailing "chapter" is load-bearing, not decoration. Matching plain
+-- `/series/{id}/` made this driver claim *Kavita* entries: a Kavita entry's
+-- download link is
+--   /api/opds/<KEY>/series/17517/volume/117120/chapter/180346/download/….cbz
+-- which contains `/series/17517/`. Since `kindFor` refuses an entry two drivers
+-- claim, that turned every Kavita server whose <author> the sniff missed into an
+-- uncatalogued one — the exact failure this pattern-free version was meant to
+-- prevent. Both documented Suwayomi paths put `chapter` right after the id
+-- (`/series/{id}/chapters`, `/series/{id}/chapter/{n}/metadata`), and Kavita puts
+-- `volume`, so requiring it separates them on evidence rather than on luck.
+local SERIES_IN_PATH = "/series/(%d+)/chapter"
 -- A chapter's page stream embeds the manga id ("/manga/3649/chapter/35/page/").
 -- The same id space the chapter-list paths use — the old plugin relied on
 -- exactly that, matching a list row by looking for "/<manga_id>/chapter/" in
@@ -86,7 +96,8 @@ local function seriesIdFrom(entry, stream)
             return manga
         end
     end
-    for _, link in ipairs(entry and entry.link or {}) do
+    local links = entry and entry.link or {}
+    for _, link in ipairs(links) do
         local href = type(link) == "table" and link.href
         if type(href) == "string" then
             local series = href:match(SERIES_IN_PATH)
@@ -94,6 +105,21 @@ local function seriesIdFrom(entry, stream)
                 return series
             end
         end
+    end
+    -- The entry's *own* stream link, before the passed-in one. A metadata-feed
+    -- entry is the case that needs it: its links are `alternate` (the scanlator's
+    -- web page), `open-access` (the CBZ) and the stream, with no `/series/` path
+    -- anywhere, so without this the driver recognised only the entry it was
+    -- handed a cursor for. `Kavita.discover` already falls back to the entry's
+    -- own link (`stream or streamHref(entry)`); this is the same fallback, and
+    -- `kindFor` — which calls `discover` with no cursor at all — depends on it.
+    -- Read as a bare href, never absolutized: `MANGA_IN_STREAM` matches a path,
+    -- and `url.absolute` with no base returns nil often enough to be a footgun.
+    local link = Base.link(entry, PSE.STREAM_REL)
+    local own = link and link.href
+    local series = type(own) == "string" and own:match(MANGA_IN_STREAM)
+    if series then
+        return series
     end
     if type(stream) == "string" then
         return stream:match(MANGA_IN_STREAM)

@@ -178,9 +178,9 @@ local function dedupe(items)
             duplicates = duplicates + 1
         end
     end
-    for index, item in ipairs(unique) do
-        item.feed_index = index
-    end
+    -- Numbered after deduping, never before: a duplicated position would leave
+    -- a gap in the reading order.
+    Catalog.numberPositions(unique)
     return unique, duplicates
 end
 
