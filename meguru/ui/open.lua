@@ -651,16 +651,38 @@ function Open.offerResume(host, server, series, item, opts)
         server_page = nil
     end
 
-    -- Asked whenever there is a choice to make, and only then. Deliberately
-    -- **not** gated on the book being new: a reader who has read volume 3 to
-    -- page 30 here and got to page 60 of it elsewhere is exactly the case worth
-    -- asking about, and both answers are theirs to pick between. With nothing
-    -- further along, there is no question to put — the book opens where it was
-    -- left. `opened_before` alone is not a choice: with no page and nowhere to
-    -- go, a book that has been read here simply reopens.
-    if not local_page and not server_page and not jump then
+    -- Asked when the *server* has an opinion, and only then. What the reader
+    -- asked for needs no question: it opens where it was left, or at its start.
+    -- The question exists because the server may disagree, so no server answer
+    -- means no question.
+    --
+    -- Gating on the server rather than on "is there anything to show" is also
+    -- what keeps the dialog from ever having a single button: the reader's own
+    -- button is always built below, so a server answer makes it two, and its
+    -- absence means the dialog is never built at all.
+    if not server_page and not jump then
         open()
         return
+    end
+
+    -- Where the book the reader clicked would open. Always offered, and that is
+    -- not decoration: with the server's answer on the table this is the only way
+    -- back to it, and removing it once made a clicked volume *unreachable* —
+    -- clicking an unread volume 11 while the server said volume 5 left one
+    -- button that went to volume 5, and a tap past the dialog cancels.
+    --
+    -- A book never read here starts at its beginning, which is page 1. That also
+    -- has to be *written*: `MeguruDocument:init` seeds the server's page into a
+    -- book with no sidecar, so leaving it unsaid would open at the server's page
+    -- after all — the server's answer winning a question the reader answered.
+    --
+    -- A book read here but with no page recorded keeps nil, and its button drops
+    -- the number rather than claiming page 1.
+    local here_page
+    if opened_before then
+        here_page = local_page
+    else
+        here_page = 1
     end
 
     -- `\u{25B6}` marks the server's answers, and is the same glyph this plugin's
@@ -684,23 +706,46 @@ function Open.offerResume(host, server, series, item, opts)
         action()
     end
 
+    -- The verb follows the situation, because one verb cannot be true of both.
+    -- `Continue — page 1` was the label a book never opened here used to get, and
+    -- it reads as a contradiction: there is nothing to continue yet. It starts,
+    -- so it says so. A book that *has* been read continues, and one read without
+    -- a recorded page continues too — it resumes where KOReader left it, and
+    -- naming no page is the honest way to say that.
+    local here_label
+    if not opened_before then
+        here_label = _("Start reading")
+    elseif here_page then
+        here_label = T(_("Continue — page %1"), here_page)
+    else
+        here_label = _("Continue")
+    end
+
     local dialog
     local buttons = {}
-    if local_page then
-        buttons[#buttons + 1] = {
-            {
-                -- No glyph: `▶` marks the server's position, which is the one
-                -- answer here that is not the reader's own doing.
-                text = T(_("Continue — page %1"), local_page),
-                callback = function()
-                    UIManager:close(dialog)
+    buttons[#buttons + 1] = {
+        {
+            -- No glyph: `▶` marks the server's answers, which are the ones here
+            -- that are not the reader's own doing.
+            text = here_label,
+            callback = function()
+                UIManager:close(dialog)
+                if opened_before then
                     -- KOReader restores their own position unaided, so this
                     -- button's whole job is to *not* get in the way.
                     once(open)
-                end,
-            },
-        }
-    end
+                else
+                    -- A book never opened here has no position to restore, and
+                    -- `MeguruDocument:init` would seed the server's page into it.
+                    -- Saying page 1 is what makes this button mean what it says.
+                    once(function()
+                        Open.seedLastPage(file, here_page)
+                        open()
+                    end)
+                end
+            end,
+        },
+    }
     if server_page then
         buttons[#buttons + 1] = {
             {

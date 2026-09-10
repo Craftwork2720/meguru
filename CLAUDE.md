@@ -199,18 +199,40 @@ is either *inside this book*, and then it is a page, or *outside it*, and then i
 is a book to open. Hence one button whose label follows:
 
 ```
+Start reading                     the book being opened, never read here
 Continue — page 30                the book being opened, where it was left
 ▶  Continue — page 60 (Server)    the server's position, inside this book
    or
 ▶  Continue — Volume 2 (Server)   the server's position, in another book
 ```
 
-Every button continues somewhere. There is deliberately **no "start over"**: the
-dialog is about which of two positions to resume at, and page 1 is not a position
-anyone has — a reader who wants it swipes back. That also removes the interaction
-that used to make it load-bearing: choosing it left no sidecar, so
-`MeguruDocument:init` would silently seed the server's page into the book a moment
-later and undo the choice.
+**The verb follows the situation, because one verb cannot be true of both.** A
+book never opened here used to get `Continue — page 1`, which reads as a
+contradiction — there is nothing to continue yet — so it says `Start reading`. A
+book that *has* been read continues; one read without a recorded page continues
+too, and drops the number rather than claiming one, because it resumes wherever
+KOReader left it.
+
+**The button for the book the reader clicked is always there, and removing it once
+broke the feature.** The reasoning for removing it was sound as far as it went —
+"start over" is odd wording, and page 1 is not a position anyone is at — but with
+the server's answer on the table it is the *only* way back to the book that was
+clicked: clicking an unread volume 11 while the server said volume 5 left a single
+button pointing at volume 5, and a tap past the dialog cancels. Volume 11 was
+simply unreachable.
+
+Two things follow from that button existing:
+
+- **The dialog is gated on the server, not on "is there anything to show".** No
+  server answer means no question — what the reader asked for needs none. That is
+  also what keeps the dialog from ever having one button: the reader's own button
+  is unconditional, so a server answer makes two, and no server answer means the
+  dialog is not built.
+- **Choosing it for an unread book has to write page 1.** `MeguruDocument:init`
+  seeds the server's page into a book with no sidecar, so leaving it unsaid would
+  open at the server's page anyway — the server's answer winning a question the
+  reader just answered. A book read here but with no page recorded keeps the
+  button without a number rather than claiming page 1.
 
 The two "continue" labels differ only in the `(Server)` marker, which is the only
 way they differ in meaning either. `▶` marks the server's answer because it is the
