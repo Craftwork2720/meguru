@@ -517,6 +517,53 @@ function Open.seedLastPage(file, page)
     return true
 end
 
+--- A book's *short* name, for putting on a button.
+---
+--- `volume_label` is the token `Naming.deriveSeries` pulled out on its own —
+--- "Volume 5", "Chapter 30" — while `display_title` is the whole cleaned entry
+--- title, which for Kavita is "Now That We Draw - Volume 2". A button carrying
+--- the series name as well as the volume and a page number overflows, which is
+--- how this was found; buttons get the token, never the full title.
+---
+--- The marker descriptor has no `volume_label`, and it is what the file path
+--- falls back to when the catalog is unreadable, so the token is derived from its
+--- title — by the same function that produced `volume_label` in the first place.
+local function bookLabel(subject)
+    if type(subject) ~= "table" then
+        return _("this book")
+    end
+    if subject.volume_label then
+        return subject.volume_label
+    end
+    local _, token = Naming.deriveSeries(subject.title or "")
+    return token or subject.display_title or subject.title or _("this book")
+end
+
+--- The page a book was left on, read out of its sidecar, or nil.
+---
+--- Only for a book that already has a sidecar: `DocSettings:open` creates the
+--- file it opens, so calling this for a book never read here would invent the
+--- very thing that tells us whether it has been. `last_page` is what
+--- `readerpaging` writes and restores from, so it is the same number the reader
+--- is about to use — not an approximation of it.
+local function localLastPage(file)
+    local ok, DocSettings = pcall(require, "docsettings")
+    if not ok then
+        return nil
+    end
+    local ok_open, ds = pcall(DocSettings.open, DocSettings, file)
+    if not ok_open or not ds then
+        return nil
+    end
+    local ok_read, page = pcall(function()
+        return tonumber(ds:readSetting("last_page"))
+    end)
+    if not ok_read or not page or page < 1 then
+        return nil
+    end
+    return page
+end
+
 --- Offer a starting point, then open. Calls `opts.open()` either way.
 ---
 --- **Asked whenever there is a choice, and only then** — a book whose series has
@@ -540,103 +587,145 @@ end
 --- is the fallback when it does not. They are not equivalent and the difference
 --- is deliberate: see `freshResumeTarget`.
 ---
---- `opts.open_item(target)` is how the third button opens the chosen chapter.
---- The two entry points reach a marker differently — the browser has a catalog
---- view to open through, the file manager has whoever is opening this file — so
---- the default is the browser's, and the file path supplies its own.
+--- **The server's position is one button with two readings, not two buttons.**
+--- Where it lands decides which: inside this book it is a page, and outside it is
+--- a book to open. Both cannot be said at once — "sync to page 60" is not a thing
+--- to say about a book you are being pointed *past* — so the label follows, and
+--- `Sync to page 60` / `Sync to Volume 5` are the same button saying the truth
+--- about where the server last saw the reader.
+---
+--- The reader's own page and the server's are therefore *both* offered when they
+--- differ, which is the point: a book read to page 30 here and left at page 60
+--- elsewhere has two honest answers and only the reader knows which they want.
+--- Suppressing the server's page for a book read locally — the first version of
+--- this — silently threw one of them away.
+---
+--- `opts.open_item(target)` is how the leaving button opens the chosen book. The
+--- two entry points reach a marker differently — the browser has a catalog view
+--- to open through, the file manager has whoever is opening this file — so the
+--- default is the browser's, and the file path supplies its own.
 ---
 --- @param opts { count, file, target, open, open_item }
 function Open.offerResume(host, server, series, item, opts)
     local file, open = opts.file, opts.open
 
-    -- Has this book been read here before? Two things follow, and they are not
-    -- the same thing: the page the server reports is only worth *offering* when
-    -- there is no local position to prefer, and "continue" names something
-    -- different in each case.
+    -- Has this book been read here before? It decides what "continue" means and
+    -- where a page number can come from — never whether to ask.
     local opened_before = not neverOpened(file)
+    local here = bookLabel(item)
 
-    -- A page worth offering: past the first, and inside the book. The old
-    -- plugin's guard, unchanged (`meguru_hook.lua:996`).
-    local page
-    if not opened_before then
-        page = item and tonumber(item.last_read)
-        if not (page and page > 1 and opts.count and page <= opts.count) then
-            page = nil
-        end
-    end
+    -- The reader's own place in this book, or nil. Read from the sidecar, which
+    -- is where KOReader keeps it and what it is about to restore from anyway.
+    local local_page = opened_before and localLastPage(file) or nil
 
-    -- Somewhere further along in the series to go instead. Never the item
-    -- already being opened — offering that would be a button that does nothing.
-    local target = opts.target
-    if not target and server and series then
+    -- The *server's* position in this series, and the one thing that decides how
+    -- the third button reads: whether that position is inside this book or in
+    -- another one. It is a genuine either/or, not a preference — "sync to page
+    -- 60" cannot be said about a book the server last saw you at page 60 of,
+    -- while pointing at volume 5.
+    local position = opts.target
+    if not position and server and series then
         local found = Catalog.resumeTarget(series.id)
-        target = found and found.item or nil
+        position = found and found.item or nil
     end
-    if target and item and target.item_key == item.item_key then
-        target = nil
+
+    -- Past the first page and inside the book. The old plugin's guard, unchanged
+    -- (`meguru_hook.lua:996`).
+    local function inBook(page)
+        page = tonumber(page)
+        if page and page > 1 and opts.count and page <= opts.count then
+            return page
+        end
+        return nil
+    end
+
+    local server_page, jump
+    if position and item and position.item_key == item.item_key then
+        -- The server is *in this book*: not somewhere to go, just a page.
+        server_page = inBook(position.last_read)
+    else
+        jump = position
+    end
+    -- Both are the same place, so one button would say it twice.
+    if server_page and server_page == local_page then
+        server_page = nil
     end
 
     -- Asked whenever there is a choice to make, and only then. Deliberately
-    -- **not** gated on the book being new: a reader who has read volume 3 here
-    -- and got to volume 5 elsewhere is exactly the case worth asking about, and
-    -- their local position is then one of the answers rather than a reason not
-    -- to ask. With nothing further along, there is no question to put — the book
-    -- opens where it was left.
-    if not target and not page then
+    -- **not** gated on the book being new: a reader who has read volume 3 to
+    -- page 30 here and got to page 60 of it elsewhere is exactly the case worth
+    -- asking about, and both answers are theirs to pick between. With nothing
+    -- further along, there is no question to put — the book opens where it was
+    -- left. `opened_before` alone is not a choice: with no page and nowhere to
+    -- go, a book that has been read here simply reopens.
+    if not local_page and not server_page and not jump then
         open()
         return
     end
 
+    -- `\u{25B6}` marks the server's answers, and is the same glyph this plugin's
+    -- own row uses in the OPDS dialog — so it is known to render, which is why it
+    -- is the only one used here.
+    --
+    -- A tap past the dialog **cancels**: nothing opens. That is the whole meaning
+    -- of a dismissal here, and it is why this sets no `tap_close_callback` — an
+    -- earlier version did, on the reasoning that a dismissal had to land
+    -- somewhere, and opened the book. Tapping past a question is not a way of
+    -- answering it.
+    --
+    -- At most one action per dialog all the same, so a double tap cannot open
+    -- two books.
+    local acted = false
+    local function once(action)
+        if acted then
+            return
+        end
+        acted = true
+        action()
+    end
+
     local dialog
-    local buttons = {
-        {
-            {
-                text = _("Start from the beginning"),
-                callback = function()
-                    UIManager:close(dialog)
-                    -- Not a no-op, and not decoration. Choosing this leaves no
-                    -- sidecar behind, and `MeguruDocument:init` silently seeds
-                    -- the server's page into a book that has none — so this
-                    -- choice would be quietly undone a moment later and the book
-                    -- would open at the server's page after all. Writing page 1
-                    -- says what was chosen and marks the book as decided.
-                    Open.seedLastPage(file, 1)
-                    open()
-                end,
-            },
-        },
-    }
-    if opened_before then
-        -- Their own position, which KOReader restores unaided — so this button's
-        -- entire job is to *not* override it. It is the answer to "or open the
-        -- one I clicked, where I had got to in it", and without it that choice
-        -- would be unreachable: the other two both move somewhere else.
+    local buttons = {}
+    if local_page then
         buttons[#buttons + 1] = {
             {
-                text = _("Continue where I left off"),
+                -- No glyph: `▶` marks the server's position, which is the one
+                -- answer here that is not the reader's own doing.
+                text = T(_("Continue — page %1"), local_page),
                 callback = function()
                     UIManager:close(dialog)
-                    open()
-                end,
-            },
-        }
-    elseif page then
-        buttons[#buttons + 1] = {
-            {
-                text = T(_("Continue here (page %1)"), page),
-                callback = function()
-                    UIManager:close(dialog)
-                    Open.seedLastPage(file, page)
-                    open()
+                    -- KOReader restores their own position unaided, so this
+                    -- button's whole job is to *not* get in the way.
+                    once(open)
                 end,
             },
         }
     end
-    if target then
+    if server_page then
         buttons[#buttons + 1] = {
             {
-                text = T(_("Continue at %1"),
-                    target.display_title or target.title),
+                -- Textually parallel with the local button above, differing only
+                -- in `(Server)` — which is the only way these two differ in
+                -- meaning either.
+                text = "\u{25B6} " .. T(_("Continue — page %1 (Server)"), server_page),
+                callback = function()
+                    UIManager:close(dialog)
+                    once(function()
+                        Open.seedLastPage(file, server_page)
+                        open()
+                    end)
+                end,
+            },
+        }
+    end
+    if jump then
+        buttons[#buttons + 1] = {
+            {
+                -- Same shape as the page variant, with the book's own label in
+                -- place of a page: `Continue — page 60` and `Continue — Volume 2`
+                -- would be two numbers for two different things, and the unit is
+                -- what says which.
+                text = "\u{25B6} " .. T(_("Continue — %1 (Server)"), bookLabel(jump)),
                 callback = function()
                     UIManager:close(dialog)
                     -- Opening the marker this was called for as well would leave
@@ -644,14 +733,16 @@ function Open.offerResume(host, server, series, item, opts)
                     local open_target = opts.open_item or function(chosen)
                         Open.openCatalogItem(host, server, series, chosen)
                     end
-                    open_target(target)
+                    once(function() open_target(jump) end)
                 end,
             },
         }
     end
 
     dialog = ButtonDialog:new{
-        title = _("Meguru: where would you like to start?"),
+        -- The book being opened is named here, in its short form, so the buttons
+        -- can stay short: the two that leave name their own destination instead.
+        title = T(_("Meguru: %1"), here),
         buttons = buttons,
     }
     UIManager:show(dialog)

@@ -190,6 +190,63 @@ The gate is now "is there anything to offer instead", and a book already being
 read with nothing further along in its series opens where it was left, silently,
 because there is genuinely nothing to decide.
 
+**The reader's page and the server's are both offered, and the server's is one
+button with two readings.** A book read to page 30 here and left at page 60
+elsewhere has two honest answers, and only the reader knows which they want — so
+suppressing the server's page for a book read locally (the first version of this)
+threw one away. What the server's position cannot do is be two things at once: it
+is either *inside this book*, and then it is a page, or *outside it*, and then it
+is a book to open. Hence one button whose label follows:
+
+```
+Continue — page 30                the book being opened, where it was left
+▶  Continue — page 60 (Server)    the server's position, inside this book
+   or
+▶  Continue — Volume 2 (Server)   the server's position, in another book
+```
+
+Every button continues somewhere. There is deliberately **no "start over"**: the
+dialog is about which of two positions to resume at, and page 1 is not a position
+anyone has — a reader who wants it swipes back. That also removes the interaction
+that used to make it load-bearing: choosing it left no sidecar, so
+`MeguruDocument:init` would silently seed the server's page into the book a moment
+later and undo the choice.
+
+The two "continue" labels differ only in the `(Server)` marker, which is the only
+way they differ in meaning either. `▶` marks the server's answer because it is the
+one on the dialog that is not the reader's own doing; the local one carries no
+glyph. `Volume 2` there is **the server's own trailing token** as
+`Naming.deriveSeries` peeled it from the entry title — "Volume 2" from Kavita,
+"Chapter 30" from Suwayomi — never an abbreviation this code invents.
+
+Two buttons reading "continue" while pointing at *different books* is worse than
+not asking — that was the first wording, where "continue where I left off" was
+equally true of the book being opened and of the one OPDS pointed at. The second
+fix named the book in each button, which overflowed: `display_title` is the whole
+cleaned entry title ("Now That We Draw - Volume 2"). Buttons therefore get
+**`volume_label`** — the token `Naming.deriveSeries` pulls out, "Volume 5" /
+"Chapter 30" — and the title carries the book being opened in the same short form.
+The marker descriptor has no `volume_label`, so the file path derives the token
+from its title with the same function, rather than showing a full title.
+
+The local page comes from the sidecar (`localLastPage`, only ever called when a
+sidecar already exists — `DocSettings:open` creates the file, so calling it for a
+new book would invent the evidence). The server's comes from `freshResumeTarget`
+on the browser path and `currentResumeTarget` on the file path.
+
+**A tap past the dialog cancels — it opens nothing.** `ButtonDialog` is
+dismissable by default, and the dialog deliberately sets no `tap_close_callback`.
+An earlier version did, on the reasoning that a dismissal had to "land somewhere",
+and opened the book: tapping past a question is not a way of answering it, and the
+reader who does it is saying no. The marker is already written by then, so a
+cancelled open costs a file on disk and nothing else.
+
+Every button still routes through a single `once(action)`, so a double tap cannot
+open two books. Worth knowing while touching this: `ButtonDialog`'s
+`tap_close_callback` fires from `onClose`, which a button's `UIManager:close` does
+**not** reach — that sends `CloseWidget`, a different event — so the two routes are
+separable, and a button's own `UIManager:close` can never re-enter it.
+
 **The catalog is the wrong place to ask, and the feed is the right one.** It has
 to be said plainly because the obvious implementation is wrong in a way that only
 shows on a real library: `items.last_read` is a snapshot from the last *sync*,
