@@ -58,10 +58,18 @@ function Net.redactStreamUrl(str)
     return Net.redactUrl(stripped)
 end
 
+-- A resume lookup happens while the reader waits for a dialog to appear, not
+-- while a walk is in progress, so it gets the tightest limits here: a server
+-- that has not answered in 4s is not going to improve anyone's afternoon, and
+-- the caller has a stale-but-usable answer to fall back on.
+Net.RESUME_BLOCK_TIMEOUT = 4
+Net.RESUME_TOTAL_TIMEOUT = 8
+
 local TIMEOUTS = {
     feed = { Net.FEED_BLOCK_TIMEOUT, Net.FEED_TOTAL_TIMEOUT },
     page = { socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT },
     large = { socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT },
+    resume = { Net.RESUME_BLOCK_TIMEOUT, Net.RESUME_TOTAL_TIMEOUT },
 }
 
 --- Synchronous GET. Returns `code, headers, body`.

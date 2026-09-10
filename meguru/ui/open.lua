@@ -269,6 +269,55 @@ local function why(reason, detail)
     return nil
 end
 
+--- The series' furthest-read item, read from the feed the browser just fetched.
+---
+--- The catalog cannot answer this question. `items.last_read` is a snapshot from
+--- the last sync, and the only thing that refreshes a row in between is opening
+--- that very chapter — so the catalog is fresh exactly where the reader has
+--- clicked and stale everywhere else, and the furthest item *known* is routinely
+--- not the furthest item *read*. Asking the feed the reader is already looking at
+--- costs nothing: `OPDSBrowser` fetched it to draw the list on screen.
+---
+--- **The feed must be this series' own.** An entry opened from `on-deck` or
+--- `recently-added` is served by an aggregate listing other series too, and
+--- parsing that as if it were a series feed would produce items belonging to
+--- them — the "never silently sync the wrong series" failure, arriving by a side
+--- door. `driver.discover` is the existing answer to "which series is this
+--- entry", so the whole feed is checked with it and rejected unless every entry
+--- claims the series being opened. Rejecting costs only the fresher answer; the
+--- caller falls back to the catalog.
+---
+--- Returns a catalog row, because the caller opens it as one. The target is
+--- upserted on the way, which is the same write `registerBook` makes for the
+--- book actually being opened, from the same feed, for the same series.
+local function freshResumeTarget(driver, feed, feed_url, ctx, series)
+    local entries = feed and feed.entry or {}
+    if #entries == 0 then
+        return nil
+    end
+    for _, entry in ipairs(entries) do
+        local found = driver.discover(entry, nil, ctx)
+        if not found or found.series_remote_id ~= series.remote_id then
+            return nil
+        end
+    end
+
+    local parsed = driver.parseCatalogPage(feed, feed_url, ctx)
+    local best
+    for _, parsed_item in ipairs(parsed or {}) do
+        if type(parsed_item.last_read) == "number" and parsed_item.last_read > 0 then
+            best = parsed_item
+        end
+    end
+    if not best then
+        return nil
+    end
+
+    Catalog.numberPositions(parsed)
+    Catalog.upsertItem(series.id, best, Catalog.nextTimestamp())
+    return Catalog.itemByKey(series.id, best.item_key)
+end
+
 --- Register the server, series and item of an opened book, returning the item's
 --- catalog row.
 ---
@@ -357,6 +406,12 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
         server = server,
         series = Catalog.series(series.id),
         item   = Catalog.itemByKey(series.id, item.item_key),
+        -- Where the reader actually is in this series, asked of the feed the
+        -- browser just fetched rather than of the catalog, which only knows what
+        -- the last sync saw. Nil when that feed is not this series' own, or when
+        -- nothing in it has been read — `offerResume` then falls back to the
+        -- catalog, which is the honest answer for a series never read anywhere.
+        resume = freshResumeTarget(driver, feed, feed_url, ctx, series),
     }
     -- Said out loud because every way this can fail says so, and the success was
     -- the only silent outcome — which makes "is it catalogued?" unanswerable from
@@ -400,23 +455,174 @@ local function handToReader(host, file)
     return true
 end
 
---- Open a catalog item from a library view.
+--- True when this book has never been opened on this device.
 ---
---- Two cases, and the second is the reason this exists at all. An item that has
---- been opened before already has a marker on disk: open that file, and its
---- reading progress and page cache come with it. An item that has never been
---- opened has no marker, and — for a Suwayomi chapter — no page stream either,
---- because a sync records every item of a series while deliberately fetching
---- nothing per item. Resolving that stream is one request, made here, at the
---- moment the reader asks for that chapter and at no other time.
+--- Must be asked *before* any `DocSettings:open`, because that call creates the
+--- sidecar this looks for — ask afterwards and every open looks like the first.
+--- `hasSidecarFile` is the cheap test core itself uses (`docsettings.lua:151`):
+--- it walks the location candidates and stats, and parses nothing.
+local function neverOpened(file)
+    local ok, DocSettings = pcall(require, "docsettings")
+    if not ok or type(DocSettings.hasSidecarFile) ~= "function" then
+        return false
+    end
+    local ok_has, has = pcall(DocSettings.hasSidecarFile, DocSettings, file)
+    return ok_has and not has
+end
+
+--- Write a starting page into a marker's sidecar, before the reader opens it.
 ---
---- Returns the marker path, or nil after reporting why.
-function Open.openCatalogItem(host, server, series, item)
+--- `ReaderUI:showReader` takes no page, and both of its post-open callbacks fire
+--- *after* `ReaderReady` and the first render — so a page seeded any later would
+--- show page 1 and then jump. The one value that lands on the first paint is the
+--- one the paging module reads out of `DocSettings` in its own `onReadSettings`
+--- (`readerpaging.lua:154`), and that is what this writes. The old plugin seeded
+--- the same setting the same way (`meguru_hook.lua:258`), and there is no other
+--- way to do it.
+---
+--- `last_page` is right because our provider is a paging document. A rolling
+--- (CREngine) one would need `last_xpointer`, which is a string — a different
+--- problem, and not one this plugin has.
+function Open.seedLastPage(file, page)
+    local ok, DocSettings = pcall(require, "docsettings")
+    if not ok then
+        return false
+    end
+    local ok_open, ds = pcall(DocSettings.open, DocSettings, file)
+    if not ok_open or not ds then
+        logger.warn("Meguru: could not open the sidecar to seed a page")
+        return false
+    end
+    ds.data.last_page = math.floor(page)
+    local ok_flush, err = pcall(function() ds:flush() end)
+    if not ok_flush then
+        logger.warn("Meguru: could not seed the reader page:", err)
+        return false
+    end
+    logger.info("Meguru: starting", file, "at page", page)
+    return true
+end
+
+--- Offer a starting point, then open. Calls `opts.open()` either way.
+---
+--- **Only ever asked for a book that has never been opened here.** A book opened
+--- before carries KOReader's own position, which is finer-grained than anything
+--- the server knows, and asking on top of it would be noise. That single
+--- condition is what keeps the question rare — it also silences the flows that
+--- come through here routinely: a next chapter reached from the reader has no
+--- progress of its own, and the furthest-read item lies *behind* it, so neither
+--- button qualifies and no dialog is built at all.
+---
+--- Buttons appear only when they have something to say, so the usual shape is
+--- two buttons, rarely three. The caller passes the open step rather than being
+--- called back into because the two entry points hand the marker on differently
+--- — the browser goes through the built-in plugin's own opener.
+---
+--- `opts.target` is the caller's fresh answer when it has one, and the catalog's
+--- is the fallback when it does not. They are not equivalent and the difference
+--- is deliberate: see `freshResumeTarget`.
+---
+--- `opts.open_item(target)` is how the third button opens the chosen chapter.
+--- The two entry points reach a marker differently — the browser has a catalog
+--- view to open through, the file manager has whoever is opening this file — so
+--- the default is the browser's, and the file path supplies its own.
+---
+--- @param opts { count, file, target, open, open_item }
+function Open.offerResume(host, server, series, item, opts)
+    local file, open = opts.file, opts.open
+    if not neverOpened(file) then
+        open()
+        return
+    end
+
+    -- A page worth offering: past the first, and inside the book. The old
+    -- plugin's guard, unchanged (`meguru_hook.lua:996`).
+    local page = item and tonumber(item.last_read)
+    if not (page and page > 1 and opts.count and page <= opts.count) then
+        page = nil
+    end
+
+    -- Somewhere further along in the series to go instead. Never the item
+    -- already being opened — offering that would be a button that does nothing.
+    local target = opts.target
+    if not target and server and series then
+        local found = Catalog.resumeTarget(series.id)
+        target = found and found.item or nil
+    end
+    if target and item and target.item_key == item.item_key then
+        target = nil
+    end
+
+    if not page and not target then
+        open()
+        return
+    end
+
+    local dialog
+    local buttons = {
+        {
+            {
+                text = _("Start from the beginning"),
+                callback = function()
+                    UIManager:close(dialog)
+                    -- Not a no-op, and not decoration. Choosing this leaves no
+                    -- sidecar behind, and `MeguruDocument:init` silently seeds
+                    -- the server's page into a book that has none — so this
+                    -- choice would be quietly undone a moment later and the book
+                    -- would open at the server's page after all. Writing page 1
+                    -- says what was chosen and marks the book as decided.
+                    Open.seedLastPage(file, 1)
+                    open()
+                end,
+            },
+        },
+    }
+    if page then
+        buttons[#buttons + 1] = {
+            {
+                text = T(_("Continue here (page %1)"), page),
+                callback = function()
+                    UIManager:close(dialog)
+                    Open.seedLastPage(file, page)
+                    open()
+                end,
+            },
+        }
+    end
+    if target then
+        buttons[#buttons + 1] = {
+            {
+                text = T(_("Continue at %1"),
+                    target.display_title or target.title),
+                callback = function()
+                    UIManager:close(dialog)
+                    -- Opening the marker this was called for as well would leave
+                    -- a book nobody asked for sitting next to the one they did.
+                    local open_target = opts.open_item or function(chosen)
+                        Open.openCatalogItem(host, server, series, chosen)
+                    end
+                    open_target(target)
+                end,
+            },
+        }
+    end
+
+    dialog = ButtonDialog:new{
+        title = _("Meguru: where would you like to start?"),
+        buttons = buttons,
+    }
+    UIManager:show(dialog)
+end
+
+--- Build, or find, the marker for a catalog item. Returns `file, count`, or nil.
+---
+--- Split out of `openCatalogItem` so the resume dialog's "continue at that
+--- chapter" can be reached from either entry point: the browser and the file
+--- manager prepare a marker identically and differ only in how they hand it on.
+local function prepareMarker(server, series, item)
     if type(item.marker_path) == "string" and item.marker_path ~= ""
         and FS.exists(item.marker_path) then
-        if handToReader(host, item.marker_path) then
-            return item.marker_path
-        end
+        return item.marker_path
     end
 
     local template, count = Sync.resolveStream(item, server)
@@ -456,15 +662,130 @@ function Open.openCatalogItem(host, server, series, item)
         Sources.remember(file, conn.username, conn.password)
     end
 
-    if not handToReader(host, file) then
-        logger.err("Meguru: no opener available for", file)
-        UIManager:show(InfoMessage:new{
-            text = T(_("Meguru: could not open the book.\nMarker written to:\n%1"),
-                file),
+    return file, count
+end
+
+--- The series' furthest-read item, fetched rather than skimmed from the catalog.
+---
+--- The file-manager path has no browser feed in hand, so `freshResumeTarget` has
+--- nothing to read — and the catalog is exactly the snapshot that made "opening
+--- volume 3 offered volume 5" happen. One request buys a current answer.
+---
+--- Only when the network is up, only with `Net.RESUME_*` limits, and **never
+--- without the stored language**: Suwayomi serves one library's translations from
+--- one URL and selects between them by `?lang=`, so a defaulted language would
+--- confidently report the progress of a translation the reader is not reading —
+--- the trap `Catalog.serverLang` already carries a warning about.
+---
+--- Falls back to the catalog on any failure. A slightly stale answer beats a
+--- dialog that never opens.
+local function currentResumeTarget(server, series)
+    local driver = server and server.kind and Base.forKind(server.kind)
+    local conn = server and Sources.connection(server.name)
+    if driver and conn and NetworkMgr:isConnected() then
+        local ctx = { lang = Catalog.serverLang(server.name) }
+        local url = driver.catalogURL(conn.url, series.remote_id, ctx)
+        local ok, feed = pcall(Net.fetchFeed, url, {
+            username = conn.username,
+            password = conn.password,
+            timeout = "resume",
         })
+        if ok and feed then
+            local ok_fresh, target = pcall(freshResumeTarget, driver, feed, url, ctx, series)
+            if ok_fresh and target then
+                return target
+            end
+        end
+    end
+    local found = Catalog.resumeTarget(series.id)
+    return found and found.item or nil
+end
+
+--- Open a catalog item from a library view.
+---
+--- Two cases, and the second is the reason this exists at all. An item that has
+--- been opened before already has a marker on disk: open that file, and its
+--- reading progress and page cache come with it. An item that has never been
+--- opened has no marker, and — for a Suwayomi chapter — no page stream either,
+--- because a sync records every item of a series while deliberately fetching
+--- nothing per item. Resolving that stream is one request, made here, at the
+--- moment the reader asks for that chapter and at no other time.
+---
+--- Returns the marker path, or nil after reporting why.
+function Open.openCatalogItem(host, server, series, item)
+    local file, count = prepareMarker(server, series, item)
+    if not file then
         return nil
     end
+
+    Open.offerResume(host, server, series, item, {
+        count = count,
+        file = file,
+        open = function()
+            if not handToReader(host, file) then
+                logger.err("Meguru: no opener available for", file)
+                UIManager:show(InfoMessage:new{
+                    text = T(_("Meguru: could not open the book.\nMarker written to:\n%1"),
+                        file),
+                })
+            end
+        end,
+    })
+    -- The marker is ready either way, so this reports "prepared", not "opened":
+    -- when the resume dialog is up the book opens on the reader's tap, and a
+    -- caller that treated the nil here as failure would be wrong.
     return file
+end
+
+--- The resume offer for a marker opened from the file manager or History.
+---
+--- A different situation from `offerResume`, and not a variation of it. There is
+--- no feed in hand here and no caller to hand the open back to — the reader is
+--- being built by whoever called us — so this gathers its own data and starts the
+--- reader itself.
+---
+--- `proceed(file)` opens `file`, or the one this was called for when given none.
+function Open.offerResumeForFile(file, host, proceed)
+    if not neverOpened(file) then
+        proceed()
+        return
+    end
+
+    -- pcall: a marker this plugin did not write, or a database that will not
+    -- open, must cost the reader a dialog, never the book.
+    local ok, desc = pcall(Marker.load, file)
+    if not ok or type(desc) ~= "table" then
+        proceed()
+        return
+    end
+
+    -- `resolveMarker` returns the item and the series, not the server — the
+    -- server row is reached through the series. Reading it as a third return
+    -- would leave `server` nil, which is silent here: the fresh fetch would just
+    -- not happen, and the chapter button would fail on `server.name` only once
+    -- the reader tapped it.
+    local item, series = Catalog.resolveMarker(desc.server_name,
+        desc.series_remote_id, desc.item_key, desc.item_id)
+    local server = series and Catalog.server(series.server_id) or nil
+
+    Open.offerResume(host, server, series, item or desc, {
+        -- The page comes from the marker itself, so it is free and works
+        -- offline. The chapter target cannot: it is a fact about the whole
+        -- series, and the catalog's copy of it is a snapshot from the last sync.
+        count = tonumber(desc.count),
+        file = file,
+        target = series and currentResumeTarget(server, series) or nil,
+        open = proceed,
+        -- The browser's jump goes through `openCatalogItem`; this one has no
+        -- catalog view behind it, so it prepares the marker and hands that file
+        -- to whoever is opening this one.
+        open_item = function(target)
+            local other = prepareMarker(server, series, target)
+            if other then
+                proceed(other)
+            end
+        end,
+    })
 end
 
 -- Saving ----------------------------------------------------------------------
@@ -650,23 +971,36 @@ function Open.openAsBook(browser, item, stream, marker_dir)
     -- settings/opds.lua. Nothing is written into the marker itself.
     Sources.remember(file, browser.root_catalog_username, browser.root_catalog_password)
 
-    -- Prefer the built-in plugin's own open path: it closes the browser cleanly
-    -- and hands the marker to ReaderUI.
     local manager = browser._manager
-    if manager and type(manager.openDownloadedFile) == "function" and manager.opds_browser then
-        manager:openDownloadedFile(file)
-        return
-    end
-
     local host = (manager and manager.ui) and manager or fallback_host
-    if handToReader(host, file) then
-        return
-    end
 
-    logger.err("Meguru: no opener available for", file)
-    UIManager:show(InfoMessage:new{
-        text = T(_("Meguru: could not open the streamed book.\nMarker written to:\n%1"), file),
-    })
+    -- The resume question comes before the handoff, not inside it: the two
+    -- handoffs below are alternatives and both are terminal, so the choice has
+    -- to be made while there is still something to choose about.
+    Open.offerResume(host, registered and registered.server, series,
+        registered and registered.item, {
+            count = tonumber(desc.count),
+            file = file,
+            -- What `registerBook` read off the feed the browser has just
+            -- fetched, which is current; the catalog's answer is a snapshot.
+            target = registered and registered.resume or nil,
+            open = function()
+                -- Prefer the built-in plugin's own open path: it closes the
+                -- browser cleanly and hands the marker to ReaderUI.
+                if manager and type(manager.openDownloadedFile) == "function"
+                    and manager.opds_browser then
+                    manager:openDownloadedFile(file)
+                    return
+                end
+                if handToReader(host, file) then
+                    return
+                end
+                logger.err("Meguru: no opener available for", file)
+                UIManager:show(InfoMessage:new{
+                    text = T(_("Meguru: could not open the streamed book.\nMarker written to:\n%1"), file),
+                })
+            end,
+        })
 end
 
 --- Add the "Meguru this series" row to the dialog the built-in browser just

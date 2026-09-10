@@ -964,23 +964,55 @@ function MeguruDocument:init()
             desc.title or "?", count, self.file))
     end
 
-    -- Carry the plugin-wide "Manga mode" (invert read) choice into this book's
-    -- own DocSettings (KOReader's ReaderView only reads "inverse_reading_order"
-    -- per book, falling back to its *global* default otherwise — a global this
-    -- plugin deliberately never touches). Books that already carry an explicit
-    -- reading order (set through the bottom-menu Manga mode row or elsewhere)
-    -- are left alone; only books with none are seeded, so existing markers
-    -- honour the plugin setting too. The bottom-menu Manga mode toggle keeps
-    -- this key in sync.
+    -- Two things are seeded into this book's own DocSettings, and they want the
+    -- same sidecar.
+    --
+    -- 1. The plugin-wide "Manga mode" (invert read) choice — KOReader's
+    --    ReaderView only reads "inverse_reading_order" per book, falling back to
+    --    its *global* default otherwise, a global this plugin deliberately never
+    --    touches. Books that already carry an explicit reading order (set
+    --    through the bottom-menu Manga mode row or elsewhere) are left alone;
+    --    only books with none are seeded, so existing markers honour the plugin
+    --    setting too. The bottom-menu Manga mode toggle keeps this key in sync.
+    --
+    -- 2. The page the *server* says the reader stopped on — but **only** for a
+    --    book never opened on this device, because a book opened before carries
+    --    KOReader's own position, which is finer-grained, and seeding over it
+    --    would move the reader backwards.
+    --
+    --    This is the only way to land on a page at the first paint:
+    --    `ReaderUI:showReader` takes no page, and both of its post-open callbacks
+    --    fire *after* the first render. `ReaderPaging:onReadSettings` reads
+    --    `last_page` out of this sidecar, and this runs before that — the
+    --    document is opened before `ReaderUI:init` even loads the settings.
+    --
+    --    Silent on this path, deliberately. `ui/open.lua` asks instead, but only
+    --    when it is the one doing the opening; a book opened from the file
+    --    manager or History reaches the reader with no moment to ask in.
+    --
+    -- `hasSidecarFile` is asked first and must stay first: the `DocSettings:open`
+    -- below creates the very file it looks for, so asking afterwards would make
+    -- every book look like a first open.
     local ok_ds, DocSettings = pcall(require, "docsettings")
     if ok_ds then
-        pcall(function()
+        local opened_before = DocSettings:hasSidecarFile(self.file)
+        local ok_seed, err = pcall(function()
             local ds = DocSettings:open(self.file)
             if ds:readSetting("inverse_reading_order") == nil then
                 ds:saveSetting("inverse_reading_order", Settings.get("manga_order"))
                 ds:flush()
             end
+            local page = not opened_before and tonumber(desc.last_read)
+            if page and page > 1 and page <= count then
+                ds.data.last_page = math.floor(page)
+                ds:flush()
+                logger.info("Meguru: starting", self.file, "at page", page,
+                    "(the server's position)")
+            end
         end)
+        if not ok_seed then
+            logger.warn("Meguru: could not seed the book's sidecar:", err)
+        end
     end
     return true
 end

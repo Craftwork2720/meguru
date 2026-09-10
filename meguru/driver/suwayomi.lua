@@ -174,6 +174,53 @@ end
 --- titles "chapter cover". Because `ui/open.lua`'s `driverItemFor` reaches
 --- drivers through this same function, covers would then fill in as chapters
 --- are opened, at no extra request and no extra sync cost.
+--- The chapter's reading progress, read out of the entry's `<summary>` prose.
+---
+--- Suwayomi reports progress nowhere machine-readable on this feed. A
+--- chapter-list entry carries no stream link, so it carries no PSE attributes at
+--- all, and the metadata feed that does state `pse:lastRead` costs one request
+--- per chapter — which is exactly what a sync may not spend. What the list entry
+--- does carry is:
+---
+---   <summary>My Girlfriend is 8 Meters Tall | Chapter 63| Przez Unknown| Postęp: 0 z 31</summary>
+---
+--- So only the *digits* are read, never the words. The last two integers of the
+--- final `|` field are `read` and `total`, and `?lang=` localises the prose
+--- without touching the numbers, so "Postęp: 0 z 31" and "Progress: 0 of 31"
+--- parse alike. Every failure — no `|`, fewer than two numbers, a count outside
+--- its own total — returns nil, which is the honest outcome rather than a guess:
+--- no progress hint, i.e. precisely the behaviour before this existed.
+---
+--- Deliberately *not* returned as `page_count`: that number arrives
+--- authoritatively as `pse:count` when the stream is resolved, and a figure
+--- scraped out of prose must not displace one the server stated.
+---
+--- One shape this reads wrongly, and knowingly: a *fractional* first number, as
+--- in `Postęp: 0.5 z 31`, yields 5 — the pair `(5, 31)` matches and a dot is
+--- invisible to a digits-only scan. Not defended against, because progress here
+--- is a page index and no fractional one has been observed in the field; the
+--- cost of meeting one is a starting page that is a few off, which is a swipe to
+--- correct. It is recorded because a silent wrong answer is worth knowing about,
+--- not because it needs code.
+local function progressFromSummary(summary)
+    if type(summary) ~= "string" then
+        return nil
+    end
+    -- `|` is not a pattern metacharacter, and the anchored greedy class cannot
+    -- cross one, so this lands on the *last* field.
+    local field = summary:match("|([^|]*)$") or summary
+    local numbers = {}
+    for value in field:gmatch("%d+") do
+        numbers[#numbers + 1] = tonumber(value)
+    end
+    local read = numbers[#numbers - 1]
+    local total = numbers[#numbers]
+    if not read or not total or read < 1 or read > total then
+        return nil
+    end
+    return read
+end
+
 function Suwayomi.parseCatalogPage(feed, base_url, ctx)
     local items = {}
     for _, entry in ipairs(feed and feed.entry or {}) do
@@ -187,6 +234,7 @@ function Suwayomi.parseCatalogPage(feed, base_url, ctx)
                 detail_url      = detail and Base.absolute(base_url, detail.href) or nil,
                 template        = nil,
                 page_count      = nil,
+                last_read       = progressFromSummary(entry.summary),
             })
         end
     end

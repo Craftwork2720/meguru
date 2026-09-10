@@ -480,6 +480,35 @@ function Catalog.neighbors(series_id, item_key)
     }
 end
 
+--- The furthest item in a series the server says has been read into.
+---
+--- Read through `orderedItems` rather than with its own `ORDER BY`, for the same
+--- reason `neighbors` is: the *order* is what is being asked about here, and a
+--- second copy of the `ITEM_ORDER` rule would disagree with every read path the
+--- moment a driver set an `ordinal`.
+---
+--- "Furthest along" rather than "most recently read" on purpose. The server also
+--- publishes `lastReadDate`, but the question being answered is where the reader
+--- has got *to* in the series — going back to re-read chapter 5 must not move the
+--- answer backwards.
+---
+--- Tombstoned items are skipped, so a chapter deleted upstream cannot be offered
+--- as somewhere to continue. Returns nil when nothing in the series has any
+--- progress, which is the normal state before a series has been read anywhere.
+function Catalog.resumeTarget(series_id)
+    local target
+    for _, item in ipairs(Catalog.orderedItems(series_id)) do
+        if not item.removed_at and type(item.last_read) == "number"
+            and item.last_read > 0 then
+            target = item
+        end
+    end
+    if not target then
+        return nil
+    end
+    return { item = target, page = target.last_read }
+end
+
 -- Timestamps ------------------------------------------------------------------
 
 --- A strictly increasing wall-clock stamp.

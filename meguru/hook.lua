@@ -78,6 +78,66 @@ function Hook.install()
     end
 
     logger.info("Meguru: hooked OPDSBrowser:showDownloads")
+
+    -- The third wrap, and the most careful one: `ReaderUI:showReader` is how
+    -- *every* document in KOReader is opened. A marker opened from the file
+    -- manager or History reaches the reader through it with no other moment to
+    -- ask where to start, which is the gap this closes.
+    --
+    -- Three things keep it from ever costing anyone a book:
+    --   * non-`.meguru` files fall straight through, before anything else;
+    --   * the whole offer runs inside a pcall, and any failure opens normally;
+    --   * the open is called at most once, so a throw after it cannot open twice.
+    local ok_ui, ReaderUI = pcall(require, "apps/reader/readerui")
+    if ok_ui and type(ReaderUI) == "table"
+        and type(ReaderUI.showReader) == "function" then
+        local orig_showReader = ReaderUI.showReader
+        ReaderUI.showReader = function(...)
+            local n = select("#", ...)
+            local args = { n = n, ... }
+            -- Colon calls pass the class *or* an instance (`switchDocument` does
+            -- `self:showReader`), so the file is whichever of the first two
+            -- arguments is the string — never `self == ReaderUI`.
+            local file = type(args[1]) == "string" and args[1] or args[2]
+
+            local opened = false
+            local function open_instead(other)
+                if opened then
+                    return
+                end
+                opened = true
+                local forwarded = { }
+                for i = 1, n do
+                    forwarded[i] = args[i]
+                end
+                if type(forwarded[1]) == "string" then
+                    forwarded[1] = other or forwarded[1]
+                else
+                    forwarded[2] = other or forwarded[2]
+                end
+                return orig_showReader(unpack(forwarded, 1, n))
+            end
+
+            if type(file) ~= "string" or file:sub(-7) ~= ".meguru" then
+                return open_instead()
+            end
+
+            local ok_offer, err = pcall(Open.offerResumeForFile, file,
+                -- A host-shaped shim: `prepareMarker` and `openCatalogItem` take
+                -- one, and on this path the only thing it can usefully do is hand
+                -- a file back to the opener we were called from.
+                { ui = { openFile = function(_, other) return open_instead(other) end } },
+                open_instead)
+            if not ok_offer then
+                logger.warn("Meguru: resume offer failed, opening normally:", err)
+                open_instead()
+            end
+        end
+        logger.info("Meguru: hooked ReaderUI:showReader (resume on file open)")
+    else
+        logger.warn("Meguru: unexpected ReaderUI:showReader, resume-on-open disabled")
+    end
+
     return true
 end
 

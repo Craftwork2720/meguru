@@ -164,11 +164,87 @@ one, and the last step is the reason a book is never cover-less. Neither link
 goes into the marker: the marker carries only what opens the stream offline.
 
 **Reading progress is not mirrored into the catalog.** It is read lazily per
-series: `DocSettings:hasSidecarFile(marker_path)` is the free "never opened"
-test, and `percent_finished` is read only for items that have both a
-`marker_path` and a sidecar. This works only because `items.marker_path` exists;
-a path pointing at a missing file means "not opened", with no fallback to a name
-search.
+series: `ui/series.lua` gates on a non-empty `items.marker_path`, then
+`DocSettings:findSidecarFile` and `openSettingsFile`, and reads `percent_finished`
+— only for items that have both a `marker_path` and a sidecar. This works only
+because `items.marker_path` exists; a path pointing at a missing file means "not
+opened", with no fallback to a name search. (`DocSettings:hasSidecarFile` is the
+cheaper, parse-free variant of the same test and is what the resume path below
+uses, where nothing needs reading.)
+
+**The server's own progress is a separate thing, and it seeds a first open.**
+`items.last_read` is the page the *server* says the reader stopped on. It is not
+a mirror of local progress and never overrides it: `ui/open.lua`'s
+`offerResume` asks only for a marker that has **no sidecar yet**, because after
+one open KOReader's own position is finer-grained than anything the server knows.
+When it does ask, it offers up to three things — start at page 1, start at the
+server's page, or jump to a later chapter the server says is further along
+("furthest in reading order", deliberately not "most recent", so re-reading an
+early chapter cannot move the answer backwards).
+
+**The catalog is the wrong place to ask, and the feed is the right one.** It has
+to be said plainly because the obvious implementation is wrong in a way that only
+shows on a real library: `items.last_read` is a snapshot from the last *sync*,
+and the only thing that refreshes a row in between is opening that very chapter —
+`registerBook` re-upserts the item from whatever feed the browser had fetched. So
+the catalog is fresh exactly where the reader has clicked and stale everywhere
+else, and the furthest item *known* is routinely not the furthest item *read*.
+Reading to chapter 7 in a browser, then opening volume 3, would offer volume 5.
+`Open.freshResumeTarget` therefore asks the feed `OPDSBrowser` has *just* fetched
+to draw the list — free, and current — and `Catalog.resumeTarget` is only the
+fallback for when there is no such feed. The two are not interchangeable.
+
+That fresh path also carries the "never silently sync the wrong series" guard:
+an entry opened from `on-deck` or `recently-added` comes from a feed listing other
+series too, so the feed is accepted only when **every** entry `driver.discover`s
+to the series being opened.
+
+**The file-manager open is wrapped, because it is the only place left that can
+ask.** `hook.lua` wraps `ReaderUI.showReader` — the same runtime-wrap technique it
+already uses on `OPDSBrowser` — so a marker opened from the file manager or
+History gets the same dialog. Three rules keep that wrap from ever costing anyone
+a book: non-`.meguru` files fall straight through before anything else; the whole
+offer runs in a `pcall` whose failure opens normally; and the open is called at
+most once, so a throw after it cannot open twice. Two traps are worth knowing:
+
+- **`showReader` is called both ways.** `switchDocument` does `self:showReader`
+  and the file manager does `ReaderUI:showReader`, so `self` is sometimes the
+  class and sometimes an instance. The file is whichever of the first two
+  arguments is a string — never `self == ReaderUI`.
+- **`switchDocument` routes through it too**, so our own neighbour opens land in
+  the wrap. They are harmless (the guards below suppress the dialog), but it is
+  why the wrap must not assume it only ever sees file-manager opens.
+
+That path has no browser feed, so its chapter target costs **one request** —
+`currentResumeTarget`, gated on `NetworkMgr:isConnected()` and bounded by
+`Net.RESUME_*` (4s/8s, not the 10s/30s a sync walk gets), with the catalog as the
+fallback on any failure. It must pass `Catalog.serverLang`, because Suwayomi
+selects between translations by `?lang=` and a defaulted language would report
+the progress of a translation the reader is not reading.
+
+**`MeguruDocument:init` keeps a silent seed as the safety net**, for any open that
+reaches the reader without going through `showReader` at all — from the marker's
+own `desc.last_read`, and with no network call, because `init` runs inside the
+document open where a dead server would freeze the screen. A choice made in the
+dialog therefore has to leave a sidecar behind, including the choice *not* to
+resume: "start from the beginning" writes page 1, or the silent seed would
+quietly undo it a moment later.
+
+**A starting page can only be set through the sidecar.** `ReaderUI:showReader`
+takes no page, and `after_open_callback` / `registerPostReaderReadyCallback` both
+fire *after* `ReaderReady` and the first render, so anything later shows page 1
+and then jumps. The one value that reaches the first paint is `last_page`, which
+`readerpaging.lua:154` reads in its own `onReadSettings` — so
+`Open.seedLastPage` writes it before the handoff. This is why
+`DocSettings:hasSidecarFile` must be asked **before** any `DocSettings:open`:
+that call creates the sidecar being tested for.
+
+The two servers differ in where that progress comes from, and it is a wire
+format, not a design choice: Kavita states `p5:lastRead` on every series-feed
+entry, so it syncs for free; Suwayomi's chapter entries carry no PSE attributes
+at all, so it is scraped out of the `<summary>` prose — see PROTOCOL.md. Both
+end up in the same column, and a series whose server says nothing simply offers
+no page.
 
 **The database degrades gracefully.** A marker needs nothing from it to open and
 read — `template` and `count` are in the file. Without the database, only

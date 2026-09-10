@@ -127,6 +127,29 @@ Chapter numbers are renumbered on a metadata refresh and can repeat between
 scanlators; the path segment is an index. **`item_key` = the `entry.id` URN**,
 which is stable and unique. Series ids come the same way: `urn:suwayomi:manga:3649`.
 
+### Progress is in the summary prose, and only there
+
+The chapter-list entry carries no PSE attributes at all — no stream link, so
+nowhere for them to sit — but it does state per-chapter progress, inside the
+human-readable `<summary>`:
+
+```
+<summary type="text">My Girlfriend is 8 Meters Tall | Chapter 63| Przez Unknown| Postęp: 0 z 31</summary>
+```
+
+Four `|`-separated fields: title, chapter label, author, progress. The progress
+is the **last** field, and `?lang=` localises its prose without touching its
+digits — so the last two integers of that field are `read` and `total` whichever
+language was asked for, and `driver/suwayomi.lua` reads only the digits. (The
+second number is also the chapter's page count, but it is deliberately *not*
+taken as `page_count`: `pse:count` states that authoritatively once the stream is
+resolved, and a figure scraped out of prose must not displace one the server
+said.)
+
+Kavita needs none of this — its series feed puts `p5:lastRead` on every entry,
+machine-readable, which is why `items.last_read` is populated for one server and
+had to be scraped for the other.
+
 ### Chapters have no stream — they point at a metadata feed
 
 A chapter entry carries only `rel=subsection` → `/series/{id}/chapter/{n}/metadata`.
