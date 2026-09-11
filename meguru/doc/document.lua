@@ -1133,11 +1133,20 @@ end
 -- Bytes on disk (fetch page N, keep in a disk LRU)
 -- ---------------------------------------------------------------------------
 
--- Delegates rather than rebuilding the name: the cache module owns how a page
--- file is named, and two spellings of it would drift apart the moment one of
--- them changed — taking the prune with it.
+-- The book identity every cache file of this document is filed under.
+--
+-- Computed from the descriptor each time rather than captured at init, so a
+-- descriptor refreshed from the catalog (the template is, at `init`) cannot
+-- leave a stale copy behind — and so there is one derivation, not two.
+function MeguruDocument:cacheKey()
+    return Marker.cacheKey(self.desc)
+end
+
+-- Delegates rather than rebuilding the name: this method owns the *key*, the
+-- cache module owns the *tail* of the name, and two spellings of either would
+-- drift apart the moment one of them changed — taking the prune with it.
 function MeguruDocument:pageCachePath(pageno)
-    return Cache.pagePath(Marker.slug(self.file), pageno)
+    return Cache.pagePath(self:cacheKey(), pageno)
 end
 
 function MeguruDocument:readPageFromDisk(pageno)
@@ -1365,7 +1374,7 @@ function MeguruDocument:getCoverPageImage()
 
     local data
     if cover_url then
-        local path = Cache.coverPath(Marker.slug(self.file), cover_url)
+        local path = Cache.coverPath(self:cacheKey(), cover_url)
         data = Cache.read(path)
         if not data then
             local user, pass = self:streamCredentials()
@@ -1397,6 +1406,11 @@ function MeguruDocument:getCoverPageImage()
         -- No stored cover link (marker written before covers were captured) or
         -- the stored one failed to fetch above: page 1 of the stream, which on
         -- OPDS-PSE servers is usually the cover.
+        --
+        -- Reached through this book's own key, unlike the version of this that
+        -- keyed on the marker's basename: there it read whatever page 1 the
+        -- book with the same title had cached, so a series whose chapters are
+        -- all called "Chapter 1" gave every volume one shared cover.
         data = self:readPageFromDisk(1)
         if not data then
             data = self:fetchPageToDisk(1)

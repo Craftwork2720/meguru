@@ -225,12 +225,19 @@ function Marker.save(desc, dir)
     return path
 end
 
---- Short filesystem-safe namespace for a document's cached pages, derived from
---- its marker path.
-function Marker.slug(path)
-    local base = path:match("([^/\\]+)%." .. Paths.MARKER_EXT .. "$")
-        or path:match("([^/\\]+)$")
-    return base or "stream"
+--- The name a document's cached pages and covers are filed under.
+---
+--- Derived from the natural key, *not* from the marker path. This used to be the
+--- marker's basename, which is why the cache was shared between books: the
+--- basename is the title, two series routinely title a chapter the same way,
+--- and the guard that disambiguates a second book with the same title
+--- (`pathFor` above) only ever looks inside one directory — so two "Volume 1"s
+--- in two series folders each kept the plain name and each wrote to the same
+--- cache file. Identity is the one thing that cannot collide, and reading it
+--- from the descriptor rather than from the path also means moving or renaming
+--- a marker keeps its cache, which is what `doc/cache.lua` has always claimed.
+function Marker.cacheKey(desc)
+    return Naming.cacheKey(Marker.naturalKey(desc), desc.title)
 end
 
 return Marker

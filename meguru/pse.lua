@@ -146,11 +146,15 @@ end
 
 --- Where the raw bytes of one page are cached.
 ---
+--- `key` is the caller's book identity and is opaque here — this module only
+--- files the bytes, it does not decide what identifies a book. It comes from
+--- `Marker.cacheKey`, which is where the reasoning for its shape lives.
+---
 --- Pure: a name, not a directory. Creating it is `doc/cache.lua`'s job, since
 --- that is also the module that writes the file and can tell whether it is
 --- writing a page or a cover.
-function PSE.pageCachePath(slug, pageno)
-    return Paths.pageCacheDir() .. "/" .. slug .. "-p" .. pageno
+function PSE.pageCachePath(key, pageno)
+    return Paths.pageCacheDir() .. "/" .. key .. "-p" .. pageno
 end
 
 return PSE

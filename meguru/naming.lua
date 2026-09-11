@@ -20,9 +20,21 @@ Naming.ALIAS_PREFIX = "Continue Reading from: "
 -- Byte cap for a marker base name and for a series/server folder component.
 -- On-device filesystems treat names as UTF-8 byte strings with a 255-byte
 -- per-component limit. The marker adds "." .. extension plus at worst a "-"
--- and 8 hex digits, and the cover cache appends "-cover-<8hex>.img" to the same
--- base, so 220 keeps every derived component under 255.
+-- and 8 hex digits, so 220 keeps every derived component under 255.
+--
+-- The page/cover cache has its own budget, CACHE_PREFIX_BYTES below: it appends
+-- a 16-hex identity digest and its own suffix, so it cannot spend 220 on the
+-- readable part without going over.
 Naming.MAX_COMPONENT_BYTES = 220
+
+-- Byte cap for the *readable head* of a cache key. Not MAX_COMPONENT_BYTES,
+-- and the difference is one byte of overflow: the longest cover name is
+-- head + "-" + 16 (digest) + "-cover-" + 8 (cover hash) + ".img", so a 220-byte
+-- head lands on 256 — one over the per-component limit, where the filesystem
+-- truncates the name behind our back and the file we wrote is not the file we
+-- later look for. Silently, and only for long titles. 64 keeps the whole name
+-- near a hundred bytes and still shows which book a file belongs to.
+Naming.CACHE_PREFIX_BYTES = 64
 
 --- Drop a leading "Continue Reading from: " prefix, so an alias entry and the
 --- real volume it duplicates name to the same marker file.
@@ -329,6 +341,54 @@ function Naming.hash32(str)
         h = (h * 33 + str:byte(i)) % 4294967296
     end
     return h
+end
+
+--- 64-bit identity digest of `str`, as 16 lowercase hex digits.
+---
+--- Two 32-bit lanes rather than one wide hash, because in Lua 5.1 every number
+--- is a double and every intermediate product has to stay exact: `h * 33` with
+--- h < 2^32 stays under 2^38 and `h * 65599` under 2^49, both clear of the 2^53
+--- where a double stops counting exactly, so neither lane ever rounds. FNV-1a
+--- would: its `h * 16777619` reaches ~2^56 and would need its operand split into
+--- 16-bit halves to be correct — more code, no better spread.
+---
+--- Two lanes, not one, because the job differs from `hash32` above in what a
+--- collision costs. There a 32-bit value is right: the worst case is two series
+--- sharing a folder *name*. Here the failure is one book being served another
+--- book's page bytes — a single lane collides with a few percent probability
+--- over a large library, and requiring *both* lanes to collide takes that to
+--- nothing worth reasoning about.
+function Naming.digest64(str)
+    str = str or ""
+    local h1, h2 = 5381, 0
+    for i = 1, #str do
+        local b = str:byte(i)
+        h1 = (h1 * 33 + b) % 4294967296       -- djb2
+        h2 = (h2 * 65599 + b) % 4294967296    -- sdbm
+    end
+    return string.format("%08x%08x", h2, h1)
+end
+
+--- The name a book's cached bytes are filed under: a readable head from the
+--- title, then the identity digest.
+---
+--- The head is legibility only and may collide freely — `sanitizeComponent`
+--- folds `: * ? " < > |` to spaces and truncates, so two different titles can
+--- produce the same head, and that is now harmless. Identity is the digest, and
+--- nothing else here may be read as identity: the *whole* bug this shape exists
+--- to prevent was a cache keyed on the readable part alone, which made every
+--- Suwayomi "Chapter 1" and every Kavita "Volume 1" share one file.
+---
+--- The digest is over the natural key, never over the title or the template, so
+--- retitling a chapter or rotating an API key does not orphan the cache.
+function Naming.cacheKey(natural_key, title)
+    local head = Naming.sanitizeComponent(title or "", Naming.CACHE_PREFIX_BYTES)
+    if head == "stream" then
+        -- sanitizeComponent's "nothing usable survived" value. A cache file
+        -- named for a fallback reads as a real book; say what it is instead.
+        head = "book"
+    end
+    return head .. "-" .. Naming.digest64(natural_key)
 end
 
 --- A filesystem component for a *natural key*, e.g. "<server>|<series>|<item>".

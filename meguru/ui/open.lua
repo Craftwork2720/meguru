@@ -1449,8 +1449,13 @@ function Open.openAsBook(browser, item, stream, marker_dir)
     -- and nowhere else: nothing ever looks this key up, so the API-key rotation
     -- that makes URL-derived keys dangerous in the catalog cannot duplicate
     -- anything — it only renames one unconcatenated marker.
+    --
+    -- 64 bits, not `keySuffix`'s 32, because this key is no longer only a name:
+    -- it is the whole of this book's identity (with no series to disambiguate
+    -- it) and `Marker.cacheKey` digests it, so a collision between two of these
+    -- hands one book another's cached pages.
     if not desc.item_key then
-        desc.item_key = "flat:" .. Naming.keySuffix(stream.href)
+        desc.item_key = "flat:" .. Naming.digest64(stream.href)
         logger.info("Meguru: book has no catalog identity; marker stays flat")
     end
 

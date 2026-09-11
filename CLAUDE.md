@@ -53,7 +53,7 @@ meguru/
   catalog.lua             every query and command against servers/series/items
   sources.lua             read-only view on settings/opds.lua (catalogs + credentials)
   net.lua                 HTTP GET, feed fetch + parse
-  naming.lua              sanitizeComponent / deriveSeries / alias / glyph
+  naming.lua              sanitizeComponent / deriveSeries / alias / glyph / identity digest
   marker.lua              marker read/write, naming, collision resolution
   pse.lua                 OPDS-PSE: link extraction, template -> URL, page fetch
   hook.lua                runtime wraps on OPDSBrowser (sniff, "Meguru this series")
@@ -66,7 +66,7 @@ meguru/
 
   doc/
     document.lua          Document subclass: the reading engine
-    cache.lua             on-disk LRU for pages and covers
+    cache.lua             identity-keyed on-disk LRU for pages and covers
     image.lua             MuPDF decoding with a size cap
     defaults.lua          per-book seeding of kopt_* from plugin preferences
 
@@ -162,6 +162,42 @@ chapters show the series cover, deliberately.
 its stream**, so a NULL item cover is not a missing cover, it is the next best
 one, and the last step is the reason a book is never cover-less. Neither link
 goes into the marker: the marker carries only what opens the stream offline.
+
+**Cached bytes are filed under the book's identity, never under its name.**
+`Marker.cacheKey(desc)` is `Naming.cacheKey(Marker.naturalKey(desc), desc.title)`
+— a readable head from the title, then a 64-bit digest of the natural key — and
+it is the only thing `doc/cache.lua` is handed for either a page or a cover. The
+head is legibility and may collide freely (`Naming.sanitizeComponent` folds
+`: * ? " < > |` to spaces and truncates at 64 bytes); the digest is identity.
+This is worth a paragraph because the version that keyed on the *readable part
+alone* — the marker's basename, via a now-deleted `Marker.slug` — shipped, and
+its failure is the reason the rule is stated this way:
+
+- Every Suwayomi chapter is titled "Chapter 1" and many Kavita volumes "Volume
+  1", so **every such book on every series and every server wrote to one file**.
+  The second book to be opened was served the first one's bytes, pages and cover
+  alike — `getCoverPageImage`'s last fallback reads this book's *page 1*, so a
+  series of identically-titled chapters shared one cover too.
+- `Marker.pathFor`'s collision guard could not catch it: it disambiguates only
+  within one directory, and same-titled books normally land in *different*
+  series folders, where it never fires.
+
+Two properties fall out of deriving the key from identity rather than from the
+path, and both are now true of the whole cache: moving or renaming a marker does
+not orphan its pages (the old scheme's docblock claimed this while its slug
+*was* the basename), and retitling a chapter or rotating a Kavita API key does
+not either, since neither `title` nor `template` is in the digest.
+
+The digest is `Naming.digest64`, two 32-bit lanes, not one. A single lane is
+right for the marker/folder suffix `Naming.keySuffix` still uses, where a
+collision means two series share a folder *name*; for a cache key the failure is
+one book serving another's bytes, which a 32-bit birthday collision reaches with
+a few percent probability over a large library. Lua 5.1 constrains the choice:
+every double intermediate must stay exact, which rules out FNV-1a's `h *
+16777619` (~2^56) and forces the two polynomials (`*33`, `*65599`) that do.
+
+Nothing cached is load-bearing, so there is no migration: a name from an older
+shape is unreachable rather than wrong, and `Cache.prune` ages it out.
 
 **Reading progress is not mirrored into the catalog.** It is read lazily per
 series: `ui/series.lua` gates on a non-empty `items.marker_path`, then
@@ -728,6 +764,16 @@ Each step must pass before the next:
 10. **Concurrency.** Two windows (FileManager + ReaderUI): the provider registers
     once, the same series does not sync twice, the UI never freezes and Cancel
     works during a walk.
+11. **Two books, one title.** Open a "Chapter 1" from two different Suwayomi
+    series (or two Kavita volumes both titled "Volume 1"). Each renders its own
+    pages *and its own cover* — the cover is where a shared key shows first —
+    and `cache/meguru/pages/` holds two files whose heads match and whose
+    digests differ. Then move one marker to another folder and reopen it from
+    the file manager: no refetch in the log, which is the property the old
+    path-derived key never had.
+12. **A fresh cache is not a cache miss.** Every name carries the digest, so a
+    cache written by an older version is unreachable rather than wrong — the
+    first open after the upgrade refetches, and no stale file is ever read.
 
 ## Known open items
 
