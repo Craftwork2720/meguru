@@ -63,10 +63,20 @@ RETURNING id, kind, kind_source
 --- Insert or refresh the server row for `name`, returning it.
 --- `name` is the catalog title from KOReader's OPDS settings — the key both for
 --- identity here and for credential lookup in `sources.lua`.
+--- Returns the whole server row, for the same reason `upsertSeries` does and
+--- after the same mistake: this used to hand back the `RETURNING` slice
+--- (`{ id, kind, kind_source }`), and a caller passed it on to something that
+--- wanted `server.name` — `Sources.connection` — which then looked up `nil` and
+--- reported "no configured catalog named nil", three frames from the cause.
+--- A partial row that callers reach into is a trap, so neither upsert returns one.
 function Catalog.upsertServer(server)
-    return Store.first(UPSERT_SERVER,
+    local stored = Store.first(UPSERT_SERVER,
         server.name, server.kind, server.kind_source,
         server.host, server.root_url, Store.now())
+    if not stored then
+        return nil
+    end
+    return Catalog.server(stored.id)
 end
 
 function Catalog.serverByName(name)

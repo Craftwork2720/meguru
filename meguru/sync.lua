@@ -399,10 +399,21 @@ function Sync.resolveStream(item, server, opts)
     opts = opts or {}
     local driver = server and Base.forKind(server.kind)
     if not driver then
+        -- Both of these return the stored template *before* any driver runs, and
+        -- the stored template is NULL for every lazy item — which is exactly the
+        -- items that need this function. So the failure surfaces three frames
+        -- away as "no page stream", with nothing naming the cause. Kavita items
+        -- never notice: their template is stored, so the early return is a
+        -- success by accident.
+        logger.warn("Meguru: no driver for server", tostring(server and server.name),
+            "(kind=" .. tostring(server and server.kind) .. ")",
+            "- cannot resolve the stream for", item.title)
         return item.template, item.page_count
     end
     local conn = Sources.connection(server.name)
     if not conn then
+        logger.warn("Meguru: no configured catalog named",
+            tostring(server and server.name), "in settings/opds.lua")
         return item.template, item.page_count
     end
     local template, count = driver.resolveStream(item, makeFetch(conn), opts)

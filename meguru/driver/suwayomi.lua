@@ -17,6 +17,8 @@ instance (see PROTOCOL.md):
     number — is the item key.
 --]]
 
+local logger = require("logger")
+
 local Base = require("meguru/driver/base")
 local Naming = require("meguru/naming")
 local PSE = require("meguru/pse")
@@ -291,21 +293,41 @@ end
 --- through the injected `fetch` so the engine keeps ownership of credentials,
 --- timeouts and logging.
 function Suwayomi.resolveStream(item, fetch, _ctx)
+    -- Every exit below is a nil, and a nil here is indistinguishable from every
+    -- other one at the call site: `prepareMarker` reports "no page stream" and
+    -- nothing says which of the four it was. Each says so now, because the
+    -- difference between "the catalog row lost its detail_url" and "the server
+    -- answered something unexpected" is the difference between two unrelated
+    -- fixes, and only the log can tell them apart.
     if not item.detail_url or not fetch then
+        logger.warn("Meguru: cannot resolve a stream for", item.title,
+            "(detail_url=" .. tostring(item.detail_url)
+            .. ", fetch=" .. tostring(fetch ~= nil) .. ")")
         return nil
     end
     local feed = fetch(item.detail_url)
     if not feed then
+        logger.warn("Meguru: no metadata feed for", item.title)
         return nil
     end
     -- A `<feed>` wrapping exactly one `<entry>`, which holds the stream.
     local entry = feed.entry and feed.entry[1]
     if not entry then
+        logger.warn("Meguru: metadata feed for", item.title, "has no entry")
         return nil
     end
     -- Absolute against the metadata URL: the stream href is a path
     -- ("/api/v1/manga/3649/chapter/35/page/{pageNumber}"), not a full URL.
-    return PSE.streamFromEntry(entry, item.detail_url)
+    local template, count = PSE.streamFromEntry(entry, item.detail_url)
+    if not template then
+        local links = {}
+        for _, link in ipairs(entry.link or {}) do
+            links[#links + 1] = tostring(link.rel)
+        end
+        logger.warn("Meguru: no PSE stream on the metadata entry for", item.title,
+            "(rels: " .. table.concat(links, ", ") .. ")")
+    end
+    return template, count
 end
 
 Base.register("suwayomi", Suwayomi)
