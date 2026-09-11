@@ -160,21 +160,24 @@ function Suwayomi.catalogURL(base_url, series_remote_id, ctx, filter)
         base_url, series_remote_id, lang(ctx), filter or "all")
 end
 
---- The `filter=` value that lists the chapters the *server* marks as read.
+--- The `filter=` value that lists the chapters the *server* has not marked read.
 ---
 --- **Suwayomi tracks "read" as a flag of its own, and it is not the page
 --- counter.** `pse:lastRead` and the `<summary>` prose count pages within a
 --- chapter; this flag is set when a chapter is finished *or* explicitly marked
---- read. The two disagree, and a chapter can be flagged read while its summary
---- still says `Postęp: 0 z 17` — which is exactly the chapter the resume button
---- used to skip, because "the furthest entry with progress" cannot see it and
---- will happily answer with a chapter the reader has not finished instead.
+--- read. The two disagree in both directions — a chapter can be flagged read
+--- while its summary still says `Postęp: 0 z 17`, and a chapter flagged unread
+--- can be part-way through at `Postęp: 2 z 22`.
 ---
---- So the server's own answer is what the resume target is built from, and it is
---- read off a feed filtered to these chapters rather than guessed at from a feed
---- that contains them mixed with everything else. A driver whose server has no
---- such flag leaves this nil, and the page-progress scan stays.
-Suwayomi.resumeFilter = "read"
+--- Both of those are the same complaint: "where does this reader continue?" is a
+--- question about the *flag*, and answering it from page progress gets it wrong
+--- either way. So the flag is what the answer is built from, and it is read off a
+--- feed filtered to these chapters rather than inferred from one that contains
+--- them mixed with everything else — the flag is in no entry's data.
+---
+--- A driver whose server has no such flag leaves this nil, and the page-progress
+--- rules stay: they are all Kavita has.
+Suwayomi.unreadFilter = "unread"
 
 --- One page of the canonical feed to normalized items. No position numbers and
 --- no series metadata: the engine assigns feed positions, the catalog owns

@@ -386,7 +386,7 @@ end
 ---
 --- `matches` is a predicate rather than a boolean flag because the two callers
 --- want genuinely different things and a flag would read as a mode: see
---- `furthestWithProgress` and `furthestIn` below.
+--- `furthestWithProgress` and `firstIn` below.
 local function lastMatching(sequence, positioned, matches)
     for pass = 1, 2 do
         local first, last
@@ -414,18 +414,26 @@ local function furthestWithProgress(sequence, positioned)
     end)
 end
 
---- The last entry of a feed that already contains only what we want.
+--- The earliest entry of a feed that already contains only what we want.
 ---
 --- **No `last_read` test, and that is exactly why this is separate from the scan
 --- above.** That one is handed a feed holding *everything* and asks which entry
---- shows page progress — so a chapter the server has flagged read but whose page
---- counter still reads zero is invisible to it, and it answers with a chapter
---- the reader has not finished instead. This one is handed a feed the server
---- already filtered to its read flag (`Suwayomi.resumeFilter`), where every
---- entry qualifies by construction, so the furthest is simply the last in
---- reading order.
-local function furthestIn(sequence, positioned)
-    return lastMatching(sequence, positioned, function() return true end)
+--- shows page progress. This one is handed a feed the server already filtered to
+--- the chapters it flags *unread* (`Suwayomi.unreadFilter`), where every entry
+--- qualifies by construction and the answer is simply the earliest one.
+---
+--- The page-progress scan gets this wrong in both directions, which is why it is
+--- not consulted here even as a tie-break: a chapter flagged read keeps whatever
+--- progress it had, so the scan can offer a chapter the server considers done;
+--- and a chapter merely *started* is not flagged read, so the scan racing ahead
+--- to it skips the chapters in between that have no progress at all.
+---
+--- Takes no account of `positioned`, unlike the scan above, and the asymmetry is
+--- real rather than an oversight: the unpositioned tail sits at the *end* of the
+--- sequence, so `sequence[1]` is already the earliest entry either way. There is
+--- no direction for the tail to win from.
+local function firstIn(sequence, _positioned)
+    return sequence[1]
 end
 
 --- The series' furthest-read item, read from the feed the browser just fetched.
@@ -465,11 +473,13 @@ end
 --- foreign entries never reach the parser at all.
 ---
 --- `select(sequence, positioned)` chooses which entry is the target, and the
---- default is not the only right answer: a feed the *server* already filtered to
---- the chapters it flags read wants `furthestIn`, which takes the last entry
---- rather than the last entry showing page progress. The two disagree exactly on
---- a chapter flagged read whose page counter still reads zero — which the scan
---- cannot see and therefore answers around. See `Suwayomi.resumeFilter`.
+--- default is not the only right answer. A feed the *server* already filtered to
+--- the chapters it flags **unread** wants `firstIn` — the earliest entry, with no
+--- reference to page progress at all — because there "which chapter is next" has
+--- already been answered by the server and the page counter only contradicts it.
+--- The two disagree in both directions: a chapter flagged read keeps whatever
+--- progress it had, and a chapter merely started carries progress while being
+--- flagged unread like its neighbours. See `Suwayomi.unreadFilter`.
 ---
 --- Returns a catalog row, because the caller opens it as one. The target is
 --- upserted on the way, which is the same write `registerBook` makes for the
@@ -616,9 +626,9 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
         -- which sits below `currentResumeTarget` and can call it — a call from
         -- here would resolve as a global, the failure `tools/check.py`'s fourth
         -- pass exists to catch.
-        resume        = driver.resumeFilter and nil
+        resume        = driver.unreadFilter and nil
             or freshResumeTarget(driver, feed, feed_url, ctx, series),
-        server_resume = driver.resumeFilter and true or nil,
+        server_target = driver.unreadFilter and true or nil,
     }
     -- Said out loud because every way this can fail says so, and the success was
     -- the only silent outcome — which makes "is it catalogued?" unanswerable from
@@ -955,17 +965,29 @@ end
 --- newest-first by default, so "the first unread" read straight off feed order
 --- would be the *newest* chapter.
 ---
+--- **"Unread" means two different things depending on the server, and `filtered`
+--- says which.** A server that flags chapters itself (Suwayomi) has already
+--- answered it, so a feed asked for those chapters needs no test at all and the
+--- earliest entry is the answer. A server that does not (Kavita) has only the
+--- page counter, and there "unread" has to mean *not finished* — see below.
+---
+--- Passing `filtered` rather than re-deriving it from the item is deliberate:
+--- the flag is a property of the *feed* that was fetched, not of any entry in it.
+---
 --- Returns nil when nothing is unread, and **that is not the same as "offer the
 --- last one"**. An earlier version did offer it, reasoning that the newest chapter
 --- is where a reader of a finished series would carry on — and the effect was a
 --- row that promises the first unread chapter and silently opens the last one, at
 --- its last page. A row that cannot do what it says says nothing instead.
-local function firstUnread(parsed)
+local function firstUnread(parsed, filtered)
     -- The ordering itself lives in `readingOrder`, shared with
     -- `freshResumeTarget`: the two ask the same question of the same series
     -- ("where does this reader actually stand?") from two different screens, and
     -- they must not answer it differently.
     local sequence = readingOrder(parsed)
+    if filtered then
+        return sequence[1]
+    end
 
     for _, item in ipairs(sequence) do
         -- "Unread" here means **not finished**, not "no progress at all". A
@@ -1040,7 +1062,11 @@ local function seriesItems(driver, conn, remote_id, ctx, feed, feed_url)
         return fallback("no connection")
     end
 
-    local url = driver.catalogURL(conn.url, remote_id, ctx)
+    -- The chapters the server flags unread, when it has such a flag. Asking for
+    -- them makes `firstUnread`'s answer exact rather than inferred — see its
+    -- comment — and the walk below still runs over the whole chain, because a
+    -- filtered feed is only as ordered as the server's `sort` was honoured.
+    local url = driver.catalogURL(conn.url, remote_id, ctx, driver.unreadFilter)
     local pages, complete, reason = Sync.walk(url, {
         username  = conn.username,
         password  = conn.password,
@@ -1114,7 +1140,7 @@ function Open.openFirstUnread(browser, info)
     -- function, which is what the walk authenticates with.
     local parsed = seriesItems(info.driver, conn, info.remote_id, info.ctx,
         info.feed, info.feed_url)
-    local target = firstUnread(parsed)
+    local target = firstUnread(parsed, info.driver.unreadFilter ~= nil)
     if not target then
         -- Nothing unread, or an empty feed: either way the row has nothing to
         -- open, and saying so beats opening the wrong chapter.
@@ -1558,7 +1584,7 @@ local function currentResumeTarget(server, series)
         -- feed's own data: a chapter the server flags read keeps whatever page
         -- counter it had, and the two disagree. Only the filtered feed answers
         -- "which chapters are done" without inference.
-        local filter = driver.resumeFilter
+        local filter = driver.unreadFilter
         local url = driver.catalogURL(conn.url, series.remote_id, ctx, filter)
         local ok, feed = pcall(Net.fetchFeed, url, {
             username = conn.username,
@@ -1567,10 +1593,10 @@ local function currentResumeTarget(server, series)
         })
         if ok and feed then
             local ok_fresh, target = pcall(freshResumeTarget, driver, feed, url, ctx, series,
-                -- `furthestIn` when the feed was already filtered to the read
+                -- `firstIn` when the feed was already filtered to the unread
                 -- ones; the page-progress scan otherwise. Passing nil lets
                 -- `freshResumeTarget` keep its own default.
-                filter and furthestIn or nil)
+                filter and firstIn or nil)
             if ok_fresh then
                 return target
             end
@@ -1844,7 +1870,7 @@ function Open.openAsBook(browser, item, stream)
     -- screen by construction cannot. Nil either way means the catalog answers,
     -- which is `offerResume`'s own fallback.
     local resume_target = registered and registered.resume or nil
-    if not resume_target and registered and registered.server_resume then
+    if not resume_target and registered and registered.server_target then
         resume_target = currentResumeTarget(registered.server, registered.series)
     end
 

@@ -352,29 +352,48 @@ new book would invent the evidence). The server's comes from `freshResumeTarget`
 on the browser path and `currentResumeTarget` on the file path — and the second
 of those is now where both end, see below.
 
-**Which chapter the server's position names is chosen by a selector, and the two
-that exist are not interchangeable.** `freshResumeTarget(..., select)` takes one:
-`furthestWithProgress` (the default, and the only one Kavita can use) picks the
-last entry showing *page* progress, while `furthestIn` picks the last entry of a
-feed that already contains only what we want. Both are built on one helper,
-`lastMatching`, so the reading-order rule and its two-pass shape live once.
+**Suwayomi tracks "read" as a flag of its own, and it is not the page counter.**
+This is the single fact behind three separate deviations below, so it is worth
+stating once. `pse:lastRead` and the `<summary>` prose count pages *within* a
+chapter; the flag is set when a chapter is finished or explicitly marked read.
+The two disagree in **both** directions, and each direction broke something:
 
-The reason they must differ: **Suwayomi tracks "read" as a flag of its own, and
-it is not the page counter.** A chapter can be flagged read while its `<summary>`
-still says `Postęp: 0 z 17`, so the page-progress scan cannot see it and answers
-with a chapter the reader has not finished — the resume button landing on
-chapters the server already considers done. The flag is not in the feed's data
-either, at any `filter`: with `filter=unread` those chapters are absent, and with
-`filter=all` they are present but indistinguishable. Hence `Suwayomi.resumeFilter`
-— the driver naming the `filter=` value that lists exactly them — and hence
-`furthestIn`, which needs no predicate because the filter did the selecting.
+- a chapter can be flagged **read** with its summary still saying `Postęp: 0 z
+  17` — invisible to a page-progress scan, which answered with a chapter the
+  reader had not finished instead;
+- a chapter merely **started** carries progress while being flagged unread like
+  its neighbours — so a scan racing to the furthest progress skips the unread
+  chapters in between that have no progress at all.
 
-That makes `currentResumeTarget` the single answer for both entry points, and it
-is fetched on **both**: `registerBook` declines to answer when the driver has a
-`resumeFilter`, because the feed the browser holds cannot, and `openAsBook` fills
-it in. So an OPDS open on Suwayomi costs one request where it used to reuse a
-feed already fetched. That is the price of naming a chapter the server agrees is
-read; the file path pays the same as before, only with a different URL.
+The flag is in no entry's data; only a feed *filtered* by it says anything. Hence
+`Suwayomi.unreadFilter = "unread"` — the driver naming the `filter=` value that
+lists exactly those chapters — and three things that follow from it:
+
+**The `▶` button names the first unread chapter, and both entry points agree on
+it.** `freshResumeTarget(..., select)` takes a selector: `furthestWithProgress`
+(the default, and all Kavita has) picks the last entry showing page progress,
+while `firstIn` takes the earliest entry of a feed that already contains only
+what we want. `lastMatching` is the shared helper under the first; `firstIn`
+needs none, because the unread tail of `readingOrder`'s sequence sits at the end
+and so cannot win from either direction. The page on the label still comes from
+that chapter's own progress — that is presentation, not selection.
+
+That makes `currentResumeTarget` the single answer for the dialog, and it is
+fetched on **both** paths: `registerBook` declines to answer when the driver has
+an `unreadFilter`, because the feed the browser holds cannot, and `openAsBook`
+fills it in. So an OPDS open on Suwayomi costs one request where it used to reuse
+a feed already fetched — the price of an answer the feed on screen cannot give.
+
+**`firstUnread` takes a `filtered` flag, because "unread" is two different
+questions.** With a server that flags chapters, the feed already answered it and
+the earliest entry is the answer, page count untouched. Without one, "unread" has
+to mean *not finished*, which is what it has always meant for Kavita. The flag is
+a property of the *feed* that was fetched, not of any entry in it, which is why
+it is passed rather than re-derived.
+
+**`seriesItems` walks the unread feed**, so the row above a series list offers
+the same chapter the dialog would — and the walk still runs over the whole chain,
+because a filtered feed is only as ordered as the server's `sort` was honoured.
 
 
 **Both of those go through `readingOrder`, and the one that did not is why the
@@ -989,15 +1008,17 @@ Each step must pass before the next:
     name the same chapter 40. Before this, the browser answered chapter 1 and the
     file answered chapter 40 for the same series, because one feed is
     `number_desc` and the other `number_asc`.
-20. **The `▶` chapter is one the server agrees is read.** On Suwayomi, mark a
-    chapter read *without* leaving page progress in it (Suwayomi's own "mark as
-    read"), and leave the next chapter part-read. The `▶` button must name the
-    marked-read chapter, not the part-read one — that is the whole difference
-    between the two selectors. The log must show a fetch carrying
-    `filter=read&sort=number_asc`; if it shows `filter=all`, `resumeFilter` was
-    not set. Then check the label's page against where the tap lands,
-    **especially on a chapter whose summary says `N z N`** — a finished chapter
-    reports its last page, which `usablePage` does not refuse.
+20. **The `▶` chapter is the first the server flags unread, and progress is not
+    consulted.** On Suwayomi, set up exactly the state that tells the two rules
+    apart: mark chapters 1–9 read, leave chapter 10 *started* (its summary says
+    `2 z 22`), and mark 15–17 read. The `▶` button must name **chapter 10, page
+    3** — not 15 or 17, which the page-progress scan would reach first. Then
+    finish chapter 40 with 41–42 untouched and 43 started: the button must name
+    **41**, with no page. The log must show a fetch carrying
+    `filter=unread&sort=number_asc`; if it shows `filter=all`, `unreadFilter` did
+    not reach `catalogURL`. The same chapter must come from the row above the
+    series list (`firstUnread`'s `filtered` branch) and from the same book opened
+    from History — three entries into one answer.
 
 ## Known open items
 
