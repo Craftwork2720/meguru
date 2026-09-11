@@ -119,7 +119,12 @@ end
 -- { left, top, right, bottom } (inclusive pixel indices, small-image
 -- coordinates) or nil when the page is blank / unsupported / has no light
 -- uniform margin.
-local function scanContentBounds(bb, pageno)
+-- `page_w`/`page_h` are the PAGE's dimensions, which are not the same thing as
+-- `bb`'s: the caller scans a downscale (AUTOCROP_SCAN_TARGET), so the buffer is
+-- smaller than the page and the message below has to say which is which. It
+-- printed the buffer alone once, and a 6883x4913 spread reported itself as
+-- "128 x 91" — which reads as a page that size, i.e. as a bug in the cap.
+local function scanContentBounds(bb, pageno, page_w, page_h)
     local w = bb:getWidth()
     local h = bb:getHeight()
     if not w or not h or w < 3 or h < 3 then
@@ -269,8 +274,14 @@ local function scanContentBounds(bb, pageno)
     -- this box comes back whole, computeContentBox has nothing left to trim and
     -- the page is kept as-is — i.e. the exact "whole frame stays" symptom.
     if left == 0 and top == 0 and right == w - 1 and bottom == h - 1 then
+        -- Both sizes, because both are the answer to a different question: the
+        -- page says how much margin there was to find, the scanned size says how
+        -- much resolution there was to find it with. A page scanned at 128 px
+        -- across is a page whose margins were judged coarsely, and that is not
+        -- visible from the page size alone.
         cropSkipWarn(pageno, "detected content spans the whole page",
-            "(bg=", math.floor(bg), ", ", w, "x", h, ") — nothing to trim")
+            "(bg=", math.floor(bg), ", page ", page_w, "x", page_h,
+            ", scanned at ", w, "x", h, ") — nothing to trim")
     end
     -- `bg` (the reference border luminance) rides along so the native fine pass
     -- in refineAutoCrop reuses the exact same content predicate as this scan.
@@ -334,7 +345,7 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
         -- freed even if the pixel scanner hits a pathological page and throws.
         local bounds
         local ok_scan, scan_err = pcall(function()
-            bounds = scanContentBounds(scan_bb, pageno)
+            bounds = scanContentBounds(scan_bb, pageno, full_w, full_h)
         end)
         if scan_bb ~= native_bb then
             scan_bb:free()
