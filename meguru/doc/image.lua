@@ -70,10 +70,11 @@ end
 -- path had, never worse.
 --
 -- Pages that already fit the budget come back at their natural resolution, so
--- normal-sized books are completely unaffected — a 2600x3700 spread is 9.5 Mpx
--- and the default budget is 8, which costs it 9%. What the budget buys is the
--- other shape of page: an 800x20000 strip used to be capped on its LONG edge to
--- 82 px of width; under the same budget it keeps 566. See `cappedDim`.
+-- normal-sized books are completely unaffected — a 2600x3700 spread is 9.6 Mpx
+-- and the default budget is 8.39 Mpx, which costs it 6.6% per axis. What the
+-- budget buys is the other shape of page: an 800x20000 strip used to be capped
+-- on its LONG edge to 82 px of width; under the same budget it keeps 579. See
+-- `cappedDim`, and `meguru/settings` for where those two numbers come from.
 
 -- The working size of one decoded page: its own size, reduced until it fits the
 -- budget — or unchanged, if it already does.
@@ -235,14 +236,22 @@ local function renderMuPDFPage(doc, pageno, refuse_oversize)
 end
 
 -- Render `data` (the raw bytes of a streamed page) through MuPDF into a
--- BlitBuffer of the whole page whose long edge is at most the cap. Returns nil
--- on any failure (decodeNative then falls back to the classic RenderImage path
--- below). NOTE: the buffer page:draw_new hands back is a colour (RGB24) one,
--- not an 8bpp grayscale tile — it reaches an e-ink screen only through the
--- converting, dithered blit in drawPage (ditherblitFrom, always on — see init),
--- and that is exactly why the night-mode "Invert Document" path inverts the
--- destination region instead of calling invertblitFrom on the tile (see
--- drawPage).
+-- BlitBuffer of the whole page, reduced until it fits the pixel budget. Returns
+-- nil on any failure (decodeNative then falls back to the classic RenderImage
+-- path below).
+--
+-- NOTE: the buffer page:draw_new hands back is an **8bpp grayscale (BB8)** one,
+-- not a colour tile. `draw_new` picks its buffer type from `doc.color`, and the
+-- document is opened with the flag turned off here — so a page reaches a
+-- grayscale screen through a same-format blit, and nothing is converted on the
+-- way. That is the premise the dither decision in `document.lua`'s init rests
+-- on, and an earlier version of this comment had it backwards (it claimed
+-- RGB24, which is what `doc.color` true would have produced) — which is how a
+-- re-quantising software dither came to look justified.
+--
+-- The night-mode "Invert Document" path in `document.lua` inverts the
+-- destination region rather than calling invertblitFrom on the tile. That is
+-- correct for a tile of any format; it is no longer *required* by this one.
 local function decodeNativeMupdf(data)
     if not Mupdf then
         return nil
@@ -257,9 +266,12 @@ local function decodeNativeMupdf(data)
         return nil
     end
     -- Ask MuPDF for a grayscale pixmap where it honours the flag (a colour page
-    -- is then converted on the way in). The returned buffer is still an RGB24
-    -- BlitBuffer — the final conversion to the 8bpp e-ink screen happens in the
-    -- converting blit in drawPage, not here.
+    -- is then converted on the way in). This is what makes the returned buffer
+    -- BB8: `draw_new` allocates `BlitBuffer.TYPE_BB8` whenever `doc.color` is
+    -- falsy, and `Mupdf.openDocumentFromText` never sets the field — so the
+    -- grayscale buffer is what this call would have got anyway, and calling it
+    -- is what makes that explicit rather than incidental. A build that dropped
+    -- `setColorRendering` would still hand back BB8.
     if doc.setColorRendering then
         doc:setColorRendering(false)
     end
@@ -330,6 +342,80 @@ local function decodeNative(data)
     return decodeNativeRenderImage(data)
 end
 
+-- Render ONE REGION of a page into a buffer of the size the caller actually
+-- wants, in a single pass and straight from the source.
+--
+-- This is the shape stock KOReader's MuPDF path has: `Document:renderPage`
+-- renders the requested rect at the full zoom, in one call, and blits the result
+-- to the screen 1:1. The alternative — and what this plugin did — is to render
+-- the whole page at the capped working size and then rescale a crop of it, which
+-- resamples every painted pixel twice and, on a page the cap has already
+-- reduced, magnifies a buffer smaller than the file it came from.
+--
+-- **How the region is located.** `page:draw_new(dc, w, h, ox, oy)` builds a CTM
+-- of `scale(dc.zoom)` and a pixmap whose origin is the *device* point `(ox, oy)`
+-- — the page point `p` lands on device `zoom * p`. So the window
+-- `(ox, oy, ox + w, oy + h)` is exactly "the page region whose device
+-- coordinates fall inside it", and putting the region's own start at the window
+-- origin is what crops:
+--
+--     ox = zoom * nx        and        ox + tw = zoom * (nx + nw)
+--
+-- so `zoom = tw / nw` makes both ends land. **`dc.offset_*` must stay zero**: it
+-- is a second, independent translation, and the whole-page render below leaves
+-- it at origin.
+--
+-- **The coordinate space, which is the trap.** `nx, ny, nw, nh` arrive in the
+-- space `self.dims` lives in — the *capped* working size, which for an oversized
+-- page is smaller than MuPDF's own page. The factor between the two is
+-- recomputed here with the very same `cappedDim` the decode used rather than
+-- passed in, so the two cannot drift apart: were they to, the crop would land
+-- somewhere else on the page, silently and by however much the cap moved.
+--
+-- Returns a BlitBuffer, or nil on any failure (the caller then falls back to the
+-- saved working-resolution decode, which is always correct, just softer).
+function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th)
+    if not Mupdf or not doc then
+        return nil
+    end
+    if not (nx and ny and nw and nh) or nw < 1 or nh < 1 or tw < 1 or th < 1 then
+        return nil
+    end
+    local ok_page, page = pcall(doc.openPage, doc, pageno)
+    if not ok_page or not page then
+        logger.dbg("Meguru: region render openPage failed:", tostring(page))
+        return nil
+    end
+    local bb
+    local ok_size, pw, ph = pcall(page.getSize, page, DrawContext.new())
+    if ok_size and pw and ph and pw > 0 and ph > 0 then
+        local fw = math.max(1, math.floor(pw + 0.5))
+        local fh = math.max(1, math.floor(ph + 0.5))
+        -- The caller's space, rederived exactly as the decode derived it.
+        local space_w = cappedDim(fw, fh, Settings.get("max_native_pixels"))
+        if space_w and space_w > 0 then
+            local f = fw / space_w -- caller's space -> the MuPDF page's own
+            local zoom = tw / (nw * f)
+            if zoom > 0 then
+                local dc = DrawContext.new()
+                dc:setZoom(zoom)
+                local ox = math.floor(zoom * nx * f + 0.5)
+                local oy = math.floor(zoom * ny * f + 0.5)
+                local ok_draw, rendered = pcall(page.draw_new, page, dc, tw, th, ox, oy)
+                if ok_draw and rendered then
+                    bb = rendered
+                else
+                    logger.dbg("Meguru: region render failed:", tostring(rendered))
+                end
+            end
+        end
+    else
+        logger.dbg("Meguru: region page size lookup failed")
+    end
+    page:close()
+    return bb
+end
+
 Image.DECODE_TOO_LARGE = DECODE_TOO_LARGE
 -- Exported because document.lua logs it: the line that explains why a lossless
 -- page is being skipped quotes the limit, and it had no way to reach it. It
@@ -337,6 +423,10 @@ Image.DECODE_TOO_LARGE = DECODE_TOO_LARGE
 -- arithmetic on it raised instead of explaining anything.
 Image.MAX_LOSSLESS_NATIVE_PIXELS = MAX_LOSSLESS_NATIVE_PIXELS
 Image.bytesPerPixel = bbBytesPerPixel
+-- document.lua opens a one-page MuPDF document for a streamed page's bytes
+-- itself, and `openDocumentFromText` needs the sniffed type; the sniffer lives
+-- here so there is one answer to "what is this page".
+Image.magicFor = documentMagic
 Image.renderMupdfPage = renderMuPDFPage
 Image.decode = decodeNative
 

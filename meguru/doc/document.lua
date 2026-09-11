@@ -966,20 +966,33 @@ function MeguruDocument:init()
     -- We cannot know beforehand how big pages are, so we scale decoded
     -- BlitBuffers to the requested size.
     self:updateColorRendering()
-    -- Dither every tile->screen blit, unconditionally. The pages we decode are
-    -- full pictures whose cached tiles are colour (RGB24) buffers, so on a
-    -- grayscale screen every paint is a colour->gray *converting* blit — and
-    -- the dithered variant (ditherblitFrom, used in drawPage/drawPageInverted
-    -- below) is what keeps smooth gradients from banding. Unlike PicDocument
-    -- this is deliberately NOT restricted to 8bpp e-ink screens without HW
-    -- dithering: KOReader's ditherblitFrom only honours the dither when the
-    -- destination is BB8 and otherwise falls back to a plain blit (blitbuffer.c
-    -- "BB_dither_blit_to"), so enabling it always is safe on every screen —
-    -- a colour one gets a plain blit no-op — and the dithered look is
-    -- guaranteed wherever it can help.
-    self.sw_dithering = true
+    -- Whether to software-dither every tile->screen blit. This is the device's
+    -- own answer, not ours, and `Screen.sw_dithering` is where it has already
+    -- worked it out: `framebuffer.lua`'s `setupDithering` turns SW dithering on
+    -- only when there is no hardware dither to do the job, and off whenever
+    -- there is — including when the reader has flipped the `dev_no_hw_dither`
+    -- setting, which re-enables it. PicDocument and `ReaderView:onDitheringUpdate`
+    -- defer to the same machinery; this document used to override it with a
+    -- hard `true`.
+    --
+    -- Forcing it on was justified by a claim that the cached tiles are colour
+    -- (RGB24) buffers, so that every paint would be a colour->gray *converting*
+    -- blit that a dither could improve. That claim is false: `doc.color` is
+    -- falsy for a streamed page, so MuPDF's `draw_new` allocates BB8 and the
+    -- tiles are 8bpp grayscale already. Blitting those to a BB8 screen is a
+    -- same-format copy, and running a dither over it is not a conversion — it is
+    -- `dither_o8x8` (blitbuffer.c) re-quantising a full 8-bit source down to 16
+    -- levels on a fixed 8x8 pattern, on every pixel of every page. On a device
+    -- whose controller dithers an 8-bit framebuffer itself, that pass burns in a
+    -- dot grid and throws four bits of tone away for nothing.
+    --
+    -- It stays a dither where it is genuinely a conversion: a tile that is not
+    -- BB8 (a future colour decode) still reaches a grayscale screen through
+    -- one, and `ditherblitFrom` is what keeps its gradients from banding.
+    self.sw_dithering = Screen.sw_dithering == true
     logger.info(string.format(
-        "Meguru: tile->screen dithering forced ON (sw_dithering; eink=%s, fb_bpp=%s, hw_dither=%s)",
+        "Meguru: tile->screen dithering %s (sw_dithering; eink=%s, fb_bpp=%s, hw_dither=%s)",
+        self.sw_dithering and "ON" or "off",
         tostring(Device:hasEinkScreen()), tostring(Screen.fb_bpp),
         tostring(Device:canHWDither())))
 
@@ -2327,23 +2340,114 @@ function MeguruDocument:ensureNativeBB(pageno, data)
     return res
 end
 
--- Decode (and, when needed, crop+scale) a page region.
+-- An open MuPDF document to render `pageno`'s region out of, plus whether the
+-- caller owns it. Two sources, and the difference matters:
+--
+--  * a local cbz has the book's own handle, open for the document's lifetime;
+--  * a streamed page is opened fresh, one page at a time, exactly as the decode
+--    does — **from the byte LRU and only from it.** `readCachedPage` is a pure
+--    cache read; `fetchPage` is not, and a fetch here would be a synchronous
+--    HTTP GET inside a paint, which is the thing `hasNative` exists to keep out
+--    of the render path. A miss falls through to the saved decode instead,
+--    which is correct, just softer — so the failure costs quality, never a
+--    stalled screen.
+function MeguruDocument:_regionSource(pageno)
+    if self.local_cbz then
+        return self.mupdf_doc, false, pageno
+    end
+    local data = self:readCachedPage(pageno)
+    if not data then
+        return nil, nil, nil, "no bytes cached"
+    end
+    local magic = Image.magicFor(data)
+    if not magic then
+        return nil, nil, nil, "unrecognised image type"
+    end
+    local ok, doc = pcall(Mupdf.openDocumentFromText, data, magic)
+    if not ok or not doc then
+        return nil, nil, nil, "MuPDF cannot open the bytes"
+    end
+    -- Same grayscale request the decode makes, so a region render and a saved
+    -- decode of the same page are the same picture (see `meguru/doc/image`).
+    if doc.setColorRendering then
+        doc:setColorRendering(false)
+    end
+    -- **Page 1, always — not `pageno`.** A streamed page's document is opened
+    -- from that one page's bytes, so it holds exactly one page and MuPDF numbers
+    -- it 1. Handing this the book's page number makes `openPage` throw for every
+    -- page after the first, and the throw is caught: the whole direct path fell
+    -- back for every page of every streamed book while the local-cbz case — the
+    -- one place the two numbers happen to coincide — was the only one that ever
+    -- worked. A silent fallback is exactly what makes a bug like this survivable
+    -- and invisible, so the reason now travels instead of being logged at a
+    -- level nobody sees.
+    return doc, true, 1
+end
+
+-- Render `cx, cy, cw, ch` (in the space `self.dims` lives in) straight into a
+-- `tw x th` buffer, in one pass from the page's own bytes. Returns nil when
+-- there is no source to render from, or when the render fails — the caller then
+-- uses `decodeRegion`, which is always correct.
+--
+-- The whole point is that no intermediate exists on this path: MuPDF paints the
+-- region at the size the screen wants, once, from the source. See
+-- `Image.renderRegion` for how the region is expressed to MuPDF and why the
+-- coordinate mapping is rederived rather than passed in.
+function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th)
+    -- A dead page stays dead, and this guard is load-bearing rather than tidy:
+    -- DECODE_TOO_LARGE is one of the ways a page dies, and it is set for a
+    -- *lossless* page whose full-size decode would be the ~100 MB transient that
+    -- OOM-kills the process. MuPDF decodes that whole PNG inside the region
+    -- render too, so going around the check would resurrect exactly the failure
+    -- the refusal exists to prevent. (A page that merely failed to decode dies
+    -- with it, which is fine — the render would fail identically.)
+    if self.dead_pages[pageno] then
+        return nil, "page is dead"
+    end
+    local doc, owned, doc_pageno, reason = self:_regionSource(pageno)
+    if not doc then
+        return nil, reason
+    end
+    local ok, bb = pcall(Image.renderRegion, doc, doc_pageno, cx, cy, cw, ch, tw, th)
+    if owned then
+        pcall(doc.close, doc)
+    end
+    if not ok then
+        return nil, "render raised: " .. tostring(bb)
+    end
+    if not bb then
+        return nil, "MuPDF produced no buffer"
+    end
+    return bb
+end
+
+-- Decode (and, when needed, crop+scale) a page region out of the saved working
+-- -resolution decode.
 -- `cx, cy, cw, ch` are in *full native* page coordinates (already mapped back
 -- from zoomed page space by renderPage, and clamped to the page size); the
 -- crop ReaderView applies lives purely in the bounding box it zooms through
 -- (getPageBBox), so it never shifts the region requested here. `tw`/`th` is
 -- the output tile size. `data` must be the cached raw bytes. Returns a
 -- BlitBuffer.
+--
+-- This is now the *fallback* for a paint: `renderPage` asks
+-- `renderRegionDirect` first, and reaches here only when there is no source to
+-- render the region from. It is still the only path for the analysis renders
+-- (`_meguruAnalysisBB`), which want a strip cut out of a page already decoded
+-- and must not each pay a fresh open and render. Its own resample is what makes
+-- it resample twice when it *is* used for a paint, which is why it is no longer
+-- the first choice.
 function MeguruDocument:decodeRegion(pageno, cx, cy, cw, ch, tw, th, data)
     local dims = self.dims[pageno] or self:getPageDims(pageno)
     local whole_page = cx <= 0 and cy <= 0 and cx + cw >= dims.w and cy + ch >= dims.h
         and cw >= dims.w and ch >= dims.h
 
     -- Note: there is deliberately no "whole page → decode straight to the tile
-    -- size" fast path. The paths below reuse the LRU-cached, cap-bounded
-    -- native render instead (getPageDims keeps one per page), so a page turn
-    -- costs a single MuPDF whole-page render, and every subsequent paint of the
-    -- page is a slice/scale of that cached buffer — not another whole-page
+    -- size" fast path here. The paths below reuse the LRU-cached, cap-bounded
+    -- native render instead (getPageDims keeps one per page), and a slice/scale
+    -- of a cached buffer is what the analysis renders want. A paint that needs
+    -- the *resolution* rather than the speed takes `renderRegionDirect` above
+    -- instead, which is where the one-pass render lives.
     -- render.
     local native_bb = self:ensureNativeBB(pageno, data)
     if not native_bb then
@@ -2479,23 +2583,58 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
     end
     self.tiles[key] = nil
 
-    -- Bytes are only for decodeRegion's *decode* path. A local cbz page has none
-    -- (it renders from the open archive, ensureNativeBB's local branch), and a
-    -- page whose native is already decoded does not need them — see `hasNative`.
-    -- `data` staying nil is expected on both, and the render below must still
-    -- run, or every page would paint the gray placeholder.
+    -- Two ways to produce this tile, and which one is right depends on nothing
+    -- but the ratio between what was asked for and what the saved decode holds.
     --
-    -- This is the read that matters: it runs on every tile miss — a zoom
-    -- change, a crop toggle, a rotation — not just on a page turn.
-    local data
-    if not self.local_cbz and not self:hasNative(pageno) then
-        data = self:fetchPage(pageno)
-        if not data then
-            return nil
+    --  * `tw > cw` (or `th > ch`): the tile wants more pixels than the region
+    --    has, so anything cut out of the saved decode would be *interpolated* —
+    --    the reader would be looking at a magnified resample of a buffer that is
+    --    itself a resample. Render the region instead, once, at this size, from
+    --    the page's own bytes. This is the case a small page on a wide screen
+    --    always lands in, and it is exactly the "one render at the target size"
+    --    the whole-page-then-rescale shape could never give.
+    --
+    --  * otherwise the saved decode has more pixels than the tile needs, so the
+    --    tile is a genuine downscale of it and no resolution is being invented.
+    --    A slice-and-scale of the cached buffer is then both correct and much
+    --    cheaper than a second open and render of the page — which matters on
+    --    e-ink, where every tile miss (a pan, a zoom step, a crop toggle) would
+    --    otherwise pay for one.
+    --
+    -- The old shape was the second of these for *every* paint, which is what
+    -- made a page narrower than the screen look soft: its pixels were magnified
+    -- out of the working buffer rather than fetched from the file.
+    local bb
+    if tw > cw or th > ch then
+        local direct, reason = self:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th)
+        if direct then
+            bb = direct
+        else
+            -- Not silent, even though the fallback is correct: this is the path
+            -- that *should* have run, and a caught throw that quietly degrades
+            -- to a slower render is how the page-number bug (see `_regionSource`)
+            -- survived its own first run on a device.
+            logger.dbg("Meguru: direct region render skipped:", reason)
         end
     end
-
-    local bb = self:decodeRegion(pageno, cx, cy, cw, ch, tw, th, data)
+    if not bb then
+        -- Bytes are only for the *decode* path below. A local cbz page has none
+        -- (it renders from the open archive, ensureNativeBB's local branch), and
+        -- a page whose native is already decoded does not need them — see
+        -- `hasNative`. `data` staying nil is expected on both, and the render
+        -- must still run, or every page would paint the gray placeholder.
+        --
+        -- This is the read that matters: it runs on every tile miss — a zoom
+        -- change, a crop toggle, a rotation — not just on a page turn.
+        local data
+        if not self.local_cbz and not self:hasNative(pageno) then
+            data = self:fetchPage(pageno)
+            if not data then
+                return nil
+            end
+        end
+        bb = self:decodeRegion(pageno, cx, cy, cw, ch, tw, th, data)
+    end
     if not bb then
         return nil
     end
@@ -2595,17 +2734,20 @@ end
 -- original (light-page) look, like a MuPDF book with "Invert Document" on.
 --
 -- The inversion is applied to the destination, not through invertblitFrom on the
--- tile, on purpose: our cached tiles are the colour (RGB24) buffers MuPDF's
--- page:draw_new returns, which reach an 8bpp grayscale e-ink screen only through
--- a converting blit (the dithered ditherblitFrom the day-mode path below always
--- uses). KOReader's invertblitFrom cannot blit a BBRGB24 source onto a BB8
--- target ("incompatible bb", blitbuffer.c) — using it here froze the renderer
--- the first time night mode was switched on. Inverting the just-blitted target
--- region instead is format-safe (the target is always BB8, invertRect works
--- in place), costs no extra buffer, is visually identical to inverting the
--- source for a matching format, and leaves the shared cached tile untouched —
--- exactly as KoptInterface relies on. KoptInterface's own drawContextPage
--- inverts the same way (blit, then target:invertRect).
+-- tile. That is the format-safe route: invertRect works in place on whatever the
+-- target is, costs no extra buffer, is visually identical to inverting the source
+-- for a matching format, and leaves the shared cached tile untouched — exactly as
+-- KoptInterface relies on. KoptInterface's own drawContextPage inverts the same
+-- way (blit, then target:invertRect).
+--
+-- The reason it was originally written this way was narrower and is worth keeping
+-- straight, because the premise has since been corrected twice: our tiles are
+-- 8bpp grayscale (see init and `meguru/doc/image`), so `invertblitFrom` on them
+-- would in fact be a legal same-format call today. The arrangement is kept
+-- because it is the safer of the two — a tile that is ever decoded in colour
+-- again would make invertblitFrom an "incompatible bb" throw out of blitbuffer.c,
+-- which is a frozen renderer mid-paint, whereas this shape cannot be affected by
+-- the tile's format at all.
 function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
     local tile = self:renderPage(pageno, rect, zoom, rotation, gamma, saturation)
     if not tile then
@@ -2616,16 +2758,17 @@ function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gam
     local dy = rect.y - tile.excerpt.y
     local configurable = self.configurable
     local invert = configurable and configurable.nightmode_document == 1 and Screen.night_mode
-    -- Dither unconditionally — there is deliberately no `sw_dithering` branch
-    -- here (the flag is still set true in init for anything that reads it):
-    -- nothing, in this document or in KOReader's own machinery, may switch this
-    -- paint back to a plain blit. The colour tile reaches a grayscale screen
-    -- only through a converting blit, and ditherblitFrom is what keeps smooth
-    -- gradients from banding there. On any screen whose destination is not BB8
-    -- the C implementation ignores the dither and does a plain blit
-    -- (blitbuffer.c "BB_dither_blit_to"), so an unconditional call is safe
-    -- everywhere.
-    target:ditherblitFrom(tile.bb, x, y, dx, dy, rect.w, rect.h)
+    -- Blit, or dither-and-blit, on the device's own answer from init. The two
+    -- differ only where the tile has to be *converted* on its way to the screen:
+    -- a same-format blit through `ditherblitFrom` runs `dither_o8x8`
+    -- (blitbuffer.c) and quantises an already-8-bit page down to 16 levels on a
+    -- fixed 8x8 pattern, which is a loss with nothing on the other side of it.
+    -- See init for why the tiles are BB8 and why this flag is not ours to force.
+    if self.sw_dithering then
+        target:ditherblitFrom(tile.bb, x, y, dx, dy, rect.w, rect.h)
+    else
+        target:blitFrom(tile.bb, x, y, dx, dy, rect.w, rect.h)
+    end
     if invert then
         target:invertRect(x, y, rect.w, rect.h)
     end
@@ -2642,9 +2785,13 @@ function MeguruDocument:drawPageInverted(target, x, y, rect, pageno, zoom, rotat
     end
     local dx = rect.x - tile.excerpt.x
     local dy = rect.y - tile.excerpt.y
-    -- Same unconditional dither as drawPage (see its comment): no sw_dithering
-    -- branch, so no later writer of the flag can make this a banding plain blit.
-    target:ditherblitFrom(tile.bb, x, y, dx, dy, rect.w, rect.h)
+    -- Same dither decision as drawPage (see its comment): the flag is the
+    -- device's, and the invert below is applied to the target either way.
+    if self.sw_dithering then
+        target:ditherblitFrom(tile.bb, x, y, dx, dy, rect.w, rect.h)
+    else
+        target:blitFrom(tile.bb, x, y, dx, dy, rect.w, rect.h)
+    end
     target:invertRect(x, y, rect.w, rect.h)
 end
 

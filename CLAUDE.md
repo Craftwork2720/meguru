@@ -220,7 +220,8 @@ it, and nothing in `document.lua` ever holds two pages' worth at once — and th
 rest is room for ReaderHinting to ask two ahead. The number is not a memory
 figure: these are the *compressed* bytes, orders of magnitude below the decoded
 natives kept beside them (`max_cached_native`, three of them, each up to
-`max_native_pixels` of RGB24). It deliberately does not reuse `evictOldest`,
+`max_native_pixels` of 8bpp gray — the decode is grayscale, see below). It
+deliberately does not reuse `evictOldest`,
 whose loop is `count >= cap` — it would turn four into three — and which stamps
 through the `stamps` table `native` shares, keyed, as this is, by page number.
 
@@ -246,6 +247,90 @@ Three consequences that are easy to trip over:
   nothing of its own to clear. Delete the two subdirectories by hand once.
   `Paths.cacheDir` itself survives: it is the last-resort folder for a marker
   when the home folder is unusable (`Marker.homeDir`).
+
+**A decoded page is 8bpp grayscale, and `sw_dithering` is the device's call, not
+ours.** Both halves are one story. `Mupdf.openDocumentFromText` never sets
+`doc.color`, and `decodeNativeMupdf` calls `setColorRendering(false)` besides, so
+`page:draw_new` takes its `or BlitBuffer.TYPE_BB8` arm and the cached tiles are
+BB8 — not the RGB24 an earlier comment here and in `meguru/doc/image` claimed.
+That mattered because the false premise was the whole justification for forcing
+`sw_dithering = true` and calling `ditherblitFrom` with no branch: a *converting*
+blit is what dithering is for, and ours is a same-format copy. On a BB8
+destination `ditherblitFrom` runs `dither_o8x8` (blitbuffer.c), which quantises a
+full 8-bit page to **16 levels on a fixed 8x8 pattern** — a burnt-in dot grid and
+four bits of tone gone, on every pixel of every page. The flag is now read from
+`Screen.sw_dithering`, which is `framebuffer.lua`'s `setupDithering` answer: on
+only where there is no hardware dither, off where the controller does it — the
+same machinery `PicDocument` and `ReaderView:onDitheringUpdate` defer to. The
+`if self.sw_dithering` branch in `drawPage`/`drawPageInverted` must stay; a tile
+that is ever colour again reaches a grayscale screen through a real conversion,
+and there the dither earns its keep.
+
+The night-mode invert stays on the *destination* (`target:invertRect`) rather
+than `invertblitFrom` on the tile. With BB8 tiles the latter would now be legal,
+but the destination route cannot be affected by the tile's format at all — an
+"incompatible bb" throw out of blitbuffer.c lands mid-paint.
+
+**A painted tile is rendered from the page's own bytes whenever it would
+otherwise be magnified — one render, at the size the screen asked for.**
+`renderPage` chooses between two paths on a single test, `tw > cw or th > ch`:
+whether the tile wants more pixels than the region it covers holds.
+
+- **Above it**, `renderRegionDirect` renders the region in **one pass** at
+  exactly `tw x th`, straight from the source (`Image.renderRegion`). The crop
+  is expressed by putting the region's own start at MuPDF's device-space window
+  origin — `draw_new(dc, tw, th, ox, oy)` builds a CTM of `scale(dc.zoom)` and a
+  pixmap rooted at the *device* point `(ox, oy)`, so `ox = zoom * nx` makes the
+  window and the region coincide. `dc.offset_*` must stay zero; it is a second,
+  independent translation.
+- **Below it**, the tile is a slice-and-scale of the saved working decode
+  (`decodeRegion`), unchanged.
+
+The old shape was the second path for *every* paint, and that is what made a
+page narrower than the screen look soft: a 960x1378 page on a ~1236-px screen is
+*always* an upscale, and there every painted pixel was a resample of a buffer
+that was itself a resample — the working decode — rather than of the file. Stock
+KOReader never does this, which is what "MuPDF renders it well" means:
+`Document:renderPage` renders the requested rect at the full zoom in one call,
+and that is the shape `renderRegionDirect` restores.
+
+The threshold sits where the quality difference is, not where the code is.
+Below it the saved decode holds more pixels than the tile needs, so a downscale
+invents nothing, and a slice of a cached buffer is far cheaper than a second
+open-and-render. That matters because a tile miss is a pan or a zoom step as
+often as it is a page turn.
+
+`decodeRegion` stays, and stays first-class: it is still the only path for
+`_meguruAnalysisBB`, where a strip wants a cut of a page *already decoded* and
+must not pay a fresh open and render per strip.
+
+`_regionSource` opens a streamed page's one-page document **from the byte LRU
+and only from it** — `readCachedPage`, never `fetchPage`. A fetch here would be
+a synchronous HTTP GET inside a paint, the exact thing `hasNative` exists to
+keep out of the render path. A miss falls through to `decodeRegion`, so the
+failure costs quality and never a stalled screen.
+
+That document holds **one page, numbered 1** — not the book's page number. It is
+opened from the single page's bytes, so `openPage(book_pageno)` throws for
+everything past the first page, and the throw is caught. Passing the book's
+number is what made the entire direct path a silent fallback for every streamed
+book on the first device run, while the local-cbz case — the one place the two
+numbers coincide — was the only one that could ever have worked. Hence the rule
+for anything reaching a streamed page through a fresh document: **the page
+number is 1, and the page is identified by the bytes, never by a number.**
+
+That failure is also why `renderRegionDirect` returns a *reason* alongside its
+nil, and why `renderPage`'s diagnostic prints it. A caught throw that silently
+degrades to a slower path is survivable and invisible at the same time; the two
+must not both be true, so the reason travels rather than being logged at a level
+nobody is reading.
+
+**`Image.renderRegion` rederives the coordinate space rather than taking it.**
+Its `nx, ny, nw, nh` arrive in the space `self.dims` lives in, which for an
+oversized page is the *capped* size — smaller than MuPDF's own page. It recomputes
+the factor between them with the same `cappedDim` the decode used, so the two
+cannot drift: were they to, the crop would land on a different part of the page,
+silently and by however much the cap had moved.
 
 **Reading progress is not mirrored into the catalog.** It is read lazily, per
 book, from the sidecar: `DocSettings:findSidecarFile` then `openSettingsFile`,
