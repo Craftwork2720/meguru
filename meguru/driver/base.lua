@@ -240,6 +240,12 @@ function Base.item(fields)
         detail_url      = fields.detail_url,
         page_count      = fields.page_count,
         last_read       = fields.last_read,
+        -- Carried through for the one decision that needs it: whether a chapter
+        -- is *finished* or merely *started*. Never stored — for Suwayomi it is
+        -- scraped from the summary prose, and `page_count` has an authoritative
+        -- source in the metadata feed's `pse:count` that must not be displaced.
+        -- Drivers that have no second number leave it nil.
+        progress_total  = fields.progress_total,
     }
 end
 

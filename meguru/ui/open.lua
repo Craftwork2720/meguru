@@ -645,8 +645,11 @@ end
 --- it would be the newest chapter. A title with no number keeps its feed
 --- position, which is all there is to go on.
 ---
---- Everything read falls back to the last one: there is nothing unread to offer,
---- and the newest is where a reader of the whole series would carry on from.
+--- Returns nil when nothing is unread, and **that is not the same as "offer the
+--- last one"**. An earlier version did offer it, reasoning that the newest chapter
+--- is where a reader of a finished series would carry on — and the effect was a
+--- row that promises the first unread chapter and silently opens the last one, at
+--- its last page. A row that cannot do what it says says nothing instead.
 local function firstUnread(parsed)
     local numbered, unnumbered = {}, {}
     for _, item in ipairs(parsed or {}) do
@@ -667,14 +670,25 @@ local function firstUnread(parsed)
         ordered[#ordered + 1] = item
     end
 
-    local last
     for _, item in ipairs(ordered) do
-        if not (type(item.last_read) == "number" and item.last_read > 0) then
+        -- "Unread" here means **not finished**, not "no progress at all". A
+        -- chapter sitting at 7 of 34 has been started, and it is exactly the
+        -- chapter to offer next — treating any non-zero progress as read skipped
+        -- it and jumped past the reader's own place. Requires a page count to
+        -- compare against; with none, the chapter is offered rather than assumed
+        -- finished, because skipping is the failure worth avoiding.
+        local total = tonumber(item.page_count) or tonumber(item.progress_total)
+        local read = tonumber(item.last_read)
+        -- No tolerance here any more: the driver has already put Suwayomi's
+        -- zero-based counter onto the same footing as Kavita's, so a finished
+        -- chapter reports its full count on both and a plain comparison is the
+        -- whole test.
+        local finished = total and read and read >= total
+        if not finished then
             return item
         end
-        last = item
     end
-    return last
+    return nil
 end
 
 --- Open the first unread volume of the series the row was offered for.
@@ -722,8 +736,10 @@ function Open.openFirstUnread(browser, info)
     local parsed = info.driver.parseCatalogPage(info.feed, info.feed_url, info.ctx)
     local target = firstUnread(parsed)
     if not target then
+        -- Nothing unread, or an empty feed: either way the row has nothing to
+        -- open, and saying so beats opening the wrong chapter.
         UIManager:show(InfoMessage:new{
-            text = T(_("Meguru: %1 has no volumes in this feed."), series_name),
+            text = T(_("Meguru: %1 has nothing unread."), series_name),
         })
         return
     end

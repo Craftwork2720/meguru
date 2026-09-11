@@ -37,6 +37,12 @@ PSE.STREAM_REL = "http://vaemendis.net/opds-pse/stream"
 ---
 --- Returning 0 is safe everywhere by construction: every consumer asks
 --- `> 0` or `> 1` before treating the number as a page.
+---
+--- **The number is *not* normalised here, and must not be.** Suwayomi counts
+--- pages from zero and Kavita from one, so the same state is `50`-of-51 on one
+--- and `174`-of-174 on the other — a difference only a driver can resolve, and
+--- `driver/suwayomi.lua` does it where its own progress enters. Normalising in a
+--- parser shared by both would move Kavita's pages by one.
 function PSE.attributesFromLink(link)
     local count, last_read
     for key, value in pairs(link) do

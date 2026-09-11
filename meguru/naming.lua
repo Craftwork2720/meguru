@@ -286,15 +286,20 @@ function Naming.deriveSeries(raw_title)
         -- tolerated, both indexing from the leading integer.
         local pattern = "^(.-)%s*[%-:]*%s*" .. token .. "%.?%s*(%d+%.?%d*)%s*%-?%s*%d*%s*$"
         local prefix, num = t:match(pattern)
-        if prefix and prefix ~= "" then
+        -- An empty prefix is a *title*, not a failure. Suwayomi titles its entries
+        -- "Chapter 1" and nothing else, so requiring something before the token
+        -- made this return nil for every one of them — which cost the label
+        -- (`volume_label` nil, so buttons fell back to the full entry title) and
+        -- left callers that need the *number* with nothing to sort by. The empty
+        -- series it returns instead is honest: this title names no series, and
+        -- every caller already rejects a series that is `""`.
+        if prefix then
             local label = t:sub(#prefix + 1):gsub("^[%s%-:]+", ""):gsub("%s+$", "")
             local series = prefix:gsub("%s+$", ""):gsub("[%-:%s]+$", "")
-            if series ~= "" then
-                if label == "" then
-                    label = token .. " " .. num
-                end
-                return series, label, tonumber(num)
+            if label == "" then
+                label = token .. " " .. num
             end
+            return series, label, tonumber(num)
         end
     end
     return nil

@@ -217,8 +217,30 @@ local function progressFromSummary(summary)
     end
     local read = numbers[#numbers - 1]
     local total = numbers[#numbers]
-    if not read or not total or read > total then
-        return nil
+    if not read or not total then
+        return nil, nil
+    end
+
+    -- **Suwayomi counts from zero; this adds the one back.** A chapter sitting on
+    -- its seventh page reports `7`, meaning the eighth page is next, and a
+    -- finished 51-page chapter reports `50` rather than `51`. Without this the
+    -- page to resume at was one early, and "finished" was never true for any
+    -- Suwayomi chapter (`50 >= 51`), so a finished one looked merely started and
+    -- the next-chapter pick offered it again. Kavita counts from one and needs
+    -- none of it, which is why this sits in the driver and not in the shared
+    -- parser — see `PSE.attributesFromLink`.
+    --
+    -- **Zero is exempt, and that is not an oversight.** It is the only value that
+    -- cannot mean a page: a chapter never read reports `Postęp: 0 z 46`, and its
+    -- stream omits `lastRead` entirely rather than writing it. Adding one there
+    -- would give every unopened chapter a progress of 1, and then "has been read
+    -- at all" would be true of the whole series — which is how the resume point
+    -- ends up on the *last* chapter instead of the one being read.
+    if read > 0 then
+        read = read + 1
+    end
+    if read > total then
+        return nil, nil
     end
     -- 0 is returned as 0, and that is the whole point: Suwayomi writes progress
     -- as "0 of 31" for a chapter that is not read, including one that *was* read
@@ -226,7 +248,11 @@ local function progressFromSummary(summary)
     -- COALESCE holding the old value, so a chapter marked unread would stay the
     -- furthest-read one here forever. See `PSE.attributesFromLink`, which carries
     -- the same rule for Kavita's `lastRead="0"`.
-    return read
+    -- The total is returned too, and that is the point of returning two values:
+    -- `read` alone cannot tell a *finished* chapter from a *started* one, and the
+    -- difference is exactly the chapter a reader wants offered next. Discarding it
+    -- meant a chapter sitting at 7 of 34 was treated as read and skipped.
+    return read, total
 end
 
 function Suwayomi.parseCatalogPage(feed, base_url, ctx)
@@ -234,6 +260,7 @@ function Suwayomi.parseCatalogPage(feed, base_url, ctx)
     for _, entry in ipairs(feed and feed.entry or {}) do
         local item_key = chapterKeyFromId(entry.id)
         if item_key then
+            local read, total = progressFromSummary(entry.summary)
             local detail = Base.link(entry, "subsection")
             items[#items + 1] = Base.item({
                 item_key        = item_key,
@@ -242,7 +269,13 @@ function Suwayomi.parseCatalogPage(feed, base_url, ctx)
                 detail_url      = detail and Base.absolute(base_url, detail.href) or nil,
                 template        = nil,
                 page_count      = nil,
-                last_read       = progressFromSummary(entry.summary),
+                last_read       = read,
+                -- Transient: carried on the parsed item for the in-memory
+                -- decision about which chapter is "next", and deliberately not
+                -- stored — `page_count` has an authoritative source in the
+                -- metadata feed's `pse:count`, and a figure scraped from prose
+                -- must not displace it.
+                progress_total  = total,
             })
         end
     end
