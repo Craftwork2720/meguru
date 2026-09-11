@@ -179,10 +179,23 @@ def module_members():
     for lua in sorted(SRC.rglob("*.lua")):
         text = strip(lua.read_text(encoding="utf-8"))
         # The module's own local, e.g. `local Defaults = {}` in defaults.lua.
-        local = re.search(r"^local\s+(\w+)\s*=\s*\{\s*\}\s*$", text, re.M)
-        if not local:
+        #
+        # **Identified by what the file returns**, not by being the first
+        # `local X = {}` in it. That first-match rule was the original guess and
+        # it is wrong the moment a module declares a second table at top level
+        # before its own -- `syncjob.lua` grew a `local active = {}` guard and
+        # this pass immediately reported `SyncJob.run` as "module active has no
+        # member 'run'", pointing at a table that has nothing to do with the
+        # call. Which table is the module is not a matter of position: it is the
+        # one that leaves the file.
+        returned = re.search(r"^return\s+(\w+)\s*$", text, re.M)
+        if not returned:
             continue
-        name = local.group(1)
+        name = returned.group(1)
+        declared = re.search(r"^local\s+" + re.escape(name) + r"\s*=\s*\{\s*\}\s*$",
+            text, re.M)
+        if not declared:
+            continue
         found = set()
         for line in text.split("\n"):
             for rx in (ASSIGN, FUNC):

@@ -16,12 +16,18 @@ Two jobs, then:
   * write a marker thin enough to open the stream with no database at all.
 
 Registering a book does not walk the series feed — that is `sync.lua`, it costs
-tens of seconds, and it must never sit between a tap and a book opening.
-**The one walk that does happen here is `seriesItems` below**, and it is a
-deliberate, bounded exception rather than an oversight: the row at the top of a
-series feed cannot answer "first unread chapter" from the page on screen, and it
-is bounded by a small page cap and the short `Net.RESUME_*` timeouts. See its
-comment for why the bound is what makes it safe.
+tens of seconds, and it must never sit between a tap and a book opening. It does
+**not** walk before opening; `openAsBook` starts one *after* the handoff, in the
+background and silently, which is the difference between a delay and a
+consequence. See `startBackgroundSync` for why it is worth starting at all.
+Two walks do happen here, both deliberate and both bounded rather than
+oversights. **`seriesItems` below** runs on a tap, because the row at the top of
+a series feed cannot answer "first unread chapter" from the page on screen; it is
+bounded by a small page cap and the short `Net.RESUME_*` timeouts, and its
+comment is where the bound is argued. **`startBackgroundSync`** runs after the
+handoff, because the alternative is a series the catalog knows one book of — and
+that is not a walk *here* so much as a walk `SyncJob` runs on a tick while the
+reader reads.
 --]]
 
 local ButtonDialog = require("ui/widget/buttondialog")
@@ -42,6 +48,7 @@ local PSE = require("meguru/pse")
 local Settings = require("meguru/settings")
 local Sources = require("meguru/sources")
 local Sync = require("meguru/sync")
+local SyncJob = require("meguru/ui/syncjob")
 
 Base.loadDrivers()
 
@@ -633,7 +640,8 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
     -- Said out loud because every way this can fail says so, and the success was
     -- the only silent outcome — which makes "is it catalogued?" unanswerable from
     -- the log. Note what it counts: **one** item. The siblings arrive from a sync,
-    -- never from this path.
+    -- never from this function — `startBackgroundSync` below is what starts one,
+    -- and `openAsBook` calls it only after the book has been handed over.
     --
     -- Every field goes through `tostring`: a status line must never be able to
     -- take down the operation it exists to report on, which it once did here.
@@ -642,6 +650,108 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
         .. ", kind " .. tostring(kind)
         .. ", key " .. tostring(item.item_key) .. ")")
     return registered
+end
+
+--- Ask an open reader to rebuild its menu, if it is showing a Meguru book.
+---
+--- **The reader menu is built once per document, and ours is derived from the
+--- catalog.** `ReaderMenu:onShowMenu` calls `setUpdateItemTable` only while
+--- `tab_item_table` is nil, and nothing clears it but a new document or a
+--- keyboard reconnection — so every plugin's rows are frozen at the state of
+--- the world when the reader first opened ⋮. That is fine for a setting that
+--- does not change under it, and wrong for the neighbour rows: they are built
+--- from `Catalog.neighbors`, and the walk below is *about to change exactly
+--- that*. Without this the reader is offered "Find the next chapter" for a
+--- series whose next chapter is already in the catalog, and never sees the
+--- "auto-open next at the end" row — which exists only when there is somewhere
+--- to go, and so was decided once, when there was not.
+---
+--- Reached through `ReaderUI.instance` rather than through `meguru/ui/reader`:
+--- that module requires this one, so requiring it back would be a cycle, and
+--- `registerModule("menu", …)` is what makes the instance reachable anyway.
+--- The same runtime-poke technique `hook.lua` uses on `OPDSBrowser`, and pcall'd
+--- for the same reason: a menu that will not rebuild must cost the reader
+--- nothing.
+---
+--- Rebuilding while the menu is on screen does not update what is displayed —
+--- the shown widget holds its own snapshot — but the table it is rebuilt from
+--- is what the next `onShowMenu` reads, so closing and reopening it is enough.
+local function refreshReaderMenu()
+    local ok_req, ReaderUI = pcall(require, "apps/reader/readerui")
+    local ui = ok_req and ReaderUI and ReaderUI.instance
+    local doc, menu = ui and ui.document, ui and ui.menu
+    if not (doc and doc.provider == "meguru" and menu
+        and type(menu.setUpdateItemTable) == "function") then
+        return
+    end
+    local ok, err = pcall(menu.setUpdateItemTable, menu)
+    if not ok then
+        logger.warn("Meguru: could not rebuild the reader menu:", err)
+    end
+end
+
+--- Start the walk that fills in a series this path has just created.
+---
+--- **A registered book is what makes this necessary, and a missing neighbour is
+--- what makes it worth doing.** `registerBook` writes one item — deliberately,
+--- because a walk must never sit between a tap and a book opening. But the
+--- catalog is then the only thing that knows where the reader is in the series,
+--- and with one item in it there is no *next*: the reader's menu offers
+--- "Find the next chapter" instead of the chapter itself, the "auto-open next at
+--- the end" toggle is not even built (it is gated on there being somewhere to
+--- go), and finishing the volume silently falls back to KOReader's own
+--- end-of-book dialog. Every one of those is downstream of the same single row.
+---
+--- So the walk happens *after* the handoff, in the background, and neither the
+--- tap nor the book pays for it.
+---
+--- **Gated by `Sync.plan`, and never with `force`.** The gate is what stops a
+--- reader adding three volumes of one series from paying for three walks —
+--- and it costs nothing on the first, because a series with no `synced_at` is
+--- never "fresh". `force` would skip the *backoff* half too, and that half is
+--- the one that matters here: a server whose walk just failed would be walked
+--- again on the very next book added from it, for as long as it kept failing.
+---
+--- **The connection is checked here, not only at the tap.** A walk that starts
+--- and fails because the wifi dropped is recorded as a *server* failure, which
+--- pushes the series into backoff for a reason the server had no part in.
+local function startBackgroundSync(registered)
+    local server = registered and registered.server
+    local series = registered and registered.series
+    if not (server and series and series.id) then
+        -- Said out loud, though the caller logged its own reason too: "the walk
+        -- was not due" and "the trigger never ran" look identical in a log that
+        -- only records the successes, and they need opposite fixes.
+        logger.info("Meguru: nothing to sync in the background"
+            .. " (no catalog row for this book's series)")
+        return
+    end
+    if not NetworkMgr:isConnected() then
+        logger.info("Meguru: no connection - not syncing", series.name,
+            "in the background")
+        return
+    end
+    -- The TTL comes from the caller rather than from inside `Sync.plan`, whose
+    -- whole claim is that it reads the series row it is given and nothing else.
+    local due, reason = Sync.plan(series, { ttl = Settings.get("sync_ttl_seconds") })
+    if not due then
+        logger.info("Meguru: background sync of", series.name, "not due (", reason, ")")
+        return
+    end
+    logger.info("Meguru: background sync started for", series.name,
+        "(series " .. tostring(series.remote_id) .. ")")
+    -- `silent`: no dialog, no Cancel, no repaint. `timeout = "resume"` is the
+    -- only bound available on a walk nobody can stop — see `SyncJob.run`.
+    -- `opts.lang` is deliberately not passed: `openAsBook` already recorded the
+    -- browsing language through `Catalog.setServerLang`, and a second way to
+    -- name it is how the two would come to disagree.
+    SyncJob.run(server, series, function(ok)
+        -- Only on success: a failed walk left the catalog as it was, so the
+        -- menu is already right about it.
+        if ok then
+            refreshReaderMenu()
+        end
+    end, { silent = true, timeout = "resume" })
 end
 
 -- Opening from the catalog ------------------------------------------------------
@@ -1095,6 +1205,13 @@ end
 
 --- Open the first unread volume of the series the row was offered for.
 ---
+--- Writes exactly one item — the one it is about to open — and leaves the
+--- siblings to the background walk it starts at the end, which is the same walk
+--- `openAsBook` starts and is gated the same way. It is deliberately *not*
+--- started from `openCatalogItem`: that is the shared funnel for the library's
+--- and the series view's item rows too, where the list already came from a sync
+--- and a walk would buy nothing.
+---
 --- Mirrors the server and series half of `registerBook` rather than calling it:
 --- that function is built around a book that was tapped, and there is no book
 --- here. The two must agree on how a series row is found and named, so if the
@@ -1162,6 +1279,29 @@ function Open.openFirstUnread(browser, info)
     local manager = browser and browser._manager
     local host = (manager and manager.ui) and manager or fallback_host
     Open.openCatalogItem(host, server, series, row)
+
+    -- The same series-filling walk the download-dialog button starts, for the
+    -- same reason and with the same gate. This row used to be left out — the
+    -- argument was that it would be a *second* walk, over the same feed
+    -- `seriesItems` has just read, and that its sibling entry point can afford
+    -- one while this one cannot.
+    --
+    -- That argument is true about the cost and wrong about the reader: tapping
+    -- "▶ Meguru this series" *here* means the same thing it means there — add
+    -- this series — and a reader who used this row got a one-item series, no
+    -- neighbour row and no auto-open, with "Find the next chapter" as the only
+    -- way out. Two walks on the first tap per TTL, and one from then on, is the
+    -- cheaper of the two prices.
+    --
+    -- Not spawned from `openCatalogItem`, deliberately: that is the shared
+    -- funnel for the library's and the series view's item rows too, where the
+    -- list already came from a sync and a walk buys nothing.
+    UIManager:nextTick(function()
+        local ok, err = pcall(startBackgroundSync, { server = server, series = series })
+        if not ok then
+            logger.warn("Meguru: the background sync could not be started:", err)
+        end
+    end)
 end
 
 --- Offer a starting point, then open. Calls `opts.open()` either way.
@@ -1915,16 +2055,44 @@ function Open.openAsBook(browser, item, stream)
 
                 -- Prefer the built-in plugin's own open path: it closes the
                 -- browser cleanly and hands the marker to ReaderUI.
+                --
+                -- One tail for both branches rather than a `return` and a
+                -- fallthrough: the walk below has to start on the path OPDS
+                -- actually takes, and that path used to leave here.
+                local handed
                 if manager and type(manager.openDownloadedFile) == "function"
                     and manager.opds_browser then
                     -- Not through `handToReader`, so this is the second place the
                     -- one-shot is armed — same reason and same instant: the dialog
                     -- above has already asked, and the `showReader` wrap must not
                     -- ask again.
-                    handOff(file, function() manager:openDownloadedFile(file) end)
-                    return
+                    handed = handOff(file, function() manager:openDownloadedFile(file) end)
+                else
+                    handed = openPrepared(host, file) ~= nil
                 end
-                openPrepared(host, file)
+
+                -- Only when the book reached a reader. A handoff that failed
+                -- leaves the reader in the browser, and the reason this walk
+                -- exists — a book added, its series unpopulated — has not
+                -- happened.
+                --
+                -- Deferred, because `SyncJob.run` calls `Sync.prepare`
+                -- synchronously and that is a database read plus, on refusal, an
+                -- UPDATE. Neither belongs inside the tap that is still building
+                -- a reader.
+                if handed then
+                    UIManager:nextTick(function()
+                        -- pcall'd so a mistake in here can never cost the reader
+                        -- the book that just opened — but not *silently*: a
+                        -- swallowed error would look exactly like a walk that
+                        -- was never due, and those two need opposite fixes.
+                        local ok_start, err = pcall(startBackgroundSync, registered)
+                        if not ok_start then
+                            logger.warn("Meguru: the background sync could not"
+                                .. " be started:", err)
+                        end
+                    end)
+                end
             end,
         })
 end

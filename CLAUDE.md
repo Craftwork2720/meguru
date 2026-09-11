@@ -71,10 +71,11 @@ meguru/
     defaults.lua          per-book seeding of kopt_* from plugin preferences
 
   ui/
-    open.lua              "Meguru this series": resume dialog, marker write, open
+    open.lua              "Meguru this series": resume dialog, marker write, open,
+                          plus the background series walk it starts
     library.lua           series list from the catalog, with new-chapter counts
     series.lua            items of one series, open, manual sync
-    syncjob.lua           cooperative sync with progress and Cancel
+    syncjob.lua           cooperative sync with progress and Cancel, a silent mode, and the one-walk-per-series guard
     reader.lua            everything grafted onto a running ReaderUI
     menu.lua              the two menu surfaces
 ```
@@ -661,23 +662,79 @@ A **cancelled** walk is deliberately exempt from `recordSyncFailure`'s backoff �
 otherwise a few impatient taps push the next automatic attempt out by most of a
 day.
 
-Sync is triggered three ways, all gated on `NetworkMgr:isConnected()`:
+Sync is triggered four ways, all gated on `NetworkMgr:isConnected()`:
 
-- a lazy TTL on opening a series (the series view),
+- **in the background, right after either OPDS add** — `ui/open.lua`'s
+  `startBackgroundSync`, called from `openAsBook` once the book has been handed
+  to the reader, and from `openFirstUnread` after the row's own open.
+  `registerBook` writes **one** item on purpose (a walk must never sit between a
+  tap and a book opening), and with one item there is no *next*: the reader menu
+  offers "Find the next chapter" instead of the chapter, the "auto-open next at
+  the end" toggle is not even built — it is gated on there being somewhere to go
+  — and finishing the volume falls back to KOReader's own end-of-book dialog.
+  All three are downstream of the same single row, so this is where it is
+  repaired. Gated by `Sync.plan` with `settings.sync_ttl_seconds`, and **never
+  `force`**: the backoff half of that gate is what stops a server whose walk just
+  failed from being walked again on the next book added from it.
+  Silent — no dialog, no Cancel, no repaint — which makes it uncancellable, and
+  bounded instead by `timeout = "resume"`. Killing KOReader stops it safely:
+  nothing is written until the last page.
+
+  **Both OPDS entry points start it, and neither library nor series view does.**
+  `openFirstUnread` pays for two walks over one feed on its first tap per TTL —
+  its own bounded read to answer "which chapter", then this one to fill the
+  series — and that was weighed against leaving it out, which left the row's
+  reader with a one-item series and no way out but "Find the next chapter". The
+  trigger is deliberately **not** in `openCatalogItem`, the funnel the library's
+  and the series view's item rows share: there the list already came from a sync
+  and a walk would buy nothing.
 - an explicit manual action ("check for new chapters"),
 - **on demand, from the reader, when a neighbour the catalog does not have is
-  asked for** — `Reader.openNeighbor`. This is the one that matters in practice:
-  opening a book from the OPDS browser records that book and nothing else, so a
-  series starts with one item in it and no next chapter at all. The reader menu
-  grows a "Find the next chapter" row in exactly that state, and the sync it
-  starts is **attempted once**: a successful walk that still turns up no
-  neighbour is an answer, and re-walking the same feed would not change it.
-  A module-level guard in `ui/reader.lua` joins a second request to the walk
-  already running rather than starting a second one.
+  asked for** — `Reader.openNeighbor`. The reader menu grows a "Find the next
+  chapter" row when there is no neighbour, and the sync it starts is
+  **attempted once**: a successful walk that still turns up no neighbour is an
+  answer, and re-walking the same feed would not change it.
   The open that follows the walk — and the direct one when the neighbour is
   already known — goes through `Open.openItemSilently`, not `openCatalogItem`:
   the reader named a chapter, so there is nothing left to ask. See the
   resume-dialog section above.
+
+**The reader menu is built once per document, and the Meguru rows are derived
+from the catalog** — so a walk that lands after that build changes nothing on
+screen. `ReaderMenu:onShowMenu` calls `setUpdateItemTable` only while
+`tab_item_table` is nil, and nothing clears it but a new document or a keyboard
+reconnection: closing and reopening ⋮ does **not** rebuild it. Our neighbour rows
+come from `Catalog.neighbors`, which is exactly what the background walk changes,
+so `Open.refreshReaderMenu` rebuilds the table when a walk succeeds. It reaches
+the instance through `ReaderUI.instance` rather than through `ui/reader.lua`,
+which requires `ui/open.lua` — requiring it back would be a cycle, and
+`registerModule("menu", …)` is what makes the instance reachable anyway.
+
+The same staleness applies to every other way the catalog can change under an
+open book (a manual sync from the series view, a neighbour walk landing), and it
+is worth knowing for any future row built from catalog state: the menu's
+*structure* is decided once, so a row that should appear later will not.
+
+**One guard, in `SyncJob`, keyed on the series id** — not one per caller. It
+refuses (`"busy"`) rather than joining, because joining would fire the joiner's
+completion callback, which on the reader's path opens a document. It is not
+redundant with `Sync.plan`: `synced_at` is written when a walk *ends*, so a
+second request arriving mid-walk finds the series looking exactly as stale as
+before. It lives here because this is the only module all three UI walkers pass
+through — `ui/reader.lua` used to keep its own scalar and that was worse in both
+directions, refusing a request for one series because a walk was running for
+another, and blind to the walks the browser path and the series view start.
+
+**A walk that hits `MAX_PAGES` writes nothing at all**, which is why a
+background walk may not be made cheap by capping it: `complete = false` means
+zero writes, so a short walk would repair nothing. It must run to the end or not
+start.
+
+**The series view has no lazy TTL trigger.** This section used to claim one, and
+the claim was false: the view offers only the manual `⟳ Check for new chapters`
+row. The pieces now exist (`Sync.plan`, `SyncJob`'s silent mode), so it is a
+decision not yet taken rather than an omission — record it as such if it is ever
+wanted.
 
 **Never in the plugin's `init()`**: at that point there is neither connectivity
 nor a UI.
@@ -896,6 +953,21 @@ nothing — see the `db:exec` rule above.
 No automated tests, so verification is a running KOReader. Run with `-d` or read
 `crash.log`, filtering on `Meguru:`.
 
+**A catalog written by a previous build is not a valid test surface.** This is
+worth stating because it cost an afternoon: `Catalog.orderedItems` sorts on
+`feed_index`, and `feed_index` is derived by rules this codebase has changed more
+than once (reading order rather than feed order; a provisional position written
+by an open rather than by a walk). Rows written before such a change keep
+positions computed by the superseded rule, so `Catalog.neighbors` answers from
+them and a series can look like it has no next chapter when its feed plainly
+contains one — and `synced_at` from an earlier successful walk then blocks the
+repairing walk for `sync_ttl_seconds`. Nothing on the device distinguishes that
+from a live bug. So: **wipe `meguru.sqlite3` and the marker folders whenever a
+change touches ordering**, and re-test on that clean state before believing any
+symptom. The repair path for a reader who does get there is one tap —
+`⟳ Check for new chapters` calls `SyncJob.run` directly and so bypasses
+`Sync.plan`'s TTL — but it is not a substitute for a valid test.
+
 **Installation must be a directory named `meguru.koplugin`.** `pluginloader.lua`
 `_discover()` ignores any directory whose name does not end in `.koplugin` and
 strips the suffix to get the plugin name, so `plugins/meguru/` is invisible and
@@ -1008,7 +1080,36 @@ Each step must pass before the next:
     name the same chapter 40. Before this, the browser answered chapter 1 and the
     file answered chapter 40 for the same series, because one feed is
     `number_desc` and the other `number_asc`.
-20. **The `▶` chapter is the first the server flags unread, and progress is not
+20. **An OPDS add populates its series.** Add a volume via `▶ Meguru this series`
+    from a series whose catalog row is empty, and answer the dialog. The book
+    opens; do nothing else. The log must show `background sync started for …`
+    then `Meguru: synced … - N items in M page(s)` with `N` equal to the real
+    chapter count, and `SELECT item_count, synced_at FROM series …` must agree.
+    **No dialog may appear at any point** — that is the silent mode, and it also
+    means an uncancellable walk, so turn several pages while it runs and confirm
+    they are prompt. Then: ⋮ → Meguru shows `Open next in series: <title>` and the
+    `Auto-open next at the end` toggle, and finishing the volume opens the next
+    one. The same series added twice inside `sync_ttl_seconds` must log
+    `not due ( fresh )` and **not** walk again.
+21. **A refused background walk is not a broken series.** Point one at a feed
+    that fails: the log shows the start, then `did not complete - <reason>`, and
+    `sync_fail_count` becomes 1; the next add from that server logs
+    `not due ( backoff )`. With the wifi off, the add logs `no connection` and
+    `sync_fail_count` stays 0 — a dropped connection must never be recorded as a
+    server's fault. **Every gate on the trigger logs its decision**, and the
+    refusals are the point: `Sync.prepare`'s three — an unknown kind, an
+    unconfigured server, no catalog feed — write only to `series.sync_error`
+    and return nil, so without `SyncJob.run`'s own line a background walk that
+    could not start would leave no trace anywhere at all. Reading a log for a
+    walk, expect exactly one of: `background sync started for …`,
+    `not due ( fresh|backoff )`, `no connection - not syncing …`, `nothing to
+    sync in the background`, `cannot start ( <reason> )`, or `the background
+    sync could not be started: <error>`. Opening a book from the **library** or the **series view**
+    must log **no** start line: the trigger hangs on the browser's own two
+    entries, not on the shared open path. Tapping the `▶ Meguru this series` row
+    **above a series list** must log one, and its reader must end up with the
+    neighbour rows and the auto-open toggle like the dialog button's does.
+22. **The `▶` chapter is the first the server flags unread, and progress is not
     consulted.** On Suwayomi, set up exactly the state that tells the two rules
     apart: mark chapters 1–9 read, leave chapter 10 *started* (its summary says
     `2 z 22`), and mark 15–17 read. The `▶` button must name **chapter 10, page

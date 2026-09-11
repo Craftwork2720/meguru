@@ -337,10 +337,15 @@ end
 --- One "open the next/previous item in this series" row.
 ---
 --- With no neighbour to name the row still belongs here, as a search rather than
---- an open: opening a book from the OPDS browser records that book alone, so a
---- series starts out with exactly one item in it and no neighbours at all. This
---- row is then the only way to ask for the next chapter, which is what
---- `Reader.openNeighbor` answers by syncing the series first.
+--- an open. Opening a book from the OPDS browser records that book alone, so the
+--- series starts with one item and no neighbours — but that is now a **passing**
+--- state rather than the resting one: `ui/open.lua`'s `startBackgroundSync`
+--- walks the series right after the handoff, and the row becomes
+--- "Open next in series: <title>" once it lands. So this row is what a reader
+--- sees while that walk is running, after it failed or was refused, on a series
+--- catalogued any other way (the row at the top of a feed, the series view), and
+--- on a server with no driver to walk with. `Reader.openNeighbor` answers it by
+--- syncing the series first.
 local function addNeighborRow(plugin, rows, context, found, which, title_of)
     local item = found and found[which]
     if not item then

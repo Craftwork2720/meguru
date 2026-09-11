@@ -24,7 +24,11 @@ local DEFAULTS = {
     auto_next_item    = true,
     manga_order       = true,
     sync_enabled      = true,
-    sync_ttl_seconds  = 6 * 60 * 60,  -- how stale a series may get before a lazy re-sync
+    -- How stale a series may get before the background walk after an OPDS add
+    -- will re-walk it. Read by `ui/open.lua`'s `startBackgroundSync` and handed
+    -- to `Sync.plan`, which is why it is no longer a preference that decides
+    -- nothing.
+    sync_ttl_seconds  = 6 * 60 * 60,
     max_native_dim    = 2048,         -- long-edge cap for a decoded page
 
     -- How the page is fitted to the screen. Semantic rather than KOReader's own

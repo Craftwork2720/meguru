@@ -672,20 +672,26 @@ local function neighborsOf(ui)
     return context, Catalog.neighbors(context.series.id, context.item.item_key)
 end
 
---- The series currently being synced on demand, if any.
----
---- Module level because the walk outlives the tap that started it: the reader
---- can still turn pages while it runs, and a second tap on the same series must
---- not start a second walk over the same feed.
-local on_demand_sync = nil
-
 --- Sync `context`'s series, then hand `which`'s neighbour to the reader.
 ---
 --- Called when the reader asks for a neighbour the catalog does not have yet —
---- which is the normal state of a series catalogued from the OPDS browser, since
---- opening a book records only that book. Without this, "next chapter" is
---- unreachable for every series until it is synced by hand from the library
---- view, which is not a step a reader would guess at.
+--- which used to be the normal state of a series catalogued from the OPDS
+--- browser, and is now the state while that add's background walk is still
+--- running, or after it failed or was refused.
+---
+--- **The once-per-series guard lives in `SyncJob`, not here.** It used to be a
+--- module-level scalar in this file, which had two problems a per-series guard
+--- in the module all three walkers pass through does not: it refused a request
+--- for one series because a walk was running for another, and it could not see
+--- the walks the browser path and the series view start — including the very
+--- ones this file's `syncThenOpen` needs protection *from*. Two guards for one
+--- invariant is how they drift, so there is one.
+---
+--- A refusal arrives as `on_done(false, "busy")` and is deliberately silent here
+--- (the `if not ok then return end` below): a walk for this series is already
+--- running, which is the state this call wanted. It does mean the neighbour is
+--- **not** opened when that walk ends — the walk opens whatever its own
+--- initiator asked for — and that is the behaviour before this change too.
 ---
 --- The completion runs on the tick the walk ends, with SyncJob's dialog already
 --- closed and the database already written to, so the requery below sees the
@@ -695,9 +701,7 @@ local on_demand_sync = nil
 local function syncThenOpen(plugin, context, which)
     local ui = plugin.ui
     local series = context.series
-    on_demand_sync = series.id
     SyncJob.run(context.server, series, function(ok)
-        on_demand_sync = nil
         -- The reader this was asked for may be gone by now (the walk is tens of
         -- seconds and the plugin instance is per-document). Switching documents
         -- then would replace whatever is on screen with a book nobody asked for.
@@ -779,13 +783,11 @@ function Reader.openNeighbor(plugin, which)
         return Open.openItemSilently(plugin, context.server, context.series, found[which]) ~= nil
     end
     -- Reachable when the reader is asked twice before the connection prompt is
-    -- answered: both re-runs land on the same tick, and the second must join the
-    -- first walk rather than start a second one over the same feed.
-    if on_demand_sync then
-        logger.dbg("Meguru: series sync already running; ignoring request for",
-            context.series.id, which)
-        return false
-    end
+    -- answered: both re-runs land on the same tick, and the second must not start
+    -- a second walk over the same feed. That is now `SyncJob`'s per-series guard
+    -- rather than a scalar here — see `syncThenOpen` — and it needs no test at
+    -- this point: a refusal comes back through `on_done(false, "busy")`, which
+    -- the callback returns on, and the return below is `false` either way.
 
     -- A walk is a run of HTTP requests, so it needs a connection the same way a
     -- page fetch does; the manager prompts for one rather than letting the walk
@@ -825,6 +827,14 @@ local function installEndOfBookHook(plugin)
         -- a tap: reaching the end of the last known chapter would otherwise
         -- start a network walk nobody asked for, every time the book is
         -- finished. Asking for a neighbour the catalog lacks is a menu row.
+        --
+        -- That refusal stays, and what changed around it is *when the neighbour
+        -- arrives*: a series added from the OPDS browser is walked in the
+        -- background right after the add, so by the time a reader reaches the
+        -- end of that volume the catalog normally has the next chapter and this
+        -- branch is the normal one. Falling through to KOReader's own
+        -- end-of-book dialog means that walk was refused, failed, or never
+        -- started — not that the series is one book long.
         local _, found = neighborsOf(ui)
         if not (found and found.next) then
             return orig(status_self, ev)

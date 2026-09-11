@@ -41,9 +41,13 @@ local Sync = {}
 --- a whole library) while still bounding a `next` chain that never terminates.
 Sync.MAX_PAGES = 25
 
---- How long a synced series is considered fresh. Opening a series inside this
---- window does not re-sync it, so browsing a library is not a stampede of
---- requests.
+--- How long a synced series is considered fresh.
+---
+--- The consumer is `ui/open.lua`'s `startBackgroundSync` — the walk that fills
+--- in a series an OPDS add has just created with one book in it — and it is what
+--- stops a reader adding three volumes of one series from paying for three
+--- walks. A series that has never been synced is never fresh, so the first add
+--- always walks; see `Sync.plan`.
 Sync.DEFAULT_TTL = 6 * 3600
 
 --- A sync that finds less than this fraction of the last known item count is
@@ -219,9 +223,23 @@ end
 
 --- Whether a series is due for a sync, and why not when it is not.
 ---
---- Pure: it reads the series row it is given and nothing else. Callers are
---- responsible for the two conditions that are not about the series — that the
---- user asked for it, and that the network is up.
+--- Pure: it reads the series row it is given and nothing else — which is why
+--- `opts.ttl` is passed *in* rather than read from `settings` here. The
+--- preference is the caller's to look up; a function that consulted a global
+--- would plan the same row differently in two runs, and a gate that cannot be
+--- reasoned about from its arguments is not a gate.
+---
+--- Callers are responsible for the two conditions that are not about the series:
+--- that it is worth asking for, and that the network is up. On the background
+--- path that second one is load-bearing rather than decorative — a walk that
+--- starts and fails because the wifi dropped is recorded as a *server* failure,
+--- and pushes the series into backoff for something the server did not do.
+---
+--- `opts.force` skips the backoff as well as the TTL, so it is not for a caller
+--- who merely wants the walk to happen: it is for a caller who has decided the
+--- backoff does not apply. The background walk uses the plain gate, because a
+--- server whose walk just failed must not be re-walked on the next book added
+--- from it.
 function Sync.plan(series, opts)
     opts = opts or {}
     if opts.force then
@@ -329,6 +347,11 @@ function Sync.prepare(server, series, opts)
             max_pages    = opts.max_pages,
             on_page      = opts.on_page,
             is_cancelled = opts.is_cancelled,
+            -- Forwarded because a caller can walk on an errand the reader did
+            -- not ask for and cannot stop, and `"resume"` is how it bounds the
+            -- worst case. `Walker:step` already passes it to the fetch; this
+            -- line is the only thing that was missing.
+            timeout      = opts.timeout,
         },
     }, nil, summary
 end
@@ -350,6 +373,13 @@ function Sync.finish(series, walker, plan)
         if reason == "cancelled" then
             return nil, reason, summary
         end
+        -- Said out loud, and not only written into `sync_error`. A walk started
+        -- in the background has no popup to report through, so without this line
+        -- a failure would leave no trace anywhere the reader or a log reader
+        -- could find it. The sibling branch below already warns; this one was
+        -- the gap.
+        logger.warn("Meguru: sync of", series.name, "did not complete -",
+            tostring(reason))
         Catalog.recordSyncFailure(series.id, "incomplete walk: " .. tostring(reason))
         return nil, reason, summary
     end

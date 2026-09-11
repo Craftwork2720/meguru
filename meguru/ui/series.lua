@@ -12,12 +12,14 @@ resolved lazily — its page stream fetched.
 --]]
 
 local DocSettings = require("docsettings")
+local InfoMessage = require("ui/widget/infomessage")
 local Menu = require("ui/widget/menu")
 local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
 local Screen = require("device").screen
 local logger = require("logger")
 local _ = require("gettext")
+local T = require("ffi/util").template
 
 local Catalog = require("meguru/catalog")
 local Open = require("meguru/ui/open")
@@ -133,7 +135,13 @@ function Series.show(host, server, series)
         -- Re-read the row: a previous sync may have moved `new_since` or the
         -- item count, and the plan is built from what it finds.
         local current = Catalog.series(series.id) or series
-        SyncJob.run(server, current, function(ok)
+        -- A refusal is a real outcome here and has to be shown, unlike on the
+        -- reader's path where it is the state the caller wanted: this is an
+        -- explicit tap, and a tap that does nothing at all with no explanation
+        -- reads as a broken row. A walk can now be running for this series
+        -- without this view having started it — the background walk after an
+        -- OPDS add, or the reader's own "Find the next chapter".
+        local started, why = SyncJob.run(server, current, function(ok)
             if not ok or not menu then
                 return
             end
@@ -147,6 +155,11 @@ function Series.show(host, server, series)
                 Catalog.markSeriesSeen(refreshed.id)
             end
         end)
+        if not started and why == "busy" then
+            UIManager:show(InfoMessage:new{
+                text = T(_("Meguru: %1 is already syncing."), current.name),
+            })
+        end
     end
 
     local item_table = buildTable(series, host, server, series.new_since or 0, on_sync)
