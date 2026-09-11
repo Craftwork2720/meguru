@@ -25,6 +25,11 @@ bitten this codebase, and that a reader cannot reliably catch by eye:
      -- that is bound nowhere in the file. Checks 3 and 4 both key on the shape
      of the use, so a name handed over as an argument or an operand slips past
      both and reads as a global nil.
+  7. a lowercase name reached through a `.` or a `:` -- `data:byte(off + 1)`
+     with no `local data` anywhere. Checks 3 keys on a capitalized module table,
+     4 on a call and 6 on a value, so this last shape of the same failure had no
+     pass at all: a refactor deleted a buffer local and left four `data:byte`
+     call sites behind it, and nothing said a word.
 
 Run: python tools/check.py
 """
@@ -507,6 +512,94 @@ def check_value_uses(path, text):
 
 
 # --------------------------------------------------------------------------
+# Check 7: a lowercase name used as a table, bound nowhere in the file.
+# --------------------------------------------------------------------------
+
+# Check 3 covers `Geom:new{...}` — a capitalized module table used without being
+# bound. Check 4 covers `handToReader(x)` — a call. Check 6 covers a name read as
+# a value. Between them, one shape is left: a LOWERCASE name reached through a
+# `.` or a `:`.
+#
+# That is not hypothetical. A refactor of the crop scanner replaced a buffer
+# read with a pointer read and deleted the `local data` that four lines further
+# down were still calling `data:byte(off + 1)` through. Nothing complained: the
+# plugin loads, the page renders, and the crop dies on the first page turn with
+# "attempt to index a nil value" -- on the device, in the reader's hands, which
+# is the failure this whole file exists to prevent. It was caught by grepping
+# for the name by hand, which is exactly what a check is for.
+#
+# Position matters as it does in check 4: a `local` below the use does not bind
+# it. `self` is the one name that is never bound and never should be, so it is
+# exempt by name rather than by allowlist -- see the note on VALUE_GLOBAL_ALLOWLIST
+# about names added to silence true positives.
+RECEIVER_USE = re.compile(r"(?<![\w.:])([a-z_][A-Za-z0-9_]*)\s*[.:]\s*[A-Za-z_]")
+
+# Receivers that are neither bound nor wrong: `self` is declared by the method
+# syntax, and `...` is not a name at all.
+RECEIVER_SKIP = {"self"}
+
+# Lua's own library tables. These are globals in every Lua 5.1 runtime -- the
+# `string`, `table`, `math` and `os` half of the language, which is why they are
+# never bound anywhere and never should be. `bit`, `jit` and `ffi` come with
+# LuaJIT, which is the only Lua this plugin runs on.
+#
+# Deliberately NOT part of LUA_GLOBALS: that set is shared with checks 4 and 6,
+# and widening it would quietly widen those too -- a change to a check that was
+# self-tested against its own failure is not something to make as a side effect
+# of adding another.
+LUA_STDLIB_TABLES = {
+    "string", "table", "math", "os", "io", "coroutine", "debug", "package",
+    "bit", "jit", "ffi",
+}
+
+
+def check_receiver_uses(path, text):
+    """Report a lowercase `name.member` / `name:member` with no binding."""
+    lines = text.split("\n")
+
+    def lineno(offset):
+        return text.count("\n", 0, offset) + 1
+
+    bindings = {}
+
+    def bind(name, line):
+        name = name.strip()
+        if not IDENT.match(name):
+            return
+        if name not in bindings or line < bindings[name]:
+            bindings[name] = line
+
+    for rx in LOWER_BINDINGS + BINDINGS:
+        for m in rx.finditer(text):
+            for name in m.group(1).split(","):
+                bind(name, lineno(m.start()))
+    for m in FUNC_PARAMS.finditer(text):
+        for name in m.group(1).split(","):
+            bind(name, lineno(m.start()))
+    # For-loop variables are bound by the loop header, not by a `local`.
+    for m in FOR_BINDINGS.finditer(text):
+        for name in m.group(1).split(","):
+            bind(name, lineno(m.start()))
+
+    errors = []
+    for line_no, line in enumerate(lines, 1):
+        for m in RECEIVER_USE.finditer(line):
+            name = m.group(1)
+            if (name in LUA_GLOBALS or name in RECEIVER_SKIP
+                    or name in LUA_STDLIB_TABLES):
+                continue
+            if name == STRIPPED_STRING:
+                continue
+            if name in bindings and bindings[name] <= line_no:
+                continue
+            errors.append(
+                f"{path}:{line_no}: {name} is used as a table but is bound "
+                f"nowhere in this file -- it resolves to a global reading nil"
+            )
+    return errors
+
+
+# --------------------------------------------------------------------------
 # Check 5: the item upsert's columns, placeholders and binds stay in step.
 # --------------------------------------------------------------------------
 
@@ -598,6 +691,7 @@ def main():
         all_errors += check_globals(rel, text)
         all_errors += check_lowercase_calls(rel, text)
         all_errors += check_value_uses(rel, text)
+        all_errors += check_receiver_uses(rel, text)
 
     all_errors += check_item_upsert()
 

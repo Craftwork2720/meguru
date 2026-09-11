@@ -24,12 +24,12 @@ local Blitbuffer = require("ffi/blitbuffer")
 local Document = require("document/document")
 local DrawContext = require("ffi/drawcontext")
 local Geom = require("ui/geometry")
+local RenderImage = require("ui/renderimage")
 local Screen = require("device").screen
 local Device = require("device")
 -- MuPDF binding (koreader-base ffi/mupdf). Guarded: every KOReader that can
--- run this plugin ships it, but should a build ever lack it the fallback lives
--- in the module that owns the render — see meguru/doc/image.lua — rather than
--- failing to load the whole document module.
+-- run this plugin ships it, but should a build ever lack it we degrade to the
+-- RenderImage path instead of failing to load the whole document module.
 local Mupdf
 do
     local ok, mupdf = pcall(require, "ffi/mupdf")
@@ -59,30 +59,26 @@ end
 --
 -- OPDS-PSE servers (and some scanners) deliver pages with a uniform white /
 -- cream border around the actual artwork. Cropping such a page is done like a
--- KOpt-engine document would: the page size stays the page's own size and the
--- crop lives only in the document's bounding box. `getPageBBox`
+-- KOpt-engine document would: the page size stays the *full* (capped) native
+-- page and the crop lives only in the document's bounding box. `getPageBBox`
 -- (below) returns the trimmed content box when the "Page Crop" ConfigDialog
 -- choice is "auto" (configurable.trim_page == 1) and the full page otherwise,
 -- and ReaderZooming/ReaderView crop through that box for every "content" fit
 -- mode ("content", "contentwidth", "contentheight"), which is what this
 -- plugin's Fit menu now maps onto.
 --
--- Detection is one pass, on the page rendered at 1:1 — the resolution stock's
--- own auto-crop scans at, and the reason it needs no second, finer pass to
--- land on the artwork: a margin one pixel wide is a margin one pixel wide, and
--- nothing has blurred it away. scanContentBounds reads raw pixels
--- (Blitbuffer.tostring gives us the bytes, the same route TileCacheItem uses to
--- serialize a tile), finds the first and last row and column that differ from
--- the uniform light border, and also decides which pages to leave alone:
--- blank, dark full-bleed art, a drawn dark frame. computeContentBox turns that
--- into the box getPageBBox hands out, and applies stock's rule for when to
--- believe it.
---
--- The 1:1 render is the one thing here that can be refused rather than
--- approximated: a page too large to scan at that size is cropped not at all
--- (AUTOCROP_MAX_SCAN_PIXELS). A crop guessed from a downscale is a crop that
--- can cut into the artwork, and stock's own answer when it cannot trust its
--- detection is the whole page.
+-- Detection is two-stage. A cheap pass reads raw pixels of a small downscaled
+-- copy of the decoded page (Blitbuffer.tostring gives us the raw bytes, the
+-- same route TileCacheItem uses to serialize tiles), finds the first/last row &
+-- column that differ from the uniform light border, and maps that back onto
+-- native coordinates — this also decides which pages to leave alone (blank,
+-- dark full-bleed art, a drawn dark frame). The top/bottom are trimmed
+-- maximally, flush with the detected content edge; the left/right margins are
+-- trimmed just as maximally (see computeContentBox). A second, native-resolution
+-- pass (refineAutoCrop) then pins each edge to the *exact* outermost content
+-- pixel, so the crop ends flush with the panel/artwork and leaves no white
+-- frame — even on a page whose only boundary is a thin printed frame line the
+-- downscale would have blurred away.
 --
 -- The two finer crops a KOReader CBZ user gets from the pagenumbercrop plugin
 -- — removing a printed page number from the bottom gutter, and "no crop on
@@ -95,51 +91,12 @@ end
 -- document's body yields only the plain margin/full box below (see the
 -- _pagenum_cache gate in getPageBBox) — so the two never double-crop.
 
--- Long edge of the buffer the panel detector scans (see panelScanBuffer). The
--- margin auto-crop does *not* use this — it scans the page at 1:1, which is
--- what stock does, because a margin is only a pixel or two wide and a downscale
--- is exactly what blurs one away.
-local PANEL_SCAN_TARGET = 256
-
+local AUTOCROP_SCAN_TARGET = 128 -- max dimension of the scanned downscale
 local AUTOCROP_MIN_BG_LUMA = 170 -- only treat a light border as a margin
 local AUTOCROP_LUMA_DELTA = 26   -- how much a pixel may differ from the border
-
--- How far inside the page edge the background ring is sampled, in pixels. See
--- the ring loop in scanContentBounds for why it is not zero.
-local AUTOCROP_RING_INSET = 2
-
--- How much of its span a row or column must carry to count as the start of
--- content: 0.2% of it, i.e. "more than an isolated speck".
---
--- This figure is not invented here. It is the bar the native-resolution fine
--- pass used, whose whole job was to pin a coarse edge to the exact outermost
--- content pixel — a corner of an illustration, the tip of a speech bubble, a
--- thin drawn frame line, all of which carry far less than a fiftieth of the
--- span. The coarse pass that fed it used 2% and could afford to, because the
--- fine pass corrected it afterwards.
---
--- That pass is gone (the scan is 1:1 now, so there is nothing left to refine)
--- and 2% stayed behind in sole charge of the decision — which is why the crop
--- cut into the top and the side of pages: any outermost row or column carrying
--- less than 2% of the span was ignored and the box started past it.
-local AUTOCROP_EDGE_MIN_FRAC = 0.002
-
--- The largest page the auto-crop will scan at 1:1, in pixels.
---
--- Stock has no such line: `KoptInterface:getAutoBBox` renders the page whole at
--- zoom 1.0 and takes whatever the bitmap costs — ~48 MB for a manhwa strip
--- 800x20000, which is the sort of allocation a low-RAM device answers by
--- swapping or dying. Above this the crop is declined and the page is shown
--- untrimmed, which is the same answer stock itself gives when its detected box
--- is too small to believe.
---
--- Budgeted in pixels because that is what the page is measured in, but the cost
--- is per byte and runs to roughly twice the pixel count: the streamed render is
--- asked for grayscale (image.lua's `setColorRendering(false)`), so it is one
--- byte per pixel, and `Blitbuffer.tostring` in the scan takes a second copy of
--- it. 8 Mpx is therefore ~16 MB of transient against a 2000x3000 scan, which
--- has room to spare.
-local AUTOCROP_MAX_SCAN_PIXELS = 8 * 1024 * 1024
+-- Degenerate-crop floor: whatever the options say, never let a scan shrink a
+-- page below this fraction of its area (guards against a pathological scan).
+local AUTOCROP_MIN_KEEP_FRAC = 0.02
 
 
 -- Blitbuffer pixel type -> bytes per pixel. Decoders give us one of these
@@ -220,27 +177,14 @@ local function scanContentBounds(bb, pageno)
     -- percentile tracks the light border as long as the border makes up even a
     -- minority of the ring samples, which is exactly the "has a white margin"
     -- case.
-    -- The ring is sampled a couple of pixels in, never on the very edge.
-    --
-    -- This runs on the page at its own resolution now, and at that size the
-    -- outermost row and column are exactly the scanner's edge: a one-pixel dark
-    -- line around a scan is common, and sampling it would make EVERY ring
-    -- sample dark, push `bg` under AUTOCROP_MIN_BG_LUMA and switch the crop off
-    -- for the whole book — silently, since "no crop" is also the answer for a
-    -- page that genuinely has no margin. (On the downscale this used to run on,
-    -- that line averaged into its neighbours and disappeared; the inset is what
-    -- replaces that accidental tolerance, deliberately rather than by luck.)
-    local inset = math.min(AUTOCROP_RING_INSET, math.floor((math.min(w, h) - 1) / 2))
-    local rx0, rx1 = inset, w - 1 - inset
-    local ry0, ry1 = inset, h - 1 - inset
     local samples = {}
-    for x = rx0, rx1 do
-        samples[#samples + 1] = lumaAt(ry0, x)
-        samples[#samples + 1] = lumaAt(ry1, x)
+    for x = 0, w - 1 do
+        samples[#samples + 1] = lumaAt(0, x)
+        samples[#samples + 1] = lumaAt(h - 1, x)
     end
-    for y = ry0 + 1, ry1 - 1 do
-        samples[#samples + 1] = lumaAt(y, rx0)
-        samples[#samples + 1] = lumaAt(y, rx1)
+    for y = 1, h - 2 do
+        samples[#samples + 1] = lumaAt(y, 0)
+        samples[#samples + 1] = lumaAt(y, w - 1)
     end
     table.sort(samples)
     local bg = samples[math.max(1, math.floor(#samples * 0.85))]
@@ -284,10 +228,9 @@ local function scanContentBounds(bb, pageno)
     end
 
     -- A candidate row/column must contain more than a couple of speck pixels
-    -- to count as the start of actual content — see AUTOCROP_EDGE_MIN_FRAC,
-    -- which is the figure the deleted fine pass used for this same call.
-    local row_min = math.max(2, math.floor(w * AUTOCROP_EDGE_MIN_FRAC))
-    local col_min = math.max(2, math.floor(h * AUTOCROP_EDGE_MIN_FRAC))
+    -- to count as the start of actual content.
+    local row_min = math.max(2, math.floor(w * 0.02))
+    local col_min = math.max(2, math.floor(h * 0.02))
 
     local left, top, right, bottom
     for y = 0, h - 1 do
@@ -329,10 +272,13 @@ local function scanContentBounds(bb, pageno)
         cropSkipWarn(pageno, "detected content spans the whole page",
             "(bg=", math.floor(bg), ", ", w, "x", h, ") — nothing to trim")
     end
-    -- `bg` (the reference border luminance) rides along so a caller can reuse
-    -- the same content predicate this scan used.
+    -- `bg` (the reference border luminance) rides along so the native fine pass
+    -- in refineAutoCrop reuses the exact same content predicate as this scan.
     return { left, top, right, bottom, bg = bg }
 end
+
+-- Native fine pass; assigned below (after makeRaster), see its definition.
+local refineAutoCrop
 
 -- Compute the native auto content box of a decoded (working-resolution) page.
 -- Returns { x0, y0, x1, y1 } in native pixels, or nil when the page should be
@@ -345,60 +291,98 @@ end
 -- up to the detected white margin, whatever lies between the content and the
 -- page edge is cut. The left and right margins are detected independently, so
 -- an asymmetric frame is trimmed asymmetrically (never centered): the result
--- is the smallest box that contains the artwork on all four sides.
---
--- `page_bb` is the page at 1:1 — the resolution stock scans at, and the reason
--- this needs no second pass: a margin one pixel wide survives a scan taken at
--- the page's own size, and is exactly what a downscale erases. Callers that
--- cannot afford a 1:1 buffer decline the crop rather than passing a smaller
--- one (see autoContentBox).
+-- is the smallest box that contains the artwork on all four sides. The scan is
+-- two-stage: a cheap ~128px projection (scanContentBounds) finds the box and
+-- decides blank/dark/full-bleed pages, then a native-resolution fine pass
+-- (refineAutoCrop) pins each edge to the exact outermost content pixel, so a
+-- page comes out of the crop flush with its artwork — no white frame left.
 --
 -- The result feeds getPageBBox (the bbox ReaderZooming/ReaderView crop
 -- through), cached per page in self.crops. It is never baked into the page
--- size: getPageDims reports the page's own size.
-local function computeContentBox(page_bb, pageno)
-    -- Returns { x0,y0,x1,y1 } in page pixels, or nil for "nothing to trim".
-    --
-    -- `page_bb` belongs to the caller, so nothing here frees it, and the scan
-    -- allocates nothing: it is a pure read of a buffer someone else owns.
+-- size: getPageDims reports the full native page.
+local function computeContentBox(native_bb, full_w, full_h, pageno)
+    -- Returns { x0,y0,x1,y1 } in native pixels, or nil. The only C-side
+    -- (BlitBuffer) allocation made here is the ~128px scan copy `scan_bb`;
+    -- BlitBuffers are malloc'd outside the Lua heap and are NOT reclaimed by
+    -- Lua GC, so an exception between an allocation and its free would leak
+    -- the buffer permanently. That is why the allocation, the (pcall-guarded)
+    -- pixel work and the free are kept as separate steps, with the free done
+    -- unconditionally right after the work.
     local ok, box = pcall(function()
-        local w = page_bb:getWidth()
-        local h = page_bb:getHeight()
-        if not w or not h or w < 1 or h < 1 then
+        local bw = native_bb:getWidth()
+        local bh = native_bb:getHeight()
+        if not bw or not bh or bw < 1 or bh < 1 then
             return nil
         end
-        local bounds = scanContentBounds(page_bb, pageno)
+        -- Downscale before scanning: ~128px across the long edge is plenty to
+        -- find a border, and keeps the Lua pixel loop tiny.
+        local sw, sh = bw, bh
+        local scan_bb = native_bb
+        if bw > AUTOCROP_SCAN_TARGET or bh > AUTOCROP_SCAN_TARGET then
+            local scale = AUTOCROP_SCAN_TARGET / math.max(bw, bh)
+            sw = math.max(1, math.floor(bw * scale + 0.5))
+            sh = math.max(1, math.floor(bh * scale + 0.5))
+            local ok_scale, scaled = pcall(RenderImage.scaleBlitBuffer,
+                RenderImage, native_bb, sw, sh, false)
+            if ok_scale and scaled and scaled ~= native_bb then
+                scan_bb = scaled
+            else
+                return nil -- could not make the scan copy: leave the page as-is
+            end
+        end
+        -- Scan for the content bounding box in its own pcall so `scan_bb` is
+        -- freed even if the pixel scanner hits a pathological page and throws.
+        local bounds
+        local ok_scan, scan_err = pcall(function()
+            bounds = scanContentBounds(scan_bb, pageno)
+        end)
+        if scan_bb ~= native_bb then
+            scan_bb:free()
+        end
+        if not ok_scan then
+            logger.warn("Meguru: auto-crop scan failed:", scan_err)
+            return nil
+        end
         if not bounds then
             return nil
         end
-        -- `right` and `bottom` are inclusive pixel indices; the box is exclusive.
-        local x0 = math.max(0, bounds[1])
-        local y0 = math.max(0, bounds[2])
-        local x1 = math.min(w, bounds[3] + 1)
-        local y1 = math.min(h, bounds[4] + 1)
-        if x0 == 0 and y0 == 0 and x1 == w and y1 == h then
+        local left, top, right, bottom = bounds[1], bounds[2], bounds[3], bounds[4]
+        local bg = bounds.bg
+        local sc_x = full_w / sw
+        local sc_y = full_h / sh
+        -- Coarse content extent in native coordinates. Maximal on every side:
+        -- top, bottom, left and right are each trimmed right up to the detected
+        -- white margin, independently (scanContentBounds), so an asymmetric
+        -- frame is trimmed asymmetrically; nothing but white margin is removed.
+        local x0 = math.max(0, math.floor(left * sc_x))
+        local y0 = math.max(0, math.floor(top * sc_y))
+        local x1 = math.min(full_w, math.ceil((right + 1) * sc_x))
+        local y1 = math.min(full_h, math.ceil((bottom + 1) * sc_y))
+
+        if x0 == 0 and y0 == 0 and x1 == full_w and y1 == full_h then
             return nil
         end
-        -- Stock's acceptance rule, verbatim in meaning if not in code
-        -- (KoptInterface:getAutoBBox): believe the detected box only when it
-        -- spans more than a tenth of the page in SOME direction, and keep the
-        -- whole page otherwise. It is a "is this a page or is this noise" test,
-        -- not a "did we trim enough" one — a legitimately thin strip of artwork
-        -- down the middle of a page passes, which an area-based rule would
-        -- reject.
-        if (x1 - x0) / w <= 0.1 and (y1 - y0) / h <= 0.1 then
-            cropSkipWarn(pageno, "detected box under a tenth of the page in",
-                "both axes — keeping the whole page")
+        -- Pin each edge to the *exact* outermost content pixel. The coarse scan
+        -- above ran on a ~128px downscale, so its box is only flush to a scan
+        -- pixel and, worse, the downscale blurs thin boundary features away (a
+        -- 1-2px printed frame line right where the panel art starts averages to
+        -- near-background and is missed), which leaves a visible white frame
+        -- around the panel. The fine pass re-scans a narrow native-resolution
+        -- band around each coarse edge with a hair-trigger threshold, so every
+        -- trimmed side ends flush with the real content — no margin is left.
+        x0, y0, x1, y1 = refineAutoCrop(native_bb, x0, y0, x1, y1, bg,
+            math.max(8, math.ceil(sc_x * 3)),
+            math.max(8, math.ceil(sc_y * 3)))
+        if x0 == 0 and y0 == 0 and x1 == full_w and y1 == full_h then
             return nil
         end
-        -- One line per cropped page: the box, the page it was measured on, and
-        -- the background it was measured against. A crop that cuts into the
-        -- artwork and a crop that leaves a margin look identical on the screen
-        -- and are opposite faults, so they have to be told apart by numbers
-        -- rather than by eye. The refusals already log themselves.
-        logger.info(string.format(
-            "Meguru: crop page %d: %d,%d+%dx%d of %dx%d (bg=%d)",
-            pageno, x0, y0, x1 - x0, y1 - y0, w, h, math.floor(bounds.bg or 0)))
+        -- Degenerate-crop guard: whatever happened above, never let a scan
+        -- shrink a page below a tiny fraction of its area. (The pagenumbercrop
+        -- plugin is what keeps genuinely blank pages uncropped; this is only a
+        -- last line of defence against a pathological scan.)
+        if (x1 - x0) * (y1 - y0) < AUTOCROP_MIN_KEEP_FRAC * full_w * full_h then
+            return nil
+        end
         return { x0 = x0, y0 = y0, x1 = x1, y1 = y1 }
     end)
     if not ok then
@@ -441,6 +425,7 @@ end
 -- white gutters, never on interior white of a single drawing, so a wrong guess
 -- degrades to "no panel", never to a mangled crop.
 
+local PANEL_SCAN_TARGET = 256
 local PANEL_GUTTER_FRAC = 0.85 -- gutter pixels must stay above 85% of paper white
 local PANEL_MIN_GUTTER_FRAC = 0.004 -- ignore separators thinner than 0.4% of the span
 local PANEL_MIN_CELL_FRAC = 0.05 -- never report a panel under 5% of the page area
@@ -489,6 +474,130 @@ local function makeRaster(bb)
     return { w = w, h = h, luma = luma }
 end
 
+-- Tighten the coarse auto-crop box to the *exact* outermost content pixel (see
+-- computeContentBox for where the coarse box comes from). The coarse scan runs
+-- on a ~128px downscale, so its box is only flush to a scan pixel; and the
+-- downscale *blurs away* thin boundary features — a 1-2px printed frame line
+-- right where the panel art starts averages to near-background in a 128px cell
+-- and is missed entirely, so the coarse box can sit a few scan pixels INSIDE
+-- the true art and a visible white frame stays around the panel. This pass
+-- re-scans a narrow native-resolution band around each coarse edge with a
+-- hair-trigger threshold and pins the edge to the first pixel that is actually
+-- content. Printed frame lines are full-width features, so the moment the scan
+-- reaches one it lights up the whole row/column — every trimmed side ends
+-- flush with the real content, with no margin left on any side that has one.
+-- Falls back to the coarse box on any hiccup (a crop must never be worse than
+-- the coarse one). Returns four tightened numbers in native coordinates.
+refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
+    if not (native_bb and native_bb.getWidth) then
+        return x0, y0, x1, y1
+    end
+    if native_bb:getRotation() and native_bb:getRotation() ~= 0 then
+        return x0, y0, x1, y1 -- raw rows are not axis-aligned: keep the coarse box
+    end
+    local raster = makeRaster(native_bb)
+    if not raster then
+        return x0, y0, x1, y1
+    end
+    local w, h = raster.w, raster.h
+    if w < 2 or h < 2 then
+        return x0, y0, x1, y1
+    end
+    local luma = raster.luma
+    local delta = AUTOCROP_LUMA_DELTA
+    -- Content = a pixel that departs from the border reference luminance (the
+    -- very predicate the coarse scan used). Only a row/column with more than
+    -- scattered specks counts: ~0.2% of its span (~4px at a 2048px native)
+    -- separates a real edge — or a thin printed frame line — from isolated JPEG
+    -- noise, and is far below the coarse 2%-of-span bar because this pass only
+    -- looks where the coarse scan already proved content is nearby.
+    local row_bar = math.max(2, math.floor(w * 0.002))
+    local col_bar = math.max(2, math.floor(h * 0.002))
+
+    local function isContent(y, x)
+        return math.abs(luma(y, x) - bg) > delta
+    end
+
+    -- Top: walk rows from the outward band edge downward; margin rows are
+    -- blank, so the first row that clears the bar is the true topmost content.
+    local top = y0
+    for y = math.max(0, y0 - pad_y), math.min(h - 1, y0 + pad_y) do
+        local cnt = 0
+        for x = 0, w - 1 do
+            if isContent(y, x) then
+                cnt = cnt + 1
+                if cnt >= row_bar then
+                    break
+                end
+            end
+        end
+        if cnt >= row_bar then
+            top = y
+            break
+        end
+    end
+
+    -- Bottom: the mirror walk, from below the coarse bottom edge upward.
+    local bottom = y1 - 1
+    for y = math.min(h - 1, y1 - 1 + pad_y), math.max(0, y1 - 1 - pad_y), -1 do
+        local cnt = 0
+        for x = 0, w - 1 do
+            if isContent(y, x) then
+                cnt = cnt + 1
+                if cnt >= row_bar then
+                    break
+                end
+            end
+        end
+        if cnt >= row_bar then
+            bottom = y
+            break
+        end
+    end
+
+    -- Left: a column counts only when content runs down enough of its height.
+    local left = x0
+    for x = math.max(0, x0 - pad_x), math.min(w - 1, x0 + pad_x) do
+        local cnt = 0
+        for y = 0, h - 1 do
+            if isContent(y, x) then
+                cnt = cnt + 1
+                if cnt >= col_bar then
+                    break
+                end
+            end
+        end
+        if cnt >= col_bar then
+            left = x
+            break
+        end
+    end
+
+    -- Right: the mirror column walk, from the far side inward.
+    local right = x1 - 1
+    for x = math.min(w - 1, x1 - 1 + pad_x), math.max(0, x1 - 1 - pad_x), -1 do
+        local cnt = 0
+        for y = 0, h - 1 do
+            if isContent(y, x) then
+                cnt = cnt + 1
+                if cnt >= col_bar then
+                    break
+                end
+            end
+        end
+        if cnt >= col_bar then
+            right = x
+            break
+        end
+    end
+
+    local nx0, ny0 = math.max(0, left), math.max(0, top)
+    local nx1, ny1 = math.min(w, right + 1), math.min(h, bottom + 1)
+    if nx0 >= nx1 or ny0 >= ny1 then
+        return x0, y0, x1, y1 -- sanity: the fine pass went sideways, keep coarse
+    end
+    return nx0, ny0, nx1, ny1
+end
 
 -- Consecutive runs of indices (in [a0, a1)) where clean(i) is true.
 local function collectCleanBands(a0, a1, clean)
@@ -675,19 +784,17 @@ local MeguruDocument = Document:extend{
     prefetch_count = 1,
     -- Maximum number of decoded/scaled tiles kept in RAM per document.
     max_cached_tiles = 8,
-    -- Maximum number of downscaled whole-page scan buffers kept in RAM for the
-    -- panel detector (see panelScanBuffer). The auto-crop's 1:1 scan is
-    -- transient and never lands here — it is a whole page at native size.
-    max_cached_scans = 3,
+    -- Maximum number of *native* decoded pages kept in RAM (for pan/zoom crops).
+    max_cached_native = 3,
     -- Maximum number of page-byte files kept on disk (global LRU, shared by all docs).
     max_disk_pages = 240,
 
     tiles = nil,    -- decoded tile LRU, key = "pageno|w x h"
-    scans = nil,    -- whole-page scan LRU, key = pageno
+    native = nil,   -- native decode LRU, key = pageno
     stamps = nil,   -- key -> recency stamp for both LRUs
     stamp = 0,
-    dims = nil,     -- pageno -> {w=, h=} the page's own size, measured by
-                    --            page:getSize (never cropped)
+    dims = nil,     -- pageno -> {w=, h=} full (capped) native page size, as
+                    --            delivered by decodeNative (never cropped)
     crops = nil,    -- pageno -> auto content box {x0,y0,x1,y1} in native px
                     --            (plain margin scan, see computeContentBox),
                     --            cached for getPageBBox / getPanelFromPage;
@@ -716,9 +823,9 @@ function MeguruDocument:_openLocalArchive()
         logger.warn("Meguru: MuPDF cannot open", self.file, ":", tostring(doc))
         return nil
     end
-    -- Ask MuPDF for a grayscale pixmap, exactly like a streamed page
-    -- (image.lua sets the same flag), so a local cbz looks bit-for-bit like a
-    -- .meguru book on every screen.
+    -- Ask MuPDF for a grayscale pixmap, exactly like the streamed decode
+    -- (decodeNativeMupdf sets the same flag per page), so a local cbz looks
+    -- bit-for-bit like a .meguru book on every screen.
     if doc.setColorRendering then
         doc:setColorRendering(false)
     end
@@ -727,7 +834,7 @@ end
 
 function MeguruDocument:init()
     self.tiles = {}
-    self.scans = {}
+    self.native = {}
     self.stamps = {}
     self.stamp = 0
     self.dims = {}
@@ -950,16 +1057,20 @@ function MeguruDocument:close()
 end
 
 function MeguruDocument:clearCaches()
-    for _, cache in ipairs({ self.tiles or {}, self.scans or {} }) do
-        for _, item in pairs(cache) do
-            if item.bb and item.bb_free ~= true then
-                item.bb:free()
-                item.bb_free = true
-            end
+    for _, tile in pairs(self.tiles or {}) do
+        if tile.bb and tile.bb_free ~= true then
+            tile.bb:free()
+            tile.bb_free = true
+        end
+    end
+    for _, item in pairs(self.native or {}) do
+        if item.bb and item.bb_free ~= true then
+            item.bb:free()
+            item.bb_free = true
         end
     end
     self.tiles = {}
-    self.scans = {}
+    self.native = {}
     self.stamps = {}
 end
 
@@ -1008,6 +1119,19 @@ function MeguruDocument:cacheTile(key, tile)
     self.tiles[key] = tile
     bump(self, key)
     evictOldest(self, self.tiles, self.max_cached_tiles)
+end
+
+function MeguruDocument:cacheNative(pageno, bb)
+    if self.native[pageno] then
+        local old = self.native[pageno]
+        if old.bb and old.bb_free ~= true then
+            old.bb:free()
+            old.bb_free = true
+        end
+    end
+    self.native[pageno] = { bb = bb, bb_free = false }
+    bump(self, pageno)
+    evictOldest(self, self.native, self.max_cached_native)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1206,31 +1330,33 @@ end
 -- treats its first image as the cover — and so does a
 -- marker whose stored cover link can no longer be fetched, so a book is never
 -- left cover-less over a stale/moved cover URL.
--- The size a cover is rendered at: fitted to the screen, and never upscaled —
--- a small source stays small rather than being blown up to fill it.
---
--- Shared by both cover paths, because both used to render the page whole and
--- then downscale the result with a second buffer. Asking the renderer for the
--- final size instead means no oversized intermediate exists at all, and so
--- nothing to free.
-local function coverSize(w, h)
-    local sw, sh = Screen:getWidth(), Screen:getHeight()
-    if w <= sw and h <= sh then
-        return w, h
-    end
-    local s = math.min(sw / w, sh / h)
-    return math.max(1, math.floor(w * s + 0.5)), math.max(1, math.floor(h * s + 0.5))
-end
-
--- Cover of a local cbz = the archive's first page, like any CBZ.
+-- Cover of a local cbz = the archive's first page (like any CBZ). Rendered
+-- into a *fresh* capped buffer and bounded to the screen, so the cover never
+-- aliases the LRU-cached native of page 1 (that buffer is cache-owned and
+-- freed on eviction) nor lingers as an oversized bitmap.
 function MeguruDocument:_localCoverPageImage()
-    local w, h = Image.pageSizeOfDoc(self.mupdf_doc, 1)
-    if not (w and h) then
-        logger.warn("Meguru: could not measure local cbz cover")
+    if self.dead_pages[1] then
         return nil
     end
-    local tw, th = coverSize(w, h)
-    return Image.renderRegionFromDoc(self.mupdf_doc, 1, 0, 0, w, h, tw, th)
+    local ok, bb = pcall(renderMuPDFPage, self.mupdf_doc, 1, nil)
+    if not ok or not bb or bb == Image.DECODE_TOO_LARGE then
+        logger.warn("Meguru: could not render local cbz cover")
+        return nil
+    end
+    local w, h = bb:getWidth(), bb:getHeight()
+    if w and h and (w > Screen:getWidth() or h > Screen:getHeight()) then
+        local scale = math.min(Screen:getWidth() / w, Screen:getHeight() / h)
+        local ok_s, scaled = pcall(RenderImage.scaleBlitBuffer, RenderImage, bb,
+            math.max(1, math.floor(w * scale + 0.5)),
+            math.max(1, math.floor(h * scale + 0.5)), false)
+        if ok_s and scaled then
+            if scaled ~= bb then
+                bb:free() -- bounded cover made; release the full-res render
+            end
+            return scaled
+        end
+    end
+    return bb
 end
 
 function MeguruDocument:getCoverPageImage()
@@ -1304,17 +1430,37 @@ function MeguruDocument:getCoverPageImage()
         return nil
     end
 
-    -- The cover is rendered straight to the size the screen can use, so a
-    -- server handing out a full-resolution image as its "cover" never produces
-    -- a full-resolution buffer here — the renderer scales as it decodes, and
-    -- there is no intermediate to free.
-    local w, h = Image.pageSizeOfBytes(data)
-    if not (w and h) then
-        logger.warn("Meguru: could not read cover image")
+    -- Decode the cover. decodeNative bounds oversized artwork to the cap, so a
+    -- server handing out a full-res image as its "cover" is not fully decoded
+    -- into RAM either (it would otherwise be another giant transient). A cover
+    -- refused as too large (Image.DECODE_TOO_LARGE: huge lossless artwork) simply
+    -- has no cover.
+    local res = Image.decode(data)
+    if not res or res == Image.DECODE_TOO_LARGE then
+        logger.warn("Meguru: could not decode cover image")
         return nil
     end
-    local tw, th = coverSize(w, h)
-    return Image.renderRegion(data, 0, 0, w, h, tw, th)
+    local bb = res
+    -- Bound memory like the MuPDF/kopt cover path: never hand back a larger
+    -- bitmap than the screen can use (the raw OPDS cover can be full-res).
+    -- free_orig_bb=false: `bb` is owned here (fresh decode), so the scaler
+    -- must not free it — we release it only when a distinct bounded copy was
+    -- actually produced; when it returns `bb` itself (or a decode failure is
+    -- reported via ok_s=false) the buffer is still ours to hand back.
+    local w, h = bb:getWidth(), bb:getHeight()
+    if w and h and (w > Screen:getWidth() or h > Screen:getHeight()) then
+        local scale = math.min(Screen:getWidth() / w, Screen:getHeight() / h)
+        local ok_s, scaled = pcall(RenderImage.scaleBlitBuffer, RenderImage, bb,
+            math.max(1, math.floor(w * scale + 0.5)),
+            math.max(1, math.floor(h * scale + 0.5)), false)
+        if ok_s and scaled then
+            if scaled ~= bb then
+                bb:free() -- bounded cover made; release the full-res decode
+            end
+            return scaled
+        end
+    end
+    return bb
 end
 
 function MeguruDocument:getToc()
@@ -1375,19 +1521,11 @@ function MeguruDocument:getPageBBox(pageno)
     if self._pagenum_cache ~= nil then
         return self:_basePageBBox(pageno)
     end
-    if self._meguru_pagenum_analysis_flag then
-        -- An analysis render is in flight. The flag guards the (theoretical)
-        -- re-entry of one — none of this document's render paths call back into
-        -- getPageBBox — and it is tested *before* the box is derived, not after:
-        -- the margin scan is a whole page rendered at 1:1, so letting it run
-        -- here would nest one full-page render inside another. The uncropped
-        -- page is the right answer anyway, since an analysis knows what it is
-        -- looking for and does not want a crop under it.
-        local dims = self:getPageDims(pageno)
-        return { x0 = 0, y0 = 0, x1 = dims.w, y1 = dims.h }
-    end
     local bbox = self:_basePageBBox(pageno)
-    if not bbox then
+    if not bbox or self._meguru_pagenum_analysis_flag then
+        -- The analysis flag guards the (theoretical) re-entry of an analysis
+        -- render; none of this document's render paths call back into
+        -- getPageBBox, but the guard mirrors pagenumbercrop's and is free.
         return bbox
     end
     local c = self.configurable
@@ -1440,107 +1578,26 @@ function MeguruDocument:_basePageBBox(pageno)
     return { x0 = 0, y0 = 0, x1 = dims.w, y1 = dims.h }
 end
 
--- The buffer a whole-page content heuristic scans, and the page rectangle it is
--- a picture of.
---
--- Returns `bb, full_w, full_h`: the whole page rendered down to
--- PANEL_SCAN_TARGET on its long edge, and the page size that buffer is a
--- downscale of. `bb` is never the page itself, and the caller maps its findings
--- back through `full_w`/`full_h` rather than through the buffer's own
--- dimensions (`getPanelFromPage` at its `full_w/sw`), so any scan resolution
--- works.
---
--- Cached in self.scans: the panel detector runs on a long-press, possibly
--- several times per page, and the scan it needs is small — a second render of
--- the same page to answer the same question would be pure waste. This is *not*
--- the auto-crop's buffer: that one has to be 1:1 and is transient, see
--- autoContentBox.
-function MeguruDocument:panelScanBuffer(pageno)
-    local dims = self:getPageDims(pageno)
-    if not (dims and dims.w > 0 and dims.h > 0) then
-        return nil
-    end
-    local item = self.scans[pageno]
-    if item and item.bb_free ~= true then
-        bump(self, pageno)
-        return item.bb, dims.w, dims.h
-    end
-    self.scans[pageno] = nil
-    local z = math.min(PANEL_SCAN_TARGET / dims.w, PANEL_SCAN_TARGET / dims.h, 1)
-    local sw = math.max(1, math.floor(dims.w * z + 0.5))
-    local sh = math.max(1, math.floor(dims.h * z + 0.5))
-    local bb = self:pageRegion(pageno, 0, 0, dims.w, dims.h, sw, sh)
-    if not bb then
-        return nil
-    end
-    self.scans[pageno] = { bb = bb, bb_free = false }
-    bump(self, pageno)
-    evictOldest(self, self.scans, self.max_cached_scans)
-    return bb, dims.w, dims.h
-end
-
 -- Compute and cache the auto content box of `pageno` (see computeContentBox).
---
--- The page is rendered at 1:1 for the scan and the buffer is freed as soon as
--- the box is read off it: what is kept is the box, in `self.crops`, for the
--- page's lifetime. Holding the bitmap instead would mean holding a full page at
--- native resolution for every open book, which is the buffer this document
--- deliberately no longer has — so the render is transient even though it is
--- dearer that way.
---
--- Three ways out, and they are different answers that must not be confused:
---
---   * too large to scan at 1:1 → the crop is off, and that is remembered;
---   * the render failed, or the page never measured → off too, and remembered,
---     because a 1:1 render is far too expensive to retry on every page turn in
---     the hope that this one comes out differently;
---   * the scan ran and found nothing to trim → nil, cached as `false`, which is
---     the same "nothing trimmed" mark a full-bleed page gets.
---
--- A `false` here is decided once and holds for the rest of the session: nothing
--- invalidates self.crops — not even "Clear cache", which empties the *disk*
--- cache and leaves this table alone. Reopening the book is what retries it. That
--- is a deliberate trade against re-rendering a whole page at native resolution
--- on every getPageBBox, but it does mean a page that failed once for a passing
--- reason stays uncropped until the book is closed.
---
--- Either way the page is shown whole, which is the answer stock itself gives
--- whenever it cannot trust its detection.
+-- It is derived from the very native decode that establishes the page size,
+-- so it never costs an extra fetch; it is cached in self.crops[pageno] for the
+-- page's lifetime (the plain margin scan is trim-independent, so the box is
+-- stable while a page is open). nil is cached as "no margin trimmed".
 function MeguruDocument:autoContentBox(pageno)
     local cached = self.crops[pageno]
     if cached ~= nil then
         return cached ~= false and cached or nil
     end
-    -- Only a page that was really measured can be cropped. `self.dims[pageno]`
-    -- holds that fact: it is written when the page's own size is known, and left
-    -- alone when the fetch failed and getPageDims handed back the screen size
-    -- for that one call. Scanning that fallback would produce a box in the
-    -- wrong space entirely, which is worse than not cropping.
-    local dims = self:getPageDims(pageno)
-    if not self.dims[pageno] then
-        cropSkipWarn(pageno, "page size unknown (the fetch failed) — kept as-is")
+    self:getPageDims(pageno) -- decodes & caches the native page into the LRU
+    local item = self.native[pageno]
+    if not (item and item.bb and item.bb_free ~= true) then
         return nil
     end
-    if self.dead_pages[pageno] or not (dims and dims.w > 0 and dims.h > 0) then
-        return nil
-    end
-    if dims.w * dims.h > AUTOCROP_MAX_SCAN_PIXELS then
-        cropSkipWarn(pageno, "page too large to scan at 1:1 (", dims.w, "x", dims.h,
-            ") — kept as-is")
-        self.crops[pageno] = false
-        return nil
-    end
-    local bb = self:pageRegion(pageno, 0, 0, dims.w, dims.h, dims.w, dims.h)
-    if not bb then
-        cropSkipWarn(pageno, "could not render the page at 1:1 for the margin scan",
-            "— kept as-is")
-        self.crops[pageno] = false
-        return nil
-    end
-    local box = computeContentBox(bb, pageno)
-    -- Malloc'd outside the Lua heap, like every BlitBuffer here: nothing will
-    -- reclaim it, and the scan read everything it had to say.
-    bb:free()
+    local bb = item.bb
+    local box = computeContentBox(bb, bb:getWidth(), bb:getHeight(), pageno)
+    -- Store false as the "nothing trimmed" mark: a box table is cached as-is,
+    -- a nil result (full page) as false, so a full-bleed page is scanned once
+    -- and not re-derived on every getPageBBox / panel-zoom call.
     self.crops[pageno] = box or false
     return box
 end
@@ -1569,13 +1626,11 @@ end
 -- (and never tripping its coexistence probe: writing `_pagenum_cache` itself
 -- would disable the standalone gate).
 --
--- Cost: the strip and the blank check are region renders of the page
--- (decodeRegion), so a page turn adds two small ones — no extra network fetch,
--- matching what pagenumbercrop does to this document through the base
--- Document.renderPage shim. On a page the cap had to reduce they come from the
--- source like every other tile, so the analysis sees the sharp page rather
--- than the retained reduction; on every other page they cut and scale from the
--- cached whole-page render, exactly as they always did.
+-- Cost: the strip and the blank check cut+scale from the per-page cached
+-- native decode that getPageDims already keeps (the same render the margin
+-- scan and every pan/zoom tile use), so a page turn adds two small region
+-- renders — no extra network fetch, matching what pagenumbercrop does to this
+-- document through the base Document.renderPage shim.
 
 local MEGURU_BLANK_RENDER_MAX_PX = 256
 local MEGURU_BLANK_MAX_CONTENT_AREA = 0.10
@@ -1808,7 +1863,21 @@ function MeguruDocument:_meguruAnalysisBB(pageno, x, y, w, h, zoom)
         end
         local tw = math.max(1, math.floor(w * zoom + 0.5))
         local th = math.max(1, math.floor(h * zoom + 0.5))
-        return self:decodeRegion(pageno, x, y, w, h, tw, th)
+        -- Streamed pages reach decodeRegion with raw bytes; local cbz pages
+        -- have no bytes to fetch — decodeRegion renders from the open archive
+        -- (ensureNativeBB's local branch). This is a bypass, not a nil no-op:
+        -- on a local book `data` stays nil and the render below must still run.
+        local data
+        if not self.local_cbz then
+            data = self:readPageFromDisk(pageno)
+            if not data then
+                data = self:fetchPageToDisk(pageno)
+            end
+            if not data then
+                return nil
+            end
+        end
+        return self:decodeRegion(pageno, x, y, w, h, tw, th, data)
     end)
     self._meguru_pagenum_analysis_flag = false
     if ok and bb then
@@ -1978,25 +2047,49 @@ function MeguruDocument:getPanelFromPage(pageno, pos)
     if px < 0 or py < 0 or px >= dims.w or py >= dims.h then
         return nil
     end
-    -- The gutter scan reads the shared downscale (panelScanBuffer), so no
-    -- second copy is made here and nothing is freed: the buffer belongs to
-    -- that cache.
-    -- The content rectangle is the whole page — edge margins only add white at
-    -- the frame, which the interior-gutter filter (keepInteriorBands) already
-    -- discards, and gutters that separate panels span the full content width
-    -- regardless of any margin crop.
-    local scan_bb, full_w, full_h = self:panelScanBuffer(pageno)
-    if not scan_bb then
+    -- Fetch bytes only in streamed mode; a local cbz page has none and
+    -- ensureNativeBB renders it from the open archive instead. Bypass, not
+    -- nil no-op: `data` stays nil on a local book and the render must run.
+    local data
+    if not self.local_cbz then
+        data = self:readPageFromDisk(pageno)
+        if not data then
+            data = self:fetchPageToDisk(pageno)
+        end
+        if not data then
+            return nil
+        end
+    end
+    local native_bb = self:ensureNativeBB(pageno, data)
+    if not native_bb then
         return nil
     end
+    local full_w, full_h = native_bb:getWidth(), native_bb:getHeight()
     if not full_w or not full_h or full_w < 1 or full_h < 1 then
         return nil
     end
-    local ok_raster, raster = pcall(makeRaster, scan_bb)
+    -- Downscale for the gutter scan. The content rectangle is the whole page:
+    -- edge margins only add white at the frame, which the interior-gutter
+    -- filter (keepInteriorBands) already discards, and gutters that separate
+    -- panels span the full content width regardless of any margin crop.
+    local small = native_bb
+    local sw, sh = full_w, full_h
+    if full_w > PANEL_SCAN_TARGET or full_h > PANEL_SCAN_TARGET then
+        local scale = PANEL_SCAN_TARGET / math.max(full_w, full_h)
+        sw = math.max(1, math.floor(full_w * scale + 0.5))
+        sh = math.max(1, math.floor(full_h * scale + 0.5))
+        small = RenderImage:scaleBlitBuffer(native_bb, sw, sh, false)
+        if not small then
+            return nil
+        end
+    end
+    local ok_raster, raster = pcall(makeRaster, small)
+    if small ~= native_bb then
+        small:free() -- scan copy is C-side owned; free even if makeRaster threw
+    end
     if not ok_raster or not raster then
         return nil
     end
-    local sw, sh = scan_bb:getWidth(), scan_bb:getHeight()
     local sx0, sy0 = 0, 0
     local sx1, sy1 = sw, sh
     local tap_x = clamp(math.floor(px * sw / full_w), sx0, sx1 - 1)
@@ -2006,7 +2099,7 @@ function MeguruDocument:getPanelFromPage(pageno, pos)
     if not cell then
         return nil
     end
-    -- The cell is in scan pixels; the reader wants page pixels.
+    -- Map the cell (whole small page == whole native page) back to native.
     local cx0 = math.max(0, math.floor(cell.x0 * full_w / sw))
     local cy0 = math.max(0, math.floor(cell.y0 * full_h / sh))
     local cx1 = math.min(full_w, math.ceil(cell.x1 * full_w / sw))
@@ -2026,65 +2119,86 @@ function MeguruDocument:getPageDims(pageno)
     if cached then
         return cached
     end
-    -- The page size, measured *without* decoding the page: `page:getSize`, which
-    -- is what stock's `Document:getNativePageDimensions` does, and the reason a
-    -- page turn no longer pays a whole-page decode just to learn how big the
-    -- page is.
-    --
-    -- This is the SOURCE's size, and it is the reader's page geometry: every
-    -- crop, every tile and every content scan is expressed in it. Reporting the
-    -- size of some *retained* buffer instead is what once turned a manhwa strip
-    -- 800x20000 into a page 82x2048, with every tile a ~13x upscale of those 82
-    -- columns. Nothing is retained whole any more — see decodeRegion.
-    --
-    -- Cropping is deliberately NOT baked in: any auto-crop lives in the
-    -- bounding box getPageBBox returns, so page turns and zoom recomputes never
-    -- re-derive a crop-dependent size (and the bbox, being a pure margin scan,
-    -- is stable for a page's lifetime).
-    local fallback = { w = Screen:getWidth(), h = Screen:getHeight() }
-    local w, h
+    -- Fetch (if needed) and decode the page once to learn its size. The size
+    -- reported is the *full* (capped) native page — decodeNative downscales
+    -- oversized scans to the cap, so the decode never holds a huge buffer.
+    -- Cropping is deliberately NOT baked into this size: any auto-crop lives
+    -- in the bounding box getPageBBox returns, so page turns / zoom recomputes
+    -- never re-derive a crop-dependent size (and the bbox, being a pure margin
+    -- scan, is stable for a page's lifetime).
     if self.local_cbz then
-        w, h = Image.pageSizeOfDoc(self.mupdf_doc, pageno)
-    else
-        local data = self:fetchPageToDisk(pageno)
-        if not data then
-            -- A missing fetch is transient, so this fallback is returned for
-            -- THIS call only and deliberately not stored. Caching it is what
-            -- made a page's geometry the screen size for good: the next look
-            -- would see a "measured" page and crop, scan and render against
-            -- 1072x1448 instead of the page — and since the box is then handed
-            -- to the reader in page coordinates, the crop came out displaced
-            -- towards the top-left, cutting the top and the left of the artwork
-            -- and leaving the right and bottom margins untouched.
-            --
-            -- Not cached also means the callers can tell the two apart: an
-            -- entry in self.dims is a page that was really measured, and its
-            -- absence is a page whose size is not known yet.
+        -- Local cbz: geometry comes from rendering the page once out of the
+        -- open archive, capped exactly like decodeNative caps a streamed page.
+        -- ensureNativeBB marks a failed page in self.dead_pages, so a doomed
+        -- page is never re-rendered on later lookups; the native LRU keeps the
+        -- very buffer whose size is reported here, so geometry, every pan/zoom
+        -- tile and the auto content-box scan share one render — the same
+        -- one-whole-page-render profile as the streamed mode.
+        local native_bb = self:ensureNativeBB(pageno)
+        if not native_bb then
+            local fallback = { w = Screen:getWidth(), h = Screen:getHeight() }
+            self.dims[pageno] = fallback
             return fallback
         end
-        w, h = Image.pageSizeOfBytes(data)
-        -- Drop the bytes before the collect below: on a big scan this is a
-        -- multi-MB Lua allocation and, still referenced by this local, a
-        -- collect right now would not reclaim it.
-        data = nil
+        local dims = {
+            w = math.max(1, native_bb:getWidth()),
+            h = math.max(1, native_bb:getHeight()),
+        }
+        self.dims[pageno] = dims
+        pcall(collectgarbage, "collect")
+        return dims
     end
-    if not (w and h) then
-        -- Unlike the fetch failure above, this one IS stored — the page is not
-        -- coming back, `dead_pages` says so, and every consumer refuses a dead
-        -- page before it can read this size. Storing it only stops the measure
-        -- being retried on every call.
-        logger.warn("Meguru: cannot measure page", pageno)
+    local data = self:fetchPageToDisk(pageno)
+    local fallback = { w = Screen:getWidth(), h = Screen:getHeight() }
+    if not data then
+        self.dims[pageno] = fallback
+        return fallback
+    end
+    local res = Image.decode(data)
+    if res == nil or res == Image.DECODE_TOO_LARGE then
+        if res == Image.DECODE_TOO_LARGE then
+            logger.warn(string.format(
+                "Meguru: page %d is a very large lossless image that MuPDF would have to decode at full size (above the %d-Mpx safety limit); skipping it",
+                pageno, MAX_LOSSLESS_NATIVE_PIXELS / 1024 / 1024))
+        else
+            logger.warn("Meguru: cannot decode page", pageno)
+        end
         self.dead_pages[pageno] = true
         self.dims[pageno] = fallback
         return fallback
     end
-    local dims = { w = math.max(1, w), h = math.max(1, h) }
+    local bb = res
+    local dims = {
+        w = math.max(1, bb:getWidth()),
+        h = math.max(1, bb:getHeight()),
+    }
     self.dims[pageno] = dims
-    -- Force a GC here so the Lua-side garbage is reclaimed before the next page
-    -- is fetched, instead of piling up until the device runs out of RAM a few
-    -- pages in (the built-in page-stream viewer survives exactly because it
-    -- holds only one page's worth). BlitBuffers are freed explicitly; it is the
-    -- byte strings this reclaims.
+
+    -- Keep the working-resolution decode (capped by decodeNative) so every
+    -- later render of this page reuses it instead of re-rendering the scan:
+    -- one capped MuPDF whole-page render per new page covers the geometry, the
+    -- auto content box (autoContentBox -> computeContentBox) and every
+    -- pan/zoom tile (decodeRegion). This is safe precisely because the buffer
+    -- is the *capped* one from Image.decode (never more than `max_native_pixels`
+    -- on its long edge), so the native LRU can never
+    -- hold a huge scan at full res.
+    self:cacheNative(pageno, bb)
+    -- Drop this page's raw bytes string before forcing the GC below: it is a
+    -- multi-MB Lua allocation on a big scan and, being still referenced by
+    -- this local, a collect right now would not reclaim it. Only the capped
+    -- native decode (now cached) is kept.
+    data = nil
+    -- A new page's geometry decode is the last point where this page's raw
+    -- bytes string (several MB on a big scan) is still referenced (the MuPDF
+    -- document/context is already closed inside decodeNative, and its
+    -- BlitBuffers are freed explicitly). Force a GC right here so the Lua-side
+    -- garbage is reclaimed *before* the next page is decoded, instead of
+    -- piling up until the device runs out of RAM a few pages in (the built-in
+    -- page-stream viewer survives exactly because it holds only one page's
+    -- worth; without this, e-ink devices with tight RAM die on the second or
+    -- third big page). One full collect per new page is cheap next to the
+    -- decode it follows; BlitBuffers are freed explicitly, it is the Lua-side
+    -- garbage (byte strings) this reclaims.
     pcall(collectgarbage, "collect")
     return dims
 end
@@ -2097,77 +2211,134 @@ local function round(v)
     return math.floor(v + 0.5)
 end
 
--- (There is no "get the whole page as a buffer" step any more. Every buffer
--- this document holds was asked for by somebody at a size they chose — see
--- decodeRegion for the painted ones, panelScanBuffer for the scanned ones, and
--- autoContentBox for the one buffer that exists only long enough to be read.)
-
--- Render the rectangle (sx, sy, sw, sh) of page `pageno`, at `tw` x `th`.
---
--- The one place that knows where a page's pixels come from, which is why no
--- caller branches on `local_cbz` any more. The two books really are different —
--- a local page lives in an archive that stays open for the book's life, and
--- whose document must not be closed (the cover renderer shares it); a streamed
--- page's bytes are read back from the disk cache or fetched — but that
--- difference belongs here, once, rather than in every caller.
---
--- The fetch lives here for the same reason: it was copy-pasted into each of
--- them, along with the same `readPageFromDisk or fetchPageToDisk` spelling.
--- Returns a fresh BlitBuffer of exactly tw x th, or nil.
-function MeguruDocument:pageRegion(pageno, sx, sy, sw, sh, tw, th)
-    if self.local_cbz then
-        return Image.renderRegionFromDoc(self.mupdf_doc, pageno, sx, sy, sw, sh, tw, th)
+-- Ensure a working-resolution (native unless capped by decodeNative) BlitBuffer
+-- for `pageno` is available, decoding `data` if it is not in the native LRU
+-- yet. Returns the BlitBuffer.
+function MeguruDocument:ensureNativeBB(pageno, data)
+    if self.dead_pages[pageno] then
+        return nil -- decode already failed once (or was refused as too large)
     end
-    local bytes = self:readPageFromDisk(pageno) or self:fetchPageToDisk(pageno)
-    if not bytes then
+    local item = self.native[pageno]
+    if item and item.bb_free ~= true then
+        bump(self, pageno)
+        return item.bb
+    end
+    self.native[pageno] = nil
+    local res
+    if self.local_cbz then
+        -- Local cbz: no raw bytes to decode — render the page straight from
+        -- the open archive, through the same capped renderer the streamed
+        -- decode uses. A local page cannot be refused up front as too large
+        -- (there are no entry bytes to sniff the format), so Image.DECODE_TOO_LARGE
+        -- never comes back here: a huge PNG-in-cbz page keeps its transient
+        -- full-res decode inside MuPDF, exactly like the stock DocumentMuPDF
+        -- path for the same file (see renderMuPDFPage).
+        res = Image.renderMupdfPage(self.mupdf_doc, pageno, nil)
+    else
+        res = Image.decode(data)
+    end
+    if res == nil or res == Image.DECODE_TOO_LARGE then
+        -- A page that failed to decode once with these bytes will fail again
+        -- identically; remembering it keeps a doomed full-resolution decode
+        -- (or the RenderImage repeat of it) from running again on every paint.
+        if res == Image.DECODE_TOO_LARGE then
+            logger.warn(string.format(
+                "Meguru: page %d skipped: its lossless source is above the %d-Mpx decode safety limit",
+                pageno, MAX_LOSSLESS_NATIVE_PIXELS / 1024 / 1024))
+        else
+            logger.warn("Meguru: decode failed for page", pageno)
+        end
+        self.dead_pages[pageno] = true
         return nil
     end
-    return Image.renderRegion(bytes, sx, sy, sw, sh, tw, th)
+    self:cacheNative(pageno, res)
+    return res
 end
 
--- Render a page rectangle into a tile.
---
--- `cx, cy, cw, ch` are in page coordinates — the space `getPageDims` reports —
--- already mapped back from zoomed page space by renderPage. `tw`/`th` is the
--- size the caller wants the buffer in and it always gets exactly that size.
--- `data` must be the page's raw bytes for a streamed page; a local cbz has none
--- and renders from its open archive instead.
---
--- There is one path here, and it is stock's: MuPDF paints the requested
--- rectangle into a pixmap of the requested size, decimating an oversized JPEG
--- *while* it decodes. Nothing whole-page is decoded, nothing is retained between
--- tiles, and no page is treated differently from any other — a manhwa strip and
--- a paperback scan are the same call with different rectangles.
---
--- The trade is that a redraw of a crop is a fresh render rather than a slice of
--- a cached buffer, so a page turn costs one render per tile instead of one per
--- page. The tile LRU in renderPage is what covers the repeat case, and stock's
--- answer to the same problem is its DocCache-backed whole-page render — which is
--- precisely the retained buffer this document gave up, in exchange for never
--- having to reduce a page's resolution to bound what it holds.
-function MeguruDocument:decodeRegion(pageno, cx, cy, cw, ch, tw, th)
+-- Decode (and, when needed, crop+scale) a page region.
+-- `cx, cy, cw, ch` are in *full native* page coordinates (already mapped back
+-- from zoomed page space by renderPage, and clamped to the page size); the
+-- crop ReaderView applies lives purely in the bounding box it zooms through
+-- (getPageBBox), so it never shifts the region requested here. `tw`/`th` is
+-- the output tile size. `data` must be the cached raw bytes. Returns a
+-- BlitBuffer.
+function MeguruDocument:decodeRegion(pageno, cx, cy, cw, ch, tw, th, data)
     local dims = self.dims[pageno] or self:getPageDims(pageno)
-    if self.dead_pages[pageno] then
+    local whole_page = cx <= 0 and cy <= 0 and cx + cw >= dims.w and cy + ch >= dims.h
+        and cw >= dims.w and ch >= dims.h
+
+    -- Note: there is deliberately no "whole page → decode straight to the tile
+    -- size" fast path. The paths below reuse the LRU-cached, cap-bounded
+    -- native render instead (getPageDims keeps one per page), so a page turn
+    -- costs a single MuPDF whole-page render, and every subsequent paint of the
+    -- page is a slice/scale of that cached buffer — not another whole-page
+    -- render.
+    local native_bb = self:ensureNativeBB(pageno, data)
+    if not native_bb then
+        -- No cached/decodable native. ensureNativeBB has already logged and
+        -- memoised a decode failure (self.dead_pages), so nothing here retries
+        -- a doomed decode on every paint — that repeated ~full-res attempt is
+        -- what OOM-killed the process. On the very first failure of a *whole
+        -- page* only, a single last-resort direct decode at the tile size is
+        -- still worth trying (it can salvage a page whose native capped render
+        -- failed for a non-memory reason); any sub-region request must keep
+        -- the nil behaviour — a wrong region is worse than a gray tile. Guarded
+        -- on `data` too: a local cbz page has no raw bytes for a direct decode.
+        if whole_page and not self.dead_pages[pageno] and data ~= nil then
+            local ok, bb = pcall(RenderImage.renderImageData, RenderImage, data, #data, false, tw, th)
+            if ok and bb then
+                return bb
+            end
+            logger.warn("Meguru: decode/scale failed for page", pageno)
+            self.dead_pages[pageno] = true
+        end
         return nil
     end
-    -- Clamp to the page: a request that runs off the edge (a rect rounded past
-    -- the last row, a pan at the margin) is pulled back rather than refused, so
-    -- the tile shows the page's edge rather than a gap.
-    local x0 = clamp(round(cx), 0, dims.w)
-    local y0 = clamp(round(cy), 0, dims.h)
-    local x1 = clamp(round(cx + cw), x0 + 1, dims.w)
-    local y1 = clamp(round(cy + ch), y0 + 1, dims.h)
-    tw = math.max(1, round(tw))
-    th = math.max(1, round(th))
-    local bb = self:pageRegion(pageno, x0, y0, x1 - x0, y1 - y0, tw, th)
-    if not bb then
-        -- Deliberately not memoised as a dead page: a render fails for
-        -- transient reasons too (a cut-short fetch, a busy device), and the
-        -- next paint should be free to try again.
-        logger.warn("Meguru: render failed for page", pageno)
+    local fw, fh = native_bb:getWidth(), native_bb:getHeight()
+    local nx0 = clamp(round(cx), 0, fw)
+    local ny0 = clamp(round(cy), 0, fh)
+    local nx1 = clamp(round(cx + cw), nx0 + 1, fw)
+    local ny1 = clamp(round(cy + ch), ny0 + 1, fh)
+    local rw = nx1 - nx0
+    local rh = ny1 - ny0
+    -- Scale the requested region out of the native bitmap. When the request is
+    -- the *whole* page and the output is not 1:1 (tw/th differ from the native
+    -- size), there is nothing to cut out first: scaleBlitBuffer must then
+    -- allocate a new buffer, so the scale can run straight on the LRU-cached
+    -- native — a no-copy fast path. The cache-ownership rule is what makes the
+    -- 1:1 case fall through to the copy: if the output size matched the input,
+    -- the scaler could hand back `native_bb` itself, and a tile that aliases
+    -- the cache-owned native would then be freed behind the LRU's back on
+    -- eviction. Every other request — a pan/zoom sub-rectangle, or a 1:1
+    -- whole-page paint — needs a region copy first.
+    local cropped
+    if nx0 == 0 and ny0 == 0 and rw == fw and rh == fh
+            and (tw ~= fw or th ~= fh) then
+        cropped = nil
+    else
+        cropped = Blitbuffer.new(rw, rh, native_bb:getType())
+        cropped:blitFrom(native_bb, 0, 0, nx0, ny0, rw, rh)
+    end
+    -- free_orig_bb=false: scaleBlitBuffer never frees its input, so `cropped`
+    -- (when built) is an intermediate owned here — it must be freed
+    -- explicitly, or every cropped render leaks one region buffer until a GC
+    -- happens (KOReader BlitBuffers are malloc'd outside the Lua heap — see
+    -- the bb:free() convention). Handing it over with free_orig_bb=true would
+    -- free it inside the call, turning this free into a double-free on every
+    -- path where scaling actually happened. The cached `native_bb` is never
+    -- consumed by the scaler nor freed here. scaleBlitBuffer may return the
+    -- very same buffer when the sizes already match, so only free when
+    -- distinct.
+    local ok, scaled = pcall(RenderImage.scaleBlitBuffer, RenderImage,
+        cropped or native_bb, tw, th, false)
+    if cropped and scaled ~= cropped then
+        cropped:free()
+    end
+    if not ok or not scaled then
+        logger.warn("Meguru: crop/scale failed for page", pageno)
         return nil
     end
-    return bb
+    return scaled
 end
 
 function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturation, hinting)
@@ -2236,7 +2407,23 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
     end
     self.tiles[key] = nil
 
-    local bb = self:decodeRegion(pageno, cx, cy, cw, ch, tw, th)
+    -- Streamed pages reach decodeRegion with raw bytes; a local cbz page has
+    -- none — decodeRegion renders it from the open archive (ensureNativeBB's
+    -- local branch). This is a bypass, not a nil no-op: `data` stays nil on a
+    -- local book and the render below must still run, or every page would
+    -- paint the gray placeholder.
+    local data
+    if not self.local_cbz then
+        data = self:readPageFromDisk(pageno)
+        if not data then
+            data = self:fetchPageToDisk(pageno)
+        end
+        if not data then
+            return nil
+        end
+    end
+
+    local bb = self:decodeRegion(pageno, cx, cy, cw, ch, tw, th, data)
     if not bb then
         return nil
     end
@@ -2258,7 +2445,7 @@ end
 
 function MeguruDocument:hintPage(pageno, zoom, rotation, gamma, saturation)
     -- A local cbz is on disk: nothing to prefetch ahead of the page turn (each
-    -- page renders on demand from the open archive), and
+    -- page renders on demand from the open archive at the capped native), and
     -- the on-disk page cache is not used in this mode anyway.
     if self.local_cbz then
         return true

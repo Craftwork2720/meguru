@@ -29,6 +29,16 @@ local DEFAULTS = {
     -- to `Sync.plan`, which is why it is no longer a preference that decides
     -- nothing.
     sync_ttl_seconds  = 6 * 60 * 60,
+    -- Pixel budget for one decoded page. The page is reduced by AREA (both
+    -- axes by the same factor) until it fits, so the memory is bounded
+    -- absolutely rather than by the square of a per-axis cap. Capping the
+    -- longest edge instead punished tall pages without measure: an 800x20000
+    -- strip lost 9.8x of its width while a 4000x5000 scan lost 2.4x, and width
+    -- is all a reader sees of a strip.
+    --
+    -- 8 Mpx keeps three of the largest pages in RAM under 25 MB, and leaves a
+    -- 2600x3700 spread effectively untouched (a 9% reduction).
+    max_native_pixels = 8 * 1024 * 1024,
 
     -- How the page is fitted to the screen. Semantic rather than KOReader's own
     -- zoom_mode names, because the mapping is what changes when the crop
