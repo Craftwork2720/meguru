@@ -1339,7 +1339,12 @@ function MeguruDocument:_localCoverPageImage()
     if self.dead_pages[1] then
         return nil
     end
-    local ok, bb = pcall(renderMuPDFPage, self.mupdf_doc, 1, nil)
+    -- `Image.renderMupdfPage`, not a bare `renderMuPDFPage`: that name is a
+    -- file-local of meguru/doc/image.lua and reads as nil here, and
+    -- `pcall(nil, ...)` returns false rather than raising — so the whole body
+    -- below was unreachable and every local cbz reported "could not render
+    -- local cbz cover" whether or not the render would have worked.
+    local ok, bb = pcall(Image.renderMupdfPage, self.mupdf_doc, 1, nil)
     if not ok or not bb or bb == Image.DECODE_TOO_LARGE then
         logger.warn("Meguru: could not render local cbz cover")
         return nil
@@ -2160,7 +2165,7 @@ function MeguruDocument:getPageDims(pageno)
         if res == Image.DECODE_TOO_LARGE then
             logger.warn(string.format(
                 "Meguru: page %d is a very large lossless image that MuPDF would have to decode at full size (above the %d-Mpx safety limit); skipping it",
-                pageno, MAX_LOSSLESS_NATIVE_PIXELS / 1024 / 1024))
+                pageno, Image.MAX_LOSSLESS_NATIVE_PIXELS / 1024 / 1024))
         else
             logger.warn("Meguru: cannot decode page", pageno)
         end
@@ -2245,7 +2250,7 @@ function MeguruDocument:ensureNativeBB(pageno, data)
         if res == Image.DECODE_TOO_LARGE then
             logger.warn(string.format(
                 "Meguru: page %d skipped: its lossless source is above the %d-Mpx decode safety limit",
-                pageno, MAX_LOSSLESS_NATIVE_PIXELS / 1024 / 1024))
+                pageno, Image.MAX_LOSSLESS_NATIVE_PIXELS / 1024 / 1024))
         else
             logger.warn("Meguru: decode failed for page", pageno)
         end

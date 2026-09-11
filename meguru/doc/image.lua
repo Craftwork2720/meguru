@@ -331,6 +331,11 @@ local function decodeNative(data)
 end
 
 Image.DECODE_TOO_LARGE = DECODE_TOO_LARGE
+-- Exported because document.lua logs it: the line that explains why a lossless
+-- page is being skipped quotes the limit, and it had no way to reach it. It
+-- named the local directly, which resolves to a global reading nil, so the
+-- arithmetic on it raised instead of explaining anything.
+Image.MAX_LOSSLESS_NATIVE_PIXELS = MAX_LOSSLESS_NATIVE_PIXELS
 Image.bytesPerPixel = bbBytesPerPixel
 Image.cappedDim = cappedDim
 Image.isJpeg = isJpegBytes
