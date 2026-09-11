@@ -69,10 +69,13 @@ local function humanBytes(n)
     return string.format("%d B", n)
 end
 
---- Drop the on-disk page and cover caches, confirming first.
+--- Drop the in-memory page store and the on-disk cover cache, confirming first.
 ---
---- Nothing cached is load-bearing, so this cannot break a book — a page of the
---- book open right now simply refetches the next time it is painted from disk.
+--- Nothing cached is load-bearing, so this cannot break a book — and it will not
+--- even change the page on screen, which is painted from the decoded buffer in
+--- the document's own LRU. The raw bytes only matter when a page has to be
+--- decoded again. The part of this that is not about the current session is the
+--- sweep of files written by an older version, which kept page bytes on disk.
 local function clearCache()
     UIManager:show(ConfirmBox:new{
         text = _("Clear Meguru's cached pages and covers?"),
@@ -80,7 +83,7 @@ local function clearCache()
         ok_callback = function()
             local removed, freed = Reader.clearCache()
             UIManager:show(InfoMessage:new{
-                text = T(_("cache cleared (%1 file(s), %2)."),
+                text = T(_("cache cleared (%1 item(s), %2)."),
                     removed, humanBytes(freed or 0)),
             })
         end,

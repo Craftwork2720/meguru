@@ -17,6 +17,13 @@ function Paths.cacheDir()
     return DataStorage:getDataDir() .. "/cache/meguru"
 end
 
+--- A tombstone, and the only path here that nothing writes to.
+---
+--- Raw page bytes used to be filed per page in this directory. They are held in
+--- RAM now (`meguru/doc/cache`), so no code reads or writes here — the path
+--- survives solely so `Cache.clear` can sweep it, which is how the files a
+--- previous version left behind stop sitting on disk forever. Removing this
+--- function would leave them there for good.
 function Paths.pageCacheDir()
     return Paths.cacheDir() .. "/pages"
 end

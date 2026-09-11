@@ -46,7 +46,8 @@ _meta.lua                 plugin metadata
 main.lua                  plugin class: provider registration, menu dispatch, reader install
 
 meguru/
-  paths.lua               every path: database, markers, page/cover caches
+  paths.lua               every path: database, markers, cover cache (the page
+                          dir is a tombstone — see doc/cache.lua)
   fs.lua                  filesystem helpers
   settings.lua            plugin-wide preferences in G_reader_settings
   store.lua               SQ3 connection (module-level), schema, migrations, transactions
@@ -66,7 +67,7 @@ meguru/
 
   doc/
     document.lua          Document subclass: the reading engine
-    cache.lua             identity-keyed on-disk LRU for pages and covers
+    cache.lua             identity-keyed bytes: a page LRU in RAM, covers on disk
     image.lua             MuPDF decoding with a size cap
     defaults.lua          per-book seeding of kopt_* from plugin preferences
 
@@ -163,12 +164,15 @@ chapters show the series cover, deliberately.
 `MeguruDocument:getCoverPageImage` resolves a book as **item → series → page 1 of
 its stream**, so a NULL item cover is not a missing cover, it is the next best
 one, and the last step is the reason a book is never cover-less. Neither link
-goes into the marker: the marker carries only what opens the stream offline.
+goes into the marker: the marker carries only what opens the stream offline. The
+last step is also the one entry of the page store that can be for a page other
+than the one on screen, which is why it is one of the reasons that store is four
+entries and not two.
 
 **Cached bytes are filed under the book's identity, never under its name.**
 `Marker.cacheKey(desc)` is `Naming.cacheKey(Marker.naturalKey(desc), desc.title)`
 — a readable head from the title, then a 64-bit digest of the natural key — and
-it is the only thing `doc/cache.lua` is handed for either a page or a cover. The
+it is the only thing `doc/cache.lua` is handed, for a page or for a cover. The
 head is legibility and may collide freely (`Naming.sanitizeComponent` folds
 `: * ? " < > |` to spaces and truncates at 64 bytes); the digest is identity.
 This is worth a paragraph because the version that keyed on the *readable part
@@ -176,7 +180,7 @@ alone* — the marker's basename, via a now-deleted `Marker.slug` — shipped, a
 its failure is the reason the rule is stated this way:
 
 - Every Suwayomi chapter is titled "Chapter 1" and many Kavita volumes "Volume
-  1", so **every such book on every series and every server wrote to one file**.
+  1", so **every such book on every series and every server shared one entry**.
   The second book to be opened was served the first one's bytes, pages and cover
   alike — `getCoverPageImage`'s last fallback reads this book's *page 1*, so a
   series of identically-titled chapters shared one cover too.
@@ -184,11 +188,19 @@ its failure is the reason the rule is stated this way:
   within one directory, and same-titled books normally land in *different*
   series folders, where it never fires.
 
+**That failure is the reason the page store may be module-level.** Page bytes
+live in one table shared by every document in the process, which would be
+indefensible if the key were a name — and is exactly right now that the key is
+identity: a second document of the same book finds the first one's pages instead
+of mistaking them for another book's. The only cost module-level state can have
+here is the one a cache is allowed to have: it can go cold.
+
 Two properties fall out of deriving the key from identity rather than from the
-path, and both are now true of the whole cache: moving or renaming a marker does
-not orphan its pages (the old scheme's docblock claimed this while its slug
-*was* the basename), and retitling a chapter or rotating a Kavita API key does
-not either, since neither `title` nor `template` is in the digest.
+path, and both hold for whichever half of the cache is being asked about: moving
+or renaming a marker does not orphan its cached bytes (the old scheme's docblock
+claimed this while its slug *was* the basename), and retitling a chapter or
+rotating a Kavita API key does not either, since neither `title` nor `template`
+is in the digest.
 
 The digest is `Naming.digest64`, two 32-bit lanes, not one. A single lane is
 right for the marker/folder suffix `Naming.keySuffix` still uses, where a
@@ -198,8 +210,38 @@ a few percent probability over a large library. Lua 5.1 constrains the choice:
 every double intermediate must stay exact, which rules out FNV-1a's `h *
 16777619` (~2^56) and forces the two polynomials (`*33`, `*65599`) that do.
 
-Nothing cached is load-bearing, so there is no migration: a name from an older
-shape is unreachable rather than wrong, and `Cache.prune` ages it out.
+**Only covers are on disk. Page bytes are in RAM, and there is nothing left to
+prune.** `cache/meguru/pages/` is a tombstone: files an older version left there
+are unreachable rather than wrong and are swept the first time the reader taps
+"Clear cache", which is the whole migration. What replaced the disk page LRU is
+four entries of *raw* bytes in `meguru/doc/cache`. Two is the floor — the page
+being rendered, plus the one `hintPage` warms ahead of it — and nothing in
+`document.lua` ever holds two pages' worth at once; the rest is room for
+ReaderHinting to ask two ahead and for `getCoverPageImage`'s page 1. The number
+is not a memory figure: these are the *compressed* bytes, orders of magnitude
+below the decoded natives the document keeps beside them (`max_cached_native`,
+three of them, each up to `max_native_pixels` of RGB24).
+
+Three consequences that are easy to trip over:
+
+- **An evicted page is refetched, not re-read.** Anything past the four-entry
+  cap, and everything after the book is closed, costs a request. Offline reading
+  of a page already seen is gone; offline reading of the page in front of you is
+  not, because the decoded buffer is still in the native LRU.
+- **The byte reads are guarded, and one of them was a bug.** `hasNative(pageno)`
+  skips fetching bytes at all when the page is already decoded, because
+  `decodeRegion` hands them to `ensureNativeBB`, which returns the cached buffer
+  before it looks at them. Without that guard every tile miss — a zoom change, a
+  crop toggle, the repaint after "Clear cache" — would pay a synchronous HTTP
+  GET inside the paint for bytes nothing reads. The bug it also fixes:
+  `renderPage` used to return nil and paint the gray placeholder when the bytes
+  were missing but a perfectly good decoded page sat in the LRU. `getPageDims`
+  is deliberately *not* guarded — it is the decoder, and a live native would
+  have answered from `self.dims` before reaching it.
+- **Cover files are now the entire disk cache, and nothing prunes them.** They
+  go when the reader asks. That gap predates this change — `Cache.prune` was
+  only ever called for pages — but it used to sit beside a bounded 240-file page
+  directory, and it is now the whole of what meguru leaves on disk.
 
 **Reading progress is not mirrored into the catalog.** It is read lazily per
 series: `ui/series.lua` gates on a non-empty `items.marker_path`, then
@@ -1162,7 +1204,12 @@ Each step must pass before the next:
    rowid — the open must land on the **correct** chapter via the natural key, not
    the substituted one.
 8. **Page fetching.** One log line per page with a rising `pageNumber` plus
-   prefetch, and **no** fetch of a whole archive.
+   prefetch, and **no** fetch of a whole archive. `cache/meguru/pages/` does not
+   grow while reading — nothing is written there at all any more. Then turn back
+   one page and force a repaint (open/close ⋮, toggle a crop setting): **no
+   fetch**, because the page's decoded buffer is still live and the bytes are
+   not needed for it. Turn back past the four-entry store and a fetch *is*
+   expected — that is the trade this makes, not a regression.
 9. **Engine port.** On the same title as the old plugin: crop, page-number crop,
    panel zoom, night-mode invert, wide-page rotation, local `.cbz` via "Open
    with…" — behaviour identical to the old plugin.
@@ -1172,13 +1219,18 @@ Each step must pass before the next:
 11. **Two books, one title.** Open a "Chapter 1" from two different Suwayomi
     series (or two Kavita volumes both titled "Volume 1"). Each renders its own
     pages *and its own cover* — the cover is where a shared key shows first —
-    and `cache/meguru/pages/` holds two files whose heads match and whose
+    and `cache/meguru/covers/` holds two files whose heads match and whose
     digests differ. Then move one marker to another folder and reopen it from
-    the file manager: no refetch in the log, which is the property the old
-    path-derived key never had.
-12. **A fresh cache is not a cache miss.** Every name carries the digest, so a
-    cache written by an older version is unreachable rather than wrong — the
-    first open after the upgrade refetches, and no stale file is ever read.
+    the file manager: its **cover** is not refetched, which is the property the
+    old path-derived key never had. Its pages are — the byte store does not
+    survive a close — so only the cover half of that assertion is askable now.
+12. **A fresh cache is not a cache miss, where there is still a file.** Every
+    cover name carries the digest, so a cover written by an older version is
+    unreachable rather than wrong — the first open after the upgrade refetches,
+    and no stale file is ever read. In the same pass, check the migration: with
+    `cache/meguru/pages/` holding files from an older version, "Clear cache"
+    empties it, and its count covers those files and the in-memory page entries
+    together.
 13. **The dialog asks once.** Tap a volume in a series feed, answer the dialog:
     the book opens and **no second dialog appears**. Then close it and reopen the
     same book from History — **the dialog comes back**, which is the half of the
