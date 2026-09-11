@@ -583,6 +583,29 @@ feed-retention rule of "record it if it has entries, clear it otherwise" recorde
 the series feed and cleared it again in the same breath. `ui/open.lua`'s
 `noteFeed` ignores a parse that is not a feed of entries.
 
+**The row at the top of a series feed is added by wrapping `genItemTableFromURL`,
+not `switchItemTable`.** Both were tried; only the first is right. `switchItemTable`
+is switched from four places — a navigation, a pagination append, a catalog edit on
+the root list, and a search — and only one of them is a series feed, so the row
+appeared on the others (a search result list, most visibly, because the retained
+feed is still the last series browsed). `genItemTableFromURL` is *handed the URL*,
+and the URL is what tells the four apart: a search is a different URL, the next
+page is `hrefs.next`, and the root list never comes through here. The decision is
+made where the evidence is rather than reconstructed from how the switch was
+called.
+
+A row with no `acquisitions` is read by `onMenuSelect` as a **catalog link**, and it
+navigates to the row's `url` — so a row of ours must carry a marker field and have
+`onMenuSelect` wrapped to intercept it. The row buys nothing on its own.
+
+The row is offered only when **every** entry of the feed discovers to the same
+series, the test `freshResumeTarget` already uses. A feed listing *series* has
+entries with no stream at all, so they fail `discover` and the row is not offered —
+which is why it appears on a list of a series' volumes and nowhere else. It opens
+the **first unread** volume, ordered by the number `Naming.deriveSeries` pulls from
+each title rather than by feed order, because Suwayomi browses newest-first and
+feed order there is the reverse of reading order.
+
 ## Development
 
 ```

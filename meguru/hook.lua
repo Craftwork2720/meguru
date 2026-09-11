@@ -77,6 +77,45 @@ function Hook.install()
         logger.info("Meguru: hooked OPDSBrowser:parseFeed (feed retention, kind sniffing)")
     end
 
+    -- Two more wraps, for the row at the top of a series feed. Both are needed:
+    -- `onMenuSelect` reads every row with no acquisitions as a *catalog link* and
+    -- navigates to its `url`, so a row of ours would try to open a URL it does
+    -- not have — which is why `Open.seriesRow` marks it and this intercepts it.
+    local orig_genItemTableFromURL = OPDSBrowser.genItemTableFromURL
+    if type(orig_genItemTableFromURL) == "function" then
+        OPDSBrowser.genItemTableFromURL = function(browser, item_url, ...)
+            local item_table = orig_genItemTableFromURL(browser, item_url, ...)
+            -- Wrapped here rather than at `switchItemTable`, which is switched
+            -- from four places: an append, a catalog edit and a search all reach
+            -- it, and only one of them is a series feed. This function is handed
+            -- the URL, and the URL is what tells them apart — so the decision is
+            -- made where the evidence is, not reconstructed from how the switch
+            -- was called.
+            local ok, row = pcall(Open.seriesRow, browser, item_url)
+            if ok and row and type(item_table) == "table" then
+                table.insert(item_table, 1, row)
+            end
+            return item_table
+        end
+    end
+
+    local orig_onMenuSelect = OPDSBrowser.onMenuSelect
+    if type(orig_onMenuSelect) == "function" then
+        OPDSBrowser.onMenuSelect = function(browser, item)
+            if type(item) == "table" and item.meguru then
+                -- pcall'd so a failure in our own row costs the built-in browser
+                -- nothing, and for the same reason as elsewhere here: a swallowed
+                -- error is indistinguishable from a row that was never wired up.
+                local ok, err = pcall(Open.openFirstUnread, browser, item.meguru)
+                if not ok then
+                    logger.warn("Meguru: could not open the series:", err)
+                end
+                return true
+            end
+            return orig_onMenuSelect(browser, item)
+        end
+    end
+
     logger.info("Meguru: hooked OPDSBrowser:showDownloads")
 
     -- The third wrap, and the most careful one: `ReaderUI:showReader` is how

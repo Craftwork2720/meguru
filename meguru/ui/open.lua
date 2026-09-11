@@ -564,6 +564,184 @@ local function localLastPage(file)
     return page
 end
 
+--- The series a feed describes, when the whole feed describes exactly one.
+---
+--- The same test `freshResumeTarget` applies, and for the same reason: an
+--- aggregate lists several series, and a row offering "this series" over one of
+--- those would be a lie about which. Returns a table of what the row and the
+--- action both need, or nil.
+local function feedSeries(browser)
+    local name = catalogTitle(browser)
+    local kind, kind_source = Open.serverKindFor(browser)
+    local driver = kind and Base.forKind(kind)
+    if not name or not driver then
+        return nil
+    end
+    local record = last_feed[name]
+    local feed = record and record.feed
+    if type(feed) ~= "table" or type(feed.entry) ~= "table" or #feed.entry == 0 then
+        return nil
+    end
+
+    local ctx = { lang = langFromBrowser(browser) }
+    local remote_id
+    for _, entry in ipairs(feed.entry) do
+        local found = driver.discover(entry, nil, ctx)
+        if not found or not found.series_remote_id then
+            return nil
+        end
+        if remote_id and found.series_remote_id ~= remote_id then
+            return nil -- more than one series here, so "this series" names nothing
+        end
+        remote_id = found.series_remote_id
+    end
+    if not remote_id then
+        return nil
+    end
+
+    return {
+        server_name  = name,
+        kind         = kind,
+        kind_source  = kind_source,
+        driver       = driver,
+        remote_id    = remote_id,
+        ctx          = ctx,
+        feed         = feed,
+        feed_url     = record.url,
+        first_entry  = feed.entry[1],
+    }
+end
+
+--- The row that goes at the top of a series feed, or nil when this is not one.
+---
+--- `item_url` is the list being built, and it must be the feed we are actually
+--- holding. That single comparison is what keeps the row off every other list the
+--- browser draws through the same path: a search result is a different URL, the
+--- next page of a paginated series is `hrefs.next`, and the root list does not
+--- come through here at all. Without it the row appeared on search results — the
+--- retained feed is still the last series browsed, so "this series" would have
+--- been true of a feed that was no longer on screen.
+function Open.seriesRow(browser, item_url)
+    local info = feedSeries(browser)
+    if not info or item_url ~= info.feed_url then
+        return nil
+    end
+    return {
+        text      = "\u{25B6} " .. _("Meguru this series"),
+        mandatory = tostring(#info.feed.entry),
+        -- What the `onMenuSelect` wrap keys on. Without a marker of our own the
+        -- row would be read as a catalog link — `onMenuSelect` treats every row
+        -- with no acquisitions that way — and tapping it would try to navigate
+        -- to a URL it does not have.
+        meguru    = info,
+    }
+end
+
+--- The first item in reading order the server says has not been read.
+---
+--- Ordered by the number `Naming.deriveSeries` pulls out of each title rather than
+--- by the order the feed is in. Suwayomi browses newest-first by default, so feed
+--- order is the *reverse* of reading order there, and "the first unread" read off
+--- it would be the newest chapter. A title with no number keeps its feed
+--- position, which is all there is to go on.
+---
+--- Everything read falls back to the last one: there is nothing unread to offer,
+--- and the newest is where a reader of the whole series would carry on from.
+local function firstUnread(parsed)
+    local numbered, unnumbered = {}, {}
+    for _, item in ipairs(parsed or {}) do
+        local _, _, number = Naming.deriveSeries(item.title or "")
+        if number then
+            numbered[#numbered + 1] = { item = item, number = number }
+        else
+            unnumbered[#unnumbered + 1] = item
+        end
+    end
+    table.sort(numbered, function(a, b) return a.number < b.number end)
+
+    local ordered = {}
+    for _, entry in ipairs(numbered) do
+        ordered[#ordered + 1] = entry.item
+    end
+    for _, item in ipairs(unnumbered) do
+        ordered[#ordered + 1] = item
+    end
+
+    local last
+    for _, item in ipairs(ordered) do
+        if not (type(item.last_read) == "number" and item.last_read > 0) then
+            return item
+        end
+        last = item
+    end
+    return last
+end
+
+--- Open the first unread volume of the series the row was offered for.
+---
+--- Mirrors the server and series half of `registerBook` rather than calling it:
+--- that function is built around a book that was tapped, and there is no book
+--- here. The two must agree on how a series row is found and named, so if the
+--- resolution below is ever changed, `registerBook` is where to change it too.
+function Open.openFirstUnread(browser, info)
+    local conn = Sources.connection(info.server_name)
+    if not conn then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Meguru: no catalog entry with this title in settings/opds.lua: %1"),
+                tostring(info.server_name)),
+        })
+        return
+    end
+
+    local server = Catalog.upsertServer({
+        name         = info.server_name,
+        kind         = info.kind,
+        kind_source  = info.kind and (info.kind_source or "author") or nil,
+        host         = Sources.host(conn.url),
+        root_url     = Sources.redactedRoot(conn.url),
+    })
+    if not server then
+        return
+    end
+
+    local series_name = info.driver.seriesName(info.feed, info.first_entry, info.ctx)
+    if type(series_name) ~= "string" or series_name == "" then
+        logger.warn("Meguru: could not name the series behind this feed")
+        return
+    end
+    local series = Catalog.upsertSeries(server.id, {
+        remote_id = info.remote_id,
+        name      = series_name,
+        name_sort = Naming.sortKey(series_name),
+        cover_url = Base.coverFromFeed(info.feed, info.first_entry, info.feed_url),
+    })
+    if not series then
+        return
+    end
+
+    local parsed = info.driver.parseCatalogPage(info.feed, info.feed_url, info.ctx)
+    local target = firstUnread(parsed)
+    if not target then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Meguru: %1 has no volumes in this feed."), series_name),
+        })
+        return
+    end
+
+    -- Positions from this page, as a sync would assign them, then the row read
+    -- back so it has an id: `openCatalogItem` writes the marker path against it.
+    Catalog.numberPositions(parsed)
+    Catalog.upsertItem(series.id, target, Catalog.nextTimestamp())
+    local row = Catalog.itemByKey(series.id, target.item_key)
+    if not row then
+        return
+    end
+
+    local manager = browser and browser._manager
+    local host = (manager and manager.ui) and manager or fallback_host
+    Open.openCatalogItem(host, server, series, row)
+end
+
 --- Offer a starting point, then open. Calls `opts.open()` either way.
 ---
 --- **Asked whenever there is a choice, and only then** — a book whose series has
