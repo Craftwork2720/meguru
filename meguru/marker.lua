@@ -173,6 +173,20 @@ end
 --- its reading progress. A collision that goes unnoticed (no catalog to ask) is
 --- therefore harmless: two series share a folder, exactly as the old plugin did,
 --- and no file is ever overwritten.
+---
+--- **Pure: it returns where a marker would go and creates nothing.** It used to
+--- `FS.ensureDir` each component as it built the path, which was right while the
+--- caller was about to write — and wrong the moment the write moved to the end of
+--- the resume dialog. Tapping a book and then tapping past the question left the
+--- series folder behind, empty, and an empty folder is not the harmless leftover
+--- it looks like: it is indistinguishable from a series whose books were all
+--- deleted, and it survives a "Clear cache" the way nothing else here does.
+--- Creating it is now `saveAt`'s, at the moment there is a file to put in it.
+---
+--- The one thing that is *not* deferred is the outermost folder: `base_dir`
+--- defaults to `Marker.baseDir()`, which does create it, because "is this folder
+--- usable" is the question it exists to answer and a path on unplugged media has
+--- to be rejected before anything is planned around it.
 function Marker.dirFor(desc, series, opts)
     opts = opts or {}
     local dir = opts.base_dir or Marker.baseDir()
@@ -180,7 +194,7 @@ function Marker.dirFor(desc, series, opts)
     if opts.server_folder and type(desc.server_name) == "string" and desc.server_name ~= "" then
         local server = Naming.sanitizeComponent(desc.server_name)
         if server ~= "stream" then
-            dir = FS.ensureDir(dir .. "/" .. server) or dir
+            dir = dir .. "/" .. server
         end
     end
 
@@ -190,7 +204,7 @@ function Marker.dirFor(desc, series, opts)
             if opts.series_folder_claimed and series.remote_id then
                 component = Naming.disambiguated(component, series.remote_id)
             end
-            dir = FS.ensureDir(dir .. "/" .. component) or dir
+            dir = dir .. "/" .. component
         end
     end
 
@@ -214,10 +228,60 @@ function Marker.pathFor(dir, desc)
         .. "." .. Paths.MARKER_EXT
 end
 
---- Persist a descriptor and return the marker file path.
-function Marker.save(desc, dir)
-    dir = (dir and FS.ensureDir(dir)) or Marker.baseDir()
-    local path = Marker.pathFor(dir, desc)
+--- Create `dir`, or the nearest ancestor that can be made.
+---
+--- Degrading is the behaviour `dirFor` used to have, one component at a time,
+--- while it was also the thing creating the path: a subfolder that cannot be
+--- made must cost the reader a folder level, not the book. The walk stops at
+--- `Marker.baseDir()`, which has already vouched for itself, so this always
+--- terminates on something usable rather than climbing to the filesystem root.
+---
+--- Returns the folder that was made, or nil when even the base is unusable.
+local function ensureDirOrAncestor(dir)
+    local base = Marker.baseDir()
+    local candidate = dir
+    while true do
+        if FS.ensureDir(candidate) then
+            return candidate
+        end
+        if #candidate <= #base then
+            return nil
+        end
+        candidate = candidate:match("^(.*)/[^/]+$") or base
+    end
+end
+
+--- Persist a descriptor at a path already decided by `pathFor`.
+---
+--- Separate from a plain write because the path has to be known *before* the
+--- file exists. The resume dialog reads a marker's sidecar to decide what to say
+--- ("Start reading" or "Continue — page 30"), and a sidecar is a path-derived
+--- thing: `DocSettings:hasSidecarFile` and `localLastPage` both work on a path
+--- that has no marker behind it yet. So the caller resolves everything, asks,
+--- and only then writes — and it must write to the path it asked about, which
+--- is why this does not call `pathFor` again. Recomputing would be a second
+--- answer to a question already answered, and `pathFor` consults the directory
+--- it is about to write into, so the two could disagree.
+---
+--- The folder is created here and only here, which is what keeps a dismissed
+--- dialog from leaving an empty series folder behind — see `dirFor`.
+---
+--- Returns the path written, or nil when no folder could be made. A caller that
+--- gets nil reports it; nothing is silently dropped.
+function Marker.saveAt(path, desc)
+    local dir = path:match("^(.*)/[^/]+$")
+    if dir then
+        local usable = ensureDirOrAncestor(dir)
+        if not usable then
+            logger.warn("Meguru: no usable folder for", path, "- the marker was not written")
+            return nil
+        end
+        if usable ~= dir then
+            logger.warn("Meguru: could not create", dir,
+                "- the marker goes in", usable)
+            path = usable .. "/" .. (path:match("([^/]+)$") or path)
+        end
+    end
     local ls = LuaSettings:open(path)
     ls:saveSetting(Marker.SETTINGS_KEY, desc)
     ls:flush()

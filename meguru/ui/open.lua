@@ -316,7 +316,70 @@ local function why(reason, detail)
     return nil
 end
 
+--- A parsed page put into reading order, plus how much of it that order covers.
+---
+--- **Order from the server's own list position, which is in the path.** A
+--- Suwayomi entry links to `/series/{id}/chapter/{n}/metadata`, and `{n}` is the
+--- position on the server's list — that is, its reading order. The title is a
+--- fallback only, and a poor one: `Prologue 1` carries no chapter token at all,
+--- so numbering by title parked it *after* every numbered chapter, when a
+--- prologue belongs before them. Kavita has no path to use (its entries link to
+--- no metadata feed), and its canonical feed is already in reading order, so
+--- there the feed order is the right answer and is what is left.
+---
+--- Returns the sequence and `positioned`, the length of its ordered prefix.
+--- Everything after index `positioned` had no position anywhere and is in feed
+--- order. Callers that need "earlier"/"later" must not read past `positioned`
+--- without meaning to: feed order is *not* reading order in general, and for
+--- Suwayomi it is its exact reverse.
+---
+--- Extracted from `firstUnread` rather than copied, because the consumer that
+--- was missing it is the bug this exists for. `freshResumeTarget` picked the
+--- furthest-read chapter by *feed* order, which is right on the canonical feed
+--- and backwards on the page the browser holds — the same series, the same
+--- question, two opposite answers depending on which screen asked. Sharing the
+--- ordering is what keeps them from disagreeing again.
+local function readingOrder(parsed)
+    local ordered, fallback_position = {}, {}
+    for index, item in ipairs(parsed or {}) do
+        local path_position = type(item.detail_url) == "string"
+            and tonumber(item.detail_url:match("/chapter/(%d+)/")) or nil
+        local _, _, title_number = Naming.deriveSeries(item.title or "")
+        local position = path_position or title_number
+        if position then
+            ordered[#ordered + 1] = { item = item, position = position }
+        else
+            fallback_position[#fallback_position + 1] = { item = item, index = index }
+        end
+    end
+    table.sort(ordered, function(a, b) return a.position < b.position end)
+
+    local sequence = {}
+    for _, entry in ipairs(ordered) do
+        sequence[#sequence + 1] = entry.item
+    end
+    local positioned = #sequence
+    -- No position anywhere: the feed's own order, which is reading order for the
+    -- server whose feeds are built that way.
+    table.sort(fallback_position, function(a, b) return a.index < b.index end)
+    for _, entry in ipairs(fallback_position) do
+        sequence[#sequence + 1] = entry.item
+    end
+
+    return sequence, positioned
+end
+
 --- The series' furthest-read item, read from the feed the browser just fetched.
+---
+--- **In reading order, not feed order.** This took the last entry of the parsed
+--- page with any progress, which is the furthest read only while the page is
+--- ascending: `currentResumeTarget` fetches `driver.catalogURL`, which asks
+--- Suwayomi for `sort=number_asc`, so there it was right — while the browser's
+--- own page is `number_desc`, newest first, so there the same line picked the
+--- *lowest*-numbered chapter in the newest hundred. One series, one function,
+--- two opposite answers, and the symptom was "▶ Meguru this series opens volume 1
+--- although a lot more has been read" against "opening the same book from the
+--- file gets it right". `readingOrder` above is what makes the two agree.
 ---
 --- The catalog cannot answer this question. `items.last_read` is a snapshot from
 --- the last sync, and the only thing that refreshes a row in between is opening
@@ -362,10 +425,42 @@ local function freshResumeTarget(driver, feed, feed_url, ctx, series)
     -- Handed on as a feed in its own right: `parseCatalogPage` reads
     -- `feed.entry` and nothing else, so a one-field table is all it needs.
     local parsed = driver.parseCatalogPage({ entry = mine }, feed_url, ctx)
+    local sequence, positioned = readingOrder(parsed)
+
+    -- Walked backwards, furthest first. Two passes rather than one, and the
+    -- order of the passes is the whole point: the ordered prefix is reading
+    -- order, so the last item in it with progress is the furthest read; the
+    -- unpositioned tail is *feed* order, so it is only consulted when no
+    -- ordered item has any progress at all. For Suwayomi that tail is empty —
+    -- every chapter entry carries a `rel=subsection` link — so the second pass
+    -- is dead code there, and it exists for Kavita, whose feed order is reading
+    -- order and where a chapter whose title carries no number is perfectly
+    -- ordinary.
+    --
+    -- Scanning the single sequence backwards instead would visit the tail
+    -- first, and on Suwayomi's newest-first page that means answering with the
+    -- *earliest* chapter — the exact confusion this function was just fixed for.
     local best
-    for _, parsed_item in ipairs(parsed or {}) do
-        if type(parsed_item.last_read) == "number" and parsed_item.last_read > 0 then
-            best = parsed_item
+    for pass = 1, 2 do
+        -- Spelled out rather than folded into one expression: `positioned` is
+        -- legitimately 0 when nothing had a position, and `0` is truthy in Lua,
+        -- so the obvious `pass == 1 and positioned or #sequence` reads as if it
+        -- guarded something it does not.
+        local first, last
+        if pass == 1 then
+            first, last = 1, positioned
+        else
+            first, last = positioned + 1, #sequence
+        end
+        for i = last, first, -1 do
+            local item = sequence[i]
+            if type(item.last_read) == "number" and item.last_read > 0 then
+                best = item
+                break
+            end
+        end
+        if best then
+            break
         end
     end
     if not best then
@@ -377,7 +472,13 @@ local function freshResumeTarget(driver, feed, feed_url, ctx, series)
     logger.info("Meguru: the feed says", best.display_title or best.title,
         "is the furthest read in series", series.remote_id)
 
-    Catalog.numberPositions(parsed)
+    -- Numbered in *reading* order, not feed order. `feed_index` is what
+    -- `Catalog.orderedItems` sorts on, so numbering this page as it arrived — which
+    -- on the browser path is newest-first — wrote a position that ran backwards,
+    -- and `resumeTarget` and `neighbors` read it until the next sync overwrote it.
+    -- Only `best` is actually written; numbering the sequence is how it gets its
+    -- position at all.
+    Catalog.numberPositions(sequence)
     Catalog.upsertItem(series.id, best, Catalog.nextTimestamp())
     return Catalog.itemByKey(series.id, best.item_key)
 end
@@ -694,7 +795,7 @@ end
 --- `offerResume`'s own rule, one button up — so naming the server's page for it
 --- would promise a page the tap does not deliver. A book with no sidecar is
 --- seeded silently from `desc.last_read` by `MeguruDocument:init`, and that is
---- the page `prepareMarker` writes into the marker, so there the promise holds.
+--- the page `planMarker` writes into the marker, so there the promise holds.
 ---
 --- That coupling is the thing to keep in step: if the silent seed ever changes,
 --- this test has to change with it, or the button starts lying.
@@ -809,11 +910,9 @@ end
 
 --- The first item in reading order the server says has not been read.
 ---
---- Ordered by the number `Naming.deriveSeries` pulls out of each title rather than
---- by the order the feed is in. Suwayomi browses newest-first by default, so feed
---- order is the *reverse* of reading order there, and "the first unread" read off
---- it would be the newest chapter. A title with no number keeps its feed
---- position, which is all there is to go on.
+--- The ordering is `readingOrder`'s, not the feed's: Suwayomi browses
+--- newest-first by default, so "the first unread" read straight off feed order
+--- would be the *newest* chapter.
 ---
 --- Returns nil when nothing is unread, and **that is not the same as "offer the
 --- last one"**. An earlier version did offer it, reasoning that the newest chapter
@@ -821,38 +920,11 @@ end
 --- row that promises the first unread chapter and silently opens the last one, at
 --- its last page. A row that cannot do what it says says nothing instead.
 local function firstUnread(parsed)
-    -- **Order from the server's own list position, which is in the path.** A
-    -- Suwayomi entry links to `/series/{id}/chapter/{n}/metadata`, and `{n}` is
-    -- the position on the server's list — that is, its reading order. The title
-    -- is a fallback only, and a poor one: `Prologue 1` carries no chapter token at
-    -- all, so numbering by title parked it *after* every numbered chapter, when a
-    -- prologue belongs before them. Kavita has no path to use (its entries link
-    -- to no metadata feed), and its canonical feed is already in reading order, so
-    -- there the feed order is the right answer and is what is left.
-    local ordered, fallback_position = {}, {}
-    for index, item in ipairs(parsed or {}) do
-        local path_position = type(item.detail_url) == "string"
-            and tonumber(item.detail_url:match("/chapter/(%d+)/")) or nil
-        local _, _, title_number = Naming.deriveSeries(item.title or "")
-        local position = path_position or title_number
-        if position then
-            ordered[#ordered + 1] = { item = item, position = position }
-        else
-            fallback_position[#fallback_position + 1] = { item = item, index = index }
-        end
-    end
-    table.sort(ordered, function(a, b) return a.position < b.position end)
-
-    local sequence = {}
-    for _, entry in ipairs(ordered) do
-        sequence[#sequence + 1] = entry.item
-    end
-    -- No position anywhere: the feed's own order, which is reading order for the
-    -- server whose feeds are built that way.
-    table.sort(fallback_position, function(a, b) return a.index < b.index end)
-    for _, entry in ipairs(fallback_position) do
-        sequence[#sequence + 1] = entry.item
-    end
+    -- The ordering itself lives in `readingOrder`, shared with
+    -- `freshResumeTarget`: the two ask the same question of the same series
+    -- ("where does this reader actually stand?") from two different screens, and
+    -- they must not answer it differently.
+    local sequence = readingOrder(parsed)
 
     for _, item in ipairs(sequence) do
         -- "Unread" here means **not finished**, not "no progress at all". A
@@ -1236,7 +1308,7 @@ function Open.offerResume(host, server, series, item, opts)
                     --
                     -- Silent on purpose, and that is the fix for the dialog that
                     -- asked twice: the reader has just named this book, so
-                    -- `openCatalogItem` — which would prepare the marker and then
+                    -- `openCatalogItem` — which would plan the marker and then
                     -- put the same question again about the book they chose — is
                     -- exactly the wrong call here.
                     local open_target = opts.open_item or function(chosen)
@@ -1257,15 +1329,49 @@ function Open.offerResume(host, server, series, item, opts)
     UIManager:show(dialog)
 end
 
---- Build, or find, the marker for a catalog item. Returns `file, count`, or nil.
+--- Everything a marker needs, worked out but **not written**.
 ---
---- Split out of `openCatalogItem` so the resume dialog's "continue at that
---- chapter" can be reached from either entry point: the browser and the file
---- manager prepare a marker identically and differ only in how they hand it on.
-local function prepareMarker(server, series, item)
+--- The write happens in `commitMarker`, when the reader has actually chosen
+--- something. That split exists because the resume dialog needs the marker's
+--- *path* before the file exists — `neverOpened`, `localLastPage` and
+--- `seedLastPage` are all keyed on the sidecar a path implies — so everything
+--- the dialog decides is known without touching the disk, and the one thing that
+--- needs the file itself is the handoff to the reader.
+---
+--- What that buys: a dismissed dialog leaves no book behind. Tapping "▶ Meguru
+--- this series" and then tapping past the question used to write a marker for a
+--- book nobody asked for, and the marker is what makes the book appear in the
+--- library and in History — so the cost was not a stray file, it was a phantom
+--- shelf entry with no progress in it.
+---
+--- Nothing is left behind at all. `Marker.dirFor` is pure and `Marker.saveAt`
+--- is what creates the folder, so a dismissed dialog costs no file *and* no
+--- folder — an empty series folder is indistinguishable from a series whose
+--- books were all deleted, and no "Clear cache" takes it away.
+---
+--- `existing` marks a plan for a marker already on disk — the item that has been
+--- opened before — where there is nothing to write and the count has to be read
+--- back out of the marker rather than resolved from the network.
+---
+--- Returns the plan, or nil after reporting why.
+local function planMarker(server, series, item)
     if type(item.marker_path) == "string" and item.marker_path ~= ""
         and FS.exists(item.marker_path) then
-        return item.marker_path
+        -- `count` is read back rather than resolved: `Sync.resolveStream` costs a
+        -- request for a Suwayomi chapter, and the marker already knows. It used
+        -- to be dropped here entirely, which is why the server's page button
+        -- appeared for a freshly made marker and vanished on the second open of
+        -- the same book — the same question answered differently by the second
+        -- and third opens, with `offerResume`'s `usablePage` refusing a page it
+        -- had no count to bound.
+        local existing = Marker.load(item.marker_path)
+        return {
+            item     = item,
+            server   = server,
+            path     = item.marker_path,
+            existing = true,
+            count    = existing and tonumber(existing.count) or nil,
+        }
     end
 
     local template, count = Sync.resolveStream(item, server)
@@ -1294,18 +1400,49 @@ local function prepareMarker(server, series, item)
         series_folder_claimed = Catalog.folderClaimedByOther(
             server.id, series.name, series.id),
     })
-    local file = Marker.save(desc, dir)
-    Catalog.setMarkerPath(item.id, file)
+    return {
+        item     = item,
+        server   = server,
+        desc     = desc,
+        path     = Marker.pathFor(dir, desc),
+        existing = false,
+        count    = count,
+    }
+end
+
+--- Write the marker a plan describes, and return its path.
+---
+--- Idempotent for a plan whose marker is already on disk: nothing is written and
+--- the path it was planned with comes back, so a caller that reaches here twice
+--- cannot make two files.
+function commitMarker(plan)
+    if plan.existing then
+        return plan.path
+    end
+    local file = Marker.saveAt(plan.path, plan.desc)
+    if not file then
+        return nil
+    end
+    Catalog.setMarkerPath(plan.item.id, file)
 
     -- Same credentials this book will be fetched with, kept in memory only so
     -- the very first page does not race the built-in plugin's own settings
     -- flush. Never written into the marker.
-    local conn = Sources.connection(server.name)
+    local conn = Sources.connection(plan.server.name)
     if conn then
         Sources.remember(file, conn.username, conn.password)
     end
+    return file
+end
 
-    return file, count
+--- Commit, then hand over. The tail every dialog answer and every silent open
+--- shares, so the write cannot be forgotten on one of them.
+local function openPlanned(host, plan)
+    local file = commitMarker(plan)
+    if not file then
+        return nil
+    end
+    return openPrepared(host, file)
 end
 
 --- The marker for a catalog item, handed to the reader without a word.
@@ -1323,18 +1460,18 @@ end
 ---
 --- Exported rather than local, even though nothing outside this file's lower
 --- half calls it: the jump button's default reaches it from inside `offerResume`,
---- which is *above* `prepareMarker`, and a `local function` down here would
+--- which is *above* `planMarker`, and a `local function` down here would
 --- resolve to a global at that call site — the failure `tools/check.py`'s fourth
 --- pass exists to catch. Going through the module table costs one lookup and
 --- sidesteps the ordering entirely.
 ---
 --- Returns the marker path, or nil after reporting why.
 function Open.openItemSilently(host, server, series, item)
-    local file = prepareMarker(server, series, item)
-    if not file then
+    local plan = planMarker(server, series, item)
+    if not plan then
         return nil
     end
-    return openPrepared(host, file)
+    return openPlanned(host, plan)
 end
 
 --- The series' furthest-read item, fetched rather than skimmed from the catalog.
@@ -1405,26 +1542,28 @@ end
 --- nothing per item. Resolving that stream is one request, made here, at the
 --- moment the reader asks for that chapter and at no other time.
 ---
---- Returns the marker path, or nil after reporting why.
+--- Returns the path the marker *will* have, or nil after reporting why. Not a
+--- file until the reader answers.
 function Open.openCatalogItem(host, server, series, item)
-    local file, count = prepareMarker(server, series, item)
-    if not file then
+    local plan = planMarker(server, series, item)
+    if not plan then
         return nil
     end
 
     Open.offerResume(host, server, series, item, {
-        count = count,
-        file = file,
+        count = plan.count,
+        -- The path, not the file: `offerResume` reads the sidecar to decide what
+        -- to say, and a sidecar is found by path. The write is `openPlanned`'s.
+        file = plan.path,
         open = function()
-            -- The marker is already prepared and its path already recorded, so
-            -- this is the handoff and nothing else.
-            openPrepared(host, file)
+            openPlanned(host, plan)
         end,
     })
-    -- The marker is ready either way, so this reports "prepared", not "opened":
-    -- when the resume dialog is up the book opens on the reader's tap, and a
-    -- caller that treated the nil here as failure would be wrong.
-    return file
+    -- Reports "planned", not "opened": when the resume dialog is up the book
+    -- opens on the reader's tap, and a caller that treated the nil here as
+    -- failure would be wrong. A caller that *uses* the path must not assume the
+    -- file is there — `reader.lua` only asks whether this returned something.
+    return plan.path
 end
 
 --- The resume offer for a marker opened from the file manager or History.
@@ -1467,13 +1606,17 @@ function Open.offerResumeForFile(file, host, proceed)
         file = file,
         target = series and currentResumeTarget(server, series) or nil,
         open = proceed,
-        -- This one has no catalog view behind it, so it prepares the marker and
+        -- This one has no catalog view behind it, so it plans the marker and
         -- hands that file to whoever is opening this one.
         --
         -- Deliberately *not* through `handToReader`: `proceed` is the wrap's own
         -- unwrapped opener, so there is no second `showReader` to arm against.
         open_item = function(target)
-            local other = prepareMarker(server, series, target)
+            local plan = planMarker(server, series, target)
+            if not plan then
+                return
+            end
+            local other = commitMarker(plan)
             if other then
                 proceed(other)
             end
@@ -1537,7 +1680,7 @@ end
 ---
 --- Takes no destination folder, deliberately. `Marker.dirFor` defaults
 --- `base_dir` to `Marker.baseDir()`, which is the one thing `Open.chooseMarkerDir`
---- and the menu row in `ui/menu.lua` write — and `prepareMarker` already relies on
+--- and the menu row in `ui/menu.lua` write — and `planMarker` already relies on
 --- exactly that. A folder passed in here was the save dialog's doing, and a second
 --- way to name the destination is how the two save paths drift apart: the browser
 --- and the catalog view must put a book in the same place, and with no parameter
@@ -1617,20 +1760,22 @@ function Open.openAsBook(browser, item, stream)
     local series = registered and registered.series or nil
     local dir = Marker.dirFor(desc, series, {
         -- No `base_dir`: the default is `Marker.baseDir()`, i.e. the stored
-        -- preference, which is what `prepareMarker` uses too.
+        -- preference, which is what `planMarker` uses too.
         server_folder = Settings.get("marker_server_dir") and true or false,
         series_folder_claimed = registered and Catalog.folderClaimedByOther(
             registered.server.id, series.name, series.id) or false,
     })
-    local file = Marker.save(desc, dir)
-    if registered then
-        Catalog.setMarkerPath(registered.item.id, file)
-    end
-
-    -- Keep this run's credentials in memory, keyed by the marker, so the book
-    -- works immediately — before the built-in plugin has flushed
-    -- settings/opds.lua. Nothing is written into the marker itself.
-    Sources.remember(file, browser.root_catalog_username, browser.root_catalog_password)
+    -- Planned here, written on the answer — see `planMarker`. The marker is what
+    -- puts the book in the library and in History, so writing it before the
+    -- question leaves a phantom shelf entry behind when the question is
+    -- dismissed with a tap past it.
+    --
+    -- Not shaped as a `planMarker` result, because the write below cannot go
+    -- through `commitMarker`: this path remembers the credentials the reader
+    -- just typed into the OPDS form, and `commitMarker` would look them up in
+    -- `sources` instead — which is exactly what has not been flushed yet.
+    local path = Marker.pathFor(dir, desc)
+    local count = tonumber(desc.count)
 
     local manager = browser._manager
     local host = (manager and manager.ui) and manager or fallback_host
@@ -1645,12 +1790,33 @@ function Open.openAsBook(browser, item, stream)
         -- `item_key` comparison in `offerResume` is never reached with a flat
         -- descriptor.
         registered and registered.item or desc, {
-            count = tonumber(desc.count),
-            file = file,
+            count = count,
+            file = path,
             -- What `registerBook` read off the feed the browser has just
             -- fetched, which is current; the catalog's answer is a snapshot.
             target = registered and registered.resume or nil,
             open = function()
+                -- Everything the marker write used to do up front — the file,
+                -- the catalog's `marker_path`, the in-memory credentials — now
+                -- happens here, on the answer, and only for a book that is
+                -- actually being opened. The credentials stay in memory only;
+                -- nothing is written into the marker itself.
+                local file = Marker.saveAt(path, desc)
+                if not file then
+                    -- Nothing was written, so there is nothing to open. Saying so
+                    -- beats handing the reader a path to a file that is not
+                    -- there: the reader would fail later, naming nothing.
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("Meguru: could not write the book file.\n%1"), path),
+                    })
+                    return
+                end
+                if registered then
+                    Catalog.setMarkerPath(registered.item.id, file)
+                end
+                Sources.remember(file,
+                    browser.root_catalog_username, browser.root_catalog_password)
+
                 -- Prefer the built-in plugin's own open path: it closes the
                 -- browser cleanly and hands the marker to ReaderUI.
                 if manager and type(manager.openDownloadedFile) == "function"

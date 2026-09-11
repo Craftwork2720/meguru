@@ -327,7 +327,7 @@ end
 --- timeouts and logging.
 function Suwayomi.resolveStream(item, fetch, _ctx)
     -- Every exit below is a nil, and a nil here is indistinguishable from every
-    -- other one at the call site: `prepareMarker` reports "no page stream" and
+    -- other one at the call site: `planMarker` reports "no page stream" and
     -- nothing says which of the four it was. Each says so now, because the
     -- difference between "the catalog row lost its detail_url" and "the server
     -- answered something unexpected" is the difference between two unrelated

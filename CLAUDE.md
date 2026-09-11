@@ -351,12 +351,71 @@ sidecar already exists — `DocSettings:open` creates the file, so calling it fo
 new book would invent the evidence). The server's comes from `freshResumeTarget`
 on the browser path and `currentResumeTarget` on the file path.
 
-**A tap past the dialog cancels — it opens nothing.** `ButtonDialog` is
-dismissable by default, and the dialog deliberately sets no `tap_close_callback`.
-An earlier version did, on the reasoning that a dismissal had to "land somewhere",
-and opened the book: tapping past a question is not a way of answering it, and the
-reader who does it is saying no. The marker is already written by then, so a
-cancelled open costs a file on disk and nothing else.
+**Both of those go through `readingOrder`, and the one that did not is why the
+two entry points disagreed.** `freshResumeTarget` took the last item of the
+parsed page with any progress — correct only while the page is ascending.
+`currentResumeTarget` fetches `driver.catalogURL`, which asks Suwayomi for
+`sort=number_asc`; the page the *browser* holds is `number_desc`, newest first.
+So the same function, on the same series, answered "furthest read" with the
+lowest-numbered chapter of the newest hundred on one screen and the true
+furthest on the other. Hence "▶ Meguru this series opens volume 1 although a lot
+more has been read" alongside "opening the same book from the file gets it
+right". `readingOrder` is `firstUnread`'s ordering, extracted rather than copied,
+and its `positioned` return is load-bearing: the unpositioned tail is *feed*
+order, so a backwards scan must not read past it — on Suwayomi that tail is
+empty, and on Kavita feed order is reading order, which is why the fallback is
+only consulted when no ordered item has progress at all.
+
+The same ordering feeds `Catalog.numberPositions` there. Numbering the page as
+it arrived wrote a `feed_index` that ran backwards on the browser path, and
+`Catalog.orderedItems` sorts on exactly that — so `resumeTarget` and `neighbors`
+read a reversed position until the next sync overwrote it.
+
+**A tap past the dialog cancels — it opens nothing, and it writes nothing.**
+`ButtonDialog` is dismissable by default, and the dialog deliberately sets no
+`tap_close_callback`. An earlier version did, on the reasoning that a dismissal
+had to "land somewhere", and opened the book: tapping past a question is not a
+way of answering it, and the reader who does it is saying no.
+
+**The marker is planned, not written, until the question is answered.**
+`planMarker` resolves everything — the stream, the descriptor, the directory and
+the path — and `commitMarker` writes it. The split exists because the dialog
+needs the marker's *path* before the file exists: `neverOpened`, `localLastPage`
+and `seedLastPage` are all keyed on the sidecar a path implies (`getSidecarDir`
+is pure derivation plus a stat, so a path with no file behind it answers
+correctly), and the one thing that needs the file itself is the handoff to the
+reader.
+
+This is not tidiness. The marker is what puts a book in the library and in
+History, so writing it on the tap and then dismissing the dialog left a phantom
+shelf entry for a book nobody chose — the earlier "a cancelled open costs a file
+on disk and nothing else" was only true while a file was cheap, and a book in
+the library is not.
+
+**A dismissed dialog leaves no folder either, and that is `dirFor` being pure.**
+It used to `FS.ensureDir` each component while it built the path, which was
+correct while the caller was about to write and became wrong the moment the write
+moved to the end of the dialog: the empty series folder appeared on the tap and
+outlived the dismissal. An empty folder is not the harmless leftover it looks
+like — it is indistinguishable from a series whose books were all deleted, and
+no "Clear cache" removes it. `Marker.saveAt` creates the folder now, at the
+moment there is a file to put in it, and degrades to the nearest ancestor that
+can be made rather than losing the book — the walk is bounded by
+`Marker.baseDir()`, which has already vouched for itself.
+
+The outermost folder is the one thing still created up front, because
+`Marker.baseDir()` is what answers "is this folder usable": a `marker_dir` on
+unplugged media has to be rejected before anything is planned around it.
+
+Two consequences worth knowing. `Marker.saveAt` takes a path rather than
+recomputing it through `pathFor`: the path was answered before the file existed,
+and `pathFor` consults the directory it is about to write into, so recomputing
+could produce a second, different answer. It returns nil when no folder could be
+made, and both callers report that rather than opening a path with no file
+behind it. And `openAsBook` does **not** go through `commitMarker`, because that
+path remembers the credentials the reader just typed into the OPDS form while
+`commitMarker` would look them up in `sources` — which is precisely what has not
+been flushed yet.
 
 Every button still routes through a single `once(action)`, so a double tap cannot
 open two books. **`once` is not what stops the dialog reopening after the open** —
@@ -453,8 +512,8 @@ Two traps are worth knowing:
   class and sometimes an instance. The file is whichever of the first two
   arguments is a string — never `self == ReaderUI`.
 - **`switchDocument` routes through it too**, so our own neighbour opens land in
-  the wrap. They are harmless (the guards below suppress the dialog), but it is
-  why the wrap must not assume it only ever sees file-manager opens.
+  the wrap. They are harmless (the one-shot below suppresses the dialog), but it
+  is why the wrap must not assume it only ever sees file-manager opens.
 
 That path has no browser feed, so its chapter target costs **one request** —
 `currentResumeTarget`, gated on `NetworkMgr:isConnected()` and bounded by
@@ -890,6 +949,20 @@ Each step must pass before the next:
 17. **No destination dialog anywhere.** `▶ Meguru this series` with the wifi off
     still prompts for a connection and then opens, straight into the resume
     dialog. Neither it nor the top-of-feed row ever asks for a folder.
+18. **A dismissed dialog leaves nothing at all.** List the marker folder first.
+    Tap a volume in a series feed, then tap *past* the resume dialog: no
+    `.meguru` appears, **no series folder appears**, and nothing new appears in
+    the library or in History. Answer the dialog on a second try and both the
+    folder and the marker do appear, in the place the first tap would have used.
+    Do this on a series that has no markers yet — an existing series already has
+    its folder, which is why the folder leak was easy to miss.
+19. **The two entry points agree on the server's position.** On Suwayomi, read
+    into chapter 40 of a 50-chapter series, then open an early chapter (say 3)
+    from the OPDS browser: the `▶` button must name chapter 40, not chapter 1.
+    Open that same early chapter's marker from History and the `▶` button must
+    name the same chapter 40. Before this, the browser answered chapter 1 and the
+    file answered chapter 40 for the same series, because one feed is
+    `number_desc` and the other `number_asc`.
 
 ## Known open items
 
