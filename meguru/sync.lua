@@ -207,8 +207,6 @@ function Sync.apply(series, items, generation)
         -- After the upserts: #items is the number of live rows the sweep leaves
         -- behind, which is exactly what the shrink gate must compare against.
         Catalog.recordSyncSuccess(series.id, #items)
-        -- The first sync of a series is an import, not a pile of new chapters.
-        Catalog.acknowledgeInitialSync(series.id)
     end)
 end
 
@@ -323,9 +321,9 @@ function Sync.prepare(server, series, opts)
 
     -- The driver's context. `lang` is remembered per server by ui/open.lua,
     -- which is the only place that sees the user browsing and can therefore
-    -- learn it: a sync driven from the library view has no browsing context,
-    -- and a driver's own default would catalogue the wrong translation of a
-    -- Suwayomi manga while still keying it to the right series.
+    -- learn it: a background walk has no browsing context, and a driver's own
+    -- default would catalogue the wrong translation of a Suwayomi manga while
+    -- still keying it to the right series.
     local ctx = {
         lang = opts.lang or Catalog.serverLang(server.name),
     }

@@ -13,28 +13,16 @@ function Paths.dbFile()
     return DataStorage:getSettingsDir() .. "/meguru.sqlite3"
 end
 
+--- The last-resort folder for a marker, when neither the configured nor the
+--- device home folder can be used (see `Marker.homeDir`). It is the only
+--- directory the plugin can create unilaterally, so it must stay derivable.
+---
+--- It held the page and cover caches once, under `pages/` and `covers/`. Neither
+--- exists: pages are in RAM and there are no covers. Files a previous version
+--- left in those two subdirectories are never read again and nothing sweeps
+--- them, so delete them by hand if they are still there.
 function Paths.cacheDir()
     return DataStorage:getDataDir() .. "/cache/meguru"
-end
-
---- A tombstone, and the only path here that nothing writes to.
----
---- Raw page bytes used to be filed per page in this directory. They are held in
---- RAM now (`meguru/doc/cache`), so no code reads or writes here — the path
---- survives solely so `Cache.clear` can sweep it, which is how the files a
---- previous version left behind stop sitting on disk forever. Removing this
---- function would leave them there for good.
-function Paths.pageCacheDir()
-    return Paths.cacheDir() .. "/pages"
-end
-
-function Paths.coverCacheDir()
-    return Paths.cacheDir() .. "/covers"
-end
-
---- Absolute path of the marker file for `title` inside `dir`.
-function Paths.markerFile(dir, title)
-    return dir .. "/" .. title .. "." .. Paths.MARKER_EXT
 end
 
 --- Extension of the marker file. Deliberately *not* the sibling plugin's

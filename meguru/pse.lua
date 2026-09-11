@@ -151,7 +151,7 @@ function PSE.fetchPage(url_str, opts)
 end
 
 -- `PSE.pageCachePath` used to live here: where the raw bytes of one page were
--- written on disk. Page bytes are held in RAM now (see `meguru/doc/cache`), so
--- there is no name to build and nothing in this module files anything.
+-- written on disk. Pages are never on disk now — the engine keeps a few in RAM —
+-- so there is no name to build and nothing in this module files anything.
 
 return PSE

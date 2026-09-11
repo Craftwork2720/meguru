@@ -44,7 +44,6 @@ local C_ = _.pgettext
 local T = require("ffi/util").template
 
 local Catalog = require("meguru/catalog")
-local Cache = require("meguru/doc/cache")
 local Defaults = require("meguru/doc/defaults")
 local Open = require("meguru/ui/open")
 local Settings = require("meguru/settings")
@@ -683,8 +682,8 @@ end
 --- module-level scalar in this file, which had two problems a per-series guard
 --- in the module all three walkers pass through does not: it refused a request
 --- for one series because a walk was running for another, and it could not see
---- the walks the browser path and the series view start — including the very
---- ones this file's `syncThenOpen` needs protection *from*. Two guards for one
+--- the walks the browser path starts — including the very ones this file's
+--- `syncThenOpen` needs protection *from*. Two guards for one
 --- invariant is how they drift, so there is one.
 ---
 --- A refusal arrives as `on_done(false, "busy")` and is deliberately silent here
@@ -864,12 +863,6 @@ local function installEndOfBookHook(plugin)
         end
         return true
     end
-end
-
--- Cache ------------------------------------------------------------------------
-
-function Reader.clearCache()
-    return Cache.clear()
 end
 
 -- Installation -----------------------------------------------------------------

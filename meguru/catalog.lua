@@ -43,17 +43,13 @@ local UPSERT_SERVER = [[
 INSERT INTO servers (name, kind, kind_source, host, root_url, last_seen_at)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(name) DO UPDATE SET
-    -- A user override in the menu is final: the author sniff must never
-    -- silently take it back on the next encounter.
+    -- A recorded kind is sticky against a *silent* encounter: the author sniff
+    -- only ever replaces it with a kind of its own, never with nothing.
     kind = CASE
-        WHEN servers.kind_source = 'manual' THEN servers.kind
         WHEN excluded.kind IS NULL THEN servers.kind
         ELSE excluded.kind
     END,
-    kind_source = CASE
-        WHEN servers.kind_source = 'manual' THEN 'manual'
-        ELSE COALESCE(excluded.kind_source, servers.kind_source)
-    END,
+    kind_source = COALESCE(excluded.kind_source, servers.kind_source),
     host = COALESCE(excluded.host, servers.host),
     root_url = COALESCE(excluded.root_url, servers.root_url),
     last_seen_at = excluded.last_seen_at
@@ -87,28 +83,10 @@ function Catalog.server(id)
     return Store.first("SELECT * FROM servers WHERE id = ?;", id)
 end
 
-function Catalog.servers()
-    return Store.query("SELECT * FROM servers ORDER BY name;")
-end
-
---- Record a user's explicit choice of server kind, which outranks the sniff.
-function Catalog.setServerKind(id, kind)
-    Store.exec(
-        "UPDATE servers SET kind = ?, kind_source = 'manual' WHERE id = ?;",
-        kind, id)
-end
-
---- Undo a manual override, handing the server back to the author sniff.
----
---- `kind_source` has to be cleared along with the kind: `upsertServer` treats
---- 'manual' as final precisely so a browsing session cannot silently undo the
---- user's choice, which means writing only `kind = NULL` would leave a server
---- that is neither overridden nor snifffable.
-function Catalog.clearServerKind(id)
-    Store.exec(
-        "UPDATE servers SET kind = NULL, kind_source = NULL WHERE id = ?;",
-        id)
-end
+-- `Catalog.servers`, `setServerKind` and `clearServerKind` lived here for the
+-- server-administration screen, which is gone. With it went the manual override:
+-- `kind_source = 'manual'` now has no writer, so a mis-sniffed server can only
+-- be corrected by clearing its row. See CLAUDE.md on driver selection.
 
 --- The language segment to catalogue this server in, or nil if never observed.
 ---
@@ -149,7 +127,7 @@ ON CONFLICT(server_id, remote_id) DO UPDATE SET
     name = excluded.name,
     name_sort = excluded.name_sort,
     cover_url = COALESCE(excluded.cover_url, series.cover_url)
-RETURNING id, new_since
+RETURNING id
 ]]
 
 --- Returns the whole series row.
@@ -182,57 +160,19 @@ function Catalog.seriesByRemoteId(server_id, remote_id)
         server_id, remote_id)
 end
 
---- Every series on a server, each with the number of unacknowledged items.
---- One query for the whole library view: the alternative is a count per row.
-function Catalog.listSeries(server_id)
-    return Store.query([[
-SELECT s.*,
-       (SELECT COUNT(*) FROM items i
-         WHERE i.series_id = s.id
-           AND i.removed_at IS NULL
-           AND i.first_seen_at > COALESCE(s.new_since, 0)) AS new_count,
-       (SELECT COUNT(*) FROM items i
-         WHERE i.series_id = s.id AND i.removed_at IS NULL) AS item_total
-  FROM series s
- WHERE s.server_id = ?
- ORDER BY s.name_sort, s.name;]], server_id)
-end
-
 function Catalog.itemCount(series_id)
     return Store.scalar(
         "SELECT COUNT(*) FROM items WHERE series_id = ? AND removed_at IS NULL;",
         series_id) or 0
 end
 
---- Number of items discovered since the user last looked at this series.
-function Catalog.newCount(series_id)
-    return Store.scalar([[
-SELECT COUNT(*) FROM items i
-  JOIN series s ON s.id = i.series_id
- WHERE i.series_id = ? AND i.removed_at IS NULL
-   AND i.first_seen_at > COALESCE(s.new_since, 0);]], series_id) or 0
-end
-
---- Push the "new" watermark to now. Called when the user actually looks at the
---- series, not when a sync happens to finish.
-function Catalog.markSeriesSeen(series_id)
-    Store.exec("UPDATE series SET new_since = ? WHERE id = ?;",
-        Store.now(), series_id)
-end
-
---- Seed the watermark so the initial import of a series is not one great pile
---- of "new chapters". Called by sync after the *first* successful sync.
-function Catalog.acknowledgeInitialSync(series_id)
-    Store.exec([[
-UPDATE series
-   SET new_since = (SELECT COALESCE(MAX(first_seen_at), 0) FROM items WHERE series_id = ?)
- WHERE id = ? AND new_since IS NULL;]], series_id, series_id)
-end
-
-function Catalog.deleteSeries(id)
-    -- ON DELETE CASCADE takes the items with it (foreign_keys is ON).
-    Store.exec("DELETE FROM series WHERE id = ?;", id)
-end
+-- `listSeries`, `newCount`, `markSeriesSeen` and `acknowledgeInitialSync` lived
+-- here for the library view's new-chapter counts. That view is gone, and with it
+-- the last *readers* of `series.new_since` — so the column is now written by
+-- nobody and read by nobody. It stays in the schema as a legacy column, because
+-- dropping one means rebuilding the table, a real migration on the device, which
+-- is a worse price than an unused column. `items.first_seen_at` is still written,
+-- because it is NOT NULL.
 
 --- Whether a *different* series on this server already owns the folder that
 --- `series_name` would sanitize to. Feeds `Marker.dirFor`'s
@@ -398,10 +338,6 @@ UPDATE items SET removed_at = ?
     return doomed
 end
 
-function Catalog.item(id)
-    return Store.first("SELECT * FROM items WHERE id = ?;", id)
-end
-
 function Catalog.itemByKey(series_id, item_key)
     return Store.first(
         "SELECT * FROM items WHERE series_id = ? AND item_key = ?;",
@@ -451,8 +387,8 @@ end
 
 --- Where an item sits in its series, and what to read either side of it.
 ---
---- `position` counts only readable items, so the series view can say "12 / 240"
---- without post-processing. Neighbours skip tombstones: if the item after this
+--- `position` counts only readable items, so a caller that wants "12 / 240" gets
+--- it without post-processing. Neighbours skip tombstones: if the item after this
 --- one was deleted upstream, "next" means the next one that still exists.
 function Catalog.neighbors(series_id, item_key)
     local items = Catalog.orderedItems(series_id)

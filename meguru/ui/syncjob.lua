@@ -42,9 +42,9 @@ local Sync = require("meguru/sync")
 
 --- Series ids with a walk in flight, so one feed is never walked twice at once.
 ---
---- **Per series, not one flag.** Three callers reach this module — the reader's
---- own-menu neighbour request, the series view's manual row, and the background
---- walk `ui/open.lua` starts after an OPDS add — and a walk for one series has
+--- **Per series, not one flag.** Two callers reach this module — the reader's
+--- own-menu neighbour request, and the background walk `ui/open.lua` starts
+--- after an OPDS add — and a walk for one series has
 --- no business refusing a request for another. (The reader used to keep its own
 --- scalar guard; it was replaced by this, because two guards for one invariant
 --- is how they drift.)

@@ -234,7 +234,7 @@ local function renderMuPDFPage(doc, pageno, refuse_oversize)
     return bb
 end
 
--- Render `data` (raw bytes of a streamed page / cover) through MuPDF into a
+-- Render `data` (the raw bytes of a streamed page) through MuPDF into a
 -- BlitBuffer of the whole page whose long edge is at most the cap. Returns nil
 -- on any failure (decodeNative then falls back to the classic RenderImage path
 -- below). NOTE: the buffer page:draw_new hands back is a colour (RGB24) one,
@@ -337,8 +337,6 @@ Image.DECODE_TOO_LARGE = DECODE_TOO_LARGE
 -- arithmetic on it raised instead of explaining anything.
 Image.MAX_LOSSLESS_NATIVE_PIXELS = MAX_LOSSLESS_NATIVE_PIXELS
 Image.bytesPerPixel = bbBytesPerPixel
-Image.cappedDim = cappedDim
-Image.isJpeg = isJpegBytes
 Image.renderMupdfPage = renderMuPDFPage
 Image.decode = decodeNative
 

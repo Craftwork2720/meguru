@@ -299,7 +299,7 @@ end
 --- The marker file path for a descriptor inside `dir`.
 ---
 --- Normally `<dir>/<title>.<ext>`, so a re-open finds the existing marker and
---- keeps its reading progress and its page cache. Only when a *different* book
+--- keeps its reading progress. Only when a *different* book
 --- already owns that title (two volumes that share a title, two servers) is a
 --- deterministic suffix of the natural key appended — distinct books never
 --- clobber each other, and each always resolves back to the same file.
@@ -395,21 +395,6 @@ function Marker.saveAt(path, desc)
     ls:flush()
     logger.info("Meguru: marker written to", path)
     return path
-end
-
---- The name a document's cached pages and covers are filed under.
----
---- Derived from the natural key, *not* from the marker path. This used to be the
---- marker's basename, which is why the cache was shared between books: the
---- basename is the title, two series routinely title a chapter the same way,
---- and the guard that disambiguates a second book with the same title
---- (`pathFor` above) only ever looks inside one directory — so two "Volume 1"s
---- in two series folders each kept the plain name and each wrote to the same
---- cache file. Identity is the one thing that cannot collide, and reading it
---- from the descriptor rather than from the path also means moving or renaming
---- a marker keeps its cache, which is what `doc/cache.lua` has always claimed.
-function Marker.cacheKey(desc)
-    return Naming.cacheKey(Marker.naturalKey(desc), desc.title)
 end
 
 return Marker

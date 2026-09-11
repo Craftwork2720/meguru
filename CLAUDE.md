@@ -46,9 +46,8 @@ _meta.lua                 plugin metadata
 main.lua                  plugin class: provider registration, menu dispatch, reader install
 
 meguru/
-  paths.lua               every path: database, markers, cover cache (the page
-                          dir is a tombstone — see doc/cache.lua)
-  fs.lua                  filesystem helpers
+  paths.lua               every path: database, markers
+  fs.lua                  filesystem predicates and directory creation
   settings.lua            plugin-wide preferences in G_reader_settings
   store.lua               SQ3 connection (module-level), schema, migrations, transactions
   catalog.lua             every query and command against servers/series/items
@@ -67,7 +66,6 @@ meguru/
 
   doc/
     document.lua          Document subclass: the reading engine
-    cache.lua             identity-keyed bytes: a page LRU in RAM, covers on disk
     image.lua             MuPDF decoding with a size cap
     defaults.lua          per-book seeding of kopt_* from plugin preferences
 
@@ -75,8 +73,6 @@ meguru/
     credential.lua        what a credential looks like in a URL: redact / restore
     open.lua              "Meguru this series": resume dialog, marker write, open,
                           plus the background series walk it starts
-    library.lua           series list from the catalog, with new-chapter counts
-    series.lua            items of one series, open, manual sync
     syncjob.lua           cooperative sync with progress and Cancel, a silent mode, and the one-walk-per-series guard
     reader.lua            everything grafted onto a running ReaderUI
     menu.lua              the two menu surfaces
@@ -91,9 +87,14 @@ only discover a series by title heuristic and cannot build a canonical
 an unrecognised server is handled by the absence of a driver rather than by a
 driver that returns nothing useful.
 
-The dependency graph is a DAG with no cycles. Two edges are deliberately lazy to
-keep it that way: `ui/library.lua` -> `ui/series.lua` and `ui/menu.lua` ->
-`ui/library.lua` are `require`d inside the callback, not at module load.
+**Nothing is written to disk but markers and the database.** There is no page
+cache and no cover cache: pages live in a small RAM LRU, and a cover is refetched
+on every call. See the covers section below for what that costs the FileManager's
+browsing.
+
+The dependency graph is a DAG with no cycles, and it now has **no lazy edges**:
+the two it used to need (`ui/library.lua` -> `ui/series.lua`, and `ui/menu.lua`
+-> `ui/library.lua`) went with those views.
 
 ## The catalog
 
@@ -152,105 +153,108 @@ The single definition is load-bearing. While numbering lived in the sync's
 passes through `dedupe` — inserted a nil and died on the constraint, *after* the
 series row had already been written, so the failure left a series with no items.
 
-**A cover belongs to a book *and* to a series, and the catalog holds both.**
-`series.cover_url` is the series' artwork; `items.cover_url` is the book's own,
-written only by a driver whose feed publishes one. Kavita's series feed does, on
-every entry, so every volume gets its own at sync time for free. Suwayomi's
-chapter list does not — its entries carry only `rel=subsection` — and the
-chapter's own artwork lives solely in its metadata feed, one request per chapter,
-which the sync rules forbid spending. So `driver/suwayomi.lua` sets none and its
-chapters show the series cover, deliberately.
+**A cover belongs to a book *and* to a series, the catalog holds both, and
+nothing about either is cached.** `series.cover_url` is the series' artwork;
+`items.cover_url` is the book's own, written only by a driver whose feed
+publishes one. Kavita's series feed does, on every entry, so every volume gets
+its own at sync time for free. Suwayomi's chapter list does not — its entries
+carry only `rel=subsection` — and the chapter's own artwork lives solely in its
+metadata feed, one request per chapter, which the sync rules forbid spending. So
+`driver/suwayomi.lua` sets none and its chapters fall back to the series cover,
+deliberately. Neither link goes into the marker: the marker carries only what
+opens the stream offline.
 
 `MeguruDocument:getCoverPageImage` resolves a book as **item → series → page 1 of
 its stream**, so a NULL item cover is not a missing cover, it is the next best
-one, and the last step is the reason a book is never cover-less. Neither link
-goes into the marker: the marker carries only what opens the stream offline. The
-last step is also the one entry of the page store that can be for a page other
-than the one on screen, which is why it is one of the reasons that store is four
-entries and not two.
+one, and the last step is the reason a book is never cover-less. This is the
+seam the FileManager's mosaic and "Book info" go through, and it is worth
+knowing what it costs: **there is no cover cache of any kind**, so every call
+fetches over HTTP. Browsing a folder of `.meguru` files is one request per book.
+That is deliberate — KOReader's own `BookInfoManager` remembers the thumbnail it
+extracts, so a cover already has somewhere else to live, and a store of our own
+would have made meguru the only thing it writes to disk besides markers. The
+last step goes through the page pipeline, so it also warms the same byte store a
+page turn does, and page 1 is the one entry in it that can be for a page other
+than the one on screen.
 
-**Cached bytes are filed under the book's identity, never under its name.**
-`Marker.cacheKey(desc)` is `Naming.cacheKey(Marker.naturalKey(desc), desc.title)`
-— a readable head from the title, then a 64-bit digest of the natural key — and
-it is the only thing `doc/cache.lua` is handed, for a page or for a cover. The
-head is legibility and may collide freely (`Naming.sanitizeComponent` folds
-`: * ? " < > |` to spaces and truncates at 64 bytes); the digest is identity.
-This is worth a paragraph because the version that keyed on the *readable part
-alone* — the marker's basename, via a now-deleted `Marker.slug` — shipped, and
-its failure is the reason the rule is stated this way:
+`series.new_since` is a **legacy column**: its only readers were the library
+view's new-chapter counts, and that view is gone, so nothing reads or writes it
+now. It is not dropped because dropping a column means rebuilding the table, a
+real migration on the device, which is a worse price than an unused column.
+`items.first_seen_at` is still written, because it is `NOT NULL`.
 
-- Every Suwayomi chapter is titled "Chapter 1" and many Kavita volumes "Volume
-  1", so **every such book on every series and every server shared one entry**.
-  The second book to be opened was served the first one's bytes, pages and cover
-  alike — `getCoverPageImage`'s last fallback reads this book's *page 1*, so a
-  series of identically-titled chapters shared one cover too.
-- `Marker.pathFor`'s collision guard could not catch it: it disambiguates only
-  within one directory, and same-titled books normally land in *different*
-  series folders, where it never fires.
+**Nothing cached is ever filed under a book's name.** That is a rule with a
+history, and the history is worth keeping because it is the cheapest way to see
+why it must not be undone. Page bytes lived on disk once, named after the
+marker's basename; every Suwayomi chapter is titled "Chapter 1" and many Kavita
+volumes "Volume 1", so **every such book on every series and every server shared
+one file** — the second book to be opened was served the first one's bytes and
+its cover alike. `Marker.pathFor`'s collision guard could not catch it: it
+disambiguates only within one directory, and same-titled books normally land in
+*different* series folders, where it never fires. (That old key was
+`Marker.cacheKey`, and the read it fed was `getCoverPageImage`'s page-1
+fallback; both are gone.)
 
-**That failure is the reason the page store may be module-level.** Page bytes
-live in one table shared by every document in the process, which would be
-indefensible if the key were a name — and is exactly right now that the key is
-identity: a second document of the same book finds the first one's pages instead
-of mistaking them for another book's. The only cost module-level state can have
-here is the one a cache is allowed to have: it can go cold.
+What survives of the lesson is `Marker.naturalKey` — `server_name | series_remote_id
+| item_key`, never the title and never the template — which is what
+`Marker.matches` and `Marker.pathFor` compare, and `Naming.digest64` is what a
+marker with **no catalog series** hashes its stream URL into. The two hashes
+differ in what a collision costs, which is why they differ in width:
+`Naming.keySuffix`'s 32 bits disambiguate a series folder *name*, while
+`digest64`'s two lanes carry a marker's whole identity, where a collision
+collapses two unrelated books onto one file — and a single lane reaches that
+with a few percent probability over a large library. Lua 5.1 constrains the
+shape: every double intermediate must stay exact, which rules out FNV-1a's
+`h * 16777619` (~2^56) and forces the two polynomials (`*33`, `*65599`) that do.
 
-Two properties fall out of deriving the key from identity rather than from the
-path, and both hold for whichever half of the cache is being asked about: moving
-or renaming a marker does not orphan its cached bytes (the old scheme's docblock
-claimed this while its slug *was* the basename), and retitling a chapter or
-rotating a Kavita API key does not either, since neither `title` nor `template`
-is in the digest.
+**Page bytes live in the document, keyed by page number alone.**
+`self.page_bytes` is a four-entry array, most-recent-first. A bare page number
+is unambiguous only because exactly one document can reach the store: `self.file`
+is fixed and `self.desc` is assigned once, so one instance never serves two
+books. **It must not be made shared again** — a process-wide store would need
+the book's identity back in the key, which is the whole apparatus this removed.
 
-The digest is `Naming.digest64`, two 32-bit lanes, not one. A single lane is
-right for the marker/folder suffix `Naming.keySuffix` still uses, where a
-collision means two series share a folder *name*; for a cache key the failure is
-one book serving another's bytes, which a 32-bit birthday collision reaches with
-a few percent probability over a large library. Lua 5.1 constrains the choice:
-every double intermediate must stay exact, which rules out FNV-1a's `h *
-16777619` (~2^56) and forces the two polynomials (`*33`, `*65599`) that do.
-
-**Only covers are on disk. Page bytes are in RAM, and there is nothing left to
-prune.** `cache/meguru/pages/` is a tombstone: files an older version left there
-are unreachable rather than wrong and are swept the first time the reader taps
-"Clear cache", which is the whole migration. What replaced the disk page LRU is
-four entries of *raw* bytes in `meguru/doc/cache`. Two is the floor — the page
-being rendered, plus the one `hintPage` warms ahead of it — and nothing in
-`document.lua` ever holds two pages' worth at once; the rest is room for
-ReaderHinting to ask two ahead and for `getCoverPageImage`'s page 1. The number
-is not a memory figure: these are the *compressed* bytes, orders of magnitude
-below the decoded natives the document keeps beside them (`max_cached_native`,
-three of them, each up to `max_native_pixels` of RGB24).
+Its lifetime is the document's: `clearCaches` empties it on close. Two entries
+are the floor — the page being rendered, plus the one `hintPage` warms ahead of
+it, and nothing in `document.lua` ever holds two pages' worth at once — and the
+rest is room for ReaderHinting to ask two ahead. The number is not a memory
+figure: these are the *compressed* bytes, orders of magnitude below the decoded
+natives kept beside them (`max_cached_native`, three of them, each up to
+`max_native_pixels` of RGB24). It deliberately does not reuse `evictOldest`,
+whose loop is `count >= cap` — it would turn four into three — and which stamps
+through the `stamps` table `native` shares, keyed, as this is, by page number.
 
 Three consequences that are easy to trip over:
 
-- **An evicted page is refetched, not re-read.** Anything past the four-entry
-  cap, and everything after the book is closed, costs a request. Offline reading
-  of a page already seen is gone; offline reading of the page in front of you is
-  not, because the decoded buffer is still in the native LRU.
+- **A page is refetched, not re-read.** Anything past the four-entry cap costs a
+  request, and so does everything after the book is closed. Offline reading of a
+  page already seen is gone; offline reading of the page in front of you is not,
+  because the decoded buffer is still in the native LRU.
 - **The byte reads are guarded, and one of them was a bug.** `hasNative(pageno)`
   skips fetching bytes at all when the page is already decoded, because
   `decodeRegion` hands them to `ensureNativeBB`, which returns the cached buffer
   before it looks at them. Without that guard every tile miss — a zoom change, a
-  crop toggle, the repaint after "Clear cache" — would pay a synchronous HTTP
-  GET inside the paint for bytes nothing reads. The bug it also fixes:
-  `renderPage` used to return nil and paint the gray placeholder when the bytes
-  were missing but a perfectly good decoded page sat in the LRU. `getPageDims`
-  is deliberately *not* guarded — it is the decoder, and a live native would
-  have answered from `self.dims` before reaching it.
-- **Cover files are now the entire disk cache, and nothing prunes them.** They
-  go when the reader asks. That gap predates this change — `Cache.prune` was
-  only ever called for pages — but it used to sit beside a bounded 240-file page
-  directory, and it is now the whole of what meguru leaves on disk.
+  crop toggle, a repaint during teardown — would pay a synchronous HTTP GET
+  inside the paint for bytes nothing reads. The bug it also fixes: `renderPage`
+  used to return nil and paint the gray placeholder when the bytes were missing
+  but a perfectly good decoded page sat in the LRU. `getPageDims` is
+  deliberately *not* guarded — it is the decoder, and a live native would have
+  answered from `self.dims` before reaching it.
+- **Files a previous version left in `cache/meguru/pages` and `.../covers` are
+  nobody's problem.** Nothing reads them and nothing sweeps them — there is no
+  "Clear cache" row any more, because with no disk cache it would have had
+  nothing of its own to clear. Delete the two subdirectories by hand once.
+  `Paths.cacheDir` itself survives: it is the last-resort folder for a marker
+  when the home folder is unusable (`Marker.homeDir`).
 
-**Reading progress is not mirrored into the catalog.** It is read lazily per
-series: `ui/series.lua` gates on a non-empty `items.marker_path`, then
-`DocSettings:findSidecarFile` and `openSettingsFile`, and reads `percent_finished`
-— only for items that have both a `marker_path` and a sidecar. This works only
-because `items.marker_path` exists; a path pointing at a missing file means "not
-opened", with no fallback to a name search. (`DocSettings:hasSidecarFile` is the
-cheaper, parse-free variant of the same test and is what the resume path below
-uses, where nothing needs reading.)
+**Reading progress is not mirrored into the catalog.** It is read lazily, per
+book, from the sidecar: `DocSettings:findSidecarFile` then `openSettingsFile`,
+reading `percent_finished`. This works only because `items.marker_path` exists —
+a path pointing at a missing file means "not opened", with no fallback to a name
+search. (`DocSettings:hasSidecarFile` is the cheaper, parse-free variant of the
+same test and is what the resume path below uses, where nothing needs reading.)
+The per-series sweep that used to walk these sidecars to annotate a series list
+went with that list; nothing reads progress in bulk any more.
 
 **The server's own progress is a separate thing, and it seeds a first open.**
 `items.last_read` is the page the *server* says the reader stopped on. It is not
@@ -594,7 +598,7 @@ correct while the caller was about to write and became wrong the moment the writ
 moved to the end of the dialog: the empty series folder appeared on the tap and
 outlived the dismissal. An empty folder is not the harmless leftover it looks
 like — it is indistinguishable from a series whose books were all deleted, and
-no "Clear cache" removes it. `Marker.saveAt` creates the folder now, at the
+nothing in the plugin removes it. `Marker.saveAt` creates the folder now, at the
 moment there is a file to put in it, and degrades to the nearest ancestor that
 can be made rather than losing the book — the walk is bounded by
 `Marker.baseDir()`, which has already vouched for itself.
@@ -843,15 +847,16 @@ Sync is triggered four ways, all gated on `NetworkMgr:isConnected()`:
   bounded instead by `timeout = "resume"`. Killing KOReader stops it safely:
   nothing is written until the last page.
 
-  **Both OPDS entry points start it, and neither library nor series view does.**
+  **Both OPDS entry points start it, and nothing else in the UI does.**
   `openFirstUnread` pays for two walks over one feed on its first tap per TTL —
   its own bounded read to answer "which chapter", then this one to fill the
   series — and that was weighed against leaving it out, which left the row's
   reader with a one-item series and no way out but "Find the next chapter". The
-  trigger is deliberately **not** in `openCatalogItem`, the funnel the library's
-  and the series view's item rows share: there the list already came from a sync
-  and a walk would buy nothing.
-- an explicit manual action ("check for new chapters"),
+  trigger is deliberately **not** in `openCatalogItem`, the funnel the file
+  manager and History reach too: they have no feed in hand to walk.
+- an explicit manual action — the `⟳ Check for new chapters` row, which lived in
+  the series view and went with it. What remains of this trigger is the reader's
+  own-menu request below, which is the same call.
 - **on demand, from the reader, when a neighbour the catalog does not have is
   asked for** — `Reader.openNeighbor`. The reader menu grows a "Find the next
   chapter" row when there is no neighbour, and the sync it starts is
@@ -874,30 +879,31 @@ which requires `ui/open.lua` — requiring it back would be a cycle, and
 `registerModule("menu", …)` is what makes the instance reachable anyway.
 
 The same staleness applies to every other way the catalog can change under an
-open book (a manual sync from the series view, a neighbour walk landing), and it
-is worth knowing for any future row built from catalog state: the menu's
-*structure* is decided once, so a row that should appear later will not.
+open book (a background walk landing), and it is worth knowing for any future row
+built from catalog state: the menu's *structure* is decided once, so a row that
+should appear later will not.
 
 **One guard, in `SyncJob`, keyed on the series id** — not one per caller. It
 refuses (`"busy"`) rather than joining, because joining would fire the joiner's
 completion callback, which on the reader's path opens a document. It is not
 redundant with `Sync.plan`: `synced_at` is written when a walk *ends*, so a
 second request arriving mid-walk finds the series looking exactly as stale as
-before. It lives here because this is the only module all three UI walkers pass
+before. It lives here because this is the only module both UI walkers pass
 through — `ui/reader.lua` used to keep its own scalar and that was worse in both
 directions, refusing a request for one series because a walk was running for
-another, and blind to the walks the browser path and the series view start.
+another, and blind to the walks the browser path starts.
 
 **A walk that hits `MAX_PAGES` writes nothing at all**, which is why a
 background walk may not be made cheap by capping it: `complete = false` means
 zero writes, so a short walk would repair nothing. It must run to the end or not
 start.
 
-**The series view has no lazy TTL trigger.** This section used to claim one, and
-the claim was false: the view offers only the manual `⟳ Check for new chapters`
-row. The pieces now exist (`Sync.plan`, `SyncJob`'s silent mode), so it is a
-decision not yet taken rather than an omission — record it as such if it is ever
-wanted.
+**The reader's "Find the next chapter" row is the only manual trigger left.** The
+series view's `⟳ Check for new chapters` row offered the same thing and went with
+the view. Note that it called `SyncJob.run` directly, bypassing `Sync.plan`'s TTL
+— which is why it could repair a series whose `synced_at` was still fresh. That
+escape hatch is gone with it, so the reader's row is now the only way to force a
+walk.
 
 **Never in the plugin's `init()`**: at that point there is neither connectivity
 nor a UI.
@@ -931,25 +937,30 @@ reached from an aggregate may not carry a recoverable series id, and an aggregat
 is not a series. **Never silently sync the wrong series** — that failure class is
 documented in the old plugin's `meguru_hook.lua:837-850`.
 
-Driver selection is by `servers.kind`, decided in this order: the **user
-override in the menu**, the session's author sniff, the kind the server was last
-recorded with, and — only when all three are silent — `Base.kindFor`, which asks
-each driver's `discover` whether the entry is its own and takes the answer only
-when exactly one driver claims it.
+Driver selection is by `servers.kind`, decided in this order: the session's
+author sniff, the kind the server was last recorded with, and — only when both
+are silent — `Base.kindFor`, which asks each driver's `discover` whether the
+entry is its own and takes the answer only when exactly one driver claims it.
 
 That last step is not decoration. A server whose feeds sign themselves with an
 `<author>` no driver recognises used to be a soft failure, because the old plugin
 only *stored* `server_kind`; here the driver is what knows a series' canonical
 feed, so an unknown kind means every book off that server is uncatalogued — no
-next chapter, no new-chapter counts, forever. `kind_source` records which of the
-four decided (`manual` / `author` / `inferred`), and `Catalog.clearServerKind`
-clears it along with `kind` — `upsertServer` treats `kind_source = 'manual'` as
-final specifically so a browsing session cannot undo the user's choice.
+next chapter at all, forever. `kind_source` records which of the three decided
+(`author` / `inferred`).
 
-A wrong classification is worse than none, which is why the inference refuses an
-ambiguous entry, and why the manual override exists at all: a wrong kind picks
-the wrong driver, and every later sync then re-keys the series against feeds that
-do not describe it.
+**There was a fourth, strongest source and it was deliberately removed: a manual
+override set from the server-administration screen.** That screen went with the
+Library/Servers views, so `kind_source = 'manual'` now has no writer, and the two
+`CASE ... WHEN servers.kind_source = 'manual'` arms that used to protect it are
+gone from `UPSERT_SERVER`. The cost is real and was accepted knowingly: a
+mis-sniffed server can no longer be corrected from the UI at all, only by clearing
+its row in `meguru.sqlite3` and letting a book re-register it. The reason the
+override existed is unchanged and worth restating — a wrong kind picks the wrong
+driver, and every later sync then re-keys the series against feeds that do not
+describe it — which is why the inference still refuses an ambiguous entry. If the
+override is ever wanted back, this is the paragraph that says what removing it
+cost.
 
 ## Reading options
 
@@ -986,19 +997,21 @@ Two invariants when touching these rows:
   `more_tools`, the position being avoided here. Both edits are safe: an order id
   with no matching item is skipped by the sorter, and a duplicate insert is inert.
 - **`separator` and `checked_func` are `TouchMenu`-only; `mandatory` is
-  plain-`Menu`-only.** Both *main* menus are `TouchMenu`s on a touch device — the
-  reader ⋮ menu and the FileManager's, which falls back to the plain widget only
-  on a keyboard-only build (`filemanagermenu.lua:1043`). The plain widget is what
-  Meguru's **own** library, series and server lists use, so `separator` is safe in
-  the rows Meguru registers and unsafe in those. `text_func` renders on both
-  (`TouchMenuItem` goes through `Menu.getMenuText`), so a row that must work on
-  either carries its state in the text rather than in a `mandatory` value slot.
-- **The FileManager has one `Meguru` submenu, not flat rows**, and it carries the
-  same two destination rows as the reader's (save folder, per-catalog subfolder).
-  Both surfaces use the key `meguru`, which is safe because the two `menu_items`
-  tables are per-surface and never shared, and `Meguru:addToMainMenu` dispatches on
-  whether a document is open — so only one is ever written. A saved menu order in
-  `settings/` then means the same thing on both.
+  plain-`Menu`-only.** Both menus Meguru registers are `TouchMenu`s on a touch
+  device — the reader ⋮ menu and the FileManager's, which falls back to the plain
+  widget only on a keyboard-only build (`filemanagermenu.lua:1043`) — so both
+  fields are usable in these rows. `text_func` renders on either
+  (`TouchMenuItem` goes through `Menu.getMenuText`), which is why the destination
+  rows carry their state in the text rather than in a `mandatory` value slot.
+  (Meguru used to have three plain-`Menu` surfaces of its own — library, series,
+  servers — and with them went the reason `separator` was ever unsafe here.)
+- **The FileManager has one `Meguru` submenu, not flat rows**, and it carries
+  nothing but the two destination rows (save folder, per-catalog subfolder) —
+  the same two the reader's carries. Both surfaces use the key `meguru`, which is
+  safe because the two `menu_items` tables are per-surface and never shared, and
+  `Meguru:addToMainMenu` dispatches on whether a document is open — so only one is
+  ever written. A saved menu order in `settings/` then means the same thing on
+  both.
 
 ## Plugin lifecycle facts worth not rediscovering
 
@@ -1010,8 +1023,8 @@ Two invariants when touching these rows:
   That is what makes `Reader.installStatusBarHook`'s once-per-process guard
   correct, and what makes the `DocumentRegistry:addProvider` guard necessary —
   `addProvider` only ever appends, so a second call would list the provider twice.
-- The reader menu is a `TouchMenu`; the library and series views are plain
-  `Menu`. They do not support the same row fields.
+- Every menu surface Meguru writes is a `TouchMenu`; the plugin no longer has a
+  plain-`Menu` surface of its own.
 - `C_` is **not** a global. Every core file declares `local C_ = _.pgettext`; a
   plugin file that omits it gets a nil call only when a row is built.
 
@@ -1184,8 +1197,9 @@ Each step must pass before the next:
 1. **Schema.** `sqlite3 meguru.sqlite3 .schema` after the first start;
    `user_version` present; no SQ3 errors in the log. A restart does not duplicate
    rows.
-2. **Database with no network.** Open the library from an empty catalog — no
-   crash, empty list.
+2. **Database with no network.** With an empty catalog, open the FileManager's
+   `Tools → Meguru` submenu — no crash, and it holds the two destination rows and
+   nothing else.
 3. **Suwayomi sync.** One series: item count in the database equals the chapter
    count in the service; the log shows the walk via `rel=next` across all pages
    and **one** `BEGIN`/`COMMIT`. Sync again: `item_count` unchanged and
@@ -1195,8 +1209,10 @@ Each step must pass before the next:
    point a page at a bad URL) — the database is unchanged, `sync_error` is
    recorded, zero tombstones. This is the `complete` gate plus the generation
    sweep.
-5. **New chapters.** After a sync that adds a chapter the library shows a count;
-   opening the series clears it.
+5. **New chapters are gone as a feature.** Nothing counts or displays them any
+   more — `series.new_since` has no reader and no writer. Confirm instead that a
+   sync that adds a chapter simply raises `SELECT COUNT(*) FROM items`, and that
+   nothing in the log mentions a count.
 6. **A marker opens without the database.** Open a book, rename
    `meguru.sqlite3`, reopen the same marker from History — the book must open and
    read, with no next/previous. Restore the database — next/previous returns.
@@ -1204,12 +1220,13 @@ Each step must pass before the next:
    rowid — the open must land on the **correct** chapter via the natural key, not
    the substituted one.
 8. **Page fetching.** One log line per page with a rising `pageNumber` plus
-   prefetch, and **no** fetch of a whole archive. `cache/meguru/pages/` does not
-   grow while reading — nothing is written there at all any more. Then turn back
-   one page and force a repaint (open/close ⋮, toggle a crop setting): **no
-   fetch**, because the page's decoded buffer is still live and the bytes are
-   not needed for it. Turn back past the four-entry store and a fetch *is*
-   expected — that is the trade this makes, not a regression.
+   prefetch, and **no** fetch of a whole archive. `cache/meguru/` does not grow
+   while reading — nothing is written there at all any more. Then turn back one
+   page and force a repaint (open/close ⋮, toggle a crop setting): **no fetch**,
+   because the page's decoded buffer is still live and the bytes are not needed
+   for it. Turn back past the four-entry store and a fetch *is* expected — that
+   is the trade this makes, not a regression. Then close the book and reopen it:
+   the page it reopens on is fetched, because the store died with the document.
 9. **Engine port.** On the same title as the old plugin: crop, page-number crop,
    panel zoom, night-mode invert, wide-page rotation, local `.cbz` via "Open
    with…" — behaviour identical to the old plugin.
@@ -1218,19 +1235,21 @@ Each step must pass before the next:
     works during a walk.
 11. **Two books, one title.** Open a "Chapter 1" from two different Suwayomi
     series (or two Kavita volumes both titled "Volume 1"). Each renders its own
-    pages *and its own cover* — the cover is where a shared key shows first —
-    and `cache/meguru/covers/` holds two files whose heads match and whose
-    digests differ. Then move one marker to another folder and reopen it from
-    the file manager: its **cover** is not refetched, which is the property the
-    old path-derived key never had. Its pages are — the byte store does not
-    survive a close — so only the cover half of that assertion is askable now.
-12. **A fresh cache is not a cache miss, where there is still a file.** Every
-    cover name carries the digest, so a cover written by an older version is
-    unreachable rather than wrong — the first open after the upgrade refetches,
-    and no stale file is ever read. In the same pass, check the migration: with
-    `cache/meguru/pages/` holding files from an older version, "Clear cache"
-    empties it, and its count covers those files and the in-memory page entries
-    together.
+    pages — the failure this guards against was one book being served another's
+    *bytes*, which is now impossible by construction, since the store is
+    per-document and keyed by page number. What is still worth checking is that
+    neither book's marker was adopted by the other: each opens the chapter it
+    names, and both markers exist in their own folders.
+12. **Nothing on disk but markers and the database.** Read several pages, then
+    confirm `cache/meguru/` is empty (or absent) — including after browsing a
+    folder of `.meguru` files in the mosaic, which *does* fetch each cover over
+    HTTP and must still write nothing. In that same browse, the covers must
+    actually appear: the book's own where its feed published one (a Kavita
+    volume), else the series', else page 1 of its stream — and at most one fetch
+    per book, since `BookInfoManager` remembers the thumbnail afterwards. With
+    the wifi off, covers already extracted stay on screen and nothing crashes.
+    The two subdirectories a previous version wrote (`pages`, `covers`) are not
+    cleaned by anything: delete them by hand once and confirm they stay gone.
 13. **The dialog asks once.** Tap a volume in a series feed, answer the dialog:
     the book opens and **no second dialog appears**. Then close it and reopen the
     same book from History — **the dialog comes back**, which is the half of the
@@ -1244,11 +1263,13 @@ Each step must pass before the next:
     unsynced series: the walk runs, the chapter opens, no dialog. Finish a volume
     with `auto-next at the end` on: the next volume opens with no dialog.
 16. **The menu lands where it should.** FileManager → Tools → `Meguru` at the top
-    of the page, holding Library, Servers, `Save books in: …` and the subfolder
-    toggle; the reader's ⋮ → Tools → `Meguru` likewise. The folder row opens the
-    picker and shows the new path afterwards; the toggle's checkbox survives a
-    restart; a new book lands in `<base>/<catalog>/<series>` when it is on.
-    With a PDF open there is no Meguru row and nothing logs `menu id not found`.
+    of the page, holding `Save books in: …` and the subfolder toggle and nothing
+    else; the reader's ⋮ → Tools → `Meguru` likewise, plus its navigation rows.
+    Nothing anywhere offers a cover, a cache to clear, a library or a server list.
+    The folder row opens the picker and shows the new path afterwards; the
+    toggle's checkbox survives a restart; a new book lands in
+    `<base>/<catalog>/<series>` when it is on. With a PDF open there is no Meguru
+    row and nothing logs `menu id not found`.
 17. **No destination dialog anywhere.** `▶ Meguru this series` with the wifi off
     still prompts for a connection and then opens, straight into the resume
     dialog. Neither it nor the top-of-feed row ever asks for a folder.
@@ -1290,10 +1311,10 @@ Each step must pass before the next:
     walk, expect exactly one of: `background sync started for …`,
     `not due ( fresh|backoff )`, `no connection - not syncing …`, `nothing to
     sync in the background`, `cannot start ( <reason> )`, or `the background
-    sync could not be started: <error>`. Opening a book from the **library** or the **series view**
-    must log **no** start line: the trigger hangs on the browser's own two
-    entries, not on the shared open path. Tapping the `▶ Meguru this series` row
-    **above a series list** must log one, and its reader must end up with the
+    sync could not be started: <error>`. Opening a book from **file manager or
+    History** must log **no** start line: the trigger hangs on the browser's own
+    two entries, not on the shared open path. Tapping the `▶ Meguru this series`
+    row **above a series list** must log one, and its reader must end up with the
     neighbour rows and the auto-open toggle like the dialog button's does.
 22. **The `▶` chapter is the first the server flags unread, and progress is not
     consulted.** On Suwayomi, set up exactly the state that tells the two rules

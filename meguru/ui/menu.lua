@@ -1,44 +1,38 @@
 --[[--
 The two menu surfaces Meguru adds.
 
-The **FileManager** gets the library and the server administration: the catalog
-is a property of the installation, not of any one book, and FileManager is where
-a reader expects to find their shelves.
+Both carry the same two rows deciding where a *new* book is written — the
+folder, and whether a per-catalog subfolder is added. They are preferences, and
+they used to be a dialog asked at every single open; a value that changes once
+does not belong in the path of a tap.
 
 The **reader** gets a ⋮ "Meguru" submenu, and only while a Meguru book is open.
-It holds the two plugin-wide reading-behaviour switches (auto-open the next item
-at the end, hide the status bar) plus the per-book maintenance actions (cover,
-clear cache). The per-book *rendering* choices — crop, fit, reading direction —
-deliberately live in the bottom ConfigDialog instead, where every other stock
-per-book option lives; see `ui/reader.lua`.
+It holds the series-navigation rows, the two plugin-wide reading-behaviour
+switches (auto-open the next item at the end, hide the status bar) and the
+destination rows. The per-book *rendering* choices — crop, fit, reading
+direction — deliberately live in the bottom ConfigDialog instead, where every
+other stock per-book option lives; see `ui/reader.lua`.
 
-Both surfaces also carry the same two rows deciding where a *new* book is
-written — the folder, and whether a per-catalog subfolder is added. They are
-preferences, and they used to be a dialog asked at every single open; a value
-that changes once does not belong in the path of a tap.
+The **FileManager** gets the destination rows and nothing else. It used to hold
+a library view and a server-administration screen; both are gone, along with the
+manual server-kind override the latter existed for.
 
-Three rules are worth stating, because breaking any of them is silent:
+Two rules are worth stating, because breaking either is silent:
 
   * `sorting_hint` must name an id that resolves in *that* surface's order
     table. `menusorter` does `findById(...)` and then indexes the result without
     checking, so a hint naming nothing throws out of the whole menu build and
     takes every other plugin's row with it. `showUnderTools` below is the only
     place a hint is chosen.
-  * `separator = true` is supported by `TouchMenu` and *not* by the plain `Menu`
-    widget. Both main menus are `TouchMenu`s on a touch device — the reader ⋮
-    menu, and the FileManager's, which falls back to the plain widget only on a
-    keyboard-only build (`filemanagermenu.lua:1043`). The plain widget is what
-    Meguru's *own* library, series and server lists use, so `separator` is safe
-    in the rows built here and unsafe in those.
   * `checked_func` is `TouchMenu`-only, and `mandatory` is plain-`Menu`-only.
-    Rows that must work on both carry their state in `text`/`text_func` instead.
+    Both surfaces here are `TouchMenu`s on a touch device — the FileManager
+    falls back to the plain widget only on a keyboard-only build
+    (`filemanagermenu.lua:1043`) — so a row that must work on both carries its
+    state in `text`/`text_func` rather than in either field. `separator = true`
+    carries the same constraint and is used by the reader's auto-open row.
 --]]
 
-local ConfirmBox = require("ui/widget/confirmbox")
-local InfoMessage = require("ui/widget/infomessage")
-local MenuWidget = require("ui/widget/menu")
 local Notification = require("ui/widget/notification")
-local Screen = require("device").screen
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local _ = require("gettext")
@@ -57,142 +51,6 @@ local Settings = require("meguru/settings")
 Base.loadDrivers()
 
 local Menu = {}
-
--- Cache ------------------------------------------------------------------------
-
-local function humanBytes(n)
-    if n >= 1048576 then
-        return string.format("%.1f MB", n / 1048576)
-    elseif n >= 1024 then
-        return string.format("%.0f KB", n / 1024)
-    end
-    return string.format("%d B", n)
-end
-
---- Drop the in-memory page store and the on-disk cover cache, confirming first.
----
---- Nothing cached is load-bearing, so this cannot break a book — and it will not
---- even change the page on screen, which is painted from the decoded buffer in
---- the document's own LRU. The raw bytes only matter when a page has to be
---- decoded again. The part of this that is not about the current session is the
---- sweep of files written by an older version, which kept page bytes on disk.
-local function clearCache()
-    UIManager:show(ConfirmBox:new{
-        text = _("Clear Meguru's cached pages and covers?"),
-        ok_text = _("Clear cache"),
-        ok_callback = function()
-            local removed, freed = Reader.clearCache()
-            UIManager:show(InfoMessage:new{
-                text = T(_("cache cleared (%1 item(s), %2)."),
-                    removed, humanBytes(freed or 0)),
-            })
-        end,
-    })
-end
-
-local function showCover(ui)
-    local doc = ui and ui.document
-    if not (doc and type(doc.getCoverPageImage) == "function") then
-        return
-    end
-    -- A stream book's cover comes off the network on a cold cache, so this can
-    -- fail for reasons that are not the reader's fault.
-    local ok, cover = pcall(doc.getCoverPageImage, doc)
-    if not ok or not cover then
-        UIManager:show(InfoMessage:new{ text = _("no cover available.") })
-        return
-    end
-    local ImageViewer = require("ui/widget/imageviewer")
-    UIManager:show(ImageViewer:new{ image = cover, with_title_bar = false, fullscreen = true })
-end
-
--- Server kind override ---------------------------------------------------------
-
---- The kinds a server may be set to: everything actually registered, plus the
---- "not yet sniffed" state.
-local function serverKindChoices()
-    local choices = { { id = nil, label = _("Detect automatically") } }
-    for _, kind in ipairs(Base.kinds()) do
-        choices[#choices + 1] = { id = kind, label = kind }
-    end
-    return choices
-end
-
---- Let the reader say what is behind a server, or hand it back to the sniff.
----
---- This is the escape hatch for a mis-sniffed server. It has to exist: a wrong
---- kind picks the wrong driver, and every subsequent sync then re-keys the
---- series against feeds that do not describe it — a failure that looks like
---- data corruption rather than a misconfiguration, and which no amount of
---- re-syncing repairs on its own.
-local function showServerKinds(server)
-    local choices = serverKindChoices()
-    local current = server.kind
-    local items = {}
-    for _, choice in ipairs(choices) do
-        local id = choice.id
-        items[#items + 1] = {
-            text = choice.label,
-            -- The plain Menu widget has no radio state; `mandatory` is its
-            -- right-aligned value slot, which is what marks the live choice.
-            mandatory = (id == current) and "✓" or nil,
-            callback = function()
-                if id == nil then
-                    Catalog.clearServerKind(server.id)
-                else
-                    Catalog.setServerKind(server.id, id)
-                end
-                UIManager:close(menu)
-                UIManager:show(InfoMessage:new{
-                    text = T(_("%1 is now %2. Its next sync will be rebuilt."),
-                        server.name,
-                        id and T(_("driven as %1"), id) or _("detected automatically")),
-                })
-            end,
-        }
-    end
-    local menu = MenuWidget:new{
-        title = T(_("Server type — %1"), server.name),
-        item_table = items,
-        is_borderless = true,
-        width = math.floor(Screen:getWidth() * 0.9),
-    }
-    UIManager:show(menu)
-end
-
---- The list of known servers, each opening its kind chooser.
----
---- This is the escape hatch for a mis-sniffed server: a wrong kind picks the
---- wrong driver, and every subsequent sync then re-keys the series against
---- feeds that do not describe it — a failure that looks like data corruption
---- rather than a misconfiguration.
-function Menu.showServers()
-    local servers = Catalog.servers()
-    if #servers == 0 then
-        UIManager:show(InfoMessage:new{
-            text = _("no servers yet. Open a catalog in KOReader's OPDS browser and use “Meguru this series” on a book."),
-        })
-        return
-    end
-    local items = {}
-    for _, server in ipairs(servers) do
-        items[#items + 1] = {
-            text = server.name,
-            mandatory = server.kind or _("unknown"),
-            callback = function()
-                UIManager:close(menu)
-                showServerKinds(server)
-            end,
-        }
-    end
-    local menu = MenuWidget:new{
-        title = _("Meguru servers"),
-        item_table = items,
-        is_borderless = true,
-        width = math.floor(Screen:getWidth() * 0.9),
-    }
-    UIManager:show(menu)
-end
 
 -- Where the row goes -----------------------------------------------------------
 
@@ -292,21 +150,7 @@ end
 --- a document. Reusing the name is better than inventing a second one: a saved
 --- menu order in `settings/` then means the same thing on both surfaces.
 function Menu.addFileManagerItems(plugin, menu_items)
-    local rows = {
-        {
-            text = _("Library"),
-            callback = function()
-                local Library = require("meguru/ui/library")
-                Library.show(plugin)
-            end,
-        },
-        {
-            text = _("Servers"),
-            callback = function()
-                Menu.showServers()
-            end,
-        },
-    }
+    local rows = {}
     for _, row in ipairs(destinationRows()) do
         rows[#rows + 1] = row
     end
@@ -346,8 +190,8 @@ end
 --- walks the series right after the handoff, and the row becomes
 --- "Open next in series: <title>" once it lands. So this row is what a reader
 --- sees while that walk is running, after it failed or was refused, on a series
---- catalogued any other way (the row at the top of a feed, the series view), and
---- on a server with no driver to walk with. `Reader.openNeighbor` answers it by
+--- catalogued any other way (the row at the top of a feed), and on a server with
+--- no driver to walk with. `Reader.openNeighbor` answers it by
 --- syncing the series first.
 local function addNeighborRow(plugin, rows, context, found, which, title_of)
     local item = found and found[which]
@@ -440,17 +284,6 @@ function Menu.addReaderItems(plugin, menu_items)
             plugin:onMeguruHideStatusBar(on)
         end,
     }
-    rows[#rows + 1] = {
-        text = _("Show book cover"),
-        callback = function()
-            showCover(ui)
-        end,
-    }
-    rows[#rows + 1] = {
-        text = _("Clear cache"),
-        callback = clearCache,
-    }
-
     -- The same two settings the FileManager's submenu carries, for the same
     -- reason they are there: they decide where the *next* book lands, and a
     -- reader who wants to change that should not have to close the book first.

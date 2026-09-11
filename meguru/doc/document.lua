@@ -4,8 +4,8 @@ book.
 
 In *streamed* mode `self.file` is a marker — a small Lua file holding a stream
 template and a page count — and pages are fetched one at a time over HTTP.
-Raw bytes live in a small in-memory LRU (`meguru/doc/cache`), decoded buffers in
-two more here — nothing is written to disk. ReaderUI's page N is template index
+Raw bytes live in a small in-memory LRU on this document, decoded buffers in two
+more beside it — nothing is written to disk. ReaderUI's page N is template index
 N-1, because OPDS-PSE counts pages from zero.
 
 In *local archive* mode (`local_cbz`) `self.file` is a real .cbz the user routed
@@ -38,7 +38,6 @@ do
     end
 end
 local logger = require("logger")
-local Cache = require("meguru/doc/cache")
 local FS = require("meguru/fs")
 local Image = require("meguru/doc/image")
 local Marker = require("meguru/marker")
@@ -797,22 +796,26 @@ local MeguruDocument = Document:extend{
     max_cached_tiles = 8,
     -- Maximum number of *native* decoded pages kept in RAM (for pan/zoom crops).
     max_cached_native = 3,
-    -- Maximum number of raw page-byte entries kept in RAM (global LRU in
-    -- `meguru/doc/cache`, shared by all docs).
+    -- Maximum number of raw page-byte entries kept in RAM, per document.
     --
     -- Two is the floor: the page being rendered and the one `hintPage` warms
     -- ahead of it — no path in this file holds two pages' bytes at once, so
-    -- nothing ever thrashes a store this size. Four is that plus room for
-    -- ReaderHinting to ask for two pages ahead, and for a cover's page 1 (a
-    -- different page number whenever the reader is past page 1). It is not a
-    -- memory figure: these bytes are the *compressed* page, orders of magnitude
-    -- below what `max_cached_native` holds decoded beside them.
+    -- nothing ever thrashes a store this size. The rest is room for
+    -- ReaderHinting to ask for two pages ahead. It is not a memory figure: these
+    -- bytes are the *compressed* page, orders of magnitude below what
+    -- `max_cached_native` holds decoded beside them.
     max_cached_pages = 4,
 
     tiles = nil,    -- decoded tile LRU, key = "pageno|w x h"
     native = nil,   -- native decode LRU, key = pageno
-    stamps = nil,   -- key -> recency stamp for both LRUs
+    stamps = nil,   -- key -> recency stamp for `tiles` and `native` ONLY. The
+                    --            page-byte store below is a self-ordering array
+                    --            and must never be stamped: it is keyed by the
+                    --            same numbers `native` is, so a shared stamp
+                    --            would let a byte eviction erase a live native's
+                    --            recency and free a buffer the renderer holds.
     stamp = 0,
+    page_bytes = nil, -- raw page bytes, most-recent-first: { pageno =, bytes = }
     dims = nil,     -- pageno -> {w=, h=} full (capped) native page size, as
                     --            delivered by decodeNative (never cropped)
     crops = nil,    -- pageno -> auto content box {x0,y0,x1,y1} in native px
@@ -857,6 +860,7 @@ function MeguruDocument:init()
     self.native = {}
     self.stamps = {}
     self.stamp = 0
+    self.page_bytes = {}
     self.dims = {}
     self.crops = {}
     -- Pages whose decode has failed (or that were refused as too large to
@@ -1092,6 +1096,10 @@ function MeguruDocument:clearCaches()
     self.tiles = {}
     self.native = {}
     self.stamps = {}
+    -- No BlitBuffer work for the byte store: its entries are Lua strings, so
+    -- dropping the table drops the last references and the GC reclaims them
+    -- with nothing here having to be told to.
+    self.page_bytes = {}
 end
 
 -- ---------------------------------------------------------------------------
@@ -1163,9 +1171,9 @@ end
 --
 -- That was affordable while they were a file. With the store in RAM, sized to a
 -- handful of pages, the read is a real risk: a repaint whose page has been
--- evicted — a zoom or crop change, a repaint during teardown, or the repaint
--- after the menu's own "Clear cache" — would pay a synchronous HTTP GET inside
--- the paint for bytes the render is about to ignore. Skipping it costs nothing:
+-- evicted — a zoom or crop change, a repaint during teardown — would pay a
+-- synchronous HTTP GET inside the paint for bytes the render is about to
+-- ignore. Skipping it costs nothing:
 -- with the native live `ensureNativeBB` cannot fail, so `decodeRegion`'s
 -- last-resort branch (the one that genuinely needs `data`) is unreachable.
 --
@@ -1180,24 +1188,52 @@ end
 -- ---------------------------------------------------------------------------
 -- Page bytes in RAM (fetch page N, keep an LRU)
 -- ---------------------------------------------------------------------------
-
--- The book identity every entry of this document is filed under.
 --
--- Computed from the descriptor each time rather than captured at init, so a
--- descriptor refreshed from the catalog (the template is, at `init`) cannot
--- leave a stale key behind — and so there is one derivation, not two.
-function MeguruDocument:cacheKey()
-    return Marker.cacheKey(self.desc)
-end
+-- The store is per-document and keyed by nothing but the page number, which is
+-- only unambiguous because exactly one document can reach it — `self.file` is
+-- fixed and `self.desc` is assigned once, so one instance never serves two
+-- books. A shared store would need the book's identity in the key; this one must
+-- not have one, and must never be made shared.
+--
+-- Its lifetime is the document's: `clearCaches` empties it on close, so opening
+-- a book again fetches its pages again.
 
--- The one read of the byte store. There is no path helper beside it any more:
--- an entry is a `(key, pageno)` tuple inside `meguru/doc/cache`, not a file, so
--- there is no name for this method to own.
+-- The one read of the byte store, and a hit is moved to the front.
 function MeguruDocument:readCachedPage(pageno)
-    return Cache.getPage(self:cacheKey(), pageno)
+    for i = 1, #self.page_bytes do
+        local entry = self.page_bytes[i]
+        if entry.pageno == pageno then
+            if i > 1 then
+                table.remove(self.page_bytes, i)
+                table.insert(self.page_bytes, 1, entry)
+            end
+            return entry.bytes
+        end
+    end
+    return nil
 end
 
--- Credentials to fetch pages and the cover with.
+-- Keep `bytes` for one page, evicting the least recently read beyond the cap.
+--
+-- Deliberately not `evictOldest`: its loop is `count >= cap`, so it holds one
+-- fewer than its cap reads, and it stamps through the `stamps` table `native`
+-- also uses — keyed, as this is, by page number.
+function MeguruDocument:cachePage(pageno, bytes)
+    for i = 1, #self.page_bytes do
+        if self.page_bytes[i].pageno == pageno then
+            table.remove(self.page_bytes, i)
+            break
+        end
+    end
+    table.insert(self.page_bytes, 1, { pageno = pageno, bytes = bytes })
+    -- Dropping the tail drops the last reference to those bytes, so the GC
+    -- reclaims them without anything here having to be told to.
+    while #self.page_bytes > self.max_cached_pages do
+        table.remove(self.page_bytes)
+    end
+end
+
+-- Credentials to fetch pages with.
 --
 -- Resolved at the moment of use and never stored: the marker holds the catalog
 -- *title*, not a secret, and `meguru/sources` looks the credentials up in the
@@ -1239,9 +1275,7 @@ function MeguruDocument:fetchPage(pageno)
         return nil
     end
     -- Stored only once the fetch has succeeded, so a failed one writes nothing.
-    -- The cap is the document's rather than the module's: how many pages are
-    -- worth keeping is a property of how this thing reads, not of the store.
-    Cache.putPage(self:cacheKey(), pageno, bytes, self.max_cached_pages)
+    self:cachePage(pageno, bytes)
     return bytes
 end
 
@@ -1357,18 +1391,22 @@ end
 -- Book cover, returned as a BlitBuffer exactly like any other KOReader
 -- Document. This is the seam FileManager ("Book info"/mosaic), coverimage-like
 -- plugins and coverbrowser all go through, so exposing it here makes a
--- streamed book show its OPDS-provided cover wherever covers normally appear.
+-- streamed book show its cover wherever covers normally appear.
 --
--- The cover is the series' artwork, looked up in the catalog: it is fetched
--- once over HTTP and cached on disk, never through the page pipeline, so
--- building a cover downloads no streamed page. The cover cache is the only
--- thing meguru still writes to disk; page bytes live in RAM. A series with no
--- cover recorded falls back to the first streamed page, mirroring how a CBZ
--- treats its first image as the cover — and so does a marker whose stored cover
--- link can no longer be fetched, so a book is never left cover-less over a
--- stale/moved cover URL. That fallback *does* go through the page pipeline, and
--- it is the one byte-store read that can be for a page other than the one on
--- screen.
+-- **Nothing is cached.** The artwork is fetched over HTTP on every call, so
+-- browsing a folder costs one request per book. That is the whole price of
+-- having covers at all here, and it is deliberate: a cover already has
+-- somewhere else to live — KOReader's own `BookInfoManager` remembers the
+-- thumbnail it extracts — so this plugin does not need a store of its own, and
+-- with one it would be the only thing meguru wrote to disk.
+--
+-- The link comes from the catalog, not from the marker: a cover belongs to a
+-- book and to a series, and the catalog is where each of those lives, so
+-- neither is copied into every marker. A book with no recorded artwork falls
+-- back to the first page of its stream, mirroring how a CBZ treats its first
+-- image as the cover — and so does a book whose stored link can no longer be
+-- fetched, so it is never left cover-less over a stale or moved URL.
+--
 -- Cover of a local cbz = the archive's first page (like any CBZ). Rendered
 -- into a *fresh* capped buffer and bounded to the screen, so the cover never
 -- aliases the LRU-cached native of page 1 (that buffer is cache-owned and
@@ -1428,47 +1466,36 @@ function MeguruDocument:getCoverPageImage()
 
     local data
     if cover_url then
-        local path = Cache.coverPath(self:cacheKey(), cover_url)
-        data = Cache.read(path)
-        if not data then
-            local user, pass = self:streamCredentials()
-            local ok, bytes, code = pcall(PSE.fetchPage, cover_url,
-                { username = user, password = pass })
-            if ok and bytes then
-                data = bytes
-                Cache.write(path, bytes)
+        local user, pass = self:streamCredentials()
+        local ok, bytes, code = pcall(PSE.fetchPage, cover_url,
+            { username = user, password = pass })
+        if ok and bytes then
+            data = bytes
+        else
+            -- The stored cover link could not be fetched (moved/changed on the
+            -- server, a transient auth/network hiccup, a server that only
+            -- answers its own page URLs). Do not leave the book cover-less:
+            -- fall through to the first streamed page below — the same fallback
+            -- a marker *without* a stored cover link already takes. Nothing was
+            -- written, so a later call simply retries the link.
+            if ok then
+                logger.warn("Meguru: failed to fetch cover (HTTP "
+                    .. tostring(code) .. "), falling back to page 1")
             else
-                -- The stored cover link could not be fetched (moved/changed on
-                -- the server, a transient auth/network hiccup, a server that
-                -- only answers its own page URLs). Do not leave the book
-                -- cover-less: fall through to the first streamed page below —
-                -- the same fallback a marker *without* a stored cover link
-                -- already takes, and the very path that makes the "next
-                -- volume" markers show a cover. The failed link is not cached,
-                -- so a later call retries it before falling back again.
-                if ok then
-                    logger.warn("Meguru: failed to fetch cover (HTTP "
-                        .. tostring(code) .. "), falling back to page 1")
-                else
-                    logger.warn("Meguru: failed to fetch cover ("
-                        .. tostring(bytes) .. "), falling back to page 1")
-                end
+                logger.warn("Meguru: failed to fetch cover ("
+                    .. tostring(bytes) .. "), falling back to page 1")
             end
         end
     end
     if not data then
-        -- No stored cover link (marker written before covers were captured) or
-        -- the stored one failed to fetch above: page 1 of the stream, which on
-        -- OPDS-PSE servers is usually the cover.
+        -- No stored cover link, or the stored one failed above: page 1 of the
+        -- stream, which on OPDS-PSE servers is usually the cover.
         --
-        -- Reached through this book's own key, unlike the version of this that
-        -- keyed on the marker's basename: there it read whatever page 1 the
-        -- book with the same title had cached, so a series whose chapters are
-        -- all called "Chapter 1" gave every volume one shared cover.
-        -- No `hasNative` guard here, unlike the render paths: this one decodes
-        -- the bytes itself rather than handing them to `decodeRegion`, so it
-        -- genuinely needs them. Page 1 is a page number of its own — the one
-        -- entry in the LRU that can be for a page other than the one on screen.
+        -- No `hasNative` guard here, unlike the render paths: this decodes the
+        -- bytes itself rather than handing them to `decodeRegion`, so it
+        -- genuinely needs them. Page 1 is also a page number of its own — the
+        -- one entry the byte store can hold that is for a page other than the
+        -- one on screen.
         data = self:fetchPage(1)
     end
     if not data then
@@ -2231,7 +2258,7 @@ function MeguruDocument:getPageDims(pageno)
     -- below: it is a multi-MB Lua allocation on a big scan and, still referenced,
     -- a collect right now would not reclaim it. What is kept by this file is the
     -- capped native decode, now cached. The bytes themselves are *not* dropped
-    -- wholesale any more — `meguru/doc/cache` holds those of the last
+    -- wholesale any more — `self.page_bytes` holds those of the last
     -- `max_cached_pages` pages on purpose, so they can be re-decoded without a
     -- fetch. That is a bounded, deliberate holding.
     data = nil

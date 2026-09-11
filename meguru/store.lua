@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS servers (
     -- an API key and every host/scheme/key change would fork a new server row.
     name         TEXT NOT NULL UNIQUE,
     kind         TEXT,                -- 'kavita' | 'suwayomi' | 'komga' | NULL
-    kind_source  TEXT,                -- 'author' (sniffed) | 'manual' (user override)
+    kind_source  TEXT,                -- 'author' (sniffed) | 'inferred' -- the
+                                      -- 'manual' override has no writer any more
     host         TEXT,
     root_url     TEXT,                -- redacted: no API key, no token
     last_seen_at INTEGER
@@ -273,7 +274,7 @@ function Store.migrate(db)
     if version < 2 then
         -- A book's own artwork. Existing rows stay NULL and gain one on their
         -- next sync, which is harmless: a NULL here falls back to the series
-        -- cover, so nothing regresses while the library fills in.
+        -- cover and then to page 1, so nothing regresses in the meantime.
         complete = addColumn(db, "items", "cover_url", "TEXT")
     end
 
@@ -299,13 +300,6 @@ function Store.ensure()
     end
     logger.warn("Meguru: database unavailable:", result)
     return nil
-end
-
-function Store.close()
-    if conn then
-        conn:close()
-        conn = nil
-    end
 end
 
 function Store.schemaVersion()

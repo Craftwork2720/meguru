@@ -21,20 +21,7 @@ Naming.ALIAS_PREFIX = "Continue Reading from: "
 -- On-device filesystems treat names as UTF-8 byte strings with a 255-byte
 -- per-component limit. The marker adds "." .. extension plus at worst a "-"
 -- and 8 hex digits, so 220 keeps every derived component under 255.
---
--- The page/cover cache has its own budget, CACHE_PREFIX_BYTES below: it appends
--- a 16-hex identity digest and its own suffix, so it cannot spend 220 on the
--- readable part without going over.
 Naming.MAX_COMPONENT_BYTES = 220
-
--- Byte cap for the *readable head* of a cache key. Not MAX_COMPONENT_BYTES,
--- and the difference is one byte of overflow: the longest cover name is
--- head + "-" + 16 (digest) + "-cover-" + 8 (cover hash) + ".img", so a 220-byte
--- head lands on 256 — one over the per-component limit, where the filesystem
--- truncates the name behind our back and the file we wrote is not the file we
--- later look for. Silently, and only for long titles. 64 keeps the whole name
--- near a hundred bytes and still shows which book a file belongs to.
-Naming.CACHE_PREFIX_BYTES = 64
 
 --- Drop a leading "Continue Reading from: " prefix, so an alias entry and the
 --- real volume it duplicates name to the same marker file.
@@ -332,9 +319,9 @@ function Naming.sortKey(name)
     return (s:gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
---- Dependable 32-bit hash (djb2), for cache keys and for disambiguating names
---- that would otherwise collide. Not a security primitive — it only has to be
---- stable across restarts and spread similar inputs apart.
+--- Dependable 32-bit hash (djb2), for disambiguating names that would otherwise
+--- collide. Not a security primitive — it only has to be stable across restarts
+--- and spread similar inputs apart.
 function Naming.hash32(str)
     local h = 5381
     for i = 1, #str do
@@ -354,10 +341,13 @@ end
 ---
 --- Two lanes, not one, because the job differs from `hash32` above in what a
 --- collision costs. There a 32-bit value is right: the worst case is two series
---- sharing a folder *name*. Here the failure is one book being served another
---- book's page bytes — a single lane collides with a few percent probability
---- over a large library, and requiring *both* lanes to collide takes that to
---- nothing worth reasoning about.
+--- sharing a folder *name*. This one digests a stream URL into the `item_key`
+--- of a marker that has no catalog series (`ui/open.lua`), and that key is what
+--- `Marker.matches` and `Marker.pathFor` decide two markers are the same book
+--- by — so a collision means two unrelated books collapsing onto one marker
+--- file, which a single lane reaches with a few percent probability over a
+--- large library. Requiring *both* lanes to collide takes that to nothing worth
+--- reasoning about.
 function Naming.digest64(str)
     str = str or ""
     local h1, h2 = 5381, 0
@@ -367,28 +357,6 @@ function Naming.digest64(str)
         h2 = (h2 * 65599 + b) % 4294967296    -- sdbm
     end
     return string.format("%08x%08x", h2, h1)
-end
-
---- The name a book's cached bytes are filed under: a readable head from the
---- title, then the identity digest.
----
---- The head is legibility only and may collide freely — `sanitizeComponent`
---- folds `: * ? " < > |` to spaces and truncates, so two different titles can
---- produce the same head, and that is now harmless. Identity is the digest, and
---- nothing else here may be read as identity: the *whole* bug this shape exists
---- to prevent was a cache keyed on the readable part alone, which made every
---- Suwayomi "Chapter 1" and every Kavita "Volume 1" share one file.
----
---- The digest is over the natural key, never over the title or the template, so
---- retitling a chapter or rotating an API key does not orphan the cache.
-function Naming.cacheKey(natural_key, title)
-    local head = Naming.sanitizeComponent(title or "", Naming.CACHE_PREFIX_BYTES)
-    if head == "stream" then
-        -- sanitizeComponent's "nothing usable survived" value. A cache file
-        -- named for a fallback reads as a real book; say what it is instead.
-        head = "book"
-    end
-    return head .. "-" .. Naming.digest64(natural_key)
 end
 
 --- A filesystem component for a *natural key*, e.g. "<server>|<series>|<item>".

@@ -11,8 +11,8 @@ happened to be on.
 
 Two jobs, then:
 
-  * register the book — server, series and item — so the library view lists it
-    and a later sync has something to attach to;
+  * register the book — server, series and item — so a later sync has something
+    to attach to and the book has neighbours;
   * write a marker thin enough to open the stream with no database at all.
 
 Registering a book does not walk the series feed — that is `sync.lua`, it costs
@@ -203,23 +203,22 @@ function Open.noteCatalogAuthor(browser, catalog)
     end
 end
 
---- Which driver serves this catalog: a manual override, else what was sniffed
---- this session, else what the catalog recorded when a book was last opened
---- from it, else nothing.
+--- Which driver serves this catalog: what was sniffed this session, else what
+--- the catalog recorded when a book was last opened from it, else nothing.
 ---
---- The manual override wins outright because a sniff is a heuristic, and one
---- wrong classification otherwise makes a server permanently unsyncable. The
---- sniff outranks the stored kind because it is current: the stored one may
+--- The sniff outranks the stored kind because it is current: the stored one may
 --- have been written by a build that guessed differently.
+---
+--- There used to be a third, strongest source above both — a manual override set
+--- from the server-administration screen. That screen is gone, so `kind_source`
+--- can no longer be `'manual'`; a mis-sniffed server is now corrected only by
+--- clearing its row. The ordering below is the guard the override used to be.
 function Open.serverKindFor(browser)
     local name = catalogTitle(browser)
     if not name then
         return nil
     end
     local server = Catalog.serverByName(name)
-    if server and server.kind_source == "manual" then
-        return server.kind, server.kind_source
-    end
     if sniffed[name] then
         return sniffed[name], "author"
     end
@@ -576,22 +575,16 @@ end
 ---
 --- Returns nil when the series cannot be identified or the item cannot be built.
 --- That is a supported outcome, not a failure: the marker alone opens and reads,
---- and the book merely has no neighbours and no new-chapter count until
---- something else brings its series into the catalog.
+--- and the book merely has no neighbours until something else brings its series
+--- into the catalog.
 ---
---- Note the order: the server row is written before the driver is resolved, and
---- that is the point of the ordering rather than an accident. The kind override
---- in the menu lists `Catalog.servers()`, so a server with no row cannot be
---- corrected — and while the row was written only after a driver was found, a
---- failed author sniff left a server with no row, no way to set its kind, and a
---- menu advising "use Meguru this series on a book", i.e. the very step that had
---- just failed. A sniff failing was therefore not the soft failure its comment
---- claimed, but a server permanently stranded.
----
---- The row is now written on the strength of the configured catalog alone, which
---- is enough to describe a server: name, host and redacted root all come from
---- `settings/opds.lua`. `upsertServer` keeps an existing manual kind, so this
---- cannot undo a choice the user already made.
+--- Note the order: the server row is written before the driver is resolved. That
+--- ordering used to matter more than it does now — while the kind had a manual
+--- override in a menu, a server with no row could not be corrected, so a failed
+--- author sniff stranded a server permanently. There is no override any more, so
+--- the row is simply a record: it is written on the strength of the configured
+--- catalog alone, which is enough to describe a server, since name, host and
+--- redacted root all come from `settings/opds.lua`.
 local function registerBook(browser, server_name, kind, kind_source, raw_entry, stream, ctx)
     local conn = Sources.connection(server_name)
     if not conn then
@@ -612,8 +605,10 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
 
     local driver = kind and Base.forKind(kind)
     if not driver then
-        return why("no driver for this server's kind -- set it in the Meguru "
-            .. "server-type menu", "kind=" .. tostring(kind))
+        -- There is no screen to correct this on any more: the kind can only come
+        -- from the sniff, from the inference below, or from what this server was
+        -- last recorded with. Naming the server is the most the message can do.
+        return why("no driver for this server's kind", "kind=" .. tostring(kind))
     end
 
     local found = driver.discover(raw_entry, stream.href, ctx)
@@ -1307,9 +1302,8 @@ end
 --- Writes exactly one item — the one it is about to open — and leaves the
 --- siblings to the background walk it starts at the end, which is the same walk
 --- `openAsBook` starts and is gated the same way. It is deliberately *not*
---- started from `openCatalogItem`: that is the shared funnel for the library's
---- and the series view's item rows too, where the list already came from a sync
---- and a walk would buy nothing.
+--- started from `openCatalogItem`: that funnel is also reached from the file
+--- manager and History, where there is no browser feed to walk from.
 ---
 --- Mirrors the server and series half of `registerBook` rather than calling it:
 --- that function is built around a book that was tapped, and there is no book
@@ -1414,9 +1408,8 @@ function Open.openFirstUnread(browser, info)
     -- way out. Two walks on the first tap per TTL, and one from then on, is the
     -- cheaper of the two prices.
     --
-    -- Not spawned from `openCatalogItem`, deliberately: that is the shared
-    -- funnel for the library's and the series view's item rows too, where the
-    -- list already came from a sync and a walk buys nothing.
+    -- Not spawned from `openCatalogItem`, deliberately: that funnel is also
+    -- reached from the file manager and History, where there is no feed to walk.
     UIManager:nextTick(function()
         local ok, err = pcall(startBackgroundSync, { server = server, series = series })
         if not ok then
@@ -1467,10 +1460,10 @@ end
 --- `buttonLabel`.
 ---
 --- `opts.open_item(target)` is how the leaving button opens the chosen book. The
---- two entry points reach a marker differently — the browser has a catalog view
---- to open through, the file manager has whoever is opening this file — so the
---- default is the browser's, and the file path supplies its own. Both are
---- *silent*: this dialog has just asked the question, so neither re-asks it.
+--- two entry points reach a marker differently — the browser opens a stream,
+--- the file manager has whoever is opening this file — so the default is the
+--- browser's, and the file path supplies its own. Both are *silent*: this dialog
+--- has just asked the question, so neither re-asks it.
 ---
 --- @param opts { count, file, target, open, open_item }
 function Open.offerResume(host, server, series, item, opts)
@@ -1936,11 +1929,13 @@ local function currentResumeTarget(server, series)
     return found and found.item or nil
 end
 
---- Open a catalog item from a library view.
+--- Open a catalog item whose stream is already known — the file-manager and
+--- History path, where the marker is what is being opened and there is no feed
+--- in hand.
 ---
 --- Two cases, and the second is the reason this exists at all. An item that has
 --- been opened before already has a marker on disk: open that file, and its
---- reading progress and page cache come with it. An item that has never been
+--- reading progress comes with it. An item that has never been
 --- opened has no marker, and — for a Suwayomi chapter — no page stream either,
 --- because a sync records every item of a series while deliberately fetching
 --- nothing per item. Resolving that stream is one request, made here, at the
@@ -1958,8 +1953,9 @@ end
 --- the reader got a row that opened volume 7 while the dialog's only "Continue"
 --- button pointed at volume 8. That is the split `readingOrder` and
 --- `firstUnfinished` exist to prevent, surviving on the one path that kept asking
---- the catalog. `ui/series.lua` is the caller entitled to omit it — its list came
---- from a sync, so it has no fresher answer to give.
+--- the catalog. Every surviving caller passes a `target`; omitting it is kept
+--- only because "no fresh answer available" is a state that can legitimately
+--- recur.
 ---
 --- The shape is a catalog row (what `Catalog.itemByKey` and `registerBook`'s
 --- `resume` both return), not a `{ item, page }` pair: only `item_key` and
@@ -2027,8 +2023,8 @@ function Open.offerResumeForFile(file, host, proceed)
         file = file,
         target = series and currentResumeTarget(server, series) or nil,
         open = proceed,
-        -- This one has no catalog view behind it, so it plans the marker and
-        -- hands that file to whoever is opening this one.
+        -- This one has no feed behind it, so it plans the marker and hands that
+        -- file to whoever is opening this one.
         --
         -- Deliberately *not* through `handToReader`: `proceed` is the wrap's own
         -- unwrapped opener, so there is no second `showReader` to arm against.
@@ -2103,9 +2099,9 @@ end
 --- `base_dir` to `Marker.baseDir()`, which is the one thing `Open.chooseMarkerDir`
 --- and the menu row in `ui/menu.lua` write — and `planMarker` already relies on
 --- exactly that. A folder passed in here was the save dialog's doing, and a second
---- way to name the destination is how the two save paths drift apart: the browser
---- and the catalog view must put a book in the same place, and with no parameter
---- they cannot disagree.
+--- way to name the destination is how the save paths drift apart: every entry
+--- point must put a book in the same place, and with no parameter they cannot
+--- disagree.
 function Open.openAsBook(browser, item, stream)
     local server_name = catalogTitle(browser)
     if not server_name then
@@ -2121,15 +2117,14 @@ function Open.openAsBook(browser, item, stream)
     local raw_entry = rawEntryFor(browser, stream)
     if raw_entry and not kind then
         -- Nobody has said what this catalog is: its feeds carry no `<author>` a
-        -- driver knows, and the user has not set the kind by hand. Ask the
+        -- driver knows, and no earlier open recorded a kind for it. Ask the
         -- drivers instead, which is the last chance to give this book a series —
         -- without one it can never have a next chapter.
         kind = Base.kindFor(raw_entry, stream.href, ctx)
         if kind then
             kind_source = "inferred"
             logger.info("Meguru: catalog", server_name,
-                "signs itself with no known author; detected", kind,
-                "from the entry — set it by hand in Meguru servers if that is wrong")
+                "signs itself with no known author; detected", kind, "from the entry")
         end
     end
 
@@ -2170,9 +2165,10 @@ function Open.openAsBook(browser, item, stream)
     -- anything — it only renames one unconcatenated marker.
     --
     -- 64 bits, not `keySuffix`'s 32, because this key is no longer only a name:
-    -- it is the whole of this book's identity (with no series to disambiguate
-    -- it) and `Marker.cacheKey` digests it, so a collision between two of these
-    -- hands one book another's cached pages.
+    -- it is the whole of this book's identity — with no series to disambiguate
+    -- it — so `Marker.matches` and `Marker.pathFor` decide two markers are the
+    -- same book by it, and a collision collapses two unrelated books onto one
+    -- marker file.
     if not desc.item_key then
         desc.item_key = "flat:" .. Naming.digest64(stream.href)
         logger.info("Meguru: book has no catalog identity; marker stays flat")
