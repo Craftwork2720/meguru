@@ -144,14 +144,36 @@ Promotion only.
 
 **`items.feed_index` is `NOT NULL` and the engine owns it.** Drivers never set
 it, because only the engine knows what the whole of a series is, so
-`Catalog.numberPositions` is the single place the rule lives: a sync numbers the
-deduped walk (positions with no gaps), an open numbers the page it was opened
-from (provisional, and overwritten by the next sync, which binds
-`feed_index = excluded.feed_index` with no COALESCE for exactly that reason).
-The single definition is load-bearing. While numbering lived in the sync's
-`dedupe` alone, the open path — which calls a driver directly and so never
-passes through `dedupe` — inserted a nil and died on the constraint, *after* the
-series row had already been written, so the failure left a series with no items.
+`Catalog.numberPositions` is the single place the rule lives — and its **only
+caller is the sync**, numbering the deduped walk (positions with no gaps). The
+sequence being numbered has to *be* the series, not a window onto it, and only a
+completed walk has that.
+
+An open therefore does not number anything. `Catalog.upsertItem` — the opens'
+write path, as `Catalog.upsertItems` is the sync's — keeps the stored position
+for a row the catalog already has and **appends** past the last position for a
+row it has never seen. That is the honest provisional answer for a write that
+cannot know where a chapter belongs: it can be wrong about the middle of a
+series, but it cannot displace a position the engine already decided. The next
+sync overwrites either way, which is why `upsertItems` goes on binding
+`feed_index = excluded.feed_index` with no COALESCE.
+
+Every open path used to call `numberPositions` over whatever page it held, and
+each of those pages is a slice that does not start at the series' beginning: the
+browser's page (newest-first on Suwayomi), Suwayomi's `filter=unread` walk
+(*begins* at the first unread chapter), and the chapter-metadata feed (one entry
+deep, so it numbers its entry `1`). `orderedItems` sorts on exactly that column,
+so a reader at chapter 41 of a run they had read up to 40 saw chapter 41 take
+position 1 — chapter 1's position. The two collided, the `item_key` tiebreak
+decided which came first, and "Open next in series" carried the reader from
+chapter 41 to **chapter 2**. The damage lasts until that series is walked again,
+which the TTL and the backoff can put hours away.
+
+The single definition is load-bearing for a second, older reason. While
+numbering lived in the sync's `dedupe` alone, the open path — which calls a
+driver directly and so never passes through `dedupe` — inserted a nil and died
+on the constraint, *after* the series row had already been written, so the
+failure left a series with no items.
 
 **A cover belongs to a book *and* to a series, the catalog holds both, and
 nothing about either is cached.** `series.cover_url` is the series' artwork;
@@ -651,10 +673,14 @@ order, so a backwards scan must not read past it — on Suwayomi that tail is
 empty, and on Kavita feed order is reading order, which is why the fallback is
 only consulted when no ordered item has progress at all.
 
-The same ordering feeds `Catalog.numberPositions` there. Numbering the page as
-it arrived wrote a `feed_index` that ran backwards on the browser path, and
-`Catalog.orderedItems` sorts on exactly that — so `resumeTarget` and `neighbors`
-read a reversed position until the next sync overwrote it.
+The same ordering decides *which* entry is the resume point, and it stays — but
+nothing takes a position from that page any more. Numbering the page as it
+arrived wrote a `feed_index` that ran backwards on the browser path, and
+`Catalog.orderedItems` sorts on exactly that, so `resumeTarget` and `neighbors`
+read a reversed position until the next sync overwrote it. Reversing the page
+before numbering fixed the direction and left the deeper fault: a page's
+positions are places *in the page*. See the `feed_index` section for the
+collision that produced and what `Catalog.upsertItem` does instead.
 
 **A tap past the dialog cancels — it opens nothing, and it writes nothing.**
 `ButtonDialog` is dismissable by default, and the dialog deliberately sets no
@@ -1230,11 +1256,13 @@ No automated tests, so verification is a running KOReader. Run with `-d` or read
 **A catalog written by a previous build is not a valid test surface.** This is
 worth stating because it cost an afternoon: `Catalog.orderedItems` sorts on
 `feed_index`, and `feed_index` is derived by rules this codebase has changed more
-than once (reading order rather than feed order; a provisional position written
-by an open rather than by a walk). Rows written before such a change keep
-positions computed by the superseded rule, so `Catalog.neighbors` answers from
-them and a series can look like it has no next chapter when its feed plainly
-contains one — and `synced_at` from an earlier successful walk then blocks the
+than once (reading order rather than feed order; a position taken from a page
+rather than from a walk). Rows written before such a change keep positions
+computed by the superseded rule, so `Catalog.neighbors` answers from them and a
+series can look like it has no next chapter when its feed plainly contains one
+— or, for the collision the open path used to write, can look like it has the
+*wrong* next chapter. A walk of the series repairs both, but only if one is due;
+`synced_at` from an earlier successful walk then blocks the
 repairing walk for `sync_ttl_seconds`. Nothing on the device distinguishes that
 from a live bug. So: **wipe `meguru.sqlite3` and the marker folders whenever a
 change touches ordering**, and re-test on that clean state before believing any

@@ -291,13 +291,13 @@ local function driverItemFor(driver, feed, feed_url, stream, ctx)
     if type(items) ~= "table" then
         return nil
     end
-    -- Drivers leave `feed_index` to the engine, and this path reaches them
-    -- without going through the sync that would otherwise number the page. It
-    -- did not number it, and the column is NOT NULL: every open died at the
-    -- insert on the constraint, after the series row had already been written.
-    -- Provisional — a metadata-feed page is one entry deep, so the position
-    -- means nothing until the next sync overwrites it.
-    Catalog.numberPositions(items)
+    -- Drivers leave `feed_index` to the engine, and the column is NOT NULL, so
+    -- a page that never went through a sync once died at the insert on the
+    -- constraint — after the series row had already been written. That is now
+    -- `Catalog.upsertItem`'s business, and it is the right place for it: a
+    -- metadata-feed page is one entry deep, so numbering it here would say the
+    -- chapter is the first of its series. See `Catalog.upsertItem` for why an
+    -- open may not number anything.
     local wanted = stream and stream.href
     for _, item in ipairs(items) do
         if wanted and item.template == wanted then
@@ -559,13 +559,14 @@ local function freshResumeTarget(driver, feed, feed_url, ctx, series, select)
     logger.info("Meguru: the feed says", best.display_title or best.title,
         "is the resume point in series", series.remote_id)
 
-    -- Numbered in *reading* order, not feed order. `feed_index` is what
-    -- `Catalog.orderedItems` sorts on, so numbering this page as it arrived — which
-    -- on the browser path is newest-first — wrote a position that ran backwards,
-    -- and `resumeTarget` and `neighbors` read it until the next sync overwrote it.
-    -- Only `best` is actually written; numbering the sequence is how it gets its
-    -- position at all.
-    Catalog.numberPositions(sequence)
+    -- `readingOrder` above is what decides *which* entry this is, and it stays:
+    -- the browser's page is newest-first, so picking the resume point by feed
+    -- order answered with the lowest-numbered chapter of the page instead of the
+    -- furthest read. What does **not** happen here any more is numbering. This
+    -- page is one page of the series and not necessarily its first, so a
+    -- position taken from it is a place in the page rather than in the series;
+    -- `Catalog.upsertItem` keeps the stored position for a row the catalog
+    -- knows, which is the only one that means anything.
     Catalog.upsertItem(series.id, best, Catalog.nextTimestamp())
     return Catalog.itemByKey(series.id, best.item_key)
 end
@@ -1376,9 +1377,17 @@ function Open.openFirstUnread(browser, info)
         return
     end
 
-    -- Positions from this page, as a sync would assign them, then the row read
-    -- back so it has an id: the opener writes the marker path against it.
-    Catalog.numberPositions(parsed)
+    -- The row is written so it has an id — the opener writes the marker path
+    -- against it — and read back for the same reason.
+    --
+    -- **Its position is not taken from this page.** `parsed` is an *unread*
+    -- walk, so its first entry is the first unread chapter, not the first
+    -- chapter: numbering it here gave a reader at chapter 41 the position
+    -- chapter 1 holds, and `orderedItems` sorts on exactly that column. The
+    -- chapter then sat next to chapter 1 in reading order and `neighbors`
+    -- answered "next" with chapter 2. `Catalog.upsertItem` now keeps the stored
+    -- position for a row it knows and appends one it does not; see its comment
+    -- for the whole of why an open may not number anything.
     Catalog.upsertItem(series.id, target, Catalog.nextTimestamp())
     local row = Catalog.itemByKey(series.id, target.item_key)
     if not row then

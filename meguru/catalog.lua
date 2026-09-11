@@ -166,6 +166,20 @@ function Catalog.itemCount(series_id)
         series_id) or 0
 end
 
+--- The highest feed position in a series, or 0 for one with no items.
+---
+--- Read by `upsertItem` to append a chapter the catalog has never seen. The
+--- number itself is never interpreted — `orderedItems` only sorts by it and
+--- `neighbors` counts positions over the sorted list — so the only property
+--- that matters is that it is larger than every other position in the series.
+---
+--- Tombstoned rows count. A removed chapter keeps its row, and reusing its
+--- position would put a live chapter on top of a dead one.
+function Catalog.lastPosition(series_id)
+    return tonumber(Store.scalar(
+        "SELECT MAX(feed_index) FROM items WHERE series_id = ?;", series_id)) or 0
+end
+
 -- `listSeries`, `newCount`, `markSeriesSeen` and `acknowledgeInitialSync` lived
 -- here for the library view's new-chapter counts. That view is gone, and with it
 -- the last *readers* of `series.new_since` — so the column is now written by
@@ -280,9 +294,12 @@ ON CONFLICT(series_id, item_key) DO UPDATE SET
 --- and died on the constraint, after the series row had already been written.
 --- Two implementations of one rule is how that happens; there is now one.
 ---
---- The caller owns what a position means. A sync numbers the deduped walk, so
---- the reading order has no gaps; an open numbers the page it was opened from,
---- which the next sync overwrites unconditionally.
+--- **The only caller is the sync**, and that is the whole of the rule: the
+--- sequence being numbered has to be the series, not a window onto it, and only
+--- a completed walk has that. The open paths used to call this too, over a
+--- browser page or Suwayomi's `filter=unread` walk — slices that do not begin at
+--- the series' start — and the positions they derived collided with real ones.
+--- See `upsertItem` for what they do instead, and for what that cost.
 function Catalog.numberPositions(items)
     for index, item in ipairs(items) do
         item.feed_index = index
@@ -297,8 +314,11 @@ end
 --- `now` is the sync's generation stamp, used verbatim for both timestamps so
 --- the sweep can tell "not seen this pass" from "not seen at all".
 ---
---- Only ever called inside the sync's transaction: a half-applied batch would
+--- The sync calls this inside its transaction, where a half-applied batch would
 --- leave the series with items stamped for a generation that never committed.
+--- It is also the statement `upsertItem` delegates to, one item at a time, on
+--- the open paths — which is why the numbering rule those two need differently
+--- lives in `upsertItem` rather than in the SQL above it.
 function Catalog.upsertItems(series_id, items, now)
     local stmt = Store.prepare(UPSERT_ITEM)
     for _, item in ipairs(items) do
@@ -312,7 +332,44 @@ function Catalog.upsertItems(series_id, items, now)
     stmt:close()
 end
 
+--- Insert or update ONE item on behalf of an *open* — and never let it move in
+--- the series order.
+---
+--- The counterpart of `upsertItems`, which is the sync's and must stay free to
+--- renumber: a sync numbers the whole deduped walk, so its positions are the
+--- only ones that describe where a chapter sits among its siblings. An open has
+--- no such view. It numbers whatever page it happens to be holding, and every
+--- one of those pages is a slice that does not begin at the series' start:
+---
+---   * the browser's feed page, which on Suwayomi is newest-first;
+---   * Suwayomi's `filter=unread` walk, which begins at the first unread
+---     chapter — so a reader at chapter 41 of a run they have read up to 40
+---     watched chapter 41 be numbered `1`, the position chapter 1 already held;
+---   * the chapter-metadata feed, one entry deep, which numbers that entry `1`
+---     by construction.
+---
+--- `orderedItems` sorts on exactly that column, so a collision is not cosmetic.
+--- With chapter 41 sharing chapter 1's position, `neighbors` answered "next"
+--- with whichever row the `item_key` tiebreak happened to leave adjacent — and
+--- "Open next in series" carried the reader from chapter 41 to chapter 2. The
+--- damage lasts until that series is walked again, which the TTL and the
+--- backoff can put hours away.
+---
+--- So a row the catalog already has keeps its stored position, and a row it has
+--- never seen is **appended** past the last one. Appending is the honest
+--- provisional answer for a write that cannot know where a chapter belongs: it
+--- can be wrong about the middle of a series, but it cannot displace a position
+--- the engine already decided, and it cannot take another chapter's place.
+--- Either way the next sync overwrites it — which is exactly why `upsertItems`
+--- goes on binding `feed_index = excluded.feed_index` with no COALESCE.
 function Catalog.upsertItem(series_id, item, now)
+    local existing = Catalog.itemByKey(series_id, item.item_key)
+    local stored = existing and tonumber(existing.feed_index)
+    if stored then
+        item.feed_index = stored
+    else
+        item.feed_index = Catalog.lastPosition(series_id) + 1
+    end
     Catalog.upsertItems(series_id, { item }, now)
 end
 
