@@ -1315,6 +1315,9 @@ end
 --- that function is built around a book that was tapped, and there is no book
 --- here. The two must agree on how a series row is found and named, so if the
 --- resolution below is ever changed, `registerBook` is where to change it too.
+--- The resolution of the *resume point* is the other half of that agreement, and
+--- it is not mirrored but shared: both end at `offerResume`, and both have to
+--- arrive with the fresh answer in hand rather than letting it ask the catalog.
 function Open.openFirstUnread(browser, info)
     local conn = Sources.connection(info.server_name)
     if not conn then
@@ -1390,7 +1393,13 @@ function Open.openFirstUnread(browser, info)
 
     local manager = browser and browser._manager
     local host = (manager and manager.ui) and manager or fallback_host
-    Open.openCatalogItem(host, server, series, row)
+    -- `row` twice, and the second one is load-bearing: it is the book to open
+    -- *and* the answer to "where is this reader in the series". Without it the
+    -- dialog asks the catalog instead, whose rule is "furthest with any
+    -- progress" rather than "first unfinished" — so on a series read to volume 6
+    -- with 7 and 8 started, this row opened volume 7 while the only "Continue"
+    -- button on the dialog pointed at volume 8. See `openCatalogItem`.
+    Open.openCatalogItem(host, server, series, row, row)
 
     -- The same series-filling walk the download-dialog button starts, for the
     -- same reason and with the same gate. This row used to be left out — the
@@ -1939,7 +1948,23 @@ end
 ---
 --- Returns the path the marker *will* have, or nil after reporting why. Not a
 --- file until the reader answers.
-function Open.openCatalogItem(host, server, series, item)
+---
+--- `target` is the caller's *fresh* answer to "where is this reader in this
+--- series", and a caller that has one is obliged to pass it. Omitting it does
+--- not mean "no answer" — it means "ask the catalog", and the catalog answers a
+--- different question: `Catalog.resumeTarget` is the furthest row with any
+--- progress, where the fresh read is the first *unfinished* one. On a series read
+--- to volume 6 with 7 and 8 both started, those are volume 8 and volume 7, and
+--- the reader got a row that opened volume 7 while the dialog's only "Continue"
+--- button pointed at volume 8. That is the split `readingOrder` and
+--- `firstUnfinished` exist to prevent, surviving on the one path that kept asking
+--- the catalog. `ui/series.lua` is the caller entitled to omit it — its list came
+--- from a sync, so it has no fresher answer to give.
+---
+--- The shape is a catalog row (what `Catalog.itemByKey` and `registerBook`'s
+--- `resume` both return), not a `{ item, page }` pair: only `item_key` and
+--- `last_read` are read off it.
+function Open.openCatalogItem(host, server, series, item, target)
     local plan = planMarker(server, series, item)
     if not plan then
         return nil
@@ -1950,6 +1975,7 @@ function Open.openCatalogItem(host, server, series, item)
         -- The path, not the file: `offerResume` reads the sidecar to decide what
         -- to say, and a sidecar is found by path. The write is `openPlanned`'s.
         file = plan.path,
+        target = target,
         open = function()
             openPlanned(host, plan)
         end,
