@@ -24,6 +24,19 @@ PSE.STREAM_REL = "http://vaemendis.net/opds-pse/stream"
 --- The parser flattens namespaced attributes onto the link keyed by their
 --- local name, and the prefix varies by server (`pse:count`, or none at all),
 --- so the attribute is matched by key *suffix* rather than by exact name.
+---
+--- **A `lastRead` of 0 is returned as 0, not as nil**, and the difference is
+--- load-bearing. Kavita marks a chapter unread by writing `lastRead="0"` rather
+--- than by dropping the attribute, so collapsing the two loses the only signal
+--- that says "this is no longer read". `Catalog.upsertItem` writes progress with
+--- `COALESCE(excluded.last_read, items.last_read)`, so a nil leaves whatever was
+--- stored there — which meant a volume marked unread on the server stayed the
+--- furthest-read one here forever, and the resume dialog kept offering to
+--- continue from it. Absent still means nil: that is a feed not publishing
+--- progress at all, which must not overwrite what a better feed recorded.
+---
+--- Returning 0 is safe everywhere by construction: every consumer asks
+--- `> 0` or `> 1` before treating the number as a page.
 function PSE.attributesFromLink(link)
     local count, last_read
     for key, value in pairs(link) do
@@ -35,7 +48,7 @@ function PSE.attributesFromLink(link)
             end
         end
     end
-    return count, (last_read and last_read > 0) and last_read or nil
+    return count, last_read
 end
 
 --- The page stream advertised by a feed entry: an absolute template, the page

@@ -215,9 +215,15 @@ local function progressFromSummary(summary)
     end
     local read = numbers[#numbers - 1]
     local total = numbers[#numbers]
-    if not read or not total or read < 1 or read > total then
+    if not read or not total or read > total then
         return nil
     end
+    -- 0 is returned as 0, and that is the whole point: Suwayomi writes progress
+    -- as "0 of 31" for a chapter that is not read, including one that *was* read
+    -- and has been reset. Returning nil there would leave `Catalog.upsertItem`'s
+    -- COALESCE holding the old value, so a chapter marked unread would stay the
+    -- furthest-read one here forever. See `PSE.attributesFromLink`, which carries
+    -- the same rule for Kavita's `lastRead="0"`.
     return read
 end
 

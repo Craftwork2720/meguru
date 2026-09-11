@@ -231,6 +231,20 @@ page 60, exactly as recorded.
 the same place. Widening it makes the question rarer; it never changes a page that
 is shown.
 
+**A recorded 0 is not the same as no recording.** Kavita marks a chapter unread by
+writing `lastRead="0"` rather than by dropping the attribute, and Suwayomi writes
+"Progress: 0 of 31" the same way. Both readers therefore return **0**, not nil, and
+the distinction is load-bearing: `Catalog.upsertItem` writes progress with
+`COALESCE(excluded.last_read, items.last_read)`, so a nil leaves whatever was
+stored — which meant a volume marked unread on the server stayed the
+furthest-read one *here* for good, and the resume dialog went on offering to
+continue from it. Nil now means only "this feed does not publish progress", which
+correctly refuses to overwrite a better feed's record.
+
+Returning 0 is safe by construction: every consumer asks `> 0` or `> 1` before
+treating the number as a page, so 0 reads as "no progress" everywhere it is used
+and still overwrites a stale value on the way into the database.
+
 **The button for the book the reader clicked is always there, and removing it once
 broke the feature.** The reasoning for removing it was sound as far as it went —
 "start over" is odd wording, and page 1 is not a position anyone is at — but with
