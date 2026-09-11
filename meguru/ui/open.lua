@@ -376,78 +376,61 @@ local function readingOrder(parsed)
     return sequence, positioned
 end
 
---- The last *positioned* entry matching a predicate, reading order respected.
+--- The first entry in reading order the server has not finished.
 ---
---- Two passes, and the order of the passes is the whole point: the ordered
---- prefix is reading order, so the last entry in it that matches is the furthest
---- along; the unpositioned tail is *feed* order, so it is only consulted when
---- nothing in the prefix matched. For Suwayomi that tail is empty — every
---- chapter entry is positioned, by its `rel=subsection` link or by its stream —
---- so the second pass is dead code there, and it exists for Kavita, whose feed
---- order is reading order and where a chapter whose title carries no number is
---- perfectly ordinary.
+--- **This is the rule the `▶` button names, for every server that has no read
+--- flag of its own** — i.e. Kavita. "Finished" is the page counter, because that
+--- is the only evidence such a feed carries: `last_read >= page_count`.
 ---
---- Scanning the single sequence backwards instead would visit the tail first,
---- and on Suwayomi's newest-first page that means answering with the *earliest*
---- chapter — the confusion this two-pass shape exists to prevent.
+--- It replaced "the last entry with any progress at all", and the difference is
+--- not academic. A reader who read volume 1-2 today and had dipped two pages into
+--- volume 3-4 yesterday gets "volume 3-4" from the old rule and "volume 1-2" from
+--- this one — and the second is where they actually are. The old rule asked
+--- "how far *in* has this reader ever been", which is a different question from
+--- "where have they got to", and it is the second one the button claims to
+--- answer.
 ---
---- `matches` is a predicate rather than a boolean flag because the two callers
---- want genuinely different things and a flag would read as a mode: see
---- `furthestWithProgress` and `firstIn` below.
-local function lastMatching(sequence, positioned, matches)
-    for pass = 1, 2 do
-        local first, last
-        if pass == 1 then
-            first, last = 1, positioned
-        else
-            first, last = positioned + 1, #sequence
-        end
-        for i = last, first, -1 do
-            if matches(sequence[i]) then
-                return sequence[i]
-            end
+--- A chapter with no `page_count` counts as unfinished rather than as finished:
+--- offering a chapter again is a smaller mistake than skipping past one, and for
+--- Suwayomi a catalogue row has no count until its stream is resolved.
+---
+--- Takes no account of `positioned`, like `firstIn`: this reads *forward*, those
+--- two reads backward. The unpositioned tail sits at the *end* of the sequence,
+--- so it cannot win from this direction — there is nothing to guard against.
+local function firstUnfinished(sequence, _positioned)
+    for _, item in ipairs(sequence) do
+        local total = tonumber(item.page_count) or tonumber(item.progress_total)
+        local read = tonumber(item.last_read)
+        if not (total and read and read >= total) then
+            return item
         end
     end
     return nil
 end
 
---- The last entry the server says has been read *into*, read off its page count.
----
---- The default selection, and the only one Kavita can use: its feed carries no
---- read flag of its own, so page progress is the only evidence there is.
-local function furthestWithProgress(sequence, positioned)
-    return lastMatching(sequence, positioned, function(item)
-        return type(item.last_read) == "number" and item.last_read > 0
-    end)
-end
-
 --- The earliest entry of a feed that already contains only what we want.
 ---
---- **No `last_read` test, and that is exactly why this is separate from the scan
---- above.** That one is handed a feed holding *everything* and asks which entry
---- shows page progress. This one is handed a feed the server already filtered to
---- the chapters it flags *unread* (`Suwayomi.unreadFilter`), where every entry
+--- **The same question as `firstUnfinished` above, answered by the server
+--- instead of inferred.** This one is handed a feed the server already filtered
+--- to the chapters it flags *unread* (`Suwayomi.unreadFilter`), where every entry
 --- qualifies by construction and the answer is simply the earliest one.
 ---
---- The page-progress scan gets this wrong in both directions, which is why it is
---- not consulted here even as a tie-break: a chapter flagged read keeps whatever
---- progress it had, so the scan can offer a chapter the server considers done;
---- and a chapter merely *started* is not flagged read, so the scan racing ahead
---- to it skips the chapters in between that have no progress at all.
----
---- Takes no account of `positioned`, unlike the scan above, and the asymmetry is
---- real rather than an oversight: the unpositioned tail sits at the *end* of the
---- sequence, so `sequence[1]` is already the earliest entry either way. There is
---- no direction for the tail to win from.
+--- Why not just ask `firstUnfinished` there too: on a filtered feed the two
+--- usually agree, and where they disagree the *server* is right. A chapter the
+--- server flags unread whose page counter happens to read full — the two axes
+--- genuinely do disagree, which is the whole reason `unreadFilter` exists — would
+--- be skipped by the page-count predicate and offered by this one. The flag is
+--- what the reader sees in the server's own UI, so the flag wins.
 local function firstIn(sequence, _positioned)
     return sequence[1]
 end
 
---- The series' furthest-read item, read from the feed the browser just fetched.
+--- The chapter the server's own position points at, read from the feed the
+--- browser just fetched.
 ---
---- **In reading order, not feed order.** This took the last entry of the parsed
---- page with any progress, which is the furthest read only while the page is
---- ascending: `currentResumeTarget` fetches `driver.catalogURL`, which asks
+--- **In reading order, not feed order.** An earlier version took the last entry
+--- of the parsed page with any progress, which is the answer only while the page
+--- is ascending: `currentResumeTarget` fetches `driver.catalogURL`, which asks
 --- Suwayomi for `sort=number_asc`, so there it was right — while the browser's
 --- own page is `number_desc`, newest first, so there the same line picked the
 --- *lowest*-numbered chapter in the newest hundred. One series, one function,
@@ -455,12 +438,20 @@ end
 --- although a lot more has been read" against "opening the same book from the
 --- file gets it right". `readingOrder` above is what makes the two agree.
 ---
+--- **And what it selects is the first *unfinished* entry — see `firstUnfinished`,
+--- which is also what the row above a series feed opens.** Two rules used to live
+--- on the two paths: the browser answered "first unfinished" and the file
+--- answered "furthest with any progress at all", so a reader who had read volume
+--- 1-2 today and dipped two pages into volume 3-4 yesterday was told volume 3-4
+--- by one screen and volume 1-2 by the other. One rule, one function, one answer.
+---
 --- The catalog cannot answer this question. `items.last_read` is a snapshot from
 --- the last sync, and the only thing that refreshes a row in between is opening
 --- that very chapter — so the catalog is fresh exactly where the reader has
---- clicked and stale everywhere else, and the furthest item *known* is routinely
---- not the furthest item *read*. Asking the feed the reader is already looking at
---- costs nothing: `OPDSBrowser` fetched it to draw the list on screen.
+--- clicked and stale everywhere else, and the chapter it *knows* about is
+--- routinely not the one the reader has got to. Asking the feed the reader is
+--- already looking at costs nothing: `OPDSBrowser` fetched it to draw the list on
+--- screen.
 ---
 --- **Entries that do not claim this series are dropped, not fatal.** An entry
 --- opened from `on-deck` or `recently-added` comes from a feed listing other
@@ -492,7 +483,7 @@ end
 --- upserted on the way, which is the same write `registerBook` makes for the
 --- book actually being opened, from the same feed, for the same series.
 local function freshResumeTarget(driver, feed, feed_url, ctx, series, select)
-    select = select or furthestWithProgress
+    select = select or firstUnfinished
     local mine = {}
     for _, entry in ipairs(feed and feed.entry or {}) do
         local found = driver.discover(entry, nil, ctx)
@@ -512,13 +503,13 @@ local function freshResumeTarget(driver, feed, feed_url, ctx, series, select)
     local sequence, positioned = readingOrder(parsed)
     local best = select(sequence, positioned)
     if not best then
-        logger.info("Meguru: nothing in series", series.remote_id,
-            "is marked read in this feed - resume point falls back to the catalog")
+        logger.info("Meguru: every entry of series", series.remote_id,
+            "in this feed is finished - resume point falls back to the catalog")
         return nil
     end
 
     logger.info("Meguru: the feed says", best.display_title or best.title,
-        "is the furthest read in series", series.remote_id)
+        "is the first unfinished in series", series.remote_id)
 
     -- Numbered in *reading* order, not feed order. `feed_index` is what
     -- `Catalog.orderedItems` sorts on, so numbering this page as it arrived — which
@@ -1090,34 +1081,23 @@ end
 --- row that promises the first unread chapter and silently opens the last one, at
 --- its last page. A row that cannot do what it says says nothing instead.
 local function firstUnread(parsed, filtered)
-    -- The ordering itself lives in `readingOrder`, shared with
-    -- `freshResumeTarget`: the two ask the same question of the same series
-    -- ("where does this reader actually stand?") from two different screens, and
-    -- they must not answer it differently.
+    -- The ordering, the predicate and the selection all live elsewhere now, and
+    -- that is the point: `freshResumeTarget`'s default selector is
+    -- `firstUnfinished` and this is the same call, so the row above a series
+    -- feed and the `▶` button in the dialog cannot answer differently. They did
+    -- — four separate times, from four separate copies of one rule.
+    --
+    -- `readingOrder` is still shared with `freshResumeTarget` for the same
+    -- reason: "where does this reader actually stand?" is one question asked
+    -- from two screens.
     local sequence = readingOrder(parsed)
     if filtered then
-        return sequence[1]
+        -- The server already answered it: every entry of this feed is one it
+        -- flags unread, so the earliest is the answer and the page counter is
+        -- not consulted. See `firstIn`.
+        return firstIn(sequence)
     end
-
-    for _, item in ipairs(sequence) do
-        -- "Unread" here means **not finished**, not "no progress at all". A
-        -- chapter sitting at 7 of 34 has been started, and it is exactly the
-        -- chapter to offer next — treating any non-zero progress as read skipped
-        -- it and jumped past the reader's own place. Requires a page count to
-        -- compare against; with none, the chapter is offered rather than assumed
-        -- finished, because skipping is the failure worth avoiding.
-        local total = tonumber(item.page_count) or tonumber(item.progress_total)
-        local read = tonumber(item.last_read)
-        -- No tolerance here any more: the driver has already put Suwayomi's
-        -- zero-based counter onto the same footing as Kavita's, so a finished
-        -- chapter reports its full count on both and a plain comparison is the
-        -- whole test.
-        local finished = total and read and read >= total
-        if not finished then
-            return item
-        end
-    end
-    return nil
+    return firstUnfinished(sequence)
 end
 
 --- How many pages of the canonical feed the row will walk.

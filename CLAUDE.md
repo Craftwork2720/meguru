@@ -241,7 +241,15 @@ Continue — Volume 1, page 30      the book being opened, where it was left
 ▶  Continue — Volume 1, page 60 (Server)   the server's position, in this book
    or
 ▶  Continue — Volume 2, page 2 (Server)    the server's position, in another book
+▶  Continue — Volume 2 (Server)            …and no page, when that book is
+                                           already read here and will resume
+                                           where KOReader left it
 ```
+
+The `▶` book is the **first chapter the server has not finished**, not the one
+anything was read into most recently — see `firstUnfinished` under the Suwayomi
+heading for why that distinction has teeth, and why it is the same rule the row
+above a series feed opens.
 
 **Every button names the book it opens, and the title names the series.** The
 title is `series.name` — the question is where in the *series* to carry on — and
@@ -370,20 +378,46 @@ The flag is in no entry's data; only a feed *filtered* by it says anything. Henc
 `Suwayomi.unreadFilter = "unread"` — the driver naming the `filter=` value that
 lists exactly those chapters — and three things that follow from it:
 
-**The `▶` button names the first unread chapter, and both entry points agree on
-it.** `freshResumeTarget(..., select)` takes a selector: `furthestWithProgress`
-(the default, and all Kavita has) picks the last entry showing page progress,
-while `firstIn` takes the earliest entry of a feed that already contains only
-what we want. `lastMatching` is the shared helper under the first; `firstIn`
-needs none, because the unread tail of `readingOrder`'s sequence sits at the end
-and so cannot win from either direction. The page on the label still comes from
-that chapter's own progress — that is presentation, not selection.
+**The `▶` button names the first chapter the server has not finished, and it is
+one rule reached two ways.** `freshResumeTarget(..., select)` takes a selector:
+
+- `firstUnfinished` is the default, and all Kavita has: reading the sequence
+  forward, it returns the first entry whose `last_read` has not reached its
+  `page_count`. A chapter with no count is *unfinished* rather than finished —
+  offering it again is a smaller mistake than skipping past it.
+- `firstIn` is Suwayomi's, on a feed already filtered to the chapters the server
+  flags unread. Every entry qualifies by construction, so it is `sequence[1]`.
+
+They are the same *question* answered by different *means*, and the means are not
+interchangeable: where a server publishes a read flag, the flag is right and the
+page counter merely correlates with it, which is the whole reason `unreadFilter`
+exists. See `firstIn` for the case where they disagree.
+
+This replaced "the last entry with any progress at all", and the difference is
+not academic. A reader who had read volume 1-2 *today* and dipped two pages into
+volume 3-4 *yesterday*: the old rule said 3-4, the new rule says 1-2, and 1-2 is
+where they are. Worse, the two entry points each had their **own** rule — the
+browser answered "first unfinished", the file answered "furthest with progress" —
+so the same book gave two answers depending on which button opened it. One rule,
+one function: `firstUnread` (the row above a series feed) now *calls*
+`firstUnfinished` rather than restating its predicate, so the two cannot drift
+apart again. The page on the label still comes from that chapter's own progress —
+that is presentation, not selection.
 
 That makes `currentResumeTarget` the single answer for the dialog, and it is
 fetched on **both** paths: `registerBook` declines to answer when the driver has
 an `unreadFilter`, because the feed the browser holds cannot, and `openAsBook`
 fills it in. So an OPDS open on Suwayomi costs one request where it used to reuse
 a feed already fetched — the price of an answer the feed on screen cannot give.
+
+`Catalog.resumeTarget` answers a **different question** and keeps its own rule
+("the last row anything was read into"), deliberately. It is the degraded answer,
+reached only when the fresh read fails, and for Suwayomi it *cannot* do better:
+the read flag is not stored, and `page_count` is NULL until a stream is resolved,
+so a "first unfinished" predicate there would be true of every row and the
+fallback would confidently answer "chapter 1" after every failed fetch. Do not
+"fix" it to match — the difference is the point, and it is visible in the log as
+`resume point from the catalog, not the feed ( … )`.
 
 **`firstUnread` takes a `filtered` flag, because "unread" is two different
 questions.** With a server that flags chapters, the feed already answered it and
