@@ -131,6 +131,13 @@ function Walker:step()
     local feed, reason = Net.fetchFeed(page_url, {
         username = opts.username,
         password = opts.password,
+        -- Forwarded so a caller walking on the *reader's* behalf rather than on
+        -- the sync's can ask for the short preset. A sync is a background job
+        -- and may spend the long one; the row at the top of a series feed is a
+        -- tap, and `Net.RESUME_*` (4s/8s) instead of `Net.FEED_*` (10s/30s) is
+        -- what keeps a slow server from holding the screen. Default unchanged:
+        -- nil here is still `"feed"` inside `Net.fetchFeed`.
+        timeout = opts.timeout,
     })
     self.count = self.count + 1
     if not feed then

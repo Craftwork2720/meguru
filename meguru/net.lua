@@ -82,7 +82,8 @@ local TIMEOUTS = {
 --- paginated feed can tell "the server said 404" from "the network died". Both
 --- must stop the walk; only the second is worth retrying later.
 ---
---- `opts`: { username, password, accept, timeout = "feed"|"page"|"large" }.
+--- `opts`: { username, password, accept,
+---           timeout = "feed"|"page"|"large"|"resume" }.
 function Net.get(url_str, opts)
     opts = opts or {}
     local parsed = url.parse(url_str)

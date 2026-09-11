@@ -91,9 +91,35 @@ function Hook.install()
             -- the URL, and the URL is what tells them apart — so the decision is
             -- made where the evidence is, not reconstructed from how the switch
             -- was called.
-            local ok, row = pcall(Open.seriesRow, browser, item_url)
-            if ok and row and type(item_table) == "table" then
-                table.insert(item_table, 1, row)
+            --
+            -- **The append is the caller the URL does *not* rule out**, and the
+            -- one that has to be named. `OPDSBrowser:appendCatalog` calls this
+            -- same function for every tap on the next-page chevron
+            -- (`opdsbrowser.lua:979`), on the same series, with the feed's own
+            -- `rel=next` href — which is a series feed like any other. What it
+            -- does with the result is the whole problem: it folds it into the
+            -- table already on screen (`appendCatalog`'s `table.insert`), so a row
+            -- added here is not another list but the *same* list with a second
+            -- copy of the row in it — halfway down, once per tap.
+            --
+            -- The append is identifiable exactly, and by the same evidence as the
+            -- rest of this function: its URL is the `next` that the page
+            -- currently retained advertises. A navigation, a search and a catalog
+            -- edit all arrive with a URL that is not that one.
+            --
+            -- Skipping it also repairs a test in the caller we do not own:
+            -- `appendCatalog` returns true only when `#menu_table > 0`, and a row
+            -- of ours satisfies that by itself — so a page carrying no real entry
+            -- would read as a successful append and `onNextPage` would keep
+            -- asking for more.
+            local retained = browser.item_table
+            local hrefs = type(retained) == "table" and retained.hrefs
+            local is_append = type(hrefs) == "table" and hrefs.next == item_url
+            if not is_append then
+                local ok, row = pcall(Open.seriesRow, browser, item_url)
+                if ok and row and type(item_table) == "table" then
+                    table.insert(item_table, 1, row)
+                end
             end
             return item_table
         end

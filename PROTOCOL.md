@@ -95,19 +95,46 @@ Navigation: `root → /library/series → /series/{mangaId}/chapters → per-cha
 |---|---|---|
 | `/` (root) | no | `library/series`, `sources`, `categories`, `genres`, `statuses`, `languages`, `explore`, `library-updates`, `history` |
 | `/library/series` | **no** — 11 entries is the whole library | the canonical series list |
-| `/series/{id}/chapters` | no | all chapters in one response; `thr:count` on the active facet is the total |
+| `/series/{id}/chapters` | **yes**, 100/page, `rel=next` = `?pageNumber=2` | `rel=first`/`rel=last` too; `thr:count` on the active facet is the total |
 | `/series/{id}/chapter/{n}/metadata` | no | a **feed with one entry** carrying the stream |
 | `/history`, `/library-updates` | yes, 100/page, `rel=next` | chapter-level aggregates |
 
 Every URL carries `?lang=`, including `rel=next` links — follow `rel=next`
 verbatim and never rebuild the URL.
 
-The chapters feed names no `rel=next` and states `?pageNumber=1` in its own
-`rel=self`, which invites the reading that a large series is truncated to one
-page. It is not, at the sizes seen: a 67-chapter series returned all 67 entries,
-and the active `filter=all` facet's `thr:count="67"` agreed (the `unread` 23 plus
-`read` 44 facets sum to the same total, which is a second, independent check).
-So a sync of this feed needs no pagination, and `complete` is honest without it.
+### The chapters feed paginates, and this document said it did not
+
+It looked like a single response because every series checked here was under the
+page size. A 67-chapter series returned all 67 entries and a 58-chapter one all
+58, and the active `filter=all` facet's `thr:count` agreed with the entry count
+(the `unread` plus `read` facets summing to the same total — a second,
+independent check, and one that still holds). So the conclusion "no pagination
+needed" was drawn from evidence that could not have shown otherwise.
+
+At **403** chapters the same feed returns **100 entries** and advertises all
+three:
+
+```
+rel=self   /api/opds/v1.2/series/13/chapters?pageNumber=1&sort=number_desc&filter=all&lang=pl
+rel=first  …?pageNumber=1…        rel=next  …?pageNumber=2…        rel=last  …?pageNumber=5…
+```
+
+Page size 100, so 5 pages for 403 — and `thr:count="403"` still states the total.
+The feed's own `<id>` says the same thing in one string, page and sort included:
+`urn:suwayomi:feed:series:13:chapters:pl:page1:sort_number_desc:filter_all`.
+
+**The pagination links inherit the current `sort` and `filter`**, and that is the
+trap rather than a detail. The default order is `number_desc` — newest first —
+so `rel=next` followed from the feed as browsed walks *backwards* through the
+series: page 1 of Berserk is chapter 386 down to 288. `sort=number_asc`, which
+`driver/suwayomi.lua`'s `catalogURL` asks for, yields a chain running from
+chapter 1 upwards, and that is the only ordering from which the first unread
+chapter is near the start. Following `rel=next` is right; following it from
+whatever page the reader happens to be on is not.
+
+Entry `<summary>` on this feed carries the progress prose
+(`… | Chapter 288| Przez Official| Postęp: 0 z 20`), so a page of it is enough to
+tell a finished chapter from a started one — see `progressFromSummary`.
 
 ### `entry.id` is a stable identity, and the chapter number is not
 

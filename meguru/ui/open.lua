@@ -15,8 +15,13 @@ Two jobs, then:
     and a later sync has something to attach to;
   * write a marker thin enough to open the stream with no database at all.
 
-It deliberately does **not** walk the series feed. That is `sync.lua`, it costs
+Registering a book does not walk the series feed — that is `sync.lua`, it costs
 tens of seconds, and it must never sit between a tap and a book opening.
+**The one walk that does happen here is `seriesItems` below**, and it is a
+deliberate, bounded exception rather than an oversight: the row at the top of a
+series feed cannot answer "first unread chapter" from the page on screen, and it
+is bounded by a small page cap and the short `Net.RESUME_*` timeouts. See its
+comment for why the bound is what makes it safe.
 --]]
 
 local ButtonDialog = require("ui/widget/buttondialog")
@@ -705,6 +710,85 @@ local function firstUnread(parsed)
     return nil
 end
 
+--- How many pages of the canonical feed the row will walk.
+---
+--- The cap exists because the walk is synchronous on a tap: this engine's HTTP
+--- blocks and there is no thread under the UI, so an unbounded chain would hold
+--- the screen for as long as the server felt like taking. Six pages is 600
+--- chapters — well past the point where walking further to find the first
+--- *unread* chapter is plausible — and it covers Berserk's 403 in five.
+local FIRST_UNREAD_PAGES = 6
+
+--- The items of a series, in reading order, from the server's own canonical feed.
+---
+--- **The page on screen is not the series, and that is the whole reason this
+--- exists.** The feed the browser holds is one page of one ordering, and it
+--- browses newest-first: for Berserk, whose 403 chapters are numbered up to 386,
+--- that retained page is `Chapter 386` down to `Chapter 288` (`number_desc`, the
+--- sort its own facets are built around). The row therefore used to offer the
+--- first unread chapter *of the newest hundred* — for a reader who has not
+--- started the series that is `Chapter 288`, not `Chapter 1`, which is what it
+--- looked like and what this fixes.
+---
+--- `driver.catalogURL` is the fix, and it is the same URL a sync walks:
+--- `sort=number_asc`, so the series starts at the beginning of its first page.
+---
+--- **Every page up to the cap is walked, with no early exit, and that is
+--- deliberate.** Stopping at the first unfinished chapter would be a request or
+--- two for the common case, but it would be correct only if the server honoured
+--- `sort=number_asc`. If it did not, the walk would stop on whatever the *first*
+--- page happened to hold — which is precisely the bug being repaired, made
+--- silent. Walking the chain and choosing from all of it needs no such
+--- assumption: `firstUnread` orders by the number in each title and each entry's
+--- own path position, so it finds the true earliest unfinished chapter whichever
+--- way the pages arrived. The cost is a handful of requests on a deliberate tap,
+--- bounded by `FIRST_UNREAD_PAGES` and by `Net.RESUME_*` per page.
+---
+--- Falls back to the page on screen when the canonical feed cannot be walked at
+--- all — offline, or a server with no saved catalog. That is degradation rather
+--- than failure: the row keeps doing exactly what it did before, over the
+--- hundred entries the browser had already fetched.
+local function seriesItems(driver, conn, remote_id, ctx, feed, feed_url)
+    local function fallback(reason)
+        logger.info("Meguru: series walk unusable (", reason,
+            ") - the row falls back to the page on screen")
+        return driver.parseCatalogPage(feed, feed_url, ctx)
+    end
+
+    if not conn then
+        return fallback("no saved catalog for this server")
+    end
+    if not NetworkMgr:isConnected() then
+        return fallback("no connection")
+    end
+
+    local url = driver.catalogURL(conn.url, remote_id, ctx)
+    local pages, complete, reason = Sync.walk(url, {
+        username  = conn.username,
+        password  = conn.password,
+        timeout   = "resume",
+        max_pages = FIRST_UNREAD_PAGES,
+    })
+
+    local items = {}
+    for _, page in ipairs(pages) do
+        -- Each page against *its own* URL: entry hrefs are relative, and a page
+        -- need not share the path of the one before it.
+        for _, item in ipairs(driver.parseCatalogPage(page.feed, page.url, ctx) or {}) do
+            items[#items + 1] = item
+        end
+    end
+    if #items == 0 then
+        -- A walk that returned nothing is not an answer, so it does not get to
+        -- suppress the page on screen.
+        return fallback(reason or "the feed carried no entry")
+    end
+
+    logger.info("Meguru: walked", #pages, "page(s) for series", remote_id, "-",
+        #items, "items,", complete and "complete" or ("stopped: " .. tostring(reason)))
+    return items
+end
+
 --- Open the first unread volume of the series the row was offered for.
 ---
 --- Mirrors the server and series half of `registerBook` rather than calling it:
@@ -747,7 +831,11 @@ function Open.openFirstUnread(browser, info)
         return
     end
 
-    local parsed = info.driver.parseCatalogPage(info.feed, info.feed_url, info.ctx)
+    -- The series from its canonical feed, not from the page on screen — see
+    -- `seriesItems`. `conn` is the connection resolved at the top of this
+    -- function, which is what the walk authenticates with.
+    local parsed = seriesItems(info.driver, conn, info.remote_id, info.ctx,
+        info.feed, info.feed_url)
     local target = firstUnread(parsed)
     if not target then
         -- Nothing unread, or an empty feed: either way the row has nothing to
