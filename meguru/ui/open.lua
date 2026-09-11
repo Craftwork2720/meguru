@@ -651,26 +651,40 @@ end
 --- row that promises the first unread chapter and silently opens the last one, at
 --- its last page. A row that cannot do what it says says nothing instead.
 local function firstUnread(parsed)
-    local numbered, unnumbered = {}, {}
-    for _, item in ipairs(parsed or {}) do
-        local _, _, number = Naming.deriveSeries(item.title or "")
-        if number then
-            numbered[#numbered + 1] = { item = item, number = number }
+    -- **Order from the server's own list position, which is in the path.** A
+    -- Suwayomi entry links to `/series/{id}/chapter/{n}/metadata`, and `{n}` is
+    -- the position on the server's list — that is, its reading order. The title
+    -- is a fallback only, and a poor one: `Prologue 1` carries no chapter token at
+    -- all, so numbering by title parked it *after* every numbered chapter, when a
+    -- prologue belongs before them. Kavita has no path to use (its entries link
+    -- to no metadata feed), and its canonical feed is already in reading order, so
+    -- there the feed order is the right answer and is what is left.
+    local ordered, fallback_position = {}, {}
+    for index, item in ipairs(parsed or {}) do
+        local path_position = type(item.detail_url) == "string"
+            and tonumber(item.detail_url:match("/chapter/(%d+)/")) or nil
+        local _, _, title_number = Naming.deriveSeries(item.title or "")
+        local position = path_position or title_number
+        if position then
+            ordered[#ordered + 1] = { item = item, position = position }
         else
-            unnumbered[#unnumbered + 1] = item
+            fallback_position[#fallback_position + 1] = { item = item, index = index }
         end
     end
-    table.sort(numbered, function(a, b) return a.number < b.number end)
+    table.sort(ordered, function(a, b) return a.position < b.position end)
 
-    local ordered = {}
-    for _, entry in ipairs(numbered) do
-        ordered[#ordered + 1] = entry.item
+    local sequence = {}
+    for _, entry in ipairs(ordered) do
+        sequence[#sequence + 1] = entry.item
     end
-    for _, item in ipairs(unnumbered) do
-        ordered[#ordered + 1] = item
+    -- No position anywhere: the feed's own order, which is reading order for the
+    -- server whose feeds are built that way.
+    table.sort(fallback_position, function(a, b) return a.index < b.index end)
+    for _, entry in ipairs(fallback_position) do
+        sequence[#sequence + 1] = entry.item
     end
 
-    for _, item in ipairs(ordered) do
+    for _, item in ipairs(sequence) do
         -- "Unread" here means **not finished**, not "no progress at all". A
         -- chapter sitting at 7 of 34 has been started, and it is exactly the
         -- chapter to offer next — treating any non-zero progress as read skipped
