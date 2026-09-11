@@ -779,8 +779,9 @@ local MeguruDocument = Document:extend{
     local_cbz = false,
     mupdf_doc = nil,
 
-    -- Number of following pages fetched in the background after a repaint
-    -- (via ReaderHinting -> Document:hintPage).
+    -- How many pages ahead to warm after a repaint, counting the one hintPage is
+    -- handed (via ReaderHinting -> Document:hintPage). One is the page the
+    -- reader is about to turn to.
     prefetch_count = 1,
     -- Maximum number of decoded/scaled tiles kept in RAM per document.
     max_cached_tiles = 8,
@@ -2444,19 +2445,66 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
 end
 
 function MeguruDocument:hintPage(pageno, zoom, rotation, gamma, saturation)
-    -- A local cbz is on disk: nothing to prefetch ahead of the page turn (each
-    -- page renders on demand from the open archive at the capped native), and
-    -- the on-disk page cache is not used in this mode anyway.
-    if self.local_cbz then
-        return true
-    end
-    for i = 1, self.prefetch_count do
+    -- Counted from `pageno`, not from the page after it: ReaderHinting already
+    -- offsets what it hands over (ReaderView passes `state.page + i`), and
+    -- stock's own documents treat the argument as the page itself — see
+    -- PdfDocument:hintPage, which renders exactly `pageno`. Counting from it
+    -- fetched the page AFTER the next one, so the page the reader was about to
+    -- turn to had nothing waiting and paid for its fetch on the turn.
+    for i = 0, self.prefetch_count - 1 do
         local target = pageno + i
         if target <= self.info.number_of_pages then
-            self:prefetchPage(target)
+            -- A local cbz needs no prefetch: each page renders on demand from
+            -- the open archive, and the on-disk page cache is not used in that
+            -- mode. The analysis below still applies to it.
+            if not self.local_cbz then
+                self:prefetchPage(target)
+            end
+            self:analyseAhead(target)
         end
     end
     return true
+end
+
+-- Warm everything getPageBBox will be asked about `pageno`, before the reader
+-- gets there.
+--
+-- ReaderView emits HintPage through `UIManager:nextTick`, so this runs on the
+-- tick after the current page is already painted — the reader is looking at it,
+-- not waiting on a blank screen — and ReaderView unschedules that tick when the
+-- view is torn down, so closing the reader drops the work rather than queueing
+-- it.
+--
+-- One call does the lot, because getPageBBox is the single seam all of it hangs
+-- off: the margin box, the blank check and the page-number strip are reached
+-- from it, and each memoises its answer. Its first step is `getPageDims`, which
+-- fetches the page and decodes it into the native LRU — the expensive part of a
+-- page turn, and the part this exists to move. That the analyses themselves no
+-- longer render (they read the retained buffer) does not make this pointless:
+-- the DECODE is still per page, and it is still what a turn waits for.
+--
+-- Guarded on both sides. Skipped when the crop is off, since nothing it would
+-- compute is ever consulted, and for a streamed page when there is no
+-- connection — the fetch inside would otherwise sit through its timeout with
+-- the UI thread blocked, which is worse than the slow page turn this avoids,
+-- and an offline page could not be rendered anyway.
+function MeguruDocument:analyseAhead(pageno)
+    local c = self.configurable
+    if not (c and c.text_wrap ~= 1 and c.trim_page == 1) then
+        return
+    end
+    if self.dead_pages[pageno] then
+        return
+    end
+    if not self.local_cbz then
+        local ok, NetworkMgr = pcall(require, "ui/network/manager")
+        if not ok or not NetworkMgr or not NetworkMgr:isConnected() then
+            return
+        end
+    end
+    -- pcall: this runs in an event nothing is waiting on, so a throw in a
+    -- heuristic must cost a crop, not the book.
+    pcall(self.getPageBBox, self, pageno)
 end
 
 -- drawPage / drawPageInverted: same as Document's, but our renderPage may
