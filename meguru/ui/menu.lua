@@ -12,16 +12,26 @@ clear cache). The per-book *rendering* choices — crop, fit, reading direction 
 deliberately live in the bottom ConfigDialog instead, where every other stock
 per-book option lives; see `ui/reader.lua`.
 
-Two rules from the reader menu are worth stating because breaking either is
-silent:
+Both surfaces also carry the same two rows deciding where a *new* book is
+written — the folder, and whether a per-catalog subfolder is added. They are
+preferences, and they used to be a dialog asked at every single open; a value
+that changes once does not belong in the path of a tap.
 
-  * `sorting_hint` must be the id of an item that already exists in the reader
-    menu. The sorter resolves it and indexes the result without checking, so a
-    hint naming nothing crashes the whole menu build. It is set only when the
-    id is actually present.
-  * `separator = true` is supported by `TouchMenu`, which is what the reader ⋮
-    menu is — but *not* by the plain `Menu` widget the library and series views
-    use. It is used here and nowhere else.
+Three rules are worth stating, because breaking any of them is silent:
+
+  * `sorting_hint` must name an id that resolves in *that* surface's order
+    table. `menusorter` does `findById(...)` and then indexes the result without
+    checking, so a hint naming nothing throws out of the whole menu build and
+    takes every other plugin's row with it. `showUnderTools` below is the only
+    place a hint is chosen.
+  * `separator = true` is supported by `TouchMenu` and *not* by the plain `Menu`
+    widget. Both main menus are `TouchMenu`s on a touch device — the reader ⋮
+    menu, and the FileManager's, which falls back to the plain widget only on a
+    keyboard-only build (`filemanagermenu.lua:1043`). The plain widget is what
+    Meguru's *own* library, series and server lists use, so `separator` is safe
+    in the rows built here and unsafe in those.
+  * `checked_func` is `TouchMenu`-only, and `mandatory` is plain-`Menu`-only.
+    Rows that must work on both carry their state in `text`/`text_func` instead.
 --]]
 
 local ConfirmBox = require("ui/widget/confirmbox")
@@ -30,11 +40,14 @@ local MenuWidget = require("ui/widget/menu")
 local Notification = require("ui/widget/notification")
 local Screen = require("device").screen
 local UIManager = require("ui/uimanager")
+local logger = require("logger")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
 local Base = require("meguru/driver/base")
 local Catalog = require("meguru/catalog")
+local Marker = require("meguru/marker")
+local Open = require("meguru/ui/open")
 local Reader = require("meguru/ui/reader")
 local Settings = require("meguru/settings")
 
@@ -178,25 +191,127 @@ function Menu.showServers()
     UIManager:show(menu)
 end
 
+-- Where the row goes -----------------------------------------------------------
+
+--- Where the plugin's row goes, and what it takes to get it there.
+---
+--- A hint alone is not enough. `menusorter` appends a hinted item to the *end*
+--- of the named page's row list, which for `tools` means below `more_tools` —
+--- i.e. below Developer options. Naming the id in that page's own order list is
+--- what puts it at the top, and it is the mechanism core ships for this purpose
+--- (`ui/plugin/insert_menu.lua`), though that one targets `more_tools`, the
+--- position we are trying to avoid.
+---
+--- Both order tables are named because they are two different files, and they
+--- are the objects the menu builders `require`, so one mutation is seen by every
+--- later build. Both edits are safe: an id in an order list with no matching
+--- item is skipped by the sorter — which is what happens on the reader surface
+--- while a PDF is open — and a duplicate insert is inert, because the first
+--- occurrence consumes the item out of `item_table`.
+---
+--- `tools` resolves unconditionally in both files (it is in `KOMenu:menu_buttons`
+--- and has its own list in each), so this guard is against a future build rather
+--- than against this one. nil is the honest failure there: an unsorted row beats
+--- a crash that takes the rest of the menu with it.
+local function showUnderTools()
+    local ok_fm, fm_order = pcall(require, "ui/elements/filemanager_menu_order")
+    local ok_rd, rd_order = pcall(require, "ui/elements/reader_menu_order")
+    if not (ok_fm and ok_rd
+        and type(fm_order.tools) == "table" and type(rd_order.tools) == "table") then
+        logger.warn("Meguru: no Tools menu in this build; the Meguru row is unsorted")
+        return nil
+    end
+    table.insert(fm_order.tools, 1, "meguru")
+    table.insert(rd_order.tools, 1, "meguru")
+    return "tools"
+end
+
+local TOOLS_HINT = showUnderTools()
+
+--- The two rows that decide where the next book lands, built fresh per call.
+---
+--- A factory rather than one table shared between the surfaces: a row table is
+--- handed to two different menu widgets in one process, and `menusorter` already
+--- writes into the items it is given (`v.id`, `v.new`). Fresh tables cost
+--- nothing and remove the question.
+---
+--- The folder is shown through `text_func` rather than a right-aligned value
+--- field, because `mandatory` is plain-`Menu`-only and `checked_func` is
+--- `TouchMenu`-only — a `text_func` renders on both (`TouchMenuItem` goes through
+--- `Menu.getMenuText`, which honours it), so the row means the same thing on
+--- either widget and only loses the checkbox on the keyboard-only fallback.
+local function destinationRows()
+    return {
+        {
+            text_func = function()
+                -- `Marker.baseDir()` is where a new marker actually lands, so the
+                -- row cannot disagree with what the open does.
+                return T(_("Save books in: %1"), Marker.baseDir())
+            end,
+            -- A choice, not a way out of the menu: the row stays and is rebuilt,
+            -- so the reader sees the folder they just picked.
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                Open.chooseMarkerDir(function()
+                    if touchmenu_instance
+                        and type(touchmenu_instance.updateItems) == "function" then
+                        touchmenu_instance:updateItems()
+                    end
+                end)
+            end,
+        },
+        {
+            text = _("Subfolder per catalog"),
+            help_text = _("New books go in a folder named after their catalog, then their series. Books already saved are not moved."),
+            keep_menu_open = true,
+            checked_func = function()
+                return Settings.get("marker_server_dir")
+            end,
+            callback = function()
+                Settings.toggle("marker_server_dir")
+            end,
+        },
+    }
+end
+
 -- FileManager ------------------------------------------------------------------
 
+--- The FileManager's `Meguru` submenu.
+---
+--- One submenu, where this used to be two flat rows and a folder question asked
+--- at every open. The library, the servers, and the two settings that decide
+--- where a book lands are one subject: what Meguru does to this installation.
+---
+--- The key is `meguru`, the same id the reader surface uses, and that is safe
+--- because the two `menu_items` tables are per-surface and never shared
+--- (`FileManagerMenu.menu_items` vs `ReaderMenu.menu_items`), and only one of
+--- them is ever written — `Meguru:addToMainMenu` dispatches on whether there is
+--- a document. Reusing the name is better than inventing a second one: a saved
+--- menu order in `settings/` then means the same thing on both surfaces.
 function Menu.addFileManagerItems(plugin, menu_items)
-    menu_items.meguru_library = {
-        text = _("Meguru library"),
-        -- The FileManager menu tolerates an unknown hint by dropping the item
-        -- into its "more" bucket, so this is presentational, not load-bearing.
-        sorting_hint = "search",
-        callback = function()
-            local Library = require("meguru/ui/library")
-            Library.show(plugin)
-        end,
+    local rows = {
+        {
+            text = _("Library"),
+            callback = function()
+                local Library = require("meguru/ui/library")
+                Library.show(plugin)
+            end,
+        },
+        {
+            text = _("Servers"),
+            callback = function()
+                Menu.showServers()
+            end,
+        },
     }
-    menu_items.meguru_servers = {
-        text = _("Meguru servers"),
-        sorting_hint = "search",
-        callback = function()
-            Menu.showServers()
-        end,
+    for _, row in ipairs(destinationRows()) do
+        rows[#rows + 1] = row
+    end
+
+    menu_items.meguru = {
+        text = _("Meguru"),
+        sorting_hint = TOOLS_HINT,
+        sub_item_table = rows,
     }
 end
 
@@ -327,11 +442,16 @@ function Menu.addReaderItems(plugin, menu_items)
         callback = clearCache,
     }
 
+    -- The same two settings the FileManager's submenu carries, for the same
+    -- reason they are there: they decide where the *next* book lands, and a
+    -- reader who wants to change that should not have to close the book first.
+    for _, row in ipairs(destinationRows()) do
+        rows[#rows + 1] = row
+    end
+
     menu_items.meguru = {
         text = _("Meguru"),
-        -- Must name an item that exists in the reader menu, or the build
-        -- crashes; omitted entirely when it does not.
-        sorting_hint = menu_items.typeset and "typeset" or nil,
+        sorting_hint = TOOLS_HINT,
         sub_item_table = rows,
     }
 end

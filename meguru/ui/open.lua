@@ -25,7 +25,6 @@ comment for why the bound is what makes it safe.
 --]]
 
 local ButtonDialog = require("ui/widget/buttondialog")
-local CheckButton = require("ui/widget/checkbutton")
 local InfoMessage = require("ui/widget/infomessage")
 local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
@@ -74,6 +73,49 @@ function Open.setFallbackHost(widget)
     if widget and widget.ui and not widget.ui.document then
         fallback_host = widget
     end
+end
+
+--- The marker path this module last handed to a reader, or nil.
+---
+--- **A one-shot keyed on the file, and it is the whole fix for the dialog that
+--- asks twice.** Handing a marker over runs `ReaderUI:showReader`, which
+--- `hook.lua` wraps, and the wrap's job is to ask where to start — for an open
+--- that had no other moment to ask in. An open that came through `offerResume`
+--- has already had that moment: the dialog was answered, or was deliberately not
+--- built, a few statements earlier. Without this the reader gets the same dialog
+--- again, and again, because `openCatalogItem` -> `handToReader` ->
+--- `switchDocument` -> `showReader` -> `offerResumeForFile` rebuilds it. The
+--- `once` guard inside `offerResume` cannot stop that, because `once` makes one
+--- dialog act once, and this is a *second* dialog.
+---
+--- The shape is a one-shot keyed on the path, and both halves are load-bearing:
+---
+---   * **One-shot, not a set and not a time window.** The re-entry being
+---     suppressed is synchronous — `switchDocument` calls `showReader` in the
+---     same statement — and a per-session set of "files we have opened" cannot
+---     tell it apart from reopening the same book from History ten minutes
+---     later, which *must* ask: the reader may have read on, and the server may
+---     have moved. A timestamp cannot either, since the reopen that has to be
+---     asked about is exactly the one that happens seconds after a close.
+---   * **Keyed on the path, so it can only suppress the open it was armed for.**
+---     The wrap receives a file and compares; a bare "we are opening something"
+---     flag would swallow an unrelated open.
+local handed_off = nil
+
+--- Arm the one-shot for `file`, immediately before handing it to a reader.
+function Open.noteHandoff(file)
+    handed_off = file
+end
+
+--- Read the one-shot and clear it, in that order. Returns the path armed, or nil.
+---
+--- Read-and-clear rather than read is what bounds the leak: one record can
+--- suppress at most one open, and any later call to the wrap clears it whatever
+--- that open turns out to be.
+function Open.takeHandoff()
+    local file = handed_off
+    handed_off = nil
+    return file
 end
 
 -- What the browser saw --------------------------------------------------------
@@ -452,6 +494,25 @@ end
 
 -- Opening from the catalog ------------------------------------------------------
 
+--- Hand `file` to `opener` with the one-shot armed for it, and disarm again if
+--- the open throws.
+---
+--- The ordering is the point. Armed immediately before the handoff, so nothing
+--- above it — a cancelled dialog, a marker that could not be prepared, a host
+--- that cannot open anything — can leave the record behind; and disarmed on a
+--- throw, so an open that *failed* cannot suppress the dialog for the next open
+--- of the same file, which is someone retrying the book that just failed.
+local function handOff(file, opener)
+    Open.noteHandoff(file)
+    local ok, err = pcall(opener)
+    if not ok then
+        Open.takeHandoff()
+        logger.warn("Meguru: the reader refused to open", file, ":", err)
+        return false
+    end
+    return true
+end
+
 --- Open a marker in whichever UI host we have: a reader swaps documents, the
 --- file browser opens a file. `host` is a plugin instance, whose `.ui` is the
 --- actual application.
@@ -466,12 +527,29 @@ local function handToReader(host, file)
     if not (host and host.ui) then
         return false
     end
+    -- The question has already been asked above this point, by `offerResume`, or
+    -- was never needed. Arming here — the one place every catalog open hands a
+    -- file over — is what tells the `showReader` wrap not to ask it again.
     if host.ui.document then
-        host.ui:switchDocument(file)
-    else
-        host.ui:openFile(file)
+        return handOff(file, function() host.ui:switchDocument(file) end)
     end
-    return true
+    return handOff(file, function() host.ui:openFile(file) end)
+end
+
+--- Hand a prepared marker over, reporting the one failure that matters.
+---
+--- Shared by both catalog open paths so the message and the arming cannot drift
+--- apart: the same file reaching the reader with two different failure texts is
+--- how a bug in one of them becomes invisible.
+local function openPrepared(host, file)
+    if handToReader(host, file) then
+        return file
+    end
+    logger.err("Meguru: no opener available for", file)
+    UIManager:show(InfoMessage:new{
+        text = T(_("Meguru: could not open the book.\nMarker written to:\n%1"), file),
+    })
+    return nil
 end
 
 --- True when this book has never been opened on this device.
@@ -542,6 +620,93 @@ local function bookLabel(subject)
     end
     local _, token = Naming.deriveSeries(subject.title or "")
     return token or subject.display_title or subject.title or _("this book")
+end
+
+--- A recorded page, when it is a position *inside* a book rather than its first
+--- page — past page 1 and within the count. The old plugin's guard, unchanged
+--- (`meguru_hook.lua:996`). Page 1 is not a position anybody is at, which is why
+--- a page-1 answer is reported as "no page" rather than as "page 1".
+---
+--- Module-level rather than the closure it used to be inside `offerResume`: the
+--- jump button needs the same test against the *other* book's count, not against
+--- the count of the book being opened.
+local function usablePage(page, count)
+    page = tonumber(page)
+    if page and page > 1 and count and page <= count then
+        return page
+    end
+    return nil
+end
+
+--- The dialog's title: the series when we know it, the book otherwise.
+---
+--- The series, not the volume, because the question is where in the *series* to
+--- carry on. The volume used to be here, and it was the one thing both buttons
+--- could name — but they are allowed to point at different books, and a title
+--- naming one of them makes the other read as a detour.
+---
+--- `series` is nil for a marker whose catalog row is gone — opened from History
+--- after a database rebuild, or a book whose series was never catalogued. There
+--- the book is all there is to name, which is what the title used to say
+--- unconditionally.
+local function dialogTitle(series, item)
+    local name = series and series.name
+    if type(name) == "string" and name:find("%S") then
+        return T(_("Meguru: %1"), name)
+    end
+    return T(_("Meguru: %1"), bookLabel(item))
+end
+
+--- One button: the verb, the book it opens, and the page it opens at.
+---
+--- **Every button names its own book**, because the buttons point at *different*
+--- books — the one the reader clicked, and whichever one the server last saw
+--- them in. Two buttons reading "Continue" while opening different volumes was
+--- the first version of this dialog, and it is worse than not asking at all:
+--- `(Server)` says whose answer it is, not where it lands. The book is
+--- `bookLabel`'s short form ("Volume 2", "Chapter 30"), never the whole entry
+--- title, which overflows the button once a page number joins it.
+---
+--- `page` is nil when there is no page worth naming; then only the book is named.
+--- `from_server` marks the answers that are not the reader's own doing: the
+--- glyph, which this plugin's own OPDS row already proves renders, and the
+--- parenthetical that says why.
+---
+--- Four whole templates rather than a suffix glued on, so a translator can move
+--- the parts around within one string.
+local function buttonLabel(verb, subject, page, from_server)
+    local name = bookLabel(subject)
+    if from_server and page then
+        return "\u{25B6} " .. T(_("%1 — %2, page %3 (Server)"), verb, name, page)
+    elseif from_server then
+        return "\u{25B6} " .. T(_("%1 — %2 (Server)"), verb, name)
+    elseif page then
+        return T(_("%1 — %2, page %3"), verb, name, page)
+    end
+    return T(_("%1 — %2"), verb, name)
+end
+
+--- The page to name on the "open the other book" button, or nil.
+---
+--- The count is the *target's* own, not the count of the book being opened, and
+--- the page is named only when it is the page that book will actually open at. A
+--- book already read on this device resumes where KOReader left the reader —
+--- `offerResume`'s own rule, one button up — so naming the server's page for it
+--- would promise a page the tap does not deliver. A book with no sidecar is
+--- seeded silently from `desc.last_read` by `MeguruDocument:init`, and that is
+--- the page `prepareMarker` writes into the marker, so there the promise holds.
+---
+--- That coupling is the thing to keep in step: if the silent seed ever changes,
+--- this test has to change with it, or the button starts lying.
+local function jumpPage(target, series)
+    local row = series and Catalog.itemByKey(series.id, target.item_key) or nil
+    local marker = (row and row.marker_path) or target.marker_path
+    if type(marker) == "string" and marker ~= "" and FS.exists(marker)
+        and not neverOpened(marker) then
+        return nil
+    end
+    local count = tonumber(target.page_count or (row and row.page_count))
+    return usablePage(target.last_read, count)
 end
 
 --- The page a book was left on, read out of its sidecar, or nil.
@@ -870,10 +1035,12 @@ end
 --- who has read volume 3 here and got to volume 5 elsewhere gets asked about
 --- precisely that.
 ---
---- The flows that come through here routinely stay silent without any extra
---- rule: a next chapter reached from the reader has no progress of its own and
---- the furthest-read item lies *behind* it, so nothing qualifies and no dialog is
---- built at all.
+--- The flows that come through here silently do so by *decision*, not by accident
+--- of the data: a neighbour reached from the reader's own menu — "find the next
+--- chapter", the automatic advance at the end of a volume — does not come through
+--- here at all. It goes through `Open.openItemSilently`, because a tap on a
+--- specific chapter is an instruction, not a question, and the dialog answering
+--- it would be the dialog overriding what the reader asked for.
 ---
 --- The caller passes the open step rather than being called back into because the
 --- two entry points hand the marker on differently — the browser goes through the
@@ -885,10 +1052,8 @@ end
 ---
 --- **The server's position is one button with two readings, not two buttons.**
 --- Where it lands decides which: inside this book it is a page, and outside it is
---- a book to open. Both cannot be said at once — "sync to page 60" is not a thing
---- to say about a book you are being pointed *past* — so the label follows, and
---- `Sync to page 60` / `Sync to Volume 5` are the same button saying the truth
---- about where the server last saw the reader.
+--- a book to open. Both cannot be said at once — naming a page is not a thing to
+--- say about a book you are being pointed *past* — so the label follows.
 ---
 --- The reader's own page and the server's are therefore *both* offered when they
 --- differ, which is the point: a book read to page 30 here and left at page 60
@@ -896,10 +1061,16 @@ end
 --- Suppressing the server's page for a book read locally — the first version of
 --- this — silently threw one of them away.
 ---
+--- **Every button names the book it opens**, which is what makes two "continue"
+--- buttons safe: they are allowed to point at different books, and before they
+--- named them the reader had to infer which was which from feed order. See
+--- `buttonLabel`.
+---
 --- `opts.open_item(target)` is how the leaving button opens the chosen book. The
 --- two entry points reach a marker differently — the browser has a catalog view
 --- to open through, the file manager has whoever is opening this file — so the
---- default is the browser's, and the file path supplies its own.
+--- default is the browser's, and the file path supplies its own. Both are
+--- *silent*: this dialog has just asked the question, so neither re-asks it.
 ---
 --- @param opts { count, file, target, open, open_item }
 function Open.offerResume(host, server, series, item, opts)
@@ -908,7 +1079,6 @@ function Open.offerResume(host, server, series, item, opts)
     -- Has this book been read here before? It decides what "continue" means and
     -- where a page number can come from — never whether to ask.
     local opened_before = not neverOpened(file)
-    local here = bookLabel(item)
 
     -- The reader's own place in this book, or nil. Read from the sidecar, which
     -- is where KOReader keeps it and what it is about to restore from anyway.
@@ -925,16 +1095,6 @@ function Open.offerResume(host, server, series, item, opts)
         position = found and found.item or nil
     end
 
-    -- Past the first page and inside the book. The old plugin's guard, unchanged
-    -- (`meguru_hook.lua:996`).
-    local function inBook(page)
-        page = tonumber(page)
-        if page and page > 1 and opts.count and page <= opts.count then
-            return page
-        end
-        return nil
-    end
-
     local server_page, jump
     if position and item and position.item_key == item.item_key then
         -- The server is *in this book*: not somewhere to go, just a page — and
@@ -943,7 +1103,7 @@ function Open.offerResume(host, server, series, item, opts)
         -- the page itself is used exactly as recorded: subtracting the artefact
         -- would walk back pages a position recorded by *another* reader never had.
         if not PSE.samePlace(position.last_read, local_page) then
-            server_page = inBook(position.last_read)
+            server_page = usablePage(position.last_read, opts.count)
         end
     else
         jump = position
@@ -994,7 +1154,9 @@ function Open.offerResume(host, server, series, item, opts)
     -- answering it.
     --
     -- At most one action per dialog all the same, so a double tap cannot open
-    -- two books.
+    -- two books. **This is not what stops the dialog reopening after the open** —
+    -- that is `Open.noteHandoff`, which spans the `showReader` wrap, and it has
+    -- to, because this guard dies with the dialog it belongs to.
     local acted = false
     local function once(action)
         if acted then
@@ -1004,20 +1166,17 @@ function Open.offerResume(host, server, series, item, opts)
         action()
     end
 
-    -- The verb follows the situation, because one verb cannot be true of both.
-    -- `Continue — page 1` was the label a book never opened here used to get, and
-    -- it reads as a contradiction: there is nothing to continue yet. It starts,
-    -- so it says so. A book that *has* been read continues, and one read without
-    -- a recorded page continues too — it resumes where KOReader left it, and
-    -- naming no page is the honest way to say that.
-    local here_label
-    if not opened_before then
-        here_label = _("Start reading")
-    elseif here_page then
-        here_label = T(_("Continue — page %1"), here_page)
-    else
-        here_label = _("Continue")
-    end
+    -- The verb follows the situation, because one verb cannot be true of both:
+    -- `Continue — Volume 1, page 1` reads as a contradiction for a book nobody
+    -- has started, so an unread book starts. A book that *has* been read
+    -- continues, and one read without a recorded page continues too and drops the
+    -- number rather than claiming one — it resumes wherever KOReader left it,
+    -- which is not a page this code knows.
+    --
+    -- A book never opened here therefore shows no page either, though `here_page`
+    -- is 1 and is still written below.
+    local here_verb = opened_before and _("Continue") or _("Start reading")
+    local here_shown_page = opened_before and here_page or nil
 
     local dialog
     local buttons = {}
@@ -1025,7 +1184,7 @@ function Open.offerResume(host, server, series, item, opts)
         {
             -- No glyph: `▶` marks the server's answers, which are the ones here
             -- that are not the reader's own doing.
-            text = here_label,
+            text = buttonLabel(here_verb, item, here_shown_page, false),
             callback = function()
                 UIManager:close(dialog)
                 if opened_before then
@@ -1047,10 +1206,10 @@ function Open.offerResume(host, server, series, item, opts)
     if server_page then
         buttons[#buttons + 1] = {
             {
-                -- Textually parallel with the local button above, differing only
-                -- in `(Server)` — which is the only way these two differ in
-                -- meaning either.
-                text = "\u{25B6} " .. T(_("Continue — page %1 (Server)"), server_page),
+                -- Textually parallel with the local button above: the same verb,
+                -- the same book — it is this one, since the server is inside it —
+                -- and the server's page instead of the reader's.
+                text = buttonLabel(_("Continue"), item, server_page, true),
                 callback = function()
                     UIManager:close(dialog)
                     once(function()
@@ -1064,17 +1223,24 @@ function Open.offerResume(host, server, series, item, opts)
     if jump then
         buttons[#buttons + 1] = {
             {
-                -- Same shape as the page variant, with the book's own label in
-                -- place of a page: `Continue — page 60` and `Continue — Volume 2`
-                -- would be two numbers for two different things, and the unit is
-                -- what says which.
-                text = "\u{25B6} " .. T(_("Continue — %1 (Server)"), bookLabel(jump)),
+                -- The book and the page, so it cannot be confused with the page
+                -- button above: `page 60` and `Volume 2, page 2` are two numbers
+                -- in two different books, and it is the book name that says so.
+                -- The page is `jumpPage`, which refuses to name one for a book
+                -- this device has already read.
+                text = buttonLabel(_("Continue"), jump, jumpPage(jump, series), true),
                 callback = function()
                     UIManager:close(dialog)
                     -- Opening the marker this was called for as well would leave
                     -- a book nobody asked for sitting next to the one they did.
+                    --
+                    -- Silent on purpose, and that is the fix for the dialog that
+                    -- asked twice: the reader has just named this book, so
+                    -- `openCatalogItem` — which would prepare the marker and then
+                    -- put the same question again about the book they chose — is
+                    -- exactly the wrong call here.
                     local open_target = opts.open_item or function(chosen)
-                        Open.openCatalogItem(host, server, series, chosen)
+                        Open.openItemSilently(host, server, series, chosen)
                     end
                     once(function() open_target(jump) end)
                 end,
@@ -1083,9 +1249,9 @@ function Open.offerResume(host, server, series, item, opts)
     end
 
     dialog = ButtonDialog:new{
-        -- The book being opened is named here, in its short form, so the buttons
-        -- can stay short: the two that leave name their own destination instead.
-        title = T(_("Meguru: %1"), here),
+        -- The series, named once. Every button names its own book and page, so
+        -- the title does not have to choose between them.
+        title = dialogTitle(series, item),
         buttons = buttons,
     }
     UIManager:show(dialog)
@@ -1140,6 +1306,35 @@ local function prepareMarker(server, series, item)
     end
 
     return file, count
+end
+
+--- The marker for a catalog item, handed to the reader without a word.
+---
+--- The asking has already happened above this: `offerResume`'s dialog when the
+--- reader chose this book, or nothing at all when the book *is* what they asked
+--- for — a neighbour tap, the end of a book, the server's own "continue" button
+--- pointing at another volume.
+---
+--- **This is what the jump button used to get wrong.** It called
+--- `openCatalogItem`, which prepares the marker for the chosen item and then runs
+--- `offerResume` for it with no `target` of its own — so the position was
+--- re-resolved from `Catalog.resumeTarget` and a fresh dialog was built for a
+--- book the reader had just named.
+---
+--- Exported rather than local, even though nothing outside this file's lower
+--- half calls it: the jump button's default reaches it from inside `offerResume`,
+--- which is *above* `prepareMarker`, and a `local function` down here would
+--- resolve to a global at that call site — the failure `tools/check.py`'s fourth
+--- pass exists to catch. Going through the module table costs one lookup and
+--- sidesteps the ordering entirely.
+---
+--- Returns the marker path, or nil after reporting why.
+function Open.openItemSilently(host, server, series, item)
+    local file = prepareMarker(server, series, item)
+    if not file then
+        return nil
+    end
+    return openPrepared(host, file)
 end
 
 --- The series' furthest-read item, fetched rather than skimmed from the catalog.
@@ -1221,13 +1416,9 @@ function Open.openCatalogItem(host, server, series, item)
         count = count,
         file = file,
         open = function()
-            if not handToReader(host, file) then
-                logger.err("Meguru: no opener available for", file)
-                UIManager:show(InfoMessage:new{
-                    text = T(_("Meguru: could not open the book.\nMarker written to:\n%1"),
-                        file),
-                })
-            end
+            -- The marker is already prepared and its path already recorded, so
+            -- this is the handoff and nothing else.
+            openPrepared(host, file)
         end,
     })
     -- The marker is ready either way, so this reports "prepared", not "opened":
@@ -1276,9 +1467,11 @@ function Open.offerResumeForFile(file, host, proceed)
         file = file,
         target = series and currentResumeTarget(server, series) or nil,
         open = proceed,
-        -- The browser's jump goes through `openCatalogItem`; this one has no
-        -- catalog view behind it, so it prepares the marker and hands that file
-        -- to whoever is opening this one.
+        -- This one has no catalog view behind it, so it prepares the marker and
+        -- hands that file to whoever is opening this one.
+        --
+        -- Deliberately *not* through `handToReader`: `proceed` is the wrap's own
+        -- unwrapped opener, so there is no second `showReader` to arm against.
         open_item = function(target)
             local other = prepareMarker(server, series, target)
             if other then
@@ -1290,63 +1483,17 @@ end
 
 -- Saving ----------------------------------------------------------------------
 
---- Ask where the marker for a new stream should go, then run the chosen action
---- with that folder.
----
---- `server_name` turns on the "add to the <catalog> source subfolder" checkbox,
---- which is a plugin-wide preference: the box flips the stored setting right
---- away, so whichever button is pressed next — and every later open — follows
---- it.
-function Open.askSaveDestination(on_save_and_open, on_choose_folder, server_name)
-    local dest = Marker.pickerStartDir()
-    local dialog
-    dialog = ButtonDialog:new{
-        title = T(_("Save the stream as a book.\nDestination: %1"), dest),
-        buttons = {
-            {
-                {
-                    text = _("Choose folder…"),
-                    callback = function()
-                        UIManager:close(dialog)
-                        on_choose_folder()
-                    end,
-                },
-                {
-                    text = _("▶ Save & open"),
-                    callback = function()
-                        UIManager:close(dialog)
-                        on_save_and_open(dest)
-                    end,
-                },
-            },
-        },
-    }
-    if type(server_name) == "string" and server_name ~= ""
-        and type(dialog.addWidget) == "function"
-        and type(dialog.getAddedWidgetAvailableWidth) == "function" then
-        -- The local is declared before the CheckButton is built: a closure can
-        -- only capture a local already in scope, and the initializer's
-        -- right-hand side runs before the name enters scope — so a
-        -- self-referencing callback inside it would see a global instead.
-        local add_to_source
-        add_to_source = CheckButton:new{
-            text = T(_("Add to the “%1” source subfolder"), server_name),
-            checked = Settings.get("marker_server_dir") and true or false,
-            parent = dialog,
-            show_parent = dialog,
-            callback = function()
-                Settings.set("marker_server_dir", add_to_source.checked and true or false)
-            end,
-        }
-        dialog:addWidget(add_to_source)
-    end
-    UIManager:show(dialog)
-end
-
 --- Ask for a folder with KOReader's own picker — the same dialog the built-in
 --- OPDS plugin uses for its download folder — then run `on_chosen(dir)`.
---- Cancelling the picker aborts the open. Without a picker the default folder is
---- used, so the button keeps working.
+---
+--- **Cancelling changes nothing.** It does not abort an open and it does not
+--- clear the stored folder; it simply never calls back, which is what a
+--- dismissal should mean. (This used to be the save dialog's question, where a
+--- cancellation really did abort the open; now the only caller is the menu row
+--- in `ui/menu.lua`, so the reader just stays on the folder they had.)
+---
+--- Without a picker the default folder is passed back, so the row keeps working
+--- and re-renders with the folder it already showed.
 function Open.chooseMarkerDir(on_chosen)
     local ok, DownloadMgr = pcall(require, "ui/downloadmgr")
     if not ok or type(DownloadMgr) ~= "table"
@@ -1387,7 +1534,15 @@ function Open.findStream(item)
 end
 
 --- Turn a browsed stream into a marker and open it as a book.
-function Open.openAsBook(browser, item, stream, marker_dir)
+---
+--- Takes no destination folder, deliberately. `Marker.dirFor` defaults
+--- `base_dir` to `Marker.baseDir()`, which is the one thing `Open.chooseMarkerDir`
+--- and the menu row in `ui/menu.lua` write — and `prepareMarker` already relies on
+--- exactly that. A folder passed in here was the save dialog's doing, and a second
+--- way to name the destination is how the two save paths drift apart: the browser
+--- and the catalog view must put a book in the same place, and with no parameter
+--- they cannot disagree.
+function Open.openAsBook(browser, item, stream)
     local server_name = catalogTitle(browser)
     if not server_name then
         return
@@ -1461,7 +1616,8 @@ function Open.openAsBook(browser, item, stream, marker_dir)
 
     local series = registered and registered.series or nil
     local dir = Marker.dirFor(desc, series, {
-        base_dir = marker_dir,
+        -- No `base_dir`: the default is `Marker.baseDir()`, i.e. the stored
+        -- preference, which is what `prepareMarker` uses too.
         server_folder = Settings.get("marker_server_dir") and true or false,
         series_folder_claimed = registered and Catalog.folderClaimedByOther(
             registered.server.id, series.name, series.id) or false,
@@ -1483,7 +1639,12 @@ function Open.openAsBook(browser, item, stream, marker_dir)
     -- handoffs below are alternatives and both are terminal, so the choice has
     -- to be made while there is still something to choose about.
     Open.offerResume(host, registered and registered.server, series,
-        registered and registered.item, {
+        -- `or desc` so a book that could not be catalogued still gets its own
+        -- name on the buttons instead of "this book". Safe: `position` comes from
+        -- `registered` on this path, so it is nil exactly when `item` is, and the
+        -- `item_key` comparison in `offerResume` is never reached with a flat
+        -- descriptor.
+        registered and registered.item or desc, {
             count = tonumber(desc.count),
             file = file,
             -- What `registerBook` read off the feed the browser has just
@@ -1494,16 +1655,14 @@ function Open.openAsBook(browser, item, stream, marker_dir)
                 -- browser cleanly and hands the marker to ReaderUI.
                 if manager and type(manager.openDownloadedFile) == "function"
                     and manager.opds_browser then
-                    manager:openDownloadedFile(file)
+                    -- Not through `handToReader`, so this is the second place the
+                    -- one-shot is armed — same reason and same instant: the dialog
+                    -- above has already asked, and the `showReader` wrap must not
+                    -- ask again.
+                    handOff(file, function() manager:openDownloadedFile(file) end)
                     return
                 end
-                if handToReader(host, file) then
-                    return
-                end
-                logger.err("Meguru: no opener available for", file)
-                UIManager:show(InfoMessage:new{
-                    text = T(_("Meguru: could not open the streamed book.\nMarker written to:\n%1"), file),
-                })
+                openPrepared(host, file)
             end,
         })
 end
@@ -1534,19 +1693,12 @@ function Open.injectBookRow(browser, item)
                 UIManager:close(dialog)
                 -- Opening a streamed book reads its first pages immediately, so
                 -- this needs a connection the same way a download does; the
-                -- manager prompts for one instead of failing.
-                local function open(dir)
-                    NetworkMgr:runWhenConnected(function()
-                        Open.openAsBook(browser, item, stream, dir)
-                    end)
-                end
-                Open.askSaveDestination(
-                    open,
-                    function()
-                        Open.chooseMarkerDir(open)
-                    end,
-                    browser.root_catalog_title
-                )
+                -- manager prompts for one instead of failing. **This gate is not
+                -- about the destination** — it is about the pages — which is why
+                -- it stays now that the destination question is gone.
+                NetworkMgr:runWhenConnected(function()
+                    Open.openAsBook(browser, item, stream)
+                end)
             end,
         },
     })

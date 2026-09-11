@@ -722,8 +722,12 @@ local function syncThenOpen(plugin, context, which)
         end
         -- Deferred for the same reason the tap that got here was: opening
         -- replaces the document, and this runs inside the walk's own tick.
+        --
+        -- Silent, like the direct path below: this is the same neighbour the
+        -- reader asked for, arriving a sync later. Asking now would put a
+        -- question in front of a request that was not one.
         UIManager:nextTick(function()
-            Open.openCatalogItem(plugin, context.server, refreshed, item)
+            Open.openItemSilently(plugin, context.server, refreshed, item)
         end)
     end)
 end
@@ -731,10 +735,17 @@ end
 --- Open the item before or after this one in the series. Returns whether the
 --- document was handed to the reader **on this call**.
 ---
---- **This replaces the document.** `Open.openCatalogItem` writes the marker and
+--- **This replaces the document.** `Open.openItemSilently` writes the marker and
 --- switches the reader to it, so a caller must not switch again afterwards, and
 --- must call this from a point where tearing the reader down is safe — never
 --- directly inside a handler that belongs to the reader being replaced.
+---
+--- **It does not ask, and that is deliberate.** Tapping "find the next chapter"
+--- names one specific book, so there is no question to put: the resume dialog
+--- belongs where the reader opens a *series* view and the server may disagree
+--- about where they got to. Before this, the tap went through `openCatalogItem`
+--- and the dialog could answer with a different chapter than the one tapped —
+--- most visibly on "previous chapter" while the server sat further along.
 ---
 --- A `false` return therefore means "nothing was opened *now*", not "there is
 --- nothing there": when the series has no such neighbour yet, this syncs it and
@@ -763,9 +774,9 @@ function Reader.openNeighbor(plugin, which)
         return false
     end
     if found[which] then
-        -- openCatalogItem reports its own failures, in more detail than a caller
+        -- openItemSilently reports its own failures, in more detail than a caller
         -- could; all that is wanted back here is whether it worked.
-        return Open.openCatalogItem(plugin, context.server, context.series, found[which]) ~= nil
+        return Open.openItemSilently(plugin, context.server, context.series, found[which]) ~= nil
     end
     -- Reachable when the reader is asked twice before the connection prompt is
     -- answered: both re-runs land on the same tick, and the second must join the

@@ -71,7 +71,7 @@ meguru/
     defaults.lua          per-book seeding of kopt_* from plugin preferences
 
   ui/
-    open.lua              "Meguru this series": dialog, marker write, open
+    open.lua              "Meguru this series": resume dialog, marker write, open
     library.lua           series list from the catalog, with new-chapter counts
     series.lua            items of one series, open, manual sync
     syncjob.lua           cooperative sync with progress and Cancel
@@ -235,19 +235,47 @@ is either *inside this book*, and then it is a page, or *outside it*, and then i
 is a book to open. Hence one button whose label follows:
 
 ```
-Start reading                     the book being opened, never read here
-Continue — page 30                the book being opened, where it was left
-▶  Continue — page 60 (Server)    the server's position, inside this book
+Start reading — Volume 1          the book being opened, never read here
+Continue — Volume 1, page 30      the book being opened, where it was left
+▶  Continue — Volume 1, page 60 (Server)   the server's position, in this book
    or
-▶  Continue — Volume 2 (Server)   the server's position, in another book
+▶  Continue — Volume 2, page 2 (Server)    the server's position, in another book
 ```
+
+**Every button names the book it opens, and the title names the series.** The
+title is `series.name` — the question is where in the *series* to carry on — and
+because it cannot name both books, the buttons each name their own. Before this
+the title carried the book (`bookLabel(item)`) and the buttons did not, which is
+the arrangement that made two "continue" buttons ambiguous. The book on a button
+is still the short form: `bookLabel`, i.e. `volume_label` or the token
+`Naming.deriveSeries` peels from the title. `dialogTitle` falls back to that
+same short form when there is no `series` — a marker opened from History after a
+database rebuild — because there the book is all there is to name.
+
+**The page on the leaving button is only named when the tap will land there.**
+`jumpPage` returns nil for a target this device has already read, because such a
+book resumes where KOReader left the reader, not at the server's page — naming
+one would promise a page the tap does not deliver. It is `nil` exactly when the
+target has a sidecar. This is coupled to `MeguruDocument:init`'s silent seed,
+which is what lands an unseeded target on the server's page: **change one and
+you must change the other.**
 
 **The verb follows the situation, because one verb cannot be true of both.** A
 book never opened here used to get `Continue — page 1`, which reads as a
 contradiction — there is nothing to continue yet — so it says `Start reading`. A
 book that *has* been read continues; one read without a recorded page continues
 too, and drops the number rather than claiming one, because it resumes wherever
-KOReader left it.
+KOReader left it. A book never opened here shows no page either, though page 1 is
+still written to its sidecar.
+
+**The flows that stay silent do so by decision, not by accident of the data.**
+A neighbour reached from the reader — "find the next chapter", the automatic
+advance at the end of a volume — does not come through `offerResume` at all; it
+goes through `Open.openItemSilently`, which prepares the marker and hands it
+over. A tap on a named chapter is an instruction, and the dialog answering it
+would be the dialog overriding what the reader asked for. That was visible on
+"previous chapter": with the server sitting at chapter 7, the only button on
+offer pointed *forward* to chapter 7 instead of opening the chapter tapped.
 
 **A recorded page is used exactly as recorded; a *small* lead is simply
 ignored.** Servers that track progress count pages *fetched*, and the reader
@@ -302,22 +330,21 @@ Two things follow from that button existing:
   reader just answered. A book read here but with no page recorded keeps the
   button without a number rather than claiming page 1.
 
-The two "continue" labels differ only in the `(Server)` marker, which is the only
-way they differ in meaning either. `▶` marks the server's answer because it is the
-one on the dialog that is not the reader's own doing; the local one carries no
-glyph. `Volume 2` there is **the server's own trailing token** as
-`Naming.deriveSeries` peeled it from the entry title — "Volume 2" from Kavita,
-"Chapter 30" from Suwayomi — never an abbreviation this code invents.
+`▶` marks the server's answer because it is the one on the dialog that is not the
+reader's own doing; the local one carries no glyph. "Volume 2" and "Chapter 30"
+are **the server's own trailing tokens** as `Naming.deriveSeries` peeled them from
+the entry title — never abbreviations this code invents. The
+`Naming.deriveSeries` example: `"Now That We Draw - Volume 2"` → series
+`"Now That We Draw"`, label `"Volume 2"`, index `2`.
 
 Two buttons reading "continue" while pointing at *different books* is worse than
 not asking — that was the first wording, where "continue where I left off" was
-equally true of the book being opened and of the one OPDS pointed at. The second
-fix named the book in each button, which overflowed: `display_title` is the whole
-cleaned entry title ("Now That We Draw - Volume 2"). Buttons therefore get
-**`volume_label`** — the token `Naming.deriveSeries` pulls out, "Volume 5" /
-"Chapter 30" — and the title carries the book being opened in the same short form.
-The marker descriptor has no `volume_label`, so the file path derives the token
-from its title with the same function, rather than showing a full title.
+equally true of the book being opened and of the one OPDS pointed at. Naming the
+book in each button fixed the meaning; it is `buttonLabel`, and the name is the
+short form because `display_title` — the whole cleaned entry title — overflows the
+button once a page number joins it. The marker descriptor has no `volume_label`,
+so the file path derives the token from its title with the same function, rather
+than showing a full title.
 
 The local page comes from the sidecar (`localLastPage`, only ever called when a
 sidecar already exists — `DocSettings:open` creates the file, so calling it for a
@@ -332,10 +359,46 @@ reader who does it is saying no. The marker is already written by then, so a
 cancelled open costs a file on disk and nothing else.
 
 Every button still routes through a single `once(action)`, so a double tap cannot
-open two books. Worth knowing while touching this: `ButtonDialog`'s
-`tap_close_callback` fires from `onClose`, which a button's `UIManager:close` does
-**not** reach — that sends `CloseWidget`, a different event — so the two routes are
-separable, and a button's own `UIManager:close` can never re-enter it.
+open two books. **`once` is not what stops the dialog reopening after the open** —
+it is per-dialog and dies with it. Worth knowing while touching this:
+`ButtonDialog`'s `tap_close_callback` fires from `onClose`, which a button's
+`UIManager:close` does **not** reach — that sends `CloseWidget`, a different
+event — so the two routes are separable, and a button's own `UIManager:close`
+can never re-enter it.
+
+**The dialog asked twice, and a one-shot keyed on the file is what fixed it.**
+Every catalog open ends in `handToReader`, which calls `host.ui:switchDocument`,
+which calls `ReaderUI.showReader` — the method `hook.lua` wraps in order to ask
+where to start. So the wrap re-entered `offerResume` for the book the dialog had
+*just* been answered about, and the reader saw the same question again; tapping
+its button repeated the cycle. `once` cannot cover this, because `once` makes one
+dialog act once and the failure is a *second* dialog.
+
+`Open.noteHandoff(file)` arms a one-shot immediately before the handoff, and the
+wrap reads *and clears* it before anything else. The shape is load-bearing in both
+halves:
+
+- **One-shot, not a set and not a time window.** The re-entry is synchronous —
+  `switchDocument` calls `showReader` in the same statement — while a per-session
+  set of "files we have opened" cannot tell it apart from reopening the same book
+  from History ten minutes later, which must still ask: the reader may have read
+  on and the server may have moved. A timestamp cannot either, since the reopen
+  that needs asking about is exactly the one seconds after a close.
+- **Keyed on the path**, so it can only suppress the open it was armed for. A bare
+  "we are opening something" flag would swallow an unrelated open.
+
+Read-and-clear is what bounds the leak: any later call to the wrap clears the
+record whatever that open turns out to be. And nothing is armed when the dialog
+is cancelled — nothing is handed over — so "a tap past the dialog cancels" is
+untouched by this.
+
+Two callers arm it, and only two: `handToReader`, and the OPDS branch of
+`openAsBook` that goes through the built-in plugin's own
+`manager:openDownloadedFile`, which does not pass through `handToReader`. The
+plain-download route (`showFileDownloadedDialog` → `openDownloadedFile`) is
+deliberately **not** armed, so a book opened from the browser's own "Read now"
+still asks. Arm it there instead of at the call sites and that question
+disappears.
 
 **The catalog is the wrong place to ask, and the feed is the right one.** It has
 to be said plainly because the obvious implementation is wrong in a way that only
@@ -377,7 +440,13 @@ already uses on `OPDSBrowser` — so a marker opened from the file manager or
 History gets the same dialog. Three rules keep that wrap from ever costing anyone
 a book: non-`.meguru` files fall straight through before anything else; the whole
 offer runs in a `pcall` whose failure opens normally; and the open is called at
-most once, so a throw after it cannot open twice. Two traps are worth knowing:
+most once, so a throw after it cannot open twice.
+
+The wrap asks only for opens that did **not** come from `offerResume`, and that
+is what closes the loop the `once` guard could not — see the one-shot keyed on
+`Open.noteHandoff` above. It also clears that record before the extension test, so
+a record that outlived its open cannot survive the next document anyone opens.
+Two traps are worth knowing:
 
 - **`showReader` is called both ways.** `switchDocument` does `self:showReader`
   and the file manager does `ReaderUI:showReader`, so `self` is sometimes the
@@ -501,6 +570,10 @@ Sync is triggered three ways, all gated on `NetworkMgr:isConnected()`:
   neighbour is an answer, and re-walking the same feed would not change it.
   A module-level guard in `ui/reader.lua` joins a second request to the walk
   already running rather than starting a second one.
+  The open that follows the walk — and the direct one when the neighbour is
+  already known — goes through `Open.openItemSilently`, not `openCatalogItem`:
+  the reader named a chapter, so there is nothing left to ask. See the
+  resume-dialog section above.
 
 **Never in the plugin's `init()`**: at that point there is neither connectivity
 nor a UI.
@@ -575,11 +648,33 @@ Two invariants when touching these rows:
   this reason: `0` is a valid choice *and* is truthy in Lua, so any normalising
   step (`value and 1 or 0`) silently turns "off" into "on" and "crop: none" into
   "crop: auto".
-- **`sorting_hint` must name an existing menu item.** The sorter dereferences the
-  lookup without checking, so a hint naming nothing crashes the entire menu
-  build; it is set only when the id is present. `separator = true` works in
-  `TouchMenu` (the reader ⋮ menu) but **not** in the plain `Menu` widget the
-  library and series views use.
+- **`sorting_hint` must name an existing menu item, in that surface's own order
+  table.** `menusorter` does `findById(...)` and then indexes the result without
+  checking, so a hint naming nothing throws out of the entire menu build and takes
+  every other plugin's row with it. `ui/menu.lua` picks it in one place
+  (`showUnderTools`, which falls back to no hint rather than a crash), and the
+  hint is `"tools"`, which resolves unconditionally in both order tables.
+- **A hint alone does not put a row at the top of its page.** It is appended to
+  the end of that page's row list — for `tools`, below `more_tools`, i.e. below
+  Developer options. Landing above them means naming the id in that page's order
+  list, which is what `showUnderTools` does for both surfaces. That is also the
+  mechanism core ships (`ui/plugin/insert_menu.lua`), though it targets
+  `more_tools`, the position being avoided here. Both edits are safe: an order id
+  with no matching item is skipped by the sorter, and a duplicate insert is inert.
+- **`separator` and `checked_func` are `TouchMenu`-only; `mandatory` is
+  plain-`Menu`-only.** Both *main* menus are `TouchMenu`s on a touch device — the
+  reader ⋮ menu and the FileManager's, which falls back to the plain widget only
+  on a keyboard-only build (`filemanagermenu.lua:1043`). The plain widget is what
+  Meguru's **own** library, series and server lists use, so `separator` is safe in
+  the rows Meguru registers and unsafe in those. `text_func` renders on both
+  (`TouchMenuItem` goes through `Menu.getMenuText`), so a row that must work on
+  either carries its state in the text rather than in a `mandatory` value slot.
+- **The FileManager has one `Meguru` submenu, not flat rows**, and it carries the
+  same two destination rows as the reader's (save folder, per-catalog subfolder).
+  Both surfaces use the key `meguru`, which is safe because the two `menu_items`
+  tables are per-surface and never shared, and `Meguru:addToMainMenu` dispatches on
+  whether a document is open — so only one is ever written. A saved menu order in
+  `settings/` then means the same thing on both.
 
 ## Plugin lifecycle facts worth not rediscovering
 
@@ -774,6 +869,27 @@ Each step must pass before the next:
 12. **A fresh cache is not a cache miss.** Every name carries the digest, so a
     cache written by an older version is unreachable rather than wrong — the
     first open after the upgrade refetches, and no stale file is ever read.
+13. **The dialog asks once.** Tap a volume in a series feed, answer the dialog:
+    the book opens and **no second dialog appears**. Then close it and reopen the
+    same book from History — **the dialog comes back**, which is the half of the
+    test that catches a guard that suppresses too much. Reopen a *different* book
+    and confirm the earlier one's record is not swallowing it.
+14. **The jump button does not re-ask.** With the server further along in another
+    volume, tap its `▶` button: that volume opens with no dialog, and the page in
+    the label is the page it lands on. Tap a jump onto a volume already read here:
+    the label names no page, and the book resumes where KOReader left it.
+15. **The silent opens stay silent.** ⋮ → Meguru → "Find the next chapter" on an
+    unsynced series: the walk runs, the chapter opens, no dialog. Finish a volume
+    with `auto-next at the end` on: the next volume opens with no dialog.
+16. **The menu lands where it should.** FileManager → Tools → `Meguru` at the top
+    of the page, holding Library, Servers, `Save books in: …` and the subfolder
+    toggle; the reader's ⋮ → Tools → `Meguru` likewise. The folder row opens the
+    picker and shows the new path afterwards; the toggle's checkbox survives a
+    restart; a new book lands in `<base>/<catalog>/<series>` when it is on.
+    With a PDF open there is no Meguru row and nothing logs `menu id not found`.
+17. **No destination dialog anywhere.** `▶ Meguru this series` with the wifi off
+    still prompts for a connection and then opens, straight into the resume
+    dialog. Neither it nor the top-of-feed row ever asks for a folder.
 
 ## Known open items
 

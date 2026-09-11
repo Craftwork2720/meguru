@@ -183,14 +183,30 @@ function Hook.install()
                 return orig_showReader(unpack(forwarded, 1, n))
             end
 
+            -- Read *and clear* the one-shot before anything else, including the
+            -- extension test: a record that outlived the open it was armed for
+            -- has to clear on the very next call to this wrap, whatever that
+            -- open turns out to be.
+            local decided = Open.takeHandoff()
+
             if type(file) ~= "string" or file:sub(-7) ~= ".meguru" then
                 return open_instead()
             end
 
+            -- **Already decided, a moment ago, by the dialog.** `handOff` arms
+            -- this immediately before `switchDocument`, and `offerResume` asked
+            -- — or deliberately did not ask — a few statements earlier, so
+            -- asking again here is the dialog asking a question it has just had
+            -- answered. `once` inside `offerResume` cannot cover that: it makes
+            -- one dialog act once, and the failure here is a *second* dialog.
+            if decided == file then
+                return open_instead()
+            end
+
             local ok_offer, err = pcall(Open.offerResumeForFile, file,
-                -- A host-shaped shim: `prepareMarker` and `openCatalogItem` take
-                -- one, and on this path the only thing it can usefully do is hand
-                -- a file back to the opener we were called from.
+                -- A host-shaped shim: `openItemSilently` and the neighbour opens
+                -- take one, and on this path the only thing it can usefully do is
+                -- hand a file back to the opener we were called from.
                 { ui = { openFile = function(_, other) return open_instead(other) end } },
                 open_instead)
             if not ok_offer then
