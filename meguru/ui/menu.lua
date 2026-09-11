@@ -391,15 +391,16 @@ function Menu.addReaderItems(plugin, menu_items)
     local context, found = neighbors(ui)
 
     local rows = {}
+    -- The book on the row is `bookLabel`'s short form, for the reason the resume
+    -- dialog's buttons already use it: the series is the one *already open*, so
+    -- the volume token is the whole of what the row has to say, and the full
+    -- entry title overflows it. It never returns nil, so there is no bare
+    -- "Open next in series" to fall back to.
     addNeighborRow(plugin, rows, context, found, "next", function(item)
-        return item.display_title
-            and T(_("Open next in series: %1"), item.display_title)
-            or _("Open next in series")
+        return T(_("Open next in series: %1"), Open.bookLabel(item))
     end)
     addNeighborRow(plugin, rows, context, found, "previous", function(item)
-        return item.display_title
-            and T(_("Open previous in series: %1"), item.display_title)
-            or _("Open previous in series")
+        return T(_("Open previous in series: %1"), Open.bookLabel(item))
     end)
 
     -- Only meaningful when there is somewhere to go; without a next item the

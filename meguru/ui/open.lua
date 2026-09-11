@@ -913,7 +913,12 @@ end
 --- The marker descriptor has no `volume_label`, and it is what the file path
 --- falls back to when the catalog is unreadable, so the token is derived from its
 --- title — by the same function that produced `volume_label` in the first place.
-local function bookLabel(subject)
+---
+--- Exported because the reader menu names a *neighbour* the same way: its series
+--- is the one already open, so "Volume 2" is the whole of what the row has to
+--- say and the full title only makes it overflow. One definition, so a row and
+--- the button that opens the same book cannot come to disagree.
+function Open.bookLabel(subject)
     if type(subject) ~= "table" then
         return _("this book")
     end
@@ -956,7 +961,7 @@ local function dialogTitle(series, item)
     if type(name) == "string" and name:find("%S") then
         return T(_("Meguru: %1"), name)
     end
-    return T(_("Meguru: %1"), bookLabel(item))
+    return T(_("Meguru: %1"), Open.bookLabel(item))
 end
 
 --- One button: the verb, the book it opens, and the page it opens at.
@@ -977,7 +982,7 @@ end
 --- Four whole templates rather than a suffix glued on, so a translator can move
 --- the parts around within one string.
 local function buttonLabel(verb, subject, page, from_server)
-    local name = bookLabel(subject)
+    local name = Open.bookLabel(subject)
     if from_server and page then
         return "\u{25B6} " .. T(_("%1 — %2, page %3 (Server)"), verb, name, page)
     elseif from_server then
