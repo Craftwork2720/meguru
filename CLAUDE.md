@@ -248,9 +248,10 @@ Continue — Volume 1, page 30      the book being opened, where it was left
 ```
 
 The `▶` book is the **first chapter the server has not finished**, not the one
-anything was read into most recently — see `firstUnfinished` under the Suwayomi
-heading for why that distinction has teeth, and why it is the same rule the row
-above a series feed opens.
+anything was read into most recently, and not the last chapter either unless
+every chapter is finished — see `firstUnfinishedOrLast` under the Suwayomi
+heading for why that distinction has teeth, and where the row above a series feed
+deliberately differs.
 
 **Every button names the book it opens, and the title names the series.** The
 title is `series.name` — the question is where in the *series* to carry on — and
@@ -379,13 +380,15 @@ The flag is in no entry's data; only a feed *filtered* by it says anything. Henc
 `Suwayomi.unreadFilter = "unread"` — the driver naming the `filter=` value that
 lists exactly those chapters — and three things that follow from it:
 
-**The `▶` button names the first chapter the server has not finished, and it is
-one rule reached two ways.** `freshResumeTarget(..., select)` takes a selector:
+**The `▶` button names the first chapter the server has not finished — or, when
+it has finished them all, the last one.** `freshResumeTarget(..., select)` takes
+a selector:
 
-- `firstUnfinished` is the default, and all Kavita has: reading the sequence
-  forward, it returns the first entry whose `last_read` has not reached its
-  `page_count`. A chapter with no count is *unfinished* rather than finished —
-  offering it again is a smaller mistake than skipping past it.
+- `firstUnfinishedOrLast` is the default, and all Kavita has. Reading the sequence
+  forward it returns the first entry whose `last_read` has not reached its
+  `page_count`; when every entry has, it returns the last entry. A chapter with no
+  count is *unfinished* rather than finished — offering it again is a smaller
+  mistake than skipping past it.
 - `firstIn` is Suwayomi's, on a feed already filtered to the chapters the server
   flags unread. Every entry qualifies by construction, so it is `sequence[1]`.
 
@@ -394,22 +397,92 @@ interchangeable: where a server publishes a read flag, the flag is right and the
 page counter merely correlates with it, which is the whole reason `unreadFilter`
 exists. See `firstIn` for the case where they disagree.
 
-This replaced "the last entry with any progress at all", and the difference is
-not academic. A reader who had read volume 1-2 *today* and dipped two pages into
-volume 3-4 *yesterday*: the old rule said 3-4, the new rule says 1-2, and 1-2 is
-where they are. Worse, the two entry points each had their **own** rule — the
+**The "or the last one" half is not decoration.** A series read to the end has
+nothing unfinished, and "nowhere to continue" is not what this button is for — a
+reader who finished chapter 177 and taps again is at chapter 177, and a button
+that vanished would be saying the series is empty. That case used to fall through
+to `Catalog.resumeTarget`, whose knowledge ends at the last sync, so the same tap
+gave two different chapters a moment apart: the first before the background walk
+landed (the last *row* the catalogue had, not the last chapter), the second after.
+
+This replaced "the last entry with any progress at all", and that difference is
+not academic either. A reader who had read volume 1-2 *today* and dipped two pages
+into volume 3-4 *yesterday*: the old rule said 3-4, the new rule says 1-2, and 1-2
+is where they are. Worse, the two entry points each had their **own** rule — the
 browser answered "first unfinished", the file answered "furthest with progress" —
 so the same book gave two answers depending on which button opened it. One rule,
-one function: `firstUnread` (the row above a series feed) now *calls*
-`firstUnfinished` rather than restating its predicate, so the two cannot drift
-apart again. The page on the label still comes from that chapter's own progress —
-that is presentation, not selection.
+one function: `firstUnread` (the row above a series feed) *calls* `firstUnfinished`
+rather than restating its predicate, so the two cannot drift apart again. The page
+on the label still comes from that chapter's own progress — that is presentation,
+not selection.
+
+**`firstUnread` deliberately stops where the `▶` button carries on.** The row
+above a series feed uses `firstUnfinished` alone and answers "nothing unread" for
+a fully read series; the button uses `firstUnfinishedOrLast` and names its last
+chapter. That is not an inconsistency to tidy away: the row offers to *open* a
+chapter, so with none to open it says so, while the button offers to *say where
+the reader is*, and for a finished series that is its end.
 
 That makes `currentResumeTarget` the single answer for the dialog, and it is
 fetched on **both** paths: `registerBook` declines to answer when the driver has
 an `unreadFilter`, because the feed the browser holds cannot, and `openAsBook`
 fills it in. So an OPDS open on Suwayomi costs one request where it used to reuse
 a feed already fetched — the price of an answer the feed on screen cannot give.
+
+**The filtered feed is an optimisation, and it comes up short in two ways.** It
+can be **empty** (nothing unread) or it can **fail** — and on a series read to the
+end Suwayomi does the second: it has nothing to list under `filter=unread` and
+answers that request with a **non-200**, which `Sync.walk` reports as `"http"`
+and the resume fetch as no feed at all. Handling only the empty case left the
+canonical feed unasked exactly where it was needed, so the answer came from
+`Catalog.resumeTarget` — the last *row* the catalogue knew rather than the last
+chapter — and the same tap gave two different chapters a moment apart, the first
+before the background walk landed and the second after. The canonical feed is now
+always asked when the filtered one yields nothing, by either route.
+
+The tell in a log is `series walk unusable ( http )` with a sync of the same
+series succeeding seconds either side: same server, same series, one feed
+filtered and one not.
+
+**Empty and failed are different answers, and reading them as one is how `▶`
+came to name chapter 1 for a series the server calls fully read.** "Empty" means
+**the server answered**: nothing is unread, and a read *flag* outranks the page
+counter everywhere else in this file — so the canonical feed is asked only where
+the series *ends* (`lastIn`), never `firstUnfinishedOrLast`, which would let a
+single chapter with four pages of progress outvote the flag and pull the answer
+back to chapter 1. "Failed" means we do not know what the server thinks, and
+there the counters are the only evidence there is.
+
+The same split runs through the row: an **empty** filtered walk is the row's
+answer ("nothing unread", no chapter to open), while a **failed** one sends it to
+the canonical feed. Conflating them made the row offer chapter 1 from counters
+for a series the server had already said was finished.
+
+**An empty feed is a feed, not a parse failure — and calling it one cost two
+symptoms.** `Net.parseFeed` used to reject a document that parsed but listed no
+entries, so `Net.fetchFeed` reported it as `"http"`: an HTTP-level failure with
+**no status code to find**, because there had been no HTTP error. Suwayomi
+answers `filter=unread` on a fully read series with exactly that — a valid, empty
+feed — so the misreport was the *normal* answer for a finished series, and it
+sent both the row and the resume fetch down their degraded paths. `fetchFeed` now
+returns `nil, "empty"` for it, which is its own state and can be handled as one.
+
+**`seriesItems` returns `items, filtered`, and the flag is load-bearing.**
+`firstUnread` uses it to decide whether the page counter may be consulted at all,
+and `seriesItems`' own fallback hands back the **browser's page**, which the
+server did not filter by read status — for Suwayomi, the newest hundred chapters.
+Deriving the flag from the driver instead made `firstUnread` take `sequence[1]` of
+that page, i.e. the newest chapter rather than the first unread: the same
+confusion the ordering apparatus exists to remove, arriving through the degraded
+path where nobody would look for it.
+
+**And `seriesItems` retries with the URL a sync uses** when the filtered walk
+yields nothing: no filter, and `Catalog.serverLang` rather than the browser's
+language. The filtered feed is an optimisation and this row cannot stand on it
+alone — the fallback above answers from the newest hundred chapters, which is how
+a row that promises "the first unread" came to open chapter 78 for a reader whose
+series starts at chapter 1. The retry fails only if the sync would fail too,
+which is the whole test of whether the row has a real answer.
 
 `Catalog.resumeTarget` answers a **different question** and keeps its own rule
 ("the last row anything was read into"), deliberately. It is the degraded answer,

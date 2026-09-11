@@ -376,36 +376,79 @@ local function readingOrder(parsed)
     return sequence, positioned
 end
 
---- The first entry in reading order the server has not finished.
+--- Has this chapter been read to its own last page?
 ---
---- **This is the rule the `▶` button names, for every server that has no read
---- flag of its own** — i.e. Kavita. "Finished" is the page counter, because that
---- is the only evidence such a feed carries: `last_read >= page_count`.
+--- The page counter is the only evidence a Kavita-style feed carries, so
+--- "finished" can only mean `last_read >= page_count` here.
 ---
---- It replaced "the last entry with any progress at all", and the difference is
---- not academic. A reader who read volume 1-2 today and had dipped two pages into
---- volume 3-4 yesterday gets "volume 3-4" from the old rule and "volume 1-2" from
---- this one — and the second is where they actually are. The old rule asked
---- "how far *in* has this reader ever been", which is a different question from
---- "where have they got to", and it is the second one the button claims to
---- answer.
+--- **A chapter with no count is unfinished, not finished.** Offering a chapter
+--- again is a smaller mistake than skipping past one, and a Suwayomi catalogue
+--- row has no count at all until its stream is resolved — so the alternative
+--- would silently treat every unopened Suwayomi chapter as done.
+local function isFinished(item)
+    local total = tonumber(item.page_count) or tonumber(item.progress_total)
+    local read = tonumber(item.last_read)
+    return (total and read and read >= total) and true or false
+end
+
+--- The first entry in reading order the server has not finished, or nil.
 ---
---- A chapter with no `page_count` counts as unfinished rather than as finished:
---- offering a chapter again is a smaller mistake than skipping past one, and for
---- Suwayomi a catalogue row has no count until its stream is resolved.
+--- Takes no account of `positioned`, like `firstIn`: this reads *forward*, and
+--- the unpositioned tail sits at the *end* of the sequence, so it cannot win
+--- from this direction — there is nothing to guard against.
 ---
---- Takes no account of `positioned`, like `firstIn`: this reads *forward*, those
---- two reads backward. The unpositioned tail sits at the *end* of the sequence,
---- so it cannot win from this direction — there is nothing to guard against.
+--- Returns nil when every entry is finished, and the two callers want opposite
+--- things from that: `firstUnread` (the row above a series feed) says so and
+--- stops, while `firstUnfinishedOrLast` below treats it as "this reader is at
+--- the end" and names the last chapter instead.
 local function firstUnfinished(sequence, _positioned)
     for _, item in ipairs(sequence) do
-        local total = tonumber(item.page_count) or tonumber(item.progress_total)
-        local read = tonumber(item.last_read)
-        if not (total and read and read >= total) then
+        if not isFinished(item) then
             return item
         end
     end
     return nil
+end
+
+--- The last entry in reading order.
+---
+--- Two passes, and the order of the passes is the point: the ordered prefix is
+--- reading order, so its last entry is the furthest along; the unpositioned tail
+--- is *feed* order, and is only consulted when nothing was positioned at all.
+--- For Suwayomi that tail is empty — every chapter entry is positioned, by its
+--- `rel=subsection` link or by its stream — so the second pass is dead code
+--- there, and it exists for Kavita, whose feed order is reading order and where a
+--- chapter whose title carries no number is perfectly ordinary.
+local function lastIn(sequence, positioned)
+    for pass = 1, 2 do
+        local first, last
+        if pass == 1 then
+            first, last = 1, positioned
+        else
+            first, last = positioned + 1, #sequence
+        end
+        if last >= first then
+            return sequence[last]
+        end
+    end
+    return nil
+end
+
+--- Where the reader carries on: the first chapter not finished, or the last one.
+---
+--- **The second half is not decoration.** A series read to the end has nothing
+--- unfinished, and "nowhere to continue" is not the answer this button is for —
+--- the reader who finished chapter 177 and taps again is at chapter 177, and a
+--- button that vanished would be telling them the series is empty. It replaced a
+--- fall back to the catalogue, which is the snapshot from the last sync and
+--- answered with whatever the catalogue happened to know (chapter 78, the last
+--- row it had) rather than with where the reader is.
+---
+--- This is the default for `freshResumeTarget`, so it is what Kavita gets on its
+--- own feed and what a Suwayomi series gets on the canonical feed when the
+--- server reports nothing unread.
+local function firstUnfinishedOrLast(sequence, positioned)
+    return firstUnfinished(sequence) or lastIn(sequence, positioned)
 end
 
 --- The earliest entry of a feed that already contains only what we want.
@@ -483,7 +526,7 @@ end
 --- upserted on the way, which is the same write `registerBook` makes for the
 --- book actually being opened, from the same feed, for the same series.
 local function freshResumeTarget(driver, feed, feed_url, ctx, series, select)
-    select = select or firstUnfinished
+    select = select or firstUnfinishedOrLast
     local mine = {}
     for _, entry in ipairs(feed and feed.entry or {}) do
         local found = driver.discover(entry, nil, ctx)
@@ -503,13 +546,19 @@ local function freshResumeTarget(driver, feed, feed_url, ctx, series, select)
     local sequence, positioned = readingOrder(parsed)
     local best = select(sequence, positioned)
     if not best then
-        logger.info("Meguru: every entry of series", series.remote_id,
-            "in this feed is finished - resume point falls back to the catalog")
+        -- Nothing to choose from: the feed carried no entry of this series, or
+        -- carried entries the driver could not build an item out of (a Kavita
+        -- special with no stream link). Both mean the same thing here — this
+        -- feed has no answer — and the caller decides what that is worth:
+        -- `currentResumeTarget` asks the canonical feed next, rather than
+        -- falling back to the catalogue's snapshot.
+        logger.info("Meguru: no entry of series", series.remote_id,
+            "in this feed - no resume point from it")
         return nil
     end
 
     logger.info("Meguru: the feed says", best.display_title or best.title,
-        "is the first unfinished in series", series.remote_id)
+        "is the resume point in series", series.remote_id)
 
     -- Numbered in *reading* order, not feed order. `feed_index` is what
     -- `Catalog.orderedItems` sorts on, so numbering this page as it arrived — which
@@ -1138,11 +1187,22 @@ local FIRST_UNREAD_PAGES = 6
 --- all — offline, or a server with no saved catalog. That is degradation rather
 --- than failure: the row keeps doing exactly what it did before, over the
 --- hundred entries the browser had already fetched.
-local function seriesItems(driver, conn, remote_id, ctx, feed, feed_url)
+local function seriesItems(info, conn)
+    local driver, remote_id, ctx = info.driver, info.remote_id, info.ctx
+    local feed, feed_url = info.feed, info.feed_url
+
+    -- **Returns `items, basis`, and the second value is the whole difference
+    -- between two answers.** `firstUnread` uses it to decide whether the page
+    -- counter may be consulted at all, and the fallback below hands it a page
+    -- the server did *not* filter by read status — the browser's own list, which
+    -- for Suwayomi is the newest hundred chapters. Deriving it from the driver
+    -- made `firstUnread` take `sequence[1]` of that page, i.e. the newest chapter
+    -- of the page on screen: the exact "opens volume 1 although a lot more has
+    -- been read" confusion the whole ordering apparatus exists to remove.
     local function fallback(reason)
         logger.info("Meguru: series walk unusable (", reason,
             ") - the row falls back to the page on screen")
-        return driver.parseCatalogPage(feed, feed_url, ctx)
+        return driver.parseCatalogPage(feed, feed_url, ctx), "counters"
     end
 
     if not conn then
@@ -1152,17 +1212,70 @@ local function seriesItems(driver, conn, remote_id, ctx, feed, feed_url)
         return fallback("no connection")
     end
 
+    local function walk(which, walk_ctx)
+        local url = driver.catalogURL(conn.url, remote_id, walk_ctx, which)
+        local pages, complete, reason = Sync.walk(url, {
+            username  = conn.username,
+            password  = conn.password,
+            timeout   = "resume",
+            max_pages = FIRST_UNREAD_PAGES,
+        })
+        return pages, complete, reason
+    end
+
     -- The chapters the server flags unread, when it has such a flag. Asking for
     -- them makes `firstUnread`'s answer exact rather than inferred — see its
     -- comment — and the walk below still runs over the whole chain, because a
     -- filtered feed is only as ordered as the server's `sort` was honoured.
-    local url = driver.catalogURL(conn.url, remote_id, ctx, driver.unreadFilter)
-    local pages, complete, reason = Sync.walk(url, {
-        username  = conn.username,
-        password  = conn.password,
-        timeout   = "resume",
-        max_pages = FIRST_UNREAD_PAGES,
-    })
+    -- **What the answer may be based on**, not merely which feed was asked for.
+    -- `"flag"` — the server filtered by read status and listed chapters, so its
+    -- flag is the truth and page counters are not consulted. `"empty"` — the
+    -- server filtered and listed *nothing*: nothing is unread, which is an
+    -- answer about where the reader is, not an absence of one. `"counters"` —
+    -- no flag in play (Kavita, or a filtered walk that failed), so the page
+    -- counts are the only evidence there is.
+    local basis = driver.unreadFilter and "flag" or "counters"
+    local pages, complete, reason = walk(driver.unreadFilter, ctx)
+
+    -- **The filtered feed is an optimisation, and this row cannot stand on it
+    -- alone — in either of the two ways it comes up short.**
+    --
+    -- It can *fail*: a series read to the end has nothing to list under
+    -- `filter=unread`, and that answer used to arrive here as `"http"`, an HTTP
+    -- failure with no status code to find. Falling straight through to the page
+    -- on screen then answered from the newest hundred chapters, so the row
+    -- offered "Chapter 78" — the first unfinished *of that page* — for a reader
+    -- whose series starts at chapter 1.
+    --
+    -- Or it can be *empty*, which is the server answering: nothing is unread.
+    -- That reads as "nothing to show" and is not — it says *where* the reader
+    -- is, at the end of the series, and the row wants that chapter, which only
+    -- the canonical feed can name. So both routes fetch it, and the answer comes
+    -- from page counters, with the basis saying so — nothing downstream may
+    -- consult a read flag that the feed it holds never carried.
+    --
+    -- The retry asks for exactly what a sync asks for — no filter, and the
+    -- language the *server* was last recorded with rather than the browser's —
+    -- so it fails only if the sync would fail too.
+    -- One branch, not one per reason: both routes need the canonical feed, and
+    -- the reason only decides how the line reads. `( empty )` is the server
+    -- saying nothing is unread; anything else is the walk failing.
+    if #pages == 0 and driver.unreadFilter and reason == "empty" then
+        -- The server filtered by read status and listed nothing: nothing is
+        -- unread. That is the row's answer — there is no chapter to open — and
+        -- fetching the canonical feed to look for one anyway would be a walk
+        -- per tap to answer a question that has already been answered.
+        logger.info("Meguru: the server lists nothing unread in series", remote_id)
+        return {}, "empty"
+    end
+    if #pages == 0 and driver.unreadFilter then
+        logger.info("Meguru: filtered series walk yielded nothing (", tostring(reason),
+            ") - asking the canonical feed")
+        pages, complete, reason = walk(nil, { lang = Catalog.serverLang(info.server_name) })
+        -- The canonical feed carries no read flag, so its page counters are all
+        -- this answer can rest on.
+        basis = "counters"
+    end
 
     local items = {}
     for _, page in ipairs(pages) do
@@ -1179,8 +1292,9 @@ local function seriesItems(driver, conn, remote_id, ctx, feed, feed_url)
     end
 
     logger.info("Meguru: walked", #pages, "page(s) for series", remote_id, "-",
-        #items, "items,", complete and "complete" or ("stopped: " .. tostring(reason)))
-    return items
+        #items, "items,", complete and "complete" or ("stopped: " .. tostring(reason)),
+        basis)
+    return items, basis
 end
 
 --- Open the first unread volume of the series the row was offered for.
@@ -1235,12 +1349,25 @@ function Open.openFirstUnread(browser, info)
     -- The series from its canonical feed, not from the page on screen — see
     -- `seriesItems`. `conn` is the connection resolved at the top of this
     -- function, which is what the walk authenticates with.
-    local parsed = seriesItems(info.driver, conn, info.remote_id, info.ctx,
-        info.feed, info.feed_url)
-    local target = firstUnread(parsed, info.driver.unreadFilter ~= nil)
+    -- The second value is `seriesItems`' judgement of what its answer may rest
+    -- on, not the driver's idea of it: the fallback is the browser's own
+    -- unfiltered page, and asking the driver would claim a filter that page
+    -- never had. See `seriesItems`.
+    -- `basis` is *what the answer may rest on*, and it decides the rule — see
+    -- `seriesItems`. The row and the `▶` button now read the same three states
+    -- the same way, which is the whole point: they gave different chapters for
+    -- the same series for as long as they answered from different evidence.
+    local parsed, basis = seriesItems(info, conn)
+
+    -- **A finished series has no chapter to open, and the row says so.** Taking
+    -- the reader to the end of it was tried and read as nonsense — the last
+    -- chapter is not somewhere they asked to go. `"empty"` collapses into "no
+    -- target" deliberately: both mean the row has nothing to offer.
+    local target
+    if basis ~= "empty" then
+        target = firstUnread(parsed, basis == "flag")
+    end
     if not target then
-        -- Nothing unread, or an empty feed: either way the row has nothing to
-        -- open, and saying so beats opening the wrong chapter.
         UIManager:show(InfoMessage:new{
             text = T(_("Meguru: %1 has nothing unread."), series_name),
         })
@@ -1248,7 +1375,7 @@ function Open.openFirstUnread(browser, info)
     end
 
     -- Positions from this page, as a sync would assign them, then the row read
-    -- back so it has an id: `openCatalogItem` writes the marker path against it.
+    -- back so it has an id: the opener writes the marker path against it.
     Catalog.numberPositions(parsed)
     Catalog.upsertItem(series.id, target, Catalog.nextTimestamp())
     local row = Catalog.itemByKey(series.id, target.item_key)
@@ -1678,6 +1805,16 @@ end
 --- confidently report the progress of a translation the reader is not reading —
 --- the trap `Catalog.serverLang` already carries a warning about.
 ---
+--- **Two fetches, not one, when the server reports nothing unread.** A series
+--- read to the end returns an empty `filter=unread` feed, and an empty feed is
+--- not an answer — so the canonical feed is asked the other question, "where does
+--- this series end". Without that second fetch the answer came from
+--- `Catalog.resumeTarget`, whose knowledge ends at the last sync, and the same
+--- tap gave two different chapters a moment apart: the first before the
+--- background walk landed, the second after. The extra request costs one
+--- `Net.RESUME_*`-bounded fetch, and only for a fully read series — which is
+--- exactly where the catalogue's answer was worst.
+---
 --- Falls back to the catalog on any failure. A slightly stale answer beats a
 --- dialog that never opens.
 --- **Fetched on every open, and not memoised.** An earlier version cached the
@@ -1705,22 +1842,73 @@ local function currentResumeTarget(server, series)
         -- counter it had, and the two disagree. Only the filtered feed answers
         -- "which chapters are done" without inference.
         local filter = driver.unreadFilter
-        local url = driver.catalogURL(conn.url, series.remote_id, ctx, filter)
-        local ok, feed = pcall(Net.fetchFeed, url, {
-            username = conn.username,
-            password = conn.password,
-            timeout = "resume",
-        })
-        if ok and feed then
+
+        local function fetch(which)
+            local url = driver.catalogURL(conn.url, series.remote_id, ctx, which)
+            local ok, feed = pcall(Net.fetchFeed, url, {
+                username = conn.username,
+                password = conn.password,
+                timeout = "resume",
+            })
+            return ok and feed or nil, url
+        end
+
+        -- **The filtered feed is an optimisation, and its failure must not lose
+        -- the answer.** It answers "which chapter is next" directly where the
+        -- server publishes a read flag, and that is all it is for; the canonical
+        -- feed answers the same question from page counters, one request later.
+        --
+        -- **"Empty" and "failed" are different answers, and reading them as one
+        -- is what made `▶` name chapter 1 for a series the server calls fully
+        -- read.**
+        --
+        --   * the feed is *empty* — `"empty"`, its own reason since `fetchFeed`
+        --     stopped calling it a parse failure: **the server has answered.**
+        --     Nothing is unread, and that is a read *flag*, which outranks the
+        --     page counter everywhere else in this file. So the canonical feed is
+        --     asked only for where the series *ends*, and `lastIn` takes it —
+        --     asking `firstUnfinishedOrLast` there let a single chapter with four
+        --     pages of progress outvote the flag and pull the answer back to
+        --     chapter 1.
+        --   * the feed *failed* — we do not know what the server thinks, so the
+        --     counters are the only evidence there is, and
+        --     `firstUnfinishedOrLast` is the honest reading of them.
+        --
+        -- On the empty path the answer is still fetched rather than taken from
+        -- `Catalog.resumeTarget`, whose knowledge ends at the last sync — the
+        -- last *row* it had rather than the last chapter.
+        local filtered_why, server_says_all_read
+        if filter then
+            local feed, url, reason = fetch(filter)
+            if feed then
+                -- `firstIn` returns `sequence[1]`, so a nil answer means the
+                -- feed was empty and nothing more.
+                local ok_fresh, target = pcall(freshResumeTarget,
+                    driver, feed, url, ctx, series, firstIn)
+                if ok_fresh and target then
+                    return target
+                end
+                filtered_why = "nothing unread in the filtered feed"
+                server_says_all_read = true
+            elseif reason == "empty" then
+                server_says_all_read = true
+            else
+                filtered_why = "the filtered feed could not be fetched"
+            end
+        end
+
+        local feed, url = fetch(nil)
+        if feed then
             local ok_fresh, target = pcall(freshResumeTarget, driver, feed, url, ctx, series,
-                -- `firstIn` when the feed was already filtered to the unread
-                -- ones; the page-progress scan otherwise. Passing nil lets
-                -- `freshResumeTarget` keep its own default.
-                filter and firstIn or nil)
-            if ok_fresh then
+                -- `lastIn` when the server already said there is nothing unread.
+                -- Passing nil leaves `freshResumeTarget` its own default.
+                server_says_all_read and lastIn or nil)
+            if ok_fresh and target then
                 return target
             end
-            why = "the feed could not be read"
+            why = "the feed carried no entry for this series"
+        else
+            why = filtered_why or "the feed could not be fetched"
         end
     end
 

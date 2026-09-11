@@ -197,11 +197,13 @@ function Net.parseFeed(body)
     if not ok_parse or type(root) ~= "table" then
         return nil
     end
-    local feed = Net.feedFrom(root)
-    if type(feed.entry) ~= "table" then
-        return nil -- parsed, but not a list of entries
-    end
-    return feed
+    -- A feed with no entries is still a feed, and is returned as one. It is not
+    -- `fetchFeed`'s business to call that a parse failure, and for a long time it
+    -- did: Suwayomi answers `filter=unread` on a fully read series with a valid,
+    -- empty feed, and rejecting it here turned "the server says nothing is
+    -- unread" into `"http"` — an HTTP-level failure with no URL logged to look
+    -- at, because there *was* no HTTP error. See `fetchFeed`.
+    return Net.feedFrom(root)
 end
 
 --- Fetch and parse one feed. Returns `feed` or `nil, reason`, where reason is
@@ -224,6 +226,15 @@ function Net.fetchFeed(url_str, opts)
     local feed = Net.parseFeed(body)
     if not feed then
         return nil, "http" -- 200 with an unparseable body: a truncated response
+    end
+    if type(feed.entry) ~= "table" then
+        -- Parsed, and lists nothing. **Its own reason, because it is its own
+        -- state**: a caller that hears "http" goes looking for a status code
+        -- that does not exist, and the filtered feeds this plugin asks for are
+        -- *legitimately* empty — a fully read series has nothing under
+        -- `filter=unread`. Callers that treat empty as "no answer" and ask again
+        -- differently need to be able to tell it apart from a broken response.
+        return nil, "empty"
     end
     return feed
 end
