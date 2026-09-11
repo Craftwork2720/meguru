@@ -151,10 +151,30 @@ end
 --- `sort=number_asc` is load-bearing: the default order is *descending*, so
 --- without it the whole series would be indexed newest-first and every "next
 --- chapter" would run backwards through the book.
-function Suwayomi.catalogURL(base_url, series_remote_id, ctx)
-    return string.format("%s/series/%s/chapters?lang=%s&sort=number_asc&filter=all",
-        base_url, series_remote_id, lang(ctx))
+---
+--- `filter` defaults to `all` and exists so the *read* list is built by the same
+--- rule — one place that knows the language must be carried and the sort must be
+--- asked for. A driver that has no filters simply ignores the extra argument.
+function Suwayomi.catalogURL(base_url, series_remote_id, ctx, filter)
+    return string.format("%s/series/%s/chapters?lang=%s&sort=number_asc&filter=%s",
+        base_url, series_remote_id, lang(ctx), filter or "all")
 end
+
+--- The `filter=` value that lists the chapters the *server* marks as read.
+---
+--- **Suwayomi tracks "read" as a flag of its own, and it is not the page
+--- counter.** `pse:lastRead` and the `<summary>` prose count pages within a
+--- chapter; this flag is set when a chapter is finished *or* explicitly marked
+--- read. The two disagree, and a chapter can be flagged read while its summary
+--- still says `Postęp: 0 z 17` — which is exactly the chapter the resume button
+--- used to skip, because "the furthest entry with progress" cannot see it and
+--- will happily answer with a chapter the reader has not finished instead.
+---
+--- So the server's own answer is what the resume target is built from, and it is
+--- read off a feed filtered to these chapters rather than guessed at from a feed
+--- that contains them mixed with everything else. A driver whose server has no
+--- such flag leaves this nil, and the page-progress scan stays.
+Suwayomi.resumeFilter = "read"
 
 --- One page of the canonical feed to normalized items. No position numbers and
 --- no series metadata: the engine assigns feed positions, the catalog owns

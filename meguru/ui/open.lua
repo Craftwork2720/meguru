@@ -369,6 +369,65 @@ local function readingOrder(parsed)
     return sequence, positioned
 end
 
+--- The last *positioned* entry matching a predicate, reading order respected.
+---
+--- Two passes, and the order of the passes is the whole point: the ordered
+--- prefix is reading order, so the last entry in it that matches is the furthest
+--- along; the unpositioned tail is *feed* order, so it is only consulted when
+--- nothing in the prefix matched. For Suwayomi that tail is empty — every
+--- chapter entry is positioned, by its `rel=subsection` link or by its stream —
+--- so the second pass is dead code there, and it exists for Kavita, whose feed
+--- order is reading order and where a chapter whose title carries no number is
+--- perfectly ordinary.
+---
+--- Scanning the single sequence backwards instead would visit the tail first,
+--- and on Suwayomi's newest-first page that means answering with the *earliest*
+--- chapter — the confusion this two-pass shape exists to prevent.
+---
+--- `matches` is a predicate rather than a boolean flag because the two callers
+--- want genuinely different things and a flag would read as a mode: see
+--- `furthestWithProgress` and `furthestIn` below.
+local function lastMatching(sequence, positioned, matches)
+    for pass = 1, 2 do
+        local first, last
+        if pass == 1 then
+            first, last = 1, positioned
+        else
+            first, last = positioned + 1, #sequence
+        end
+        for i = last, first, -1 do
+            if matches(sequence[i]) then
+                return sequence[i]
+            end
+        end
+    end
+    return nil
+end
+
+--- The last entry the server says has been read *into*, read off its page count.
+---
+--- The default selection, and the only one Kavita can use: its feed carries no
+--- read flag of its own, so page progress is the only evidence there is.
+local function furthestWithProgress(sequence, positioned)
+    return lastMatching(sequence, positioned, function(item)
+        return type(item.last_read) == "number" and item.last_read > 0
+    end)
+end
+
+--- The last entry of a feed that already contains only what we want.
+---
+--- **No `last_read` test, and that is exactly why this is separate from the scan
+--- above.** That one is handed a feed holding *everything* and asks which entry
+--- shows page progress — so a chapter the server has flagged read but whose page
+--- counter still reads zero is invisible to it, and it answers with a chapter
+--- the reader has not finished instead. This one is handed a feed the server
+--- already filtered to its read flag (`Suwayomi.resumeFilter`), where every
+--- entry qualifies by construction, so the furthest is simply the last in
+--- reading order.
+local function furthestIn(sequence, positioned)
+    return lastMatching(sequence, positioned, function() return true end)
+end
+
 --- The series' furthest-read item, read from the feed the browser just fetched.
 ---
 --- **In reading order, not feed order.** This took the last entry of the parsed
@@ -405,10 +464,18 @@ end
 --- (the one the server says is read). Filtering is also the stronger guard:
 --- foreign entries never reach the parser at all.
 ---
+--- `select(sequence, positioned)` chooses which entry is the target, and the
+--- default is not the only right answer: a feed the *server* already filtered to
+--- the chapters it flags read wants `furthestIn`, which takes the last entry
+--- rather than the last entry showing page progress. The two disagree exactly on
+--- a chapter flagged read whose page counter still reads zero — which the scan
+--- cannot see and therefore answers around. See `Suwayomi.resumeFilter`.
+---
 --- Returns a catalog row, because the caller opens it as one. The target is
 --- upserted on the way, which is the same write `registerBook` makes for the
 --- book actually being opened, from the same feed, for the same series.
-local function freshResumeTarget(driver, feed, feed_url, ctx, series)
+local function freshResumeTarget(driver, feed, feed_url, ctx, series, select)
+    select = select or furthestWithProgress
     local mine = {}
     for _, entry in ipairs(feed and feed.entry or {}) do
         local found = driver.discover(entry, nil, ctx)
@@ -426,43 +493,7 @@ local function freshResumeTarget(driver, feed, feed_url, ctx, series)
     -- `feed.entry` and nothing else, so a one-field table is all it needs.
     local parsed = driver.parseCatalogPage({ entry = mine }, feed_url, ctx)
     local sequence, positioned = readingOrder(parsed)
-
-    -- Walked backwards, furthest first. Two passes rather than one, and the
-    -- order of the passes is the whole point: the ordered prefix is reading
-    -- order, so the last item in it with progress is the furthest read; the
-    -- unpositioned tail is *feed* order, so it is only consulted when no
-    -- ordered item has any progress at all. For Suwayomi that tail is empty —
-    -- every chapter entry carries a `rel=subsection` link — so the second pass
-    -- is dead code there, and it exists for Kavita, whose feed order is reading
-    -- order and where a chapter whose title carries no number is perfectly
-    -- ordinary.
-    --
-    -- Scanning the single sequence backwards instead would visit the tail
-    -- first, and on Suwayomi's newest-first page that means answering with the
-    -- *earliest* chapter — the exact confusion this function was just fixed for.
-    local best
-    for pass = 1, 2 do
-        -- Spelled out rather than folded into one expression: `positioned` is
-        -- legitimately 0 when nothing had a position, and `0` is truthy in Lua,
-        -- so the obvious `pass == 1 and positioned or #sequence` reads as if it
-        -- guarded something it does not.
-        local first, last
-        if pass == 1 then
-            first, last = 1, positioned
-        else
-            first, last = positioned + 1, #sequence
-        end
-        for i = last, first, -1 do
-            local item = sequence[i]
-            if type(item.last_read) == "number" and item.last_read > 0 then
-                best = item
-                break
-            end
-        end
-        if best then
-            break
-        end
-    end
+    local best = select(sequence, positioned)
     if not best then
         logger.info("Meguru: nothing in series", series.remote_id,
             "is marked read in this feed - resume point falls back to the catalog")
@@ -577,7 +608,17 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
         -- the last sync saw. Nil when nothing in that feed has been read, or when
         -- no entry of it belongs to this series — `offerResume` then falls back
         -- to the catalog, which is the honest answer for a series never read.
-        resume = freshResumeTarget(driver, feed, feed_url, ctx, series),
+        --
+        -- **Not asked at all on a server that flags chapters read.** The page on
+        -- screen cannot answer it: browsing with `filter=unread` removes exactly
+        -- the chapters the question is about, and with `filter=all` the flag is
+        -- still not in the entries. Left unanswered and fetched by `openAsBook`,
+        -- which sits below `currentResumeTarget` and can call it — a call from
+        -- here would resolve as a global, the failure `tools/check.py`'s fourth
+        -- pass exists to catch.
+        resume        = driver.resumeFilter and nil
+            or freshResumeTarget(driver, feed, feed_url, ctx, series),
+        server_resume = driver.resumeFilter and true or nil,
     }
     -- Said out loud because every way this can fail says so, and the success was
     -- the only silent outcome — which makes "is it catalogued?" unanswerable from
@@ -1476,6 +1517,11 @@ end
 
 --- The series' furthest-read item, fetched rather than skimmed from the catalog.
 ---
+--- **The single answer both entry points end at**, which is why the filter lives
+--- here rather than in either caller: the browser path reaches it through
+--- `openAsBook` when its own feed cannot answer (see `registerBook`), and the
+--- file path calls it directly. One URL, one selection, one answer.
+---
 --- The file-manager path has no browser feed in hand, so `freshResumeTarget` has
 --- nothing to read — and the catalog is exactly the snapshot that made "opening
 --- volume 3 offered volume 5" happen. One request buys a current answer.
@@ -1507,14 +1553,24 @@ local function currentResumeTarget(server, series)
     elseif driver then
         why = "the feed could not be fetched"
         local ctx = { lang = Catalog.serverLang(server.name) }
-        local url = driver.catalogURL(conn.url, series.remote_id, ctx)
+        -- The server's own read flag, when it has one. Asked for as a *filter*
+        -- rather than read off the full feed, because the flag is not in the
+        -- feed's own data: a chapter the server flags read keeps whatever page
+        -- counter it had, and the two disagree. Only the filtered feed answers
+        -- "which chapters are done" without inference.
+        local filter = driver.resumeFilter
+        local url = driver.catalogURL(conn.url, series.remote_id, ctx, filter)
         local ok, feed = pcall(Net.fetchFeed, url, {
             username = conn.username,
             password = conn.password,
             timeout = "resume",
         })
         if ok and feed then
-            local ok_fresh, target = pcall(freshResumeTarget, driver, feed, url, ctx, series)
+            local ok_fresh, target = pcall(freshResumeTarget, driver, feed, url, ctx, series,
+                -- `furthestIn` when the feed was already filtered to the read
+                -- ones; the page-progress scan otherwise. Passing nil lets
+                -- `freshResumeTarget` keep its own default.
+                filter and furthestIn or nil)
             if ok_fresh then
                 return target
             end
@@ -1780,6 +1836,18 @@ function Open.openAsBook(browser, item, stream)
     local manager = browser._manager
     local host = (manager and manager.ui) and manager or fallback_host
 
+    -- Where the reader is, resolved before the dialog is built because the
+    -- dialog is built from it.
+    --
+    -- `currentResumeTarget` fetches, so it is reached only when `registerBook`
+    -- declined to answer — a server that flags chapters read, where the feed on
+    -- screen by construction cannot. Nil either way means the catalog answers,
+    -- which is `offerResume`'s own fallback.
+    local resume_target = registered and registered.resume or nil
+    if not resume_target and registered and registered.server_resume then
+        resume_target = currentResumeTarget(registered.server, registered.series)
+    end
+
     -- The resume question comes before the handoff, not inside it: the two
     -- handoffs below are alternatives and both are terminal, so the choice has
     -- to be made while there is still something to choose about.
@@ -1794,7 +1862,9 @@ function Open.openAsBook(browser, item, stream)
             file = path,
             -- What `registerBook` read off the feed the browser has just
             -- fetched, which is current; the catalog's answer is a snapshot.
-            target = registered and registered.resume or nil,
+            -- Fetched instead when the server flags chapters read, because the
+            -- browser's feed cannot answer this one — see `registerBook`.
+            target = resume_target,
             open = function()
                 -- Everything the marker write used to do up front — the file,
                 -- the catalog's `marker_path`, the in-memory credentials — now

@@ -349,7 +349,33 @@ than showing a full title.
 The local page comes from the sidecar (`localLastPage`, only ever called when a
 sidecar already exists — `DocSettings:open` creates the file, so calling it for a
 new book would invent the evidence). The server's comes from `freshResumeTarget`
-on the browser path and `currentResumeTarget` on the file path.
+on the browser path and `currentResumeTarget` on the file path — and the second
+of those is now where both end, see below.
+
+**Which chapter the server's position names is chosen by a selector, and the two
+that exist are not interchangeable.** `freshResumeTarget(..., select)` takes one:
+`furthestWithProgress` (the default, and the only one Kavita can use) picks the
+last entry showing *page* progress, while `furthestIn` picks the last entry of a
+feed that already contains only what we want. Both are built on one helper,
+`lastMatching`, so the reading-order rule and its two-pass shape live once.
+
+The reason they must differ: **Suwayomi tracks "read" as a flag of its own, and
+it is not the page counter.** A chapter can be flagged read while its `<summary>`
+still says `Postęp: 0 z 17`, so the page-progress scan cannot see it and answers
+with a chapter the reader has not finished — the resume button landing on
+chapters the server already considers done. The flag is not in the feed's data
+either, at any `filter`: with `filter=unread` those chapters are absent, and with
+`filter=all` they are present but indistinguishable. Hence `Suwayomi.resumeFilter`
+— the driver naming the `filter=` value that lists exactly them — and hence
+`furthestIn`, which needs no predicate because the filter did the selecting.
+
+That makes `currentResumeTarget` the single answer for both entry points, and it
+is fetched on **both**: `registerBook` declines to answer when the driver has a
+`resumeFilter`, because the feed the browser holds cannot, and `openAsBook` fills
+it in. So an OPDS open on Suwayomi costs one request where it used to reuse a
+feed already fetched. That is the price of naming a chapter the server agrees is
+read; the file path pays the same as before, only with a different URL.
+
 
 **Both of those go through `readingOrder`, and the one that did not is why the
 two entry points disagreed.** `freshResumeTarget` took the last item of the
@@ -963,6 +989,15 @@ Each step must pass before the next:
     name the same chapter 40. Before this, the browser answered chapter 1 and the
     file answered chapter 40 for the same series, because one feed is
     `number_desc` and the other `number_asc`.
+20. **The `▶` chapter is one the server agrees is read.** On Suwayomi, mark a
+    chapter read *without* leaving page progress in it (Suwayomi's own "mark as
+    read"), and leave the next chapter part-read. The `▶` button must name the
+    marked-read chapter, not the part-read one — that is the whole difference
+    between the two selectors. The log must show a fetch carrying
+    `filter=read&sort=number_asc`; if it shows `filter=all`, `resumeFilter` was
+    not set. Then check the label's page against where the tap lands,
+    **especially on a chapter whose summary says `N z N`** — a finished chapter
+    reports its last page, which `usablePage` does not refuse.
 
 ## Known open items
 
