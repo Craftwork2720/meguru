@@ -213,6 +213,24 @@ book that *has* been read continues; one read without a recorded page continues
 too, and drops the number rather than claiming one, because it resumes wherever
 KOReader left it.
 
+**A recorded page is used exactly as recorded; a *small* lead is simply
+ignored.** Servers that track progress count pages *fetched*, and the reader
+fetches one page beyond the one on screen (`MeguruDocument.prefetch_count`), so a
+book read here is recorded a page ahead of where its reader stopped.
+
+That lead is **never subtracted**. An earlier version did, and it was wrong in the
+case that matters most: a position recorded by *another* reader has no such lead —
+read on a tablet to page 60 and meguru would have reopened at 57, walking back
+three pages already read. The lead is instead *tolerated*: `PSE.samePlace(recorded,
+local)` is true when the recording is not meaningfully ahead, and there the
+server's button is not offered at all. Read to 23 with the server saying 24: same
+place, no button, no dialog, opens at 23. Read to 5 here and left at 60 elsewhere:
+page 60, exactly as recorded.
+
+`PSE.SERVER_PAGE_TOLERANCE` is the whole knob — how much of a lead still counts as
+the same place. Widening it makes the question rarer; it never changes a page that
+is shown.
+
 **The button for the book the reader clicked is always there, and removing it once
 broke the feature.** The reasoning for removing it was sound as far as it went —
 "start over" is odd wording, and page 1 is not a position anyone is at — but with
@@ -294,6 +312,14 @@ opening volume 1 offered volume 4, the last one meguru itself had opened.
 When the fresh read is unavailable, each path says so in the log with its reason.
 That matters more than it looks: a stale answer and a fresh one present
 identically — as a chapter button — and they need opposite fixes.
+
+**It is fetched on every open, and deliberately not cached.** An earlier version
+cached the answer per series for 45 seconds, to spare a reader tapping through
+several volumes a fetch each time. That window is longer than reading a few pages:
+close a book, read on, reopen it within 45s, and the dialog offered the position
+from *before* — the server's button ten pages behind the truth, which is the one
+thing asking the server was supposed to prevent. The cost bought back is one feed
+fetch per open, bounded by `Net.RESUME_*` and only when the network is up.
 
 **The file-manager open is wrapped, because it is the only place left that can
 ask.** `hook.lua` wraps `ReaderUI.showReader` — the same runtime-wrap technique it

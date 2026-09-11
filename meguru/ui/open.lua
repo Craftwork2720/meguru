@@ -641,14 +641,16 @@ function Open.offerResume(host, server, series, item, opts)
 
     local server_page, jump
     if position and item and position.item_key == item.item_key then
-        -- The server is *in this book*: not somewhere to go, just a page.
-        server_page = inBook(position.last_read)
+        -- The server is *in this book*: not somewhere to go, just a page — and
+        -- only when it is genuinely a different page from the reader's own. A
+        -- lead inside `PSE.samePlace`'s tolerance is the prefetch artefact, and
+        -- the page itself is used exactly as recorded: subtracting the artefact
+        -- would walk back pages a position recorded by *another* reader never had.
+        if not PSE.samePlace(position.last_read, local_page) then
+            server_page = inBook(position.last_read)
+        end
     else
         jump = position
-    end
-    -- Both are the same place, so one button would say it twice.
-    if server_page and server_page == local_page then
-        server_page = nil
     end
 
     -- Asked when the *server* has an opinion, and only then. What the reader
@@ -858,24 +860,15 @@ end
 ---
 --- Falls back to the catalog on any failure. A slightly stale answer beats a
 --- dialog that never opens.
---- Fresh answers already fetched, keyed by series id, with when they were taken.
----
---- The file-open path asks on every open now, including for books being resumed,
---- so an unmemoised lookup would be one feed fetch per tap on a book: a few
---- hundred milliseconds in front of a dialog, and up to `Net.RESUME_*` against a
---- server that has stopped answering. Short-lived on purpose — this exists to
---- stop a burst of opens paying repeatedly, not to cache a fact that goes stale.
---- A failure is never memoised, so a series that could not be reached is retried
---- on the next open rather than written off for the rest of the session.
-local recent_targets = {}
-local RESUME_MEMO_SECONDS = 45
-
+--- **Fetched on every open, and not memoised.** An earlier version cached the
+--- answer per series for 45 seconds, to stop a reader tapping through several
+--- volumes paying for a fetch each time. That window is longer than reading a few
+--- pages: close a book, read on, reopen it inside 45s, and the dialog offered the
+--- position from before — the server's button a good ten pages behind the truth,
+--- which is the one thing asking the server was supposed to prevent. The cost
+--- this trades back is one feed fetch per open, `Net.RESUME_*`-bounded and only
+--- when the network is up.
 local function currentResumeTarget(server, series)
-    local memo = series and recent_targets[series.id]
-    if memo and (os.time() - memo.at) < RESUME_MEMO_SECONDS then
-        return memo.target
-    end
-
     local driver = server and server.kind and Base.forKind(server.kind)
     local conn = server and Sources.connection(server.name)
     local why = "no driver for this server's kind"
@@ -895,10 +888,6 @@ local function currentResumeTarget(server, series)
         if ok and feed then
             local ok_fresh, target = pcall(freshResumeTarget, driver, feed, url, ctx, series)
             if ok_fresh then
-                -- Memoised even when nil: "this series has nothing read" is an
-                -- answer, and re-fetching to hear it again is the cost this
-                -- guards against.
-                recent_targets[series.id] = { target = target, at = os.time() }
                 return target
             end
             why = "the feed could not be read"

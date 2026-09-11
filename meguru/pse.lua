@@ -76,6 +76,40 @@ function PSE.pageURL(template, zero_based_index, screen_w, screen_h)
     return ret
 end
 
+--- How far ahead a recorded page may be before it stops being the same place.
+---
+--- Servers that track progress count pages *fetched*, and this reader fetches one
+--- page beyond the one on screen so the next turn is instant
+--- (`MeguruDocument.prefetch_count`) — so a book read here ends up recorded a page
+--- ahead of where its reader stopped. That lead is the artefact this tolerates.
+---
+--- **It is not subtracted from the page.** Doing that was the first version, and
+--- it was wrong in the case that matters most: a position recorded by *another*
+--- reader has no such lead, so trimming it walks the reader back three pages they
+--- had already read — the one direction that skips nothing and annoys everybody.
+--- A lead this small means the two positions agree, which is a reason to say
+--- nothing rather than to say a different number.
+---
+--- The slack covers the artefact plus a little judgement: page numbering also
+--- drifts by one wherever a server counts from zero, and a two-page lead is still
+--- not worth a question.
+local SERVER_PAGE_TOLERANCE = 3
+
+--- Whether a recorded page and a local one describe the same place.
+---
+--- True when the recording is not meaningfully ahead — including when it is
+--- behind, where there is equally nothing to offer.
+---
+--- A missing local page is never "the same place": with nothing to compare
+--- against, the recording is the only position there is.
+function PSE.samePlace(recorded, local_page)
+    recorded, local_page = tonumber(recorded), tonumber(local_page)
+    if not recorded or not local_page then
+        return false
+    end
+    return recorded - local_page <= SERVER_PAGE_TOLERANCE
+end
+
 --- Raw bytes of one page image, or nil plus the HTTP code.
 function PSE.fetchPage(url_str, opts)
     opts = opts or {}

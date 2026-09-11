@@ -1002,7 +1002,13 @@ function MeguruDocument:init()
                 ds:saveSetting("inverse_reading_order", Settings.get("manga_order"))
                 ds:flush()
             end
-            local page = not opened_before and tonumber(desc.last_read)
+            -- The recorded page is used exactly as recorded. It is *not* trimmed
+            -- back past the prefetch lead, even though a book read here is
+            -- recorded a page ahead: a position recorded by another reader has no
+            -- such lead, and trimming would walk the reader back pages they had
+            -- already read. This only runs for a book never opened here, so there
+            -- is no local page to weigh it against — the recording is all there is.
+            local page = not opened_before and tonumber(desc.last_read) or nil
             if page and page > 1 and page <= count then
                 ds.data.last_page = math.floor(page)
                 ds:flush()
