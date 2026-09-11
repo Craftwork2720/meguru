@@ -157,7 +157,7 @@ function Series.show(host, server, series)
         end)
         if not started and why == "busy" then
             UIManager:show(InfoMessage:new{
-                text = T(_("Meguru: %1 is already syncing."), current.name),
+                text = T(_("%1 is already syncing."), current.name),
             })
         end
     end

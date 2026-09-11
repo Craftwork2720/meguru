@@ -849,7 +849,7 @@ local function openPrepared(host, file)
     end
     logger.err("Meguru: no opener available for", file)
     UIManager:show(InfoMessage:new{
-        text = T(_("Meguru: could not open the book.\nMarker written to:\n%1"), file),
+        text = T(_("could not open the book.\nMarker written to:\n%1"), file),
     })
     return nil
 end
@@ -1314,7 +1314,7 @@ function Open.openFirstUnread(browser, info)
     local conn = Sources.connection(info.server_name)
     if not conn then
         UIManager:show(InfoMessage:new{
-            text = T(_("Meguru: no catalog entry with this title in settings/opds.lua: %1"),
+            text = T(_("no catalog entry with this title in settings/opds.lua: %1"),
                 tostring(info.server_name)),
         })
         return
@@ -1369,7 +1369,7 @@ function Open.openFirstUnread(browser, info)
     end
     if not target then
         UIManager:show(InfoMessage:new{
-            text = T(_("Meguru: %1 has nothing unread."), series_name),
+            text = T(_("%1 has nothing unread."), series_name),
         })
         return
     end
@@ -1692,7 +1692,7 @@ local function planMarker(server, series, item)
     if type(template) ~= "string" or template == "" then
         logger.warn("Meguru: no page stream for", item.title)
         UIManager:show(InfoMessage:new{
-            text = T(_("Meguru: could not find a page stream for “%1”."),
+            text = T(_("could not find a page stream for “%1”."),
                 item.display_title or item.title),
         })
         return nil
@@ -2211,7 +2211,7 @@ function Open.openAsBook(browser, item, stream)
                     -- beats handing the reader a path to a file that is not
                     -- there: the reader would fail later, naming nothing.
                     UIManager:show(InfoMessage:new{
-                        text = T(_("Meguru: could not write the book file.\n%1"), path),
+                        text = T(_("could not write the book file.\n%1"), path),
                     })
                     return
                 end

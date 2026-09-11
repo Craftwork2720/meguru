@@ -75,7 +75,7 @@ function Library.show(host)
         -- the only moment either is worth knowing, and a row nobody opens is a
         -- worse home for the answer than the screen that raised the question.
         UIManager:show(InfoMessage:new{
-            text = T(_("Meguru: the catalog is empty.\n\nOpen a series from an OPDS catalog with “Meguru this series” to start filling it.\n\nschema v%1\n%2"),
+            text = T(_("the catalog is empty.\n\nOpen a series from an OPDS catalog with “Meguru this series” to start filling it.\n\nschema v%1\n%2"),
                 Store.schemaVersion(), Paths.dbFile()),
         })
         return

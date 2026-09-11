@@ -719,8 +719,8 @@ local function syncThenOpen(plugin, context, which)
         if not item then
             UIManager:show(InfoMessage:new{
                 text = which == "next"
-                    and T(_("Meguru: %1 has no next chapter."), refreshed.name)
-                    or T(_("Meguru: %1 has no previous chapter."), refreshed.name),
+                    and T(_("%1 has no next chapter."), refreshed.name)
+                    or T(_("%1 has no previous chapter."), refreshed.name),
             })
             return
         end

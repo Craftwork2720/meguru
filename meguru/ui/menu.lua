@@ -80,7 +80,7 @@ local function clearCache()
         ok_callback = function()
             local removed, freed = Reader.clearCache()
             UIManager:show(InfoMessage:new{
-                text = T(_("Meguru: cache cleared (%1 file(s), %2)."),
+                text = T(_("cache cleared (%1 file(s), %2)."),
                     removed, humanBytes(freed or 0)),
             })
         end,
@@ -96,7 +96,7 @@ local function showCover(ui)
     -- fail for reasons that are not the reader's fault.
     local ok, cover = pcall(doc.getCoverPageImage, doc)
     if not ok or not cover then
-        UIManager:show(InfoMessage:new{ text = _("Meguru: no cover available.") })
+        UIManager:show(InfoMessage:new{ text = _("no cover available.") })
         return
     end
     local ImageViewer = require("ui/widget/imageviewer")
@@ -141,7 +141,7 @@ local function showServerKinds(server)
                 end
                 UIManager:close(menu)
                 UIManager:show(InfoMessage:new{
-                    text = T(_("Meguru: %1 is now %2. Its next sync will be rebuilt."),
+                    text = T(_("%1 is now %2. Its next sync will be rebuilt."),
                         server.name,
                         id and T(_("driven as %1"), id) or _("detected automatically")),
                 })
@@ -167,7 +167,7 @@ function Menu.showServers()
     local servers = Catalog.servers()
     if #servers == 0 then
         UIManager:show(InfoMessage:new{
-            text = _("Meguru: no servers yet. Open a catalog in KOReader's OPDS browser and use “Meguru this series” on a book."),
+            text = _("no servers yet. Open a catalog in KOReader's OPDS browser and use “Meguru this series” on a book."),
         })
         return
     end
@@ -417,7 +417,7 @@ function Menu.addReaderItems(plugin, menu_items)
             callback = function()
                 local on = Settings.toggle("auto_next_item")
                 UIManager:show(Notification:new{
-                    text = on and _("Meguru: auto-open on") or _("Meguru: auto-open off"),
+                    text = on and _("auto-open on") or _("auto-open off"),
                     timeout = 2,
                 })
             end,

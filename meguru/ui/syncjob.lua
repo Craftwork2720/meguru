@@ -122,9 +122,9 @@ local function report(series, ok, reason)
     end
     local text
     if reason == "cancelled" then
-        text = T(_("Meguru: sync of %1 cancelled."), series.name)
+        text = T(_("sync of %1 cancelled."), series.name)
     else
-        text = T(_("Meguru: could not sync %1.\n%2"), series.name, tostring(reason))
+        text = T(_("could not sync %1.\n%2"), series.name, tostring(reason))
     end
     UIManager:show(InfoMessage:new{ text = text })
 end
