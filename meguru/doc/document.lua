@@ -884,7 +884,12 @@ function MeguruDocument:init()
     -- over the marker's snapshot — the snapshot is whatever was saved when the
     -- book was first opened, while the catalog's is what the last sync saw.
     -- The marker's stays as the fallback, which is the point of it carrying a
-    -- template at all: a book opens and reads with no database.
+    -- template at all: a book opens and reads with no database. That fallback is
+    -- already a *restored* template by the time it gets here — `Marker.load`
+    -- puts the credential back from `settings/opds.lua`, so the marker sitting
+    -- in the book folder holds a `<redacted>` one and this never sees it. Which
+    -- is why the fallback needs the catalog *configured* rather than only the
+    -- database absent; see `meguru/credential`.
     --
     -- Nothing here goes to the network. A catalog row with no template is a
     -- chapter that was synced but never opened; it is resolved when the series
@@ -1162,6 +1167,11 @@ end
 -- Resolved at the moment of use and never stored: the marker holds the catalog
 -- *title*, not a secret, and `meguru/sources` looks the credentials up in the
 -- session's cache or read-only in KOReader's own settings/opds.lua.
+--
+-- "Not a secret" is about *these* credentials, and it is also true of the other
+-- one: the stream template in `desc` had Kavita's API key stripped before it was
+-- written and restored by `Marker.load`. Two different secrets, one file, and
+-- neither of them in it.
 function MeguruDocument:streamCredentials()
     local desc = self.desc or {}
     return Sources.credentials(desc.server_name, self.file)

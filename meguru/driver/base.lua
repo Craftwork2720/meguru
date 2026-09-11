@@ -48,6 +48,16 @@ function Base.register(kind, driver)
     -- `resolveStream` unconditionally cannot trip over a driver that had no
     -- reason to override it.
     driver.resolveStream = driver.resolveStream or Base.resolveStream
+
+    -- Note what is deliberately *not* here, because this is where a reader would
+    -- come looking for it: removing the credential from a stored stream template
+    -- (`meguru/credential`) is not a driver hook, and cannot be. The read side
+    -- is `Marker.load`, which has no driver — and on the path that needs it most
+    -- there is no way to get one, because a marker is designed to open with no
+    -- database and the kind would have to come from the catalog. Making it a
+    -- hook would move the secret out of the marker and then leave nothing able
+    -- to put it back. A server whose credential sits somewhere else gets another
+    -- rule in `credential.lua`, where the read path can reach it.
     registry[kind] = driver
 end
 

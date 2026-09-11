@@ -71,6 +71,7 @@ meguru/
     defaults.lua          per-book seeding of kopt_* from plugin preferences
 
   ui/
+    credential.lua        what a credential looks like in a URL: redact / restore
     open.lua              "Meguru this series": resume dialog, marker write, open,
                           plus the background series walk it starts
     library.lua           series list from the catalog, with new-chapter counts
@@ -632,6 +633,15 @@ next/previous and the new-chapter counts are unavailable. That is why the
 database can live in `settings/` and be restored from backup independently of the
 books.
 
+**"No database" is not "no configuration", and the difference is one file.** A
+marker's `template` is stored with its credential removed and restored at load
+from `settings/opds.lua` — so a Kavita marker reads with the database deleted and
+cannot fetch its pages with the *OPDS catalog* deleted. The failure is loud and
+self-describing (a 404 whose path says `<redacted>`, plus a warning naming the
+missing catalog), and it is narrower than it sounds: with the database present,
+`MeguruDocument:init` takes the template from the catalog row and the marker's
+redacted copy is never consulted. See `meguru/credential`.
+
 ## The marker
 
 Extension `.meguru`, provider key `"meguru"`. Serialised with `LuaSettings` as
@@ -643,7 +653,11 @@ title, template, count, last_read
 ```
 
 `server_name` is the **catalog title**, which is the key credentials are looked
-up by in `settings/opds.lua`. No secret is stored in the marker.
+up by in `settings/opds.lua`. No secret is stored in the marker — `template` on
+disk has any credential-bearing path segment replaced by `<redacted>`, and
+`Marker.load` restores it from that catalog. What was in the file before this is
+covered under Security notes, including the markers it does not reach backwards
+to.
 
 `item_id` is a *hint*, not authority. A rowid is reassigned when the database is
 rebuilt, and a rebuilt database can give an old `item_id` to a **different
@@ -939,6 +953,19 @@ python tools/check.py       # structure of the Lua
 python tools/scan_sql.py    # semicolons inside SQL comments
 ```
 
+**A Python mirror of Lua logic models values, not Lua's evaluation rules, and the
+difference has shipped a crash.** `Meguru/credential.lua`'s `restoreTemplate`
+ended `return (s:gsub(...))` — parentheses truncate a multi-value expression to
+one, so the `count` its caller branches on was nil on exactly the *successful*
+path, where `count == 0` is false and the caller's `count > 1` compared a number
+with nil and took the document open down. A harness that returns a tuple cannot
+see that; only a harness that models the parenthesisation can. So when a mirror
+is written — and it is worth writing, it found nothing wrong in that same file —
+say which Lua rules it is modelling, and treat anything it does not model as
+untested rather than as passed. The other traps of the same shape: `and`/`or`
+folding (`x and f or nil`), `nil` in a table constructor ending the array part,
+`#` on a table with holes, and integer division or bitwise operators under 5.1.
+
 There is no Lua interpreter on the development machine, so `check.py` stands in
 for one. It runs five passes:
 
@@ -1169,12 +1196,27 @@ which matches what a fresh book actually got.
 
 ## Security notes
 
-- No secret is ever part of a marker descriptor. `server_name` is the catalog
-  title, which is the credential key in `settings/opds.lua`.
+- **No secret is in a marker file, and `Marker.saveAt` is what enforces it.**
+  `server_name` is a catalog title; Kavita's API key is a path segment of the
+  stream template, and it is replaced by `<redacted>` on the way to disk and put
+  back by `Marker.load` from `settings/opds.lua`. One member of the pair on each
+  side — see `meguru/credential`.
+- **A marker written before that pair existed still carries the key, forever.**
+  Markers are not scrubbed in place: rewriting a book file the reader did not ask
+  to have rewritten is worse than a stale copy in a folder they control. So
+  "markers hold no secret" is true of new ones; delete and re-add the old books
+  if it matters. Saying this plainly matters more than the fact, because the
+  opposite reads as settled.
 - Credentials are resolved only when a page actually has to be fetched.
 - `servers.root_url` and the derived `catalogURL` are **redacted** — no API key,
   no token.
-- Kavita's stream `template` unavoidably embeds the API key; that is what opens
-  the book. This is a knowingly accepted risk bounded to one column, in
-  `settings/`, which is the user's private directory.
+- **`crash.log` is a file too, and `Net.redactUrl` is the only thing a log line
+  may print a URL through.** It strips the credential-bearing path segment, so
+  the four failure lines in `Net.get` no longer write Kavita's key out on every
+  404. The query is reduced to its byte count and `user:pass@host` never reaches
+  the output; both are load-bearing and neither should be "simplified".
+- Kavita's stream `template` in `items.template` unavoidably embeds the API key;
+  that is what opens the book. Bounded to one column in `settings/meguru.sqlite3`,
+  the user's private directory — and to `settings/opds.lua`, where the key
+  already lives.
 - `settings/opds.lua` is read **only**, never written.

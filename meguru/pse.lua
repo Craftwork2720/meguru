@@ -81,6 +81,13 @@ end
 
 --- The URL of one page. `zero_based_index` is 0 for the first page.
 ---
+--- **`template` must be a live one, not a marker's raw field.** A marker stores
+--- its template with any credential-bearing path segment replaced by
+--- `<redacted>` (see `meguru/credential`), and `Marker.load` puts it back. Hand
+--- this a template straight off disk and the URL it builds is self-describing
+--- and wrong — `…/api/opds/<redacted>/image?…` — which the server answers with a
+--- 404 and nothing in this function can notice.
+---
 --- `screen_h` is optional: the height substitutions are only applied when a
 --- height is given, so a caller that knows only its width leaves any
 --- `{height}` in the template untouched rather than substituting nonsense.

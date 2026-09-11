@@ -7,6 +7,24 @@ database at all, which is why `template` and `count` are in the file rather than
 looked up: the catalog can be deleted, rebuilt or restored from a backup
 independently of the books on disk, and every marker keeps working when it is.
 
+**No secret is in the file, and that is enforced here rather than assumed.**
+`saveAt` strips the credential out of `template` on the way to disk and `load`
+puts it back — for Kavita the API key is a path segment, and the marker lives in
+the reader's *book* folder (an SD card, a folder something syncs), not in
+`settings/`. See `meguru/credential`.
+
+Two consequences worth knowing, because both are load-bearing:
+
+  * "no database" is not the same as "no configuration". A redacted template is
+    restored from `settings/opds.lua`, so a marker opens and reads with the
+    catalog deleted, and cannot fetch its pages with the *OPDS catalog* deleted.
+    The failure is loud and self-describing — a 404 whose path says
+    `<redacted>` — rather than a book that will not open.
+  * a marker written before this existed still carries the key, and nothing
+    rewrites it. Markers are not scrubbed in place: rewriting a book file the
+    reader did not ask to have rewritten is worse than a stale copy in a folder
+    they control. Delete and re-add such books if that matters to you.
+
 What is deliberately *not* in the file: any series metadata. Volume order,
 titles, whether a series has new chapters — all of that is the catalog's, in one
 place. The old sibling plugin duplicated a sibling list into every marker, which
@@ -20,10 +38,12 @@ local Device = require("device")
 local LuaSettings = require("luasettings")
 local logger = require("logger")
 
+local Credential = require("meguru/credential")
 local FS = require("meguru/fs")
 local Naming = require("meguru/naming")
 local Paths = require("meguru/paths")
 local Settings = require("meguru/settings")
+local Sources = require("meguru/sources")
 
 local Marker = {}
 
@@ -44,6 +64,12 @@ Marker.VERSION = 1
 ---   title             as shown to the reader
 ---   template, count   enough to open and read with no database
 ---   last_read         server-reported, cosmetic
+---
+--- **`template` here is the live URL, secret and all** — this builds the
+--- in-memory descriptor, not the file. `saveAt` redacts it on the way out and
+--- `load` restores it on the way in, so a caller that builds a descriptor, saves
+--- it and reads the file back gets the same string it started with, and a caller
+--- that inspects `desc.template` after a save still has the real one.
 function Marker.new(fields)
     return {
         version          = Marker.VERSION,
@@ -59,6 +85,14 @@ function Marker.new(fields)
 end
 
 --- A descriptor complete enough to open a book from.
+---
+--- Deliberately a predicate over the descriptor alone, and it does **not** test
+--- for an unrestored `<redacted>` in the template. Two reasons: a validity test
+--- that depended on whether a catalog happens to be configured would be a
+--- different kind of test than this one, and this one is also the "is this file
+--- ours at all" check that keeps a stray `.meguru` from becoming a bogus stream.
+--- A marker whose catalog is missing is *valid* — it opens, and its pages fail
+--- to fetch with a URL that says why.
 function Marker.isValid(desc)
     return type(desc) == "table"
         and type(desc.template) == "string" and desc.template ~= ""
@@ -77,8 +111,59 @@ function Marker.naturalKey(desc)
     }, "|")
 end
 
+--- Put the credential back into a descriptor read off disk.
+---
+--- The file stores a placeholder rather than the key (`saveAt` put it there),
+--- so this is the inverse half of one pair, and the pair has exactly one member
+--- on each side. Every caller of `Marker.load` therefore sees a descriptor whose
+--- `template` is the real stream URL, and none of them has to know the file is
+--- redacted at all — which is the point of doing it here rather than at the
+--- call sites. `ui/open.lua` alone reads a marker from four places, and a
+--- fifth added later would not know to restore.
+---
+--- **A marker with no catalog configured still loads.** It is a valid marker —
+--- `isValid` asks whether the file is ours and complete, not whether the world
+--- is configured — and refusing it would cost the reader the book with a message
+--- that misdescribes its own file. What it cannot do is fetch: the placeholder
+--- stays, the URL 404s, and the log says why. See `MeguruDocument:init`.
+local function restoreCredential(desc)
+    if type(desc.template) ~= "string"
+        or not desc.template:find(Credential.PLACEHOLDER, 1, true) then
+        -- Nothing to do, and this is the common path — every Suwayomi marker,
+        -- and every Kavita one written before this existed. Silent on purpose:
+        -- a line here would be a line per book opened.
+        return desc
+    end
+    local conn = Sources.connection(desc.server_name)
+    local restored, count = Credential.restoreTemplate(desc.template, conn and conn.url)
+    if count == 0 then
+        -- The placeholder survived: no catalog of that title, or one whose root
+        -- no longer matches this template's prefix (a renamed entry, a second
+        -- server sharing the title, a server that moved host). Both are worth
+        -- saying out loud — this is the line the reader pastes into a report,
+        -- and without it the diagnosis needs them to know that a `<redacted>`
+        -- in a URL is not what the server sent.
+        logger.warn("Meguru: the marker for", desc.title or "?", "has a redacted"
+            .. " stream URL and no usable catalog named",
+            tostring(desc.server_name), "- it will open but cannot fetch pages")
+        return desc
+    end
+    if count > 1 then
+        -- The credential sat in more than one path position, and both were
+        -- filled with the same value. Right for every shape the supported
+        -- servers emit, unverified for one nobody has seen.
+        logger.dbg("Meguru: restored", count, "credentials in the marker for",
+            desc.title or "?")
+    end
+    desc.template = restored
+    return desc
+end
+
 --- Read a descriptor back from a marker file, or nil when the file is missing
 --- or does not hold one of ours.
+---
+--- The descriptor comes back as the book it names, not as the file it came
+--- from: `template` has its credential restored — see `restoreCredential`.
 function Marker.load(path)
     if not FS.exists(path) then
         return nil
@@ -96,7 +181,7 @@ function Marker.load(path)
     if not Marker.isValid(desc) then
         return nil
     end
-    return desc
+    return restoreCredential(desc)
 end
 
 --- Does the marker at `path` describe the same book as `desc`?
@@ -266,6 +351,24 @@ end
 --- The folder is created here and only here, which is what keeps a dismissed
 --- dialog from leaving an empty series folder behind — see `dirFor`.
 ---
+--- **The descriptor is written with its credential removed, and the caller's
+--- table is left alone.** Kavita's API key is a path segment, so the marker
+--- file — which lives in the reader's *book* folder, not in `settings/` — would
+--- otherwise carry it in plaintext, onto an SD card or into whatever syncs that
+--- folder. `Marker.load` puts it back; the pair has exactly this one member on
+--- each side. See `meguru/credential`.
+---
+--- A copy rather than an edit, and the reason is mechanical as well as
+--- hygienic: `LuaSettings:saveSetting` stores the table *by reference* and only
+--- serialises at `flush()`, so a table shared with this function is a live
+--- object the caller could still change underneath the write. Nothing reads
+--- `desc.template` after a save today, which is exactly when an invariant like
+--- this is cheap to establish and expensive to retrofit.
+---
+--- The copy goes through `pairs` rather than an explicit field list: a list is
+--- how a field added to `Marker.new` later gets silently dropped on the way to
+--- disk.
+---
 --- Returns the path written, or nil when no folder could be made. A caller that
 --- gets nil reports it; nothing is silently dropped.
 function Marker.saveAt(path, desc)
@@ -282,8 +385,13 @@ function Marker.saveAt(path, desc)
             path = usable .. "/" .. (path:match("([^/]+)$") or path)
         end
     end
+    local stored = {}
+    for key, value in pairs(desc) do
+        stored[key] = value
+    end
+    stored.template = Credential.redactTemplate(desc.template)
     local ls = LuaSettings:open(path)
-    ls:saveSetting(Marker.SETTINGS_KEY, desc)
+    ls:saveSetting(Marker.SETTINGS_KEY, stored)
     ls:flush()
     logger.info("Meguru: marker written to", path)
     return path

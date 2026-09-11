@@ -8,6 +8,13 @@ it, and nothing here is persisted: a marker stores `server_name` (a catalog
 title, not a secret) and the password is looked up at the moment a page has to
 be fetched.
 
+It is also where the *other* secret is read from — Kavita's API key, which is a
+path segment of the root URL rather than a password. A marker stores a stream
+template with that segment replaced by a placeholder, and `Marker.load` puts it
+back by reading this file; see `meguru/credential`. So "the marker holds no
+secret" is true because of what is done to it on the way out, not because a
+template has nothing secret in it.
+
 The catalog title is also the identity a server is stored under in the
 catalog, which is why it is `server_name` everywhere rather than a URL: Kavita's
 URL changes when the API key rotates, and every rotation would otherwise fork a
@@ -18,6 +25,7 @@ local DataStorage = require("datastorage")
 local LuaSettings = require("luasettings")
 local logger = require("logger")
 
+local Credential = require("meguru/credential")
 local FS = require("meguru/fs")
 
 local Sources = {}
@@ -124,30 +132,22 @@ function Sources.host(url_str)
     return url_str:match("^%a+://([^/]+)")
 end
 
-local UUID_SEGMENT = "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
-
 --- A catalog root with any credential removed, for the `servers.root_url`
 --- diagnostics column.
 ---
---- A URL-shaped redaction is not enough: Kavita's API key is a *path* segment
---- (`/api/opds/<key>`), so anything that keeps the path keeps the key. Two
---- rules cover what the supported servers do — the segment following `opds/`,
---- and any UUID-shaped segment (Kavita's key is a UUID) — and both are applied
---- because either alone would miss a deployment that differs in one respect.
----
---- This is why the column exists only for diagnostics: nothing fetches from it.
---- The real root is read from `settings/opds.lua` at the moment a request is
---- made and is never stored.
+--- The rule itself lives in `meguru/credential`, which is also what the marker
+--- and the log use, so there is one definition of what a credential looks like
+--- in a URL rather than three. What belongs *here* is why this column exists at
+--- all: **nothing fetches from it.** The real root is read from
+--- `settings/opds.lua` at the moment a request is made and is never stored — so
+--- a heuristic that redacts a segment too many costs a cosmetic word in a
+--- column no code reads, which is exactly why the broad rule is right for this
+--- caller and wrong for a stream template.
 function Sources.redactedRoot(url_str)
     if type(url_str) ~= "string" or url_str == "" then
         return nil
     end
-    -- Rewritten in place rather than split and re-joined: `gmatch("[^/]+")`
-    -- would drop one slash of the scheme's "//".
-    local out = url_str:gsub("/(opds)/([^/]+)", "/%1/<redacted>")
-    return (out:gsub("/([^/]+)", function(segment)
-        return segment:match(UUID_SEGMENT) and "/<redacted>" or "/" .. segment
-    end))
+    return Credential.redact(url_str)
 end
 
 return Sources

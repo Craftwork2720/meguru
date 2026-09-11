@@ -8,6 +8,12 @@ written against — where it disagrees with an assumption, the observation wins.
 Credentials are never written here. Kavita's API key is shown as `<KEY>`; it is
 a path segment (`/api/opds/<KEY>/...`) and appears inside every stream URL.
 
+`meguru` therefore stores a stream template with that segment replaced by
+`<redacted>`, and restores it at load from the catalog root in
+`settings/opds.lua`. So `<KEY>` on the wire, `<redacted>` in a marker file and
+`<redacted>` in `crash.log` are the same position in the same URL, seen at three
+different points. See `meguru/credential`.
+
 ## Kavita
 
 Navigation: `root → /libraries → /libraries/{id} → /series/{id}`.

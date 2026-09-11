@@ -14,6 +14,8 @@ local socket = require("socket")
 local socketutil = require("socketutil")
 local url = require("socket.url")
 
+local Credential = require("meguru/credential")
+
 local Net = {}
 
 -- Feed fetches get tighter limits than socketutil.FILE_* (15s block / 60s
@@ -27,10 +29,30 @@ Net.FEED_TOTAL_TIMEOUT = 30
 Net.FEED_ACCEPT = "application/atom+xml;profile=opds-catalog, application/xml;q=0.9, */*;q=0.5"
 Net.IMAGE_ACCEPT = "image/*;q=1, */*;q=0.5"
 
---- A URL safe to log: scheme, host, port, path and only the *size* of the
---- query. Kavita puts its API key in the path, which is why the query is not
---- the only thing guarded — callers redact the path too when they log a stream
---- URL (see `Net.redactStreamUrl`).
+--- A URL safe to log: scheme, host, port, a path with any credential-bearing
+--- segment removed, and only the *size* of the query.
+---
+--- **Every log line that prints a URL prints it through here**, which is why the
+--- credential rule lives inside this function rather than beside it. Kavita
+--- encodes its API key as a path segment (`/opds/<apiKey>/…`), so a path that is
+--- shown verbatim leaks the key into `crash.log` — a file routinely pasted into
+--- bug reports. There used to be a separate `Net.redactStreamUrl` for that,
+--- defined and called from nowhere while all four call sites here printed the
+--- key; one function every caller already reaches for is the only shape of this
+--- that survives the fifth log line.
+---
+--- Two things this output is *already* safe about, said here so nobody "fixes"
+--- them:
+---
+---   * the query is reduced to its byte count, never its contents — that is what
+---     covers a server that carries its credential as a token parameter;
+---   * `user:pass@host` never appears, because `url.parse` splits those into
+---     `parsed.user`/`parsed.password` and `shown` is built from `scheme`, `host`
+---     and `port` only.
+---
+--- What remains is deliberately diagnostic: `…/api/opds/<redacted>/image?97
+--- bytes of query` still says which endpoint was asked for, which is the whole
+--- reason the URL was logged.
 function Net.redactUrl(str)
     local parsed = url.parse(str)
     if not parsed or not parsed.host then
@@ -44,18 +66,7 @@ function Net.redactUrl(str)
     if parsed.query and #parsed.query > 0 then
         shown = shown .. "?" .. #parsed.query .. " bytes of query"
     end
-    return shown
-end
-
---- A stream template with the credential-bearing path segment removed. Kavita
---- encodes its API key as a path segment (`/opds/<apiKey>/image/...`), so
---- logging the path of a stream URL leaks the key into crash.log.
-function Net.redactStreamUrl(str)
-    if type(str) ~= "string" then
-        return "(none)"
-    end
-    local stripped = str:gsub("/opds/[^/]+/", "/opds/<redacted>/")
-    return Net.redactUrl(stripped)
+    return Credential.redact(shown)
 end
 
 -- A resume lookup happens while the reader waits for a dialog to appear, not
