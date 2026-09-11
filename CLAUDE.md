@@ -67,7 +67,7 @@ meguru/
   doc/
     document.lua          Document subclass: the reading engine
     cache.lua             identity-keyed on-disk LRU for pages and covers
-    image.lua             MuPDF decoding with a size cap
+    image.lua             MuPDF: measure a page, render a rectangle of it
     defaults.lua          per-book seeding of kopt_* from plugin preferences
 
   ui/

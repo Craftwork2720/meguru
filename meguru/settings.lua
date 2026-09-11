@@ -29,7 +29,6 @@ local DEFAULTS = {
     -- to `Sync.plan`, which is why it is no longer a preference that decides
     -- nothing.
     sync_ttl_seconds  = 6 * 60 * 60,
-    max_native_dim    = 2048,         -- long-edge cap for a decoded page
 
     -- How the page is fitted to the screen. Semantic rather than KOReader's own
     -- zoom_mode names, because the mapping is what changes when the crop

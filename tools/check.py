@@ -21,6 +21,10 @@ bitten this codebase, and that a reader cannot reliably catch by eye:
   5. the item upsert's column list, `?` placeholders and `bind` arguments agree.
      Four separate edits have to stay in step and Lua checks none of them, so a
      mismatch is a runtime error on the first sync, on the device.
+  6. a name read as a *value* -- `pcall(renderMuPDFPage, ...)`, or `MAX_X / 1024`
+     -- that is bound nowhere in the file. Checks 3 and 4 both key on the shape
+     of the use, so a name handed over as an argument or an operand slips past
+     both and reads as a global nil.
 
 Run: python tools/check.py
 """
@@ -338,6 +342,10 @@ LUA_GLOBALS = {
     "pcall", "print", "rawequal", "rawget", "rawset", "require", "select",
     "setfenv", "setmetatable", "tonumber", "tostring", "type", "unpack",
     "xpcall",
+    # The environment table itself, which `settings.lua` reads through
+    # (`rawget(_G, "G_reader_settings")`) to avoid a hard dependency on a name
+    # that may not exist yet at plugin-load time.
+    "_G",
     "and", "break", "do", "else", "elseif", "end", "false", "for", "function",
     "if", "in", "local", "nil", "not", "or", "repeat", "return", "then",
     "true", "until", "while",
@@ -381,6 +389,119 @@ def check_lowercase_calls(path, text):
             errors.append(
                 f"{path}:{line_no}: {name}(...) is not bound at this point -- "
                 f"a `local` below it would resolve as a global here"
+            )
+    return errors
+
+
+# --------------------------------------------------------------------------
+# Check 6: a name used as a VALUE that is bound nowhere in the file.
+# --------------------------------------------------------------------------
+
+# Checks 3 and 4 both key on the shape of the *use*: 3 wants `Name.member` or
+# `Name:member`, 4 wants `name(`. A name handed over as a plain value matches
+# neither, and two bugs of exactly that shape reached the device:
+#
+#   `pcall(renderMuPDFPage, self.mupdf_doc, 1, nil)` has a comma where check 4
+#   wanted a `(`. `renderMuPDFPage` is a file-local of `image.lua`, exported as
+#   `Image.renderMupdfPage`, so in `document.lua` it was a global reading nil --
+#   `pcall(nil, ...)` returns false, the caller logged "could not render local
+#   cbz cover" and returned nil, and a local cbz never had a cover.
+#
+#   `MAX_LOSSLESS_NATIVE_PIXELS / 1024 / 1024` is not a call at all. The
+#   constant is a local of `image.lua`; in `document.lua` it was nil, so the one
+#   log line that exists to explain why a giant lossless page is skipped raised
+#   "attempt to perform arithmetic on a nil value" instead of explaining it.
+#
+# The rule is the narrowest one that catches both: the name must be bound
+# NOWHERE in the file. Check 4 keeps the positional half of the problem (a
+# binding *below* the use), and a pass that also claimed that here would report
+# every forward reference in the codebase.
+#
+# Deliberately not a style police: a name that is only ever ASSIGNED is left
+# alone. `foo = 1` at file scope is a deliberate global, and so is a table key.
+# Only a name that is read and never written is reported.
+#
+# Note it cannot see the use side of `local x` itself -- `x` in `local x = 1`
+# is followed by `=`, which is the assignment exemption below. That is the
+# intended direction: the binding patterns run over the whole file first, so a
+# name declared anywhere is excused here.
+VALUE_USE = re.compile(r"(?<![\w.:])([A-Za-z_][A-Za-z0-9_]*)(?![\w])")
+
+# `strip` collapses every string literal to this token, and to this pass the
+# token reads as a bare identifier -- so every string in the codebase reported
+# as an unbound name until it was named here. Spelling the coupling out from
+# both ends is the point: change the sentinel in `strip` and this line is what
+# tells you there was a second reader of it.
+STRIPPED_STRING = "STR"
+
+# Words that may legally sit immediately before a value-use without being one:
+# the statement forms that bind rather than read, plus `return`/`and`/`or`,
+# where the following token is still checked on its own account.
+VALUE_PREFIX_SKIP = {"local", "function", "for", "in", "return", "not", "and",
+                     "or", "if", "while", "until", "then", "else", "elseif",
+                     "repeat", "do"}
+
+# For-loop variables, which are bound by the loop header rather than by a
+# `local`: `for key, item in self.cache:pairs()`. Without this every loop in
+# the codebase reports its own counters.
+FOR_BINDINGS = re.compile(r"\bfor\s+([A-Za-z0-9_, \t]+?)\s*(?:=|in\b)")
+
+# The receiver of a method definition, which is implicit rather than declared.
+IMPLICIT_BINDINGS = {"self", "..."}
+
+# Every bare global this codebase genuinely reads, with the evidence. KOReader
+# creates these in `setupkoenv`/`datastorage` before any plugin loads; each one
+# added here is a name this pass would otherwise report on every run, and a
+# name added to silence a true positive turns the pass off.
+VALUE_GLOBAL_ALLOWLIST = {
+    # `_` is KOReader's gettext table and `C_` its context variant. Both are
+    # installed as globals by `setupkoenv.lua` (`_ = require("gettext")`).
+    "_", "C_", "N_",
+    # LuaSettings instances KOReader sets on the global table at startup.
+    "G_reader_settings", "G_defaults",
+    # The device's own screen, in files that reach it through `Device` instead
+    # of requiring `device`.
+    "Screen",
+}
+
+
+def check_value_uses(path, text):
+    """Report a name read as a value that is bound nowhere in the file."""
+    bound = set(IMPLICIT_BINDINGS)
+    for rx in BINDINGS + LOWER_BINDINGS:
+        for m in rx.finditer(text):
+            for name in m.group(1).split(","):
+                bound.add(name.strip())
+    for m in FUNC_PARAMS.finditer(text):
+        for name in m.group(1).split(","):
+            bound.add(name.strip())
+    for m in FOR_BINDINGS.finditer(text):
+        for name in m.group(1).split(","):
+            bound.add(name.strip())
+
+    errors = []
+    for lineno, line in enumerate(text.split("\n"), 1):
+        for m in VALUE_USE.finditer(line):
+            name = m.group(1)
+            if name == STRIPPED_STRING or name in LUA_GLOBALS or name in bound:
+                continue
+            if name in VALUE_GLOBAL_ALLOWLIST:
+                continue
+            rest = line[m.end():]
+            if rest[:1] == "." or rest[:1] == ":":
+                continue  # a field or method: checks 2 and 3 own this
+            after = rest.lstrip()
+            if after[:1] == "(":
+                continue  # a call: check 4 owns this
+            if after[:1] == "=" and after[:2] != "==":
+                continue  # an assignment or a table key: a write, not a read
+            before = line[:m.start()].rstrip()
+            word = re.search(r"([A-Za-z_][A-Za-z0-9_]*)$", before)
+            if word and word.group(1) in VALUE_PREFIX_SKIP:
+                continue
+            errors.append(
+                f"{path}:{lineno}: {name} is read as a value but bound nowhere "
+                f"in this file -- it resolves to a global reading nil"
             )
     return errors
 
@@ -476,6 +597,7 @@ def main():
         all_errors += check_members(rel, text, raw, members, by_stem)
         all_errors += check_globals(rel, text)
         all_errors += check_lowercase_calls(rel, text)
+        all_errors += check_value_uses(rel, text)
 
     all_errors += check_item_upsert()
 
