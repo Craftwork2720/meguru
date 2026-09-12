@@ -42,6 +42,7 @@ local logger = require("logger")
 local FS = require("meguru/fs")
 local Image = require("meguru/doc/image")
 local Marker = require("meguru/marker")
+local Panel = require("meguru/panel")
 local Naming = require("meguru/naming")
 local PSE = require("meguru/pse")
 local Settings = require("meguru/settings")
@@ -306,7 +307,8 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
     return { left, top, right, bottom, bg = bg }
 end
 
--- Native fine pass; assigned below (after makeRaster), see its definition.
+-- Native fine pass; assigned below (it needs `computeContentBox` above it), see
+-- its definition.
 local refineAutoCrop
 
 -- Compute the native auto content box of a decoded (working-resolution) page.
@@ -422,7 +424,7 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
 end
 
 -- ---------------------------------------------------------------------------
--- Panel zoom (getPanelFromPage)
+-- Panel zoom (getPanelFromPage, and the sequence in getPanelsFromPage)
 -- ---------------------------------------------------------------------------
 --
 -- KOReader's "Panel zoom (manga/comic)" (ReaderHighlight:onPanelZoom, a
@@ -453,55 +455,25 @@ end
 -- The detector is intentionally strict: it only ever splits on *complete*
 -- white gutters, never on interior white of a single drawing, so a wrong guess
 -- degrades to "no panel", never to a mangled crop.
+--
+-- **That strictness is why there is a second detector.** `getPanelsFromPage`
+-- below hands the whole page to `meguru/panel`, which splits recursively and
+-- renders its own, finer scan; it is what the panel *sequence* walks. This one
+-- is what a long-press falls back to when that finds no sequence, and it is
+-- deliberately left alone by that work — a fallback that inherited the
+-- sequence's sensitivity would guess where it must not. `meguru/panel` carries
+-- the argument in full.
 
 local PANEL_SCAN_TARGET = 256
 local PANEL_GUTTER_FRAC = 0.85 -- gutter pixels must stay above 85% of paper white
 local PANEL_MIN_GUTTER_FRAC = 0.004 -- ignore separators thinner than 0.4% of the span
 local PANEL_MIN_CELL_FRAC = 0.05 -- never report a panel under 5% of the page area
 
--- Cheap raster accessor over a BlitBuffer's raw bytes (same layout handling as
--- the auto-crop scan above).
-local function makeRaster(bb)
-    local w = bb:getWidth()
-    local h = bb:getHeight()
-    if not w or not h or w < 2 or h < 2 then
-        return nil
-    end
-    local bpp = Image.bytesPerPixel(bb:getType())
-    if not bpp then
-        return nil
-    end
-    local inv = bb:getInverse() == true
-    local data = Blitbuffer.tostring(bb)
-    local stride = tonumber(bb.stride)
-    if not stride or stride < w * bpp then
-        stride = w * bpp
-    end
-    if #data < stride * h then
-        stride = w * bpp
-        if #data < stride * h then
-            return nil
-        end
-    end
-    local function luma(y, x)
-        local off = y * stride + x * bpp
-        local lum
-        if bpp == 1 then
-            lum = data:byte(off + 1)
-        elseif bpp == 2 then
-            local a = data:byte(off + 1)
-            local b = data:byte(off + 2)
-            lum = a < b and a or b
-        else
-            lum = (data:byte(off + 1) + data:byte(off + 2) + data:byte(off + 3)) * (1/3)
-        end
-        if inv then
-            lum = 255 - lum
-        end
-        return lum
-    end
-    return { w = w, h = h, luma = luma }
-end
+-- The raster accessor itself now lives beside the decoder: `Image.rasterFor`
+-- (`meguru/doc/image`). It moved because the panel segmenter in
+-- `meguru/panel.lua` reads a buffer too, and a module that answers "what is this
+-- buffer's byte layout" belongs with the module that produced the buffer — a
+-- second copy here would have been the second answer to that question.
 
 -- Tighten the coarse auto-crop box to the *exact* outermost content pixel (see
 -- computeContentBox for where the coarse box comes from). The coarse scan runs
@@ -524,7 +496,7 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     if native_bb:getRotation() and native_bb:getRotation() ~= 0 then
         return x0, y0, x1, y1 -- raw rows are not axis-aligned: keep the coarse box
     end
-    local raster = makeRaster(native_bb)
+    local raster = Image.rasterFor(native_bb)
     if not raster then
         return x0, y0, x1, y1
     end
@@ -2169,6 +2141,99 @@ function MeguruDocument:_meguruPageMostlyBlank(pageno)
     return false
 end
 
+-- The tile-LRU key for one panel.
+--
+-- One definition, because two places have to agree on it byte for byte:
+-- `drawPagePart` writes the tile under it, and `releasePanelTile` frees the
+-- tile under it. Keyed by the *region* rather than by the rendered tile's size,
+-- which is not known until the render has run and is not what identifies the
+-- panel anyway. Rotation is deliberately absent: the same region is the same
+-- tile whichever way up it is shown.
+local function panelTileKey(pageno, rect)
+    return string.format("%d|panel|%d,%d+%dx%d",
+        pageno, rect.x, rect.y, rect.w, rect.h)
+end
+
+-- Get the page's decoded native buffer, fetching and decoding it if the LRUs
+-- have let it go.
+--
+-- Both panel entry points start here, and it is a pure move of what
+-- `getPanelFromPage` used to do inline: one definition of "make sure the page
+-- this gesture is about is in hand". A local function taking the document
+-- rather than a method, because nothing outside this file calls it.
+--
+-- Bytes are only for the *decode* path: a local cbz page has none (it renders
+-- from the open archive), and a page whose native is already decoded does not
+-- need them — see `hasNative`. `data` staying nil is expected on both, and the
+-- decode must run regardless. Bypass, not a nil no-op.
+local function panelNativeFor(doc, pageno)
+    local data
+    if not doc.local_cbz and not doc:hasNative(pageno) then
+        data = doc:fetchPage(pageno)
+        if not data then
+            return nil
+        end
+    end
+    return doc:ensureNativeBB(pageno, data)
+end
+
+-- Every panel on a page, in reading order, for the panel *sequence* viewer.
+--
+-- Separate from `getPanelFromPage` below rather than built on top of it, and
+-- that is a decision rather than an oversight — see `meguru/panel` for the long
+-- version. The short one: this is the detector that has to be sensitive enough
+-- to split on a hairline gutter, and that one is the fallback that must never
+-- guess. They share the page preparation above and the raster accessor in
+-- `meguru/doc/image`; they do not share a threshold.
+--
+-- Returns an ordered list of `{x,y,w,h}` in **full native** page coordinates —
+-- the space `self.dims` lives in, and the space `drawPanel` renders — or nil
+-- and the reason there is no sequence. `manga` picks the reading direction and
+-- is passed in rather than read from a preference: the document has no view,
+-- and which book is on screen is the reader's question.
+function MeguruDocument:getPanelsFromPage(pageno, manga)
+    local native_bb = panelNativeFor(self, pageno)
+    if not native_bb then
+        return nil, "page could not be decoded"
+    end
+    return Panel.detect(native_bb, manga)
+end
+
+-- Drop the tile a panel render left in the tile LRU.
+--
+-- Not an optimisation, and not about the tile being wrong: `drawPagePart`
+-- caches every panel it renders under `page|panel|region`, and a reader walking
+-- through a page's panels leaves one behind at every step. Eight entries is the
+-- whole LRU, shared with the page tiles ReaderView paints, so a dozen panels
+-- would push up to seven dead panel buffers — each one bounded only by
+-- `max_native_pixels`, so up to ~28 MB of malloc'd bitmap — and evict the
+-- page's own tile on the way. The panel sequence viewer releases the panel it
+-- just left, which keeps it at two: the one on screen and the one being warmed.
+--
+-- This is also what makes "no cache" true rather than aspirational: nothing
+-- remembers a panel a reader has moved past, so going back re-renders it — from
+-- bytes that are still in `self.page_bytes`, so still without the network.
+--
+-- The key is built by `panelTileKey` and not retyped, because a key that drifts
+-- from `drawPagePart`'s would free nothing and fail silently.
+function MeguruDocument:releasePanelTile(pageno, rect)
+    if not rect then
+        return false
+    end
+    local key = panelTileKey(pageno, rect)
+    local tile = self.tiles[key]
+    if not tile then
+        return false
+    end
+    self.tiles[key] = nil
+    self.stamps[key] = nil
+    if tile.bb and tile.bb_free ~= true then
+        tile.bb:free()
+        tile.bb_free = true
+    end
+    return true
+end
+
 -- Panel under a touch point, for KOReader's manga/comic "panel zoom" (see the
 -- comment block above getPanelFromPage's helpers). Coordinates are in *full
 -- native* page space: pos.x/pos.y come from ReaderView already in that space
@@ -2189,18 +2254,7 @@ function MeguruDocument:getPanelFromPage(pageno, pos)
     if px < 0 or py < 0 or px >= dims.w or py >= dims.h then
         return nil
     end
-    -- Bytes are only for the *decode* path: a local cbz page has none (it
-    -- renders from the open archive), and a page whose native is already decoded
-    -- does not need them — see `hasNative`. `data` staying nil is expected on
-    -- both, and the render must run regardless. Bypass, not a nil no-op.
-    local data
-    if not self.local_cbz and not self:hasNative(pageno) then
-        data = self:fetchPage(pageno)
-        if not data then
-            return nil
-        end
-    end
-    local native_bb = self:ensureNativeBB(pageno, data)
+    local native_bb = panelNativeFor(self, pageno)
     if not native_bb then
         return nil
     end
@@ -2223,9 +2277,9 @@ function MeguruDocument:getPanelFromPage(pageno, pos)
             return nil
         end
     end
-    local ok_raster, raster = pcall(makeRaster, small)
+    local ok_raster, raster = pcall(Image.rasterFor, small)
     if small ~= native_bb then
-        small:free() -- scan copy is C-side owned; free even if makeRaster threw
+        small:free() -- scan copy is C-side owned; free even if rasterFor threw
     end
     if not ok_raster or not raster then
         return nil
@@ -2554,10 +2608,7 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation)
         rotate = (canvas.w > canvas.h) ~= (rect.w > rect.h)
     end
 
-    -- Keyed by the region, not by the tile's size: the size is not known until
-    -- the render has run, and the region is what identifies the tile anyway.
-    local key = string.format("%d|panel|%d,%d+%dx%d",
-        pageno, rect.x, rect.y, rect.w, rect.h)
+    local key = panelTileKey(pageno, rect)
     local cached = self.tiles[key]
     if cached and cached.bb_free ~= true then
         bump(self, key)

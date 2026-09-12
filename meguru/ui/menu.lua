@@ -335,15 +335,28 @@ function Menu.addReaderItems(plugin, menu_items)
 
     -- A default for everything Meguru opens, not an override of anything: the
     -- stock ⋮ row still answers per book, and a book that has an answer keeps it.
-    settings[#settings + 1] = {
-        text = _("Panel zoom in Meguru books"),
-        help_text = _("The default for everything Meguru opens, streams and .cbz alike. A book you switch individually with KOReader's own ⋮ → Panel zoom (manga/comic) keeps its own answer; this is what the rest follow."),
-        keep_menu_open = true,
-        checked_func = Reader.panelZoomEnabled,
-        callback = function()
-            Reader.setPanelZoom(plugin.ui, not Reader.panelZoomEnabled())
-        end,
-    }
+    --
+    -- Absent when Panels+ owns the long-press, and that is not tidiness. That
+    -- plugin forces `panel_zoom_enabled` on for every document it takes over, so
+    -- the row would flip a preference with no effect on the book in front of the
+    -- reader — a control that reads one way while the panels behave another.
+    -- That is the same shape of bug the old per-extension version of this row
+    -- shipped, and the fix is the same: do not offer a switch that does not
+    -- switch anything.
+    local hl = plugin.ui and plugin.ui.highlight
+    local panels_plus_owns = hl
+        and (hl._panels_plus_plugin or hl._panels_plus_original_panel_zoom)
+    if not panels_plus_owns then
+        settings[#settings + 1] = {
+            text = _("Panel zoom in Meguru books"),
+            help_text = _("The default for everything Meguru opens, streams and .cbz alike. A book you switch individually with KOReader's own ⋮ → Panel zoom (manga/comic) keeps its own answer; this is what the rest follow."),
+            keep_menu_open = true,
+            checked_func = Reader.panelZoomEnabled,
+            callback = function()
+                Reader.setPanelZoom(plugin.ui, not Reader.panelZoomEnabled())
+            end,
+        }
+    end
 
     settings[#settings + 1] = {
         text = _("Hide status bar"),

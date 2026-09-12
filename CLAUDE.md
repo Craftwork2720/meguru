@@ -73,6 +73,7 @@ meguru/
   credential.lua          what a credential looks like in a URL: redact / restore
   pse.lua                 OPDS-PSE: link extraction, template -> URL, page fetch
   feed.lua                reading a series feed: the rel=next walk, order, neighbour
+  panel.lua               the panels on a page, and the order they are read in
   hook.lua                runtime wraps on OPDSBrowser (sniff, "Meguru this series")
 
   driver/
@@ -88,6 +89,7 @@ meguru/
   ui/
     open.lua              "Meguru this series": resume dialog, marker write, open
     reader.lua            everything grafted onto a running ReaderUI
+    panelzoom.lua         the panel sequence viewer: nav, pre-warm, page boundary
     menu.lua              the two menu surfaces
 ```
 
@@ -111,7 +113,9 @@ Nothing reads it and nothing sweeps it; delete it by hand once, the way the olde
 
 The dependency graph is a DAG with no cycles, and it now has **no lazy edges**:
 the two it used to need (`ui/library.lua` -> `ui/series.lua`, and `ui/menu.lua`
--> `ui/library.lua`) went with those views.
+-> `ui/library.lua`) went with those views. The panel sequence added four and
+kept that property: `panel` -> `doc/image`, `ui/panelzoom` -> `panel`,
+`doc/document` -> `panel`, and `ui/reader` -> `ui/panelzoom`.
 
 ## Series state, and where it lives
 
@@ -1364,6 +1368,176 @@ selection that cannot exist here.
 Nothing reads it. It sits in `settings.reader.lua` on any device that ran the
 build that wrote one, and nothing sweeps it — delete it by hand, or ignore it, the
 way `meguru.sqlite3` and `cache/meguru/` are handled.
+
+### The panel sequence, and the detector it needed
+
+**A long-press shows the page's panels in reading order, one at a time.** It used
+to show exactly one: the region under the finger, in a bare `ImageViewer`. That
+one crop is still what a page *without* a panel grid gets, unchanged — the
+sequence is what the reader gets when there is a sequence to walk.
+
+`meguru/panel.lua` is the detector, and it is pure: a raster goes in
+(`Image.rasterFor`), ordered rectangles come out in **full native** coordinates.
+It knows nothing about documents, pages or fetching — `MeguruDocument:getPanelsFromPage`
+is the seam, and it hands over one decoded buffer and takes back a list.
+
+**The map is ink, not brightness, and that is the whole of the port.** The page
+is rendered down to a 480-pixel scan once; the background is the **median
+luminance of the outer one-percent ring** (the median and not the mean, because a
+ring that is three quarters paper and one quarter a bleed has a mean the page does
+not contain anywhere), and a cell is ink when it departs from that by more than
+`PANEL_INK_DELTA`. Everything the reference does with three channels collapses to
+one difference here, because **every buffer this plugin decodes is BB8** — see
+the `setColorRendering(false)` calls this document already makes. The reference's
+`hasWhiteSeparator` fallback and its greyscale-background variant exist to
+recover a paper colour; a border-relative map never loses it in the first place.
+
+The recursion is the classic cut, and it is short: project ink onto rows and
+columns for one region, trim to the content extent, find the widest gutter on
+each axis, split on the longer one, recurse, and stop when a region has no gutter
+left. `panels_plus` ships the same algorithm. `PANEL_MAX_DEPTH` and
+`PANEL_MAX_PANELS` bound it; the leaves are the panels.
+
+**Two detectors, and merging them would be the mistake.** `getPanelFromPage` — the
+old one — still exists, still answers "which single region is under the finger",
+and is what a long-press falls back to whenever this finds no sequence. They share
+`Image.rasterFor` and `panelNativeFor`, and deliberately **not** a threshold,
+because they fail in opposite directions:
+
+| | scan | a gutter it cannot see |
+|---|---|---|
+| `getPanelFromPage` | 256 px | degrades to "no panel", and a hold that finds nothing does nothing |
+| `Panel.detect` | 480 px | **merges two panels into one** |
+
+That is why the second scan is finer, and it is not a performance knob dressed up
+as one: the gutter floor is a fraction of the scan, so the scan's resolution *is*
+the smallest gutter the cut can see. A 1600x2400 page with a 10-pixel printed
+gutter is 1.06 cells wide at 256 and 2.0 at 480. `panels_plus` arrived at 480 the
+same way. A fallback that inherited this sensitivity would guess where it must
+not, which is precisely what "degrades to no panel" was buying.
+
+**What was left out of the reference, and the one thing left out knowingly.**
+Gone: the shear search (~185 lines, off by default there too), the comic
+border-stroke split (it needs a whole second plane in the map), the 4-koma centre
+split, and the connected-component detector the reference actually uses live —
+an order of magnitude more code than everything in this file. **Kept out on
+purpose: `looksLikePageFurnitureLayout`.** A contents or credits page can pass
+the coverage tests and be accepted as a bogus sequence; the escape is a swipe
+down, and the `dbg` line names the page and the count, so it is diagnosable from
+a log. It is the one place this reduced version is knowingly worse, and it is
+written down rather than discovered.
+
+**Order is a reading direction, and the direction is the book's.**
+`Panel.sortReadingOrder` groups panels into rows by their **top edge** with a
+tolerance that shrinks with the shortest member seen so far — measured against
+the row's *fixed* top and never chained from the previous member, which is what
+stops a staircase of slightly lower panels from growing one row down the page —
+then sorts each row left-to-right for a comic and right-to-left for a manga, and
+holds a panel that sits beside a tall later-row neighbour until after it (the
+`1,2,3,5,6,7,4` order). The direction comes from `Reader.panelZoomMode(ui)`, which
+reads `ui.view.inverse_reading_order` — **not** `Settings.get("manga_order")`.
+That preference is only the floor of KOReader's cascade; the view holds the
+resolved value, which is what turning a page already obeys, and a book that
+answered for itself keeps its answer. The document is told the mode rather than
+reading it, because a document has no view.
+
+**The viewer is four overrides on `ImageViewer`, and stock does the rest.**
+`ui/panelzoom.lua` passes a list of **lazy functions** — `ImageViewer:init` and
+`switchToImageNum` both call an entry that is a function, which is the shape the
+reference uses too — so panels the reader never reaches are never rendered, and
+each render goes through `drawPagePart`, whose LRU decides whether it is fresh
+work. `image_disposable = false` everywhere: those buffers belong to the
+document's tile LRU, and `cacheTile` is what frees them.
+`images_keep_pan_and_zoom = false` is what makes the navigation *classic*: a panel
+opens at best fit instead of inheriting the previous panel's pinch.
+
+The four overrides are `switchToImageNum` (recompute `rotated` per panel, then
+release the one left behind, then re-arm the warm), `onShowNextImage`/`onShowPrevImage`
+(boundary past either end), and `onTap`/`onSwipe`. **Those last two exist for one
+reason:** stock picks the sides from `BD.mirroredUILayout()` — the UI language —
+and a manga read in a Polish UI gets stock's answer backwards. Everything else is
+delegated to stock, including the tap outside the frame that closes the viewer
+and the bottom-left screenshot corner, which are deliberate gestures this must not
+quietly take over. The hardware keys come free: `ImageViewer:init` binds
+`PgFwd`/`PgBack` to next/previous image and `Back` to close whenever `image` is a
+list, so the reference's entire key-handling apparatus is not needed at all.
+
+**Pre-warming reuses the tile LRU; it does not add a cache.** `drawPagePart`
+already stores what it renders under `page|panel|region`, so rendering the *next*
+panel a moment after showing this one makes the swipe a cache hit rather than
+second work. One scheduled action, re-armed on every panel change, and what it
+warms depends on where the reader is: the next panel mid-page, and the next
+page's **decode** at the end of one, so crossing a boundary does not pay for it
+inside the gesture. The delay is the point — a reader swiping quickly re-arms and
+unschedules faster than it, so the warm never does work they did not ask for. The
+guard is `UIManager:isWidgetShown(self)`, which is the whole bookkeeping: a viewer
+that has been closed or handed off is off the stack, so its queued warm is a
+no-op. Both branches are gated on `dead_pages` and the page branch on
+`hasConnection()` — offline, a fetch inside `getPageDims` would sit through its
+timeout with the UI thread blocked, which is worse than the stall it avoids.
+
+**`releasePanelTile` is memory, not correctness — and the difference matters,
+because the wrong reason has been written down once already.** `evictOldest`
+frees a tile's buffer, so the fear was that it could free the bitmap the viewer is
+displaying. It cannot: `drawPagePart` bumps on every hit and `cacheTile` bumps on
+insert, so the panel on screen is always the most recent entry and eviction takes
+an older one. The real cost is the other direction — one dead panel tile per step,
+up to seven of them at 8 entries, each bounded only by `max_native_pixels`, so up
+to ~28 MB of malloc'd bitmap **and** the page tiles ReaderView needs evicted
+alongside. Handing each panel back keeps the LRU at two: the one on screen and the
+one warmed. The key is built by one function (`panelTileKey`) read by both the
+write and the release, because a key that drifts frees nothing and says nothing.
+The price is the one this design was asked for: **going back to a panel re-renders
+it** — from bytes still in the page LRU, so still offline, but re-rendered.
+
+**The page boundary is four statements in a fixed order.** At the last panel,
+forward means the next page; at the first, back means the previous one, opened at
+its last panel. Inside one `tickAfterNext`: resolve the next page's panels
+**first**, so a page with no sequence leaves the reader where they were rather
+than dismissing their viewer and handing them nothing; close the viewer **second**,
+before the turn, because a page turn can reach `installEndOfBookHook` and swap the
+whole reader out — a viewer still on the stack would float above a different book,
+and closing first makes that impossible by construction rather than by a guard;
+then `GotoPage` (exact, unlike `PageForward`, which is a "next view" that is a page
+only because this plugin forces `page_scroll` off); then open the new viewer
+against the layout that resulted. The panel lookup is gated on `hasConnection()`
+for the prefetch reason above. The cost, accepted: the reader paints the new page
+under the viewer, so a boundary crossing is one extra e-ink pass.
+
+**Panels+ present means Meguru takes no part — and the test is per press.**
+`hl._panels_plus_plugin` and `hl._panels_plus_original_panel_zoom` are that
+plugin's own fields, set together when it takes the gesture and cleared together
+when it gives it back. They answer the question that matters — *is Panels+ what
+will handle this press* — where "is Panels+ installed" answers a different one. A
+reader who has it installed but **switched off** is asking for someone else's
+panel zoom, and Panels+' own wrapper delegates to the original handler in exactly
+that case; standing down on mere presence would take panel zoom away from them.
+The check is per press and never cached, because which plugin patches
+`onPanelZoom` first depends on the order their directories sort in.
+
+**The stand-down has to cover the three `panel_zoom_enabled` wraps too, not just
+the viewer.** Those wraps put `Settings.panel_zoom` onto a book with no answer of
+its own — so with the preference off they would set `panel_zoom_enabled` false,
+which is the very field Panels+ gates its own handler on. Meguru would be
+switching off the plugin that replaced it. So when Panels+ owns the gesture,
+`installPanelZoom` installs nothing at all and logs one `info` line per process;
+and the `onReadSettings` wrap re-asks anyway, for the ordering where Panels+
+patches *after* this one. The `Panel zoom in Meguru books` row is hidden for the
+same reason the old per-extension row was replaced: Panels+ forces
+`panel_zoom_enabled` on, so the row would flip a preference with no effect on the
+book in front of the reader — a control that reads one way while the panels
+behave another.
+
+**Logging follows the frequency rule.** `Meguru: page N panel zoom: K panels
+(mode) in X ms` (the milliseconds are the measurement of the recursive cut, which
+is the only place its cost can be seen), `... no sequence (<reason>)` (the
+fall-through to stock; per press on a book with no gutters, which is the
+`crop skip` case again — `dbg`, not `warn`), and `... handed to page N with no
+sequence` are all `dbg`. The stand-down is `info` — a decision, once per process.
+A detection or handoff that *throws* is `warn`, which is what `crash.log` is read
+for. There is deliberately **no** separate "panel warmed" line: the existing
+`panel zoom on page N, region ... rendered WxH` already fires once per panel
+render, including once per warm.
 
 ## Plugin lifecycle facts worth not rediscovering
 

@@ -43,14 +43,26 @@ local _ = require("gettext")
 -- Not a global: every core file that uses `C_` declares it locally, so a plugin
 -- file that skips this line gets a nil call only when the row is built.
 local C_ = _.pgettext
-local T = require("ffi/util").template
+local ffiutil = require("ffi/util")
+local T = ffiutil.template
 
 local Feed = require("meguru/feed")
 local Defaults = require("meguru/doc/defaults")
 local Open = require("meguru/ui/open")
+local Panel = require("meguru/panel")
+local PanelZoom = require("meguru/ui/panelzoom")
 local Settings = require("meguru/settings")
 
 local Reader = {}
+
+--- Monotonic milliseconds, for the panel-detection timing in the log line below.
+--- The same clock `document.lua` measures with, and for the same reason: the
+--- panel scan walks a page's pixels, so its cost is real seconds of a reader's
+--- life and `os.clock` would report it as CPU time.
+local function nowMs()
+    local secs, usecs = ffiutil.gettime()
+    return secs * 1000 + usecs / 1000
+end
 
 --- Off / clockwise / counter-clockwise, as stored in `kopt_rotate_wide_pages`.
 local ROTATE_OFF, ROTATE_RIGHT, ROTATE_LEFT = 0, 1, 2
@@ -413,6 +425,31 @@ function Reader.setPanelZoom(ui, on)
     end
 end
 
+--- The direction this book is read in, as `"manga"` or `"comic"`.
+---
+--- The panel sequence orders a page's panels by this and picks its tap and swipe
+--- sides from it, and there is exactly one source: the same value `ReaderView`
+--- turns pages with. `ui.view.inverse_reading_order` is KOReader's per-book
+--- answer, and Meguru's `Manga mode` row and the plugin-wide `manga_order`
+--- preference both end there — the document seeds the book's own key from the
+--- preference at open time, before `ReadSettings`, and `onMeguruMangaRead` keeps
+--- the live value current. So the cascade is already applied, and reading it
+--- here cannot drift from what turning a page does.
+---
+--- A book that answered for itself therefore keeps its answer, which is the same
+--- rule the panel-zoom preference follows.
+function Reader.panelZoomMode(ui)
+    local view = ui and ui.view
+    if view and view.inverse_reading_order ~= nil then
+        return view.inverse_reading_order and "manga" or "comic"
+    end
+    local configurable = ui and ui.document and ui.document.configurable
+    if configurable and configurable.opdsbook_manga ~= nil then
+        return configurable.opdsbook_manga == 1 and "manga" or "comic"
+    end
+    return Settings.get("manga_order") and "manga" or "comic"
+end
+
 --- Leave KOReader's own cascade alone, and put Meguru's preference underneath it.
 ---
 --- The switch is the stock "⋮ → Panel zoom (manga/comic) → Allow panel zoom", and
@@ -438,6 +475,35 @@ end
 --- preference was on would be pinned on for good, and would survive the reader
 --- turning it off — which is precisely the failure the design above was built to
 --- avoid, arriving from the other side.
+--- Is another plugin the one currently sitting on the long-press?
+---
+--- The fields are `Panels+`'s own, set together when it takes the gesture over
+--- and cleared together when it gives it back (`restoreNativePanelZoom`, from
+--- its `onCloseWidget`). They answer the question that matters — not "is
+--- Panels+ installed", but "is Panels+ the thing that will handle this press" —
+--- and they are the only signal that does.
+---
+--- That distinction has teeth. A reader who has Panels+ installed but switched
+--- *off* in the plugin manager is asking for someone else's panel zoom, and
+--- Panels+' own wrapper delegates to the original handler in exactly that case.
+--- Standing down on the mere presence of the plugin would take panel zoom away
+--- from them; standing down on this leaves it working.
+---
+--- Read per press and never cached, because whichever plugin patches
+--- `onPanelZoom` first depends on the order their directories sort in, and this
+--- has to be right in both.
+local function panelsPlusOwnsGesture(hl)
+    if not hl then
+        return false
+    end
+    return (hl._panels_plus_plugin or hl._panels_plus_original_panel_zoom) and true or false
+end
+
+--- Logged once per process, not once per press: a stand-down is a decision a
+--- reader might ask about, and the answer to "why is Meguru's viewer not
+--- showing" is worth one line — not one per long-press for a whole session.
+local panel_zoom_standdown_logged = false
+
 local function installPanelZoom(ui)
     local hl = ui and ui.highlight
     if not (hl and ui.paging) then
@@ -447,6 +513,20 @@ local function installPanelZoom(ui)
         return true
     end
     hl._meguru_panel_zoom_installed = true
+
+    -- Panels+ handles the long-press for this document, so Meguru takes no part
+    -- in it at all — and that has to include the three wraps below, not just
+    -- the viewer. An `onReadSettings` wrap that put `Settings.panel_zoom` onto
+    -- a book with no answer of its own would turn `panel_zoom_enabled` *off*
+    -- when the preference is off, and Panels+ gates its own handler on that
+    -- very field: Meguru would be switching off the plugin that replaced it.
+    if panelsPlusOwnsGesture(hl) then
+        if not panel_zoom_standdown_logged then
+            panel_zoom_standdown_logged = true
+            logger.info("Meguru: Panels+ owns panel zoom; Meguru's panel viewer stands down")
+        end
+        return false
+    end
 
     -- `config` is named rather than reached through `...`, because the cascade
     -- turns on `config:has(...)`. The rest is still forwarded, so a build that
@@ -464,7 +544,13 @@ local function installPanelZoom(ui)
         -- file is allowed to keep a copy. A file answered in an earlier session
         -- counts exactly as much as one answered in this one.
         self._meguru_panel_zoom_pinned = own and true or false
-        if not own then
+        -- Re-asked here, not only at install: a Panels+ that patched the
+        -- long-press *after* this wrap went in would otherwise have its own gate
+        -- (`panel_zoom_enabled`) switched off by the line below whenever the
+        -- Meguru preference is off — Meguru disabling the plugin that replaced
+        -- it. The three wraps stay installed in that ordering; they just stop
+        -- having a vote about what Panels+ does.
+        if not own and not panelsPlusOwnsGesture(self) then
             -- Stock put the per-extension entry here. This preference is the only
             -- default this plugin recognises.
             self.panel_zoom_enabled = Settings.get("panel_zoom")
@@ -502,6 +588,78 @@ local function installPanelZoom(ui)
                 ds:delSetting("panel_zoom_enabled")
             end
         end
+    end
+
+    -- The long-press itself.
+    --
+    -- Stock's `onPanelZoom` renders the one region `getPanelFromPage` answered
+    -- with and shows it in a bare `ImageViewer`. This replaces that with the
+    -- panel *sequence* when the page has one, and calls stock's own handler
+    -- every other time — so a page with no panel grid behaves exactly as it did
+    -- before this existed, and the two detectors back each other up rather than
+    -- one being a rewrite of the other.
+    --
+    -- Stock's `onHold` has already gated on `self.panel_zoom_enabled` by the
+    -- time this runs, so the preference is not re-checked here.
+    local orig_zoom = hl.onPanelZoom
+    hl.onPanelZoom = function(self, arg, ges)
+        local function stock()
+            if type(orig_zoom) == "function" then
+                return orig_zoom(self, arg, ges)
+            end
+            return false
+        end
+
+        -- Panels+ is on this gesture: let it through rather than showing a
+        -- second viewer on top of its own. Asked per press, so a Panels+ closed
+        -- mid-session hands the gesture straight back.
+        if panelsPlusOwnsGesture(self) then
+            return stock()
+        end
+        local ui = self.ui
+        local doc = ui and ui.document
+        if not (doc and doc.provider == "meguru"
+            and type(doc.getPanelsFromPage) == "function") then
+            return stock()
+        end
+        self:clear()
+        local view = ui.view
+        local pos = view and type(view.screenToPageTransform) == "function"
+            and view:screenToPageTransform(ges.pos)
+        -- `page` as well as the point: the document below will happily try to
+        -- fetch page `nil`, which is a socket call rather than an error.
+        if not (pos and pos.page) then
+            return stock()
+        end
+
+        local mode = Reader.panelZoomMode(ui)
+        local t_start = nowMs()
+        local ok_detect, panels, reason = pcall(doc.getPanelsFromPage, doc,
+            pos.page, mode)
+        if not ok_detect then
+            logger.warn("Meguru: panel zoom detection failed:", panels)
+            return stock()
+        end
+        if not panels then
+            -- Repeats per press on a book whose pages have no gutters, which is
+            -- why it is `dbg` and not `warn`: the same frequency argument the
+            -- crop-skip line lost on. The reason names the test that refused.
+            logger.dbg("Meguru: page", pos.page, "panel zoom: no sequence ("
+                .. tostring(reason) .. ")")
+            return stock()
+        end
+        logger.dbg(string.format(
+            "Meguru: page %d panel zoom: %d panels (%s) in %d ms",
+            pos.page, #panels, mode, nowMs() - t_start))
+
+        local start = Panel.indexAt(panels, pos.x, pos.y) or 1
+        local ok_show, shown = pcall(PanelZoom.open, ui, pos.page, panels, start, mode)
+        if not ok_show or not shown then
+            logger.warn("Meguru: panel zoom viewer failed:",
+                ok_show and "not shown" or tostring(shown))
+            return stock()
+        end
+        return true
     end
 
     return true

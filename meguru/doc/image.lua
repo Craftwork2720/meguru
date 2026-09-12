@@ -445,6 +445,78 @@ function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th)
     return bb
 end
 
+-- A cheap per-pixel luminance accessor over a BlitBuffer's raw bytes.
+--
+-- This is the bottom of every scan that asks a question about a page's *pixels*
+-- rather than about its geometry: the auto content-box pass, its native
+-- refinement, and the panel gutter scan. It lives here, beside the decoder,
+-- because it is the one answer to "what is this buffer's byte layout" — it used
+-- to live in `document.lua`, which left the panel segmenter unable to read a
+-- buffer without importing a document.
+--
+-- Returns `{ w, h, luma(y, x) }`, or nil for anything it cannot read: a
+-- degenerate size, a pixel type this module has no bytes-per-pixel for, or a
+-- buffer whose byte count does not cover the stride it reports.
+--
+-- `luma` returns 0-255 in every case, because the three pixel shapes it handles
+-- are reduced to one number here rather than by each caller: BB8 is already the
+-- value; BB8A takes the *darker* of its two channels (the alpha channel of a
+-- PNG is not a brightness, and taking the minimum keeps a translucent white
+-- from reading as content); RGB takes the mean of the three. `getInverse()` is
+-- honoured, so an inverted buffer reads as what the reader sees rather than as
+-- what the file stores — that is what makes an inverted (white-on-black) page
+-- scan the same way as a normal one, and it is why the panel detector no longer
+-- has to give up on a dark page entirely.
+--
+-- The closure reads through `data:byte`, so the whole buffer is copied into a
+-- Lua string once per call to this function. That is deliberate: the scan runs
+-- tens of thousands of reads, and one copy beats one ffi cast per read.
+local function rasterFor(bb)
+    if not (bb and bb.getWidth and bb.getHeight) then
+        return nil
+    end
+    local w = bb:getWidth()
+    local h = bb:getHeight()
+    if not w or not h or w < 2 or h < 2 then
+        return nil
+    end
+    local bpp = bbBytesPerPixel(bb:getType())
+    if not bpp then
+        return nil
+    end
+    local inv = bb:getInverse() == true
+    local data = Blitbuffer.tostring(bb)
+    local stride = tonumber(bb.stride)
+    if not stride or stride < w * bpp then
+        stride = w * bpp
+    end
+    if #data < stride * h then
+        stride = w * bpp
+        if #data < stride * h then
+            return nil
+        end
+    end
+    local function luma(y, x)
+        local off = y * stride + x * bpp
+        local lum
+        if bpp == 1 then
+            lum = data:byte(off + 1)
+        elseif bpp == 2 then
+            local a = data:byte(off + 1)
+            local b = data:byte(off + 2)
+            lum = a < b and a or b
+        else
+            lum = (data:byte(off + 1) + data:byte(off + 2) + data:byte(off + 3)) * (1/3)
+        end
+        if inv then
+            lum = 255 - lum
+        end
+        return lum
+    end
+    return { w = w, h = h, luma = luma }
+end
+Image.rasterFor = rasterFor
+
 Image.DECODE_TOO_LARGE = DECODE_TOO_LARGE
 -- Exported because document.lua logs it: the line that explains why a lossless
 -- page is being skipped quotes the limit, and it had no way to reach it. It
