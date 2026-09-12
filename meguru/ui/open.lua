@@ -11,23 +11,21 @@ happened to be on.
 
 Two jobs, then:
 
-  * register the book — server, series and item — so a later sync has something
-    to attach to and the book has neighbours;
+  * work out what series a book belongs to, so the marker can carry it;
   * write a marker thin enough to open the stream with no database at all.
 
-Registering a book does not walk the series feed — that is `sync.lua`, it costs
-tens of seconds, and it must never sit between a tap and a book opening. It does
-**not** walk before opening; `openAsBook` starts one *after* the handoff, in the
-background and silently, which is the difference between a delay and a
-consequence. See `startBackgroundSync` for why it is worth starting at all.
-Two walks do happen here, both deliberate and both bounded rather than
-oversights. **`seriesItems` below** runs on a tap, because the row at the top of
-a series feed cannot answer "first unread chapter" from the page on screen; it is
-bounded by a small page cap and the short `Net.RESUME_*` timeouts, and its
-comment is where the bound is argued. **`startBackgroundSync`** runs after the
-handoff, because the alternative is a series the catalog knows one book of — and
-that is not a walk *here* so much as a walk `SyncJob` runs on a tick while the
-reader reads.
+**A marker is written only for a book the reader is opening, and it is written
+last.** Planning and writing are split (`planMarker` / `commitMarker`) because
+the resume dialog needs the marker's *path* before the file exists — the sidecar
+that answers "has this device read it" lives at a path-derived location.
+
+Nothing here walks a feed to fill anything in. A book that could not be
+identified is still a perfectly good book: the marker opens and reads, and it
+simply has no series to navigate. The one walk on this path is **`seriesItems`
+below**, on a tap, because the row at the top of a series feed cannot answer
+"first unread chapter" from the page on screen; it is bounded by a small page cap
+and the short `Net.RESUME_*` timeouts, and its comment is where the bound is
+argued.
 --]]
 
 local ButtonDialog = require("ui/widget/buttondialog")
@@ -39,7 +37,6 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 local Base = require("meguru/driver/base")
-local Catalog = require("meguru/catalog")
 local Feed = require("meguru/feed")
 local FS = require("meguru/fs")
 local Marker = require("meguru/marker")
@@ -48,8 +45,6 @@ local Net = require("meguru/net")
 local PSE = require("meguru/pse")
 local Settings = require("meguru/settings")
 local Sources = require("meguru/sources")
-local Sync = require("meguru/sync")
-local SyncJob = require("meguru/ui/syncjob")
 
 Base.loadDrivers()
 
@@ -204,26 +199,22 @@ function Open.noteCatalogAuthor(browser, catalog)
     end
 end
 
---- Which driver serves this catalog: what was sniffed this session, else what
---- the catalog recorded when a book was last opened from it, else nothing.
+--- Which driver serves this catalog: what was sniffed this session, else nothing.
 ---
---- The sniff outranks the stored kind because it is current: the stored one may
---- have been written by a build that guessed differently.
----
---- There used to be a third, strongest source above both — a manual override set
---- from the server-administration screen. That screen is gone, so `kind_source`
---- can no longer be `'manual'`; a mis-sniffed server is now corrected only by
---- clearing its row. The ordering below is the guard the override used to be.
+--- **The middle source is gone with the catalog.** It used to fall back to the
+--- kind recorded the last time a book was opened from this server, which was how
+--- a feed that signs itself with an unrecognised `<author>` still got a driver.
+--- There is nowhere to record it now — but the *marker* carries the kind, so a
+--- book already opened still knows its server, and a fresh browse has
+--- `Base.kindFor`'s inference below to fall back on. What is lost is only the
+--- memory of a server whose feeds nothing can identify at all, and for that
+--- server nothing has changed: it has no next chapter either way.
 function Open.serverKindFor(browser)
     local name = catalogTitle(browser)
     if not name then
         return nil
     end
-    local server = Catalog.serverByName(name)
-    if sniffed[name] then
-        return sniffed[name], "author"
-    end
-    return server and server.kind, server and server.kind_source
+    return sniffed[name], sniffed[name] and "author" or nil
 end
 
 --- The language the user is browsing this server in.
@@ -429,46 +420,37 @@ local function freshResumeTarget(driver, feed, feed_url, ctx, series, select)
     -- `readingOrder` above is what decides *which* entry this is, and it stays:
     -- the browser's page is newest-first, so picking the resume point by feed
     -- order answered with the lowest-numbered chapter of the page instead of the
-    -- furthest read. What does **not** happen here any more is numbering. This
-    -- page is one page of the series and not necessarily its first, so a
-    -- position taken from it is a place in the page rather than in the series;
-    -- `Catalog.upsertItem` keeps the stored position for a row the catalog
-    -- knows, which is the only one that means anything.
-    Catalog.upsertItem(series.id, best, Catalog.nextTimestamp())
-    return Catalog.itemByKey(series.id, best.item_key)
+    -- furthest read.
+    --
+    -- **Nothing is written.** This used to number the page and upsert the winner,
+    -- which is what made a position taken from a *page* decide reading order for
+    -- the whole series — the collision that carried a reader from chapter 41 to
+    -- chapter 2. There is no order to write into now: the entry is returned and
+    -- the caller uses it.
+    return best
 end
 
---- Register the server, series and item of an opened book, returning the item's
---- catalog row.
+--- Work out what series an opened book belongs to, and return it with the item.
 ---
 --- Returns nil when the series cannot be identified or the item cannot be built.
 --- That is a supported outcome, not a failure: the marker alone opens and reads,
---- and the book merely has no neighbours until something else brings its series
---- into the catalog.
+--- and the book merely has no neighbours — nothing derives from this that the
+--- book needs in order to be read.
 ---
---- Note the order: the server row is written before the driver is resolved. That
---- ordering used to matter more than it does now — while the kind had a manual
---- override in a menu, a server with no row could not be corrected, so a failed
---- author sniff stranded a server permanently. There is no override any more, so
---- the row is simply a record: it is written on the strength of the configured
---- catalog alone, which is enough to describe a server, since name, host and
---- redacted root all come from `settings/opds.lua`.
+--- **It writes nothing.** It used to write a server row, a series row and an item
+--- row before answering, which is what made "what series is this" a question only
+--- the database could answer. Everything it found is now returned for the marker
+--- to carry, and the answer is the same shape a marker produces
+--- (`Marker.seriesContext`) so a caller cannot tell the two apart.
+---
+--- The `conn` check stays and is not about writing: it is what tells "this
+--- catalog title exists in `settings/opds.lua`" from "the title was mistyped",
+--- and the difference is the whole message a reader would need.
 local function registerBook(browser, server_name, kind, kind_source, raw_entry, stream, ctx)
     local conn = Sources.connection(server_name)
     if not conn then
         return why("no catalog entry with this title",
             "in settings/opds.lua: " .. tostring(server_name))
-    end
-
-    local server = Catalog.upsertServer({
-        name         = server_name,
-        kind         = kind,
-        kind_source  = kind and (kind_source or "author") or nil,
-        host         = Sources.host(conn.url),
-        root_url     = Sources.redactedRoot(conn.url),
-    })
-    if not server then
-        return why("could not record the server row")
     end
 
     local driver = kind and Base.forKind(kind)
@@ -497,32 +479,28 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
         return why("driver could not name the series",
             tostring(raw_entry and raw_entry.title))
     end
-    local series = Catalog.upsertSeries(server.id, {
-        remote_id  = found.series_remote_id,
-        name       = series_name,
-        name_sort  = Naming.sortKey(series_name),
-        -- Captured here rather than in the marker: the cover belongs to the
-        -- series, so it has one home instead of a copy in every book file.
-        -- `upsertSeries` keeps whatever is already stored when this is nil, so
-        -- a feed that offered no image never erases one.
-        cover_url  = Base.coverFromFeed(feed, raw_entry, feed_url or stream.href),
-    })
-    if not series then
-        return why("could not record the series row", series_name)
-    end
 
     local item = driverItemFor(driver, feed, feed_url, stream, ctx)
     if not item then
         return why("driver could not build the item from the retained feed",
             tostring(#(feed.entry or {})) .. " entry(ies) in it")
     end
-    Catalog.upsertItem(series.id, item, Catalog.nextTimestamp())
+
+    -- The context a marker would give, for a book that has no marker yet. Field
+    -- for field the same names, so everything downstream takes one shape.
+    local series = {
+        server_name      = server_name,
+        server_kind      = kind,
+        series_remote_id = found.series_remote_id,
+        series_name      = series_name,
+        series_cover_url = Base.coverFromFeed(feed, raw_entry, feed_url or stream.href),
+        item_key         = item.item_key,
+        lang             = ctx and ctx.lang,
+    }
 
     local registered = {
-        server = server,
-        -- `upsertSeries` returns the whole row, so this needs no second read.
-        series = series,
-        item   = Catalog.itemByKey(series.id, item.item_key),
+        context = series,
+        item    = item,
         -- Where the reader actually is in this series, asked of the feed the
         -- browser just fetched rather than of the catalog, which only knows what
         -- the last sync saw. Nil when nothing in that feed has been read, or when
@@ -548,8 +526,8 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
     --
     -- Every field goes through `tostring`: a status line must never be able to
     -- take down the operation it exists to report on, which it once did here.
-    logger.info("Meguru: catalogued", item.display_title or item.title,
-        "(series " .. tostring(series.remote_id)
+    logger.info("Meguru: identified", item.display_title or item.title,
+        "(series " .. tostring(series.series_remote_id)
         .. ", kind " .. tostring(kind)
         .. ", key " .. tostring(item.item_key) .. ")")
     return registered
@@ -579,83 +557,6 @@ end
 --- Rebuilding while the menu is on screen does not update what is displayed —
 --- the shown widget holds its own snapshot — but the table it is rebuilt from
 --- is what the next `onShowMenu` reads, so closing and reopening it is enough.
-local function refreshReaderMenu()
-    local ok_req, ReaderUI = pcall(require, "apps/reader/readerui")
-    local ui = ok_req and ReaderUI and ReaderUI.instance
-    local doc, menu = ui and ui.document, ui and ui.menu
-    if not (doc and doc.provider == "meguru" and menu
-        and type(menu.setUpdateItemTable) == "function") then
-        return
-    end
-    local ok, err = pcall(menu.setUpdateItemTable, menu)
-    if not ok then
-        logger.warn("Meguru: could not rebuild the reader menu:", err)
-    end
-end
-
---- Start the walk that fills in a series this path has just created.
----
---- **A registered book is what makes this necessary, and a missing neighbour is
---- what makes it worth doing.** `registerBook` writes one item — deliberately,
---- because a walk must never sit between a tap and a book opening. But the
---- catalog is then the only thing that knows where the reader is in the series,
---- and with one item in it there is no *next*: the reader's menu offers
---- "Find the next chapter" instead of the chapter itself, the "auto-open next at
---- the end" toggle is not even built (it is gated on there being somewhere to
---- go), and finishing the volume silently falls back to KOReader's own
---- end-of-book dialog. Every one of those is downstream of the same single row.
----
---- So the walk happens *after* the handoff, in the background, and neither the
---- tap nor the book pays for it.
----
---- **Gated by `Sync.due`, and never with `force`.** The gate is what stops a
---- reader adding three volumes of one series from paying for three walks —
---- and it costs nothing on the first, because a series with no `synced_at` is
---- never "fresh". `force` would skip the *backoff* half too, and that half is
---- the one that matters here: a server whose walk just failed would be walked
---- again on the very next book added from it, for as long as it kept failing.
----
---- **The connection is checked here, not only at the tap.** A walk that starts
---- and fails because the wifi dropped is recorded as a *server* failure, which
---- pushes the series into backoff for a reason the server had no part in.
-local function startBackgroundSync(registered)
-    local server = registered and registered.server
-    local series = registered and registered.series
-    if not (server and series and series.id) then
-        -- Said out loud, though the caller logged its own reason too: "the walk
-        -- was not due" and "the trigger never ran" look identical in a log that
-        -- only records the successes, and they need opposite fixes.
-        logger.info("Meguru: nothing to sync in the background"
-            .. " (no catalog row for this book's series)")
-        return
-    end
-    if not NetworkMgr:isConnected() then
-        logger.info("Meguru: no connection - not syncing", series.name,
-            "in the background")
-        return
-    end
-    -- The TTL comes from the caller rather than from inside `Sync.due`, whose
-    -- whole claim is that it reads the series row it is given and nothing else.
-    local due, reason = Sync.due(series, { ttl = Settings.get("sync_ttl_seconds") })
-    if not due then
-        logger.info("Meguru: background sync of", series.name, "not due (", reason, ")")
-        return
-    end
-    logger.info("Meguru: background sync started for", series.name,
-        "(series " .. tostring(series.remote_id) .. ")")
-    -- `silent`: no dialog, no Cancel, no repaint. `timeout = "resume"` is the
-    -- only bound available on a walk nobody can stop — see `SyncJob.run`.
-    -- `opts.lang` is deliberately not passed: `openAsBook` already recorded the
-    -- browsing language through `Catalog.setServerLang`, and a second way to
-    -- name it is how the two would come to disagree.
-    SyncJob.run(server, series, function(ok)
-        -- Only on success: a failed walk left the catalog as it was, so the
-        -- menu is already right about it.
-        if ok then
-            refreshReaderMenu()
-        end
-    end, { silent = true, timeout = "resume" })
-end
 
 -- Opening from the catalog ------------------------------------------------------
 
@@ -819,8 +720,8 @@ end
 --- after a database rebuild, or a book whose series was never catalogued. There
 --- the book is all there is to name, which is what the title used to say
 --- unconditionally.
-local function dialogTitle(series, item)
-    local name = series and series.name
+local function dialogTitle(context, item)
+    local name = context and context.series_name
     if type(name) == "string" and name:find("%S") then
         return T(_("Meguru: %1"), name)
     end
@@ -861,6 +762,34 @@ end
 --- The count is the *target's* own, not the count of the book being opened, and
 --- the page is named only when it is the page that book will actually open at. A
 --- book already read on this device resumes where KOReader left the reader —
+--- Where a book's marker file sits, from the series it belongs to.
+---
+--- The one place that names a marker *before* one exists, and it is deliberately
+--- the same pair of calls `planMarker` makes — `Marker.dirFor` then
+--- `Marker.pathFor` — because the question "is this book already on disk" and
+--- the write "put it here" must not be able to disagree. `dirFor` reads the
+--- server name and the series; `pathFor` reads the title and the natural key;
+--- no template is involved, which is what lets this answer for a chapter whose
+--- stream has never been resolved.
+---
+--- Nil when the context cannot name a series: a flat book has no folder of its
+--- own, and its path comes from `target.marker_path` if it has one at all.
+local function markerPathFor(context, item)
+    if not (context and context.server_name and item and item.item_key) then
+        return nil
+    end
+    local dir = Marker.dirFor(context, context, {
+        base_dir      = Marker.baseDir(),
+        server_folder = Settings.get("marker_server_dir") and true or false,
+    })
+    return Marker.pathFor(dir, {
+        server_name      = context.server_name,
+        series_remote_id = context.series_remote_id,
+        item_key         = item.item_key,
+        title            = item.title,
+    })
+end
+
 --- `offerResume`'s own rule, one button up — so naming the server's page for it
 --- would promise a page the tap does not deliver. A book with no sidecar is
 --- seeded silently from `desc.last_read` by `MeguruDocument:init`, and that is
@@ -869,13 +798,16 @@ end
 --- That coupling is the thing to keep in step: if the silent seed ever changes,
 --- this test has to change with it, or the button starts lying.
 local function jumpPage(target, series)
-    local row = series and Catalog.itemByKey(series.id, target.item_key) or nil
-    local marker = (row and row.marker_path) or target.marker_path
+    -- Recomputed rather than read off a row: a marker's path is a pure function
+    -- of its identity and its series, which is the same two functions that
+    -- decided where it was written. See `markerPathFor`.
+    local marker = series and markerPathFor(series, target) or nil
+    marker = marker or target.marker_path
     if type(marker) == "string" and marker ~= "" and FS.exists(marker)
         and not neverOpened(marker) then
         return nil
     end
-    local count = tonumber(target.page_count or (row and row.page_count))
+    local count = tonumber(target.page_count)
     return usablePage(target.last_read, count)
 end
 
@@ -1139,7 +1071,7 @@ local function seriesItems(info, conn)
     if #pages == 0 and driver.unreadFilter then
         logger.info("Meguru: filtered series walk yielded nothing (", tostring(reason),
             ") - asking the canonical feed")
-        pages, complete, reason = walk(nil, { lang = Catalog.serverLang(info.server_name) })
+        pages, complete, reason = walk(nil, { lang = info.ctx and info.ctx.lang })
         -- The canonical feed carries no read flag, so its page counters are all
         -- this answer can rest on.
         basis = "counters"
@@ -1167,19 +1099,18 @@ end
 
 --- Open the first unread volume of the series the row was offered for.
 ---
---- Writes exactly one item — the one it is about to open — and leaves the
---- siblings to the background walk it starts at the end, which is the same walk
---- `openAsBook` starts and is gated the same way. It is deliberately *not*
---- started from `openCatalogItem`: that funnel is also reached from the file
---- manager and History, where there is no browser feed to walk from.
+--- **It writes nothing and starts no walk.** The target is the entry the
+--- canonical feed gave up, and it is handed straight to the opener, which is what
+--- writes its marker. The siblings were never this function's business: a
+--- neighbour is fetched when the reader asks for one.
 ---
---- Mirrors the server and series half of `registerBook` rather than calling it:
---- that function is built around a book that was tapped, and there is no book
---- here. The two must agree on how a series row is found and named, so if the
---- resolution below is ever changed, `registerBook` is where to change it too.
+--- Mirrors the series half of `registerBook` rather than calling it: that
+--- function is built around a book that was tapped, and there is no book here.
+--- The two must agree on how a series is found and named, so if the resolution
+--- below is ever changed, `registerBook` is where to change it too.
 --- The resolution of the *resume point* is the other half of that agreement, and
 --- it is not mirrored but shared: both end at `offerResume`, and both have to
---- arrive with the fresh answer in hand rather than letting it ask the catalog.
+--- arrive with the fresh answer in hand.
 function Open.openFirstUnread(browser, info)
     local conn = Sources.connection(info.server_name)
     if not conn then
@@ -1190,31 +1121,20 @@ function Open.openFirstUnread(browser, info)
         return
     end
 
-    local server = Catalog.upsertServer({
-        name         = info.server_name,
-        kind         = info.kind,
-        kind_source  = info.kind and (info.kind_source or "author") or nil,
-        host         = Sources.host(conn.url),
-        root_url     = Sources.redactedRoot(conn.url),
-    })
-    if not server then
-        return
-    end
-
     local series_name = info.driver.seriesName(info.feed, info.first_entry, info.ctx)
     if type(series_name) ~= "string" or series_name == "" then
         logger.warn("Meguru: could not name the series behind this feed")
         return
     end
-    local series = Catalog.upsertSeries(server.id, {
-        remote_id = info.remote_id,
-        name      = series_name,
-        name_sort = Naming.sortKey(series_name),
-        cover_url = Base.coverFromFeed(info.feed, info.first_entry, info.feed_url),
-    })
-    if not series then
-        return
-    end
+    -- The context a marker would give, for a series that has no marker yet.
+    local series = {
+        server_name      = info.server_name,
+        server_kind      = info.kind,
+        series_remote_id = info.remote_id,
+        series_name      = series_name,
+        series_cover_url = Base.coverFromFeed(info.feed, info.first_entry, info.feed_url),
+        lang             = info.ctx and info.ctx.lang,
+    }
 
     -- The series from its canonical feed, not from the page on screen — see
     -- `seriesItems`. `conn` is the connection resolved at the top of this
@@ -1252,46 +1172,22 @@ function Open.openFirstUnread(browser, info)
     -- chapter: numbering it here gave a reader at chapter 41 the position
     -- chapter 1 holds, and `orderedItems` sorts on exactly that column. The
     -- chapter then sat next to chapter 1 in reading order and `neighbors`
-    -- answered "next" with chapter 2. `Catalog.upsertItem` now keeps the stored
-    -- position for a row it knows and appends one it does not; see its comment
-    -- for the whole of why an open may not number anything.
-    Catalog.upsertItem(series.id, target, Catalog.nextTimestamp())
-    local row = Catalog.itemByKey(series.id, target.item_key)
-    if not row then
-        return
-    end
-
+    -- answered "next" with chapter 2.
+    --
+    -- **Nothing is written, and no walk is started.** The target is the entry
+    -- the feed just gave up, and it is handed straight to the opener — which is
+    -- what writes its marker. The background walk that used to follow is gone
+    -- with the catalog it filled: a neighbour is now fetched when the reader asks
+    -- for one, by `Reader.openNeighbor`.
     local manager = browser and browser._manager
     local host = (manager and manager.ui) and manager or fallback_host
-    -- `row` twice, and the second one is load-bearing: it is the book to open
+    -- `target` twice, and the second one is load-bearing: it is the book to open
     -- *and* the answer to "where is this reader in the series". Without it the
-    -- dialog asks the catalog instead, whose rule is "furthest with any
-    -- progress" rather than "first unfinished" — so on a series read to volume 6
+    -- dialog asks the server instead, whose rule is "furthest along in reading
+    -- order" rather than "first unfinished" — so on a series read to volume 6
     -- with 7 and 8 started, this row opened volume 7 while the only "Continue"
     -- button on the dialog pointed at volume 8. See `openCatalogItem`.
-    Open.openCatalogItem(host, server, series, row, row)
-
-    -- The same series-filling walk the download-dialog button starts, for the
-    -- same reason and with the same gate. This row used to be left out — the
-    -- argument was that it would be a *second* walk, over the same feed
-    -- `seriesItems` has just read, and that its sibling entry point can afford
-    -- one while this one cannot.
-    --
-    -- That argument is true about the cost and wrong about the reader: tapping
-    -- "▶ Meguru this series" *here* means the same thing it means there — add
-    -- this series — and a reader who used this row got a one-item series, no
-    -- neighbour row and no auto-open, with "Find the next chapter" as the only
-    -- way out. Two walks on the first tap per TTL, and one from then on, is the
-    -- cheaper of the two prices.
-    --
-    -- Not spawned from `openCatalogItem`, deliberately: that funnel is also
-    -- reached from the file manager and History, where there is no feed to walk.
-    UIManager:nextTick(function()
-        local ok, err = pcall(startBackgroundSync, { server = server, series = series })
-        if not ok then
-            logger.warn("Meguru: the background sync could not be started:", err)
-        end
-    end)
+    Open.openCatalogItem(host, series, target, target)
 end
 
 --- Offer a starting point, then open. Calls `opts.open()` either way.
@@ -1342,7 +1238,7 @@ end
 --- has just asked the question, so neither re-asks it.
 ---
 --- @param opts { count, file, target, open, open_item }
-function Open.offerResume(host, server, series, item, opts)
+function Open.offerResume(host, context, item, opts)
     local file, open = opts.file, opts.open
 
     -- Has this book been read here before? It decides what "continue" means and
@@ -1358,11 +1254,14 @@ function Open.offerResume(host, server, series, item, opts)
     -- another one. It is a genuine either/or, not a preference — "sync to page
     -- 60" cannot be said about a book the server last saw you at page 60 of,
     -- while pointing at volume 5.
+    -- `opts.target` only. It used to fall back to the catalog's furthest row
+    -- with any progress, which answered a *different* question from the fresh
+    -- read the callers do — "the last row anything was read into" rather than
+    -- "the first chapter not finished" — and gave two different volumes for the
+    -- same series depending on which path reached the dialog. With no catalog
+    -- there is nothing to fall back to, and no server answer is the honest
+    -- answer when nothing has one.
     local position = opts.target
-    if not position and server and series then
-        local found = Catalog.resumeTarget(series.id)
-        position = found and found.item or nil
-    end
 
     local server_page, jump
     if position and item and position.item_key == item.item_key then
@@ -1497,7 +1396,7 @@ function Open.offerResume(host, server, series, item, opts)
                 -- in two different books, and it is the book name that says so.
                 -- The page is `jumpPage`, which refuses to name one for a book
                 -- this device has already read.
-                text = buttonLabel(_("Continue"), jump, jumpPage(jump, series), true),
+                text = buttonLabel(_("Continue"), jump, jumpPage(jump, context), true),
                 callback = function()
                     UIManager:close(dialog)
                     -- Opening the marker this was called for as well would leave
@@ -1514,13 +1413,7 @@ function Open.offerResume(host, server, series, item, opts)
                     -- differ, so the shape is built here rather than at the
                     -- call, and it disappears with the rows.
                     local open_target = opts.open_item or function(chosen)
-                        Open.openItemSilently(host, {
-                            server_name      = server and server.name,
-                            server_kind      = server and server.kind,
-                            series_remote_id = series and series.remote_id,
-                            series_name      = series and series.name,
-                            series_cover_url = series and series.cover_url,
-                        }, chosen)
+                        Open.openItemSilently(host, context, chosen)
                     end
                     once(function() open_target(jump) end)
                 end,
@@ -1531,7 +1424,7 @@ function Open.offerResume(host, server, series, item, opts)
     dialog = ButtonDialog:new{
         -- The series, named once. Every button names its own book and page, so
         -- the title does not have to choose between them.
-        title = dialogTitle(series, item),
+        title = dialogTitle(context, item),
         buttons = buttons,
     }
     UIManager:show(dialog)
@@ -1562,7 +1455,7 @@ end
 --- back out of the marker rather than resolved from the network.
 ---
 --- Returns the plan, or nil after reporting why.
-local function planMarker(server, series, item)
+local function planMarker(context, item)
     -- **The path is recomputed rather than read off a row.** It used to be
     -- `item.marker_path`, remembered in the catalog when the marker was written,
     -- which answered "is this book already on disk" in one column. With no
@@ -1572,12 +1465,12 @@ local function planMarker(server, series, item)
     -- `pathFor` and `naturalKey` read; no template is needed, which is what
     -- lets this happen *before* `resolveStream` and keep its saving.
     local identity = {
-        server_name      = server.name,
-        series_remote_id = series.remote_id,
+        server_name      = context.server_name,
+        series_remote_id = context.series_remote_id,
         item_key         = item.item_key,
         title            = item.title,
     }
-    local dir = Marker.dirFor(identity, series, {
+    local dir = Marker.dirFor(identity, context, {
         base_dir      = Marker.baseDir(),
         server_folder = Settings.get("marker_server_dir") and true or false,
     })
@@ -1592,14 +1485,18 @@ local function planMarker(server, series, item)
         -- had no count to bound.
         local existing = Marker.load(path)
         return {
-            item     = item,
-            server   = server,
-            path     = path,
-            existing = true,
-            count    = existing and tonumber(existing.count) or nil,
+            item        = item,
+            server_name = context.server_name,
+            path        = path,
+            existing    = true,
+            count       = existing and tonumber(existing.count) or nil,
         }
     end
 
+    -- `Feed.resolveStream` wants the server by name and kind, which is exactly
+    -- the pair a marker carries; the shim is here rather than at the call sites
+    -- so there is one of it.
+    local server = { name = context.server_name, kind = context.server_kind }
     local template, count = Feed.resolveStream(item, server)
     if type(template) ~= "string" or template == "" then
         logger.warn("Meguru: no page stream for", item.title)
@@ -1615,18 +1512,18 @@ local function planMarker(server, series, item)
     -- -- a marker context or the shim `openItemSilently` builds from one -- so
     -- none of this costs a query.
     local desc = Marker.new{
-        server_name      = server.name,
-        series_remote_id = series.remote_id,
-        series_name      = series.name,
-        server_kind      = server.kind,
+        server_name      = context.server_name,
+        series_remote_id = context.series_remote_id,
+        series_name      = context.series_name,
+        server_kind      = context.server_kind,
         item_key         = item.item_key,
         title            = item.title,
         template         = template,
         count            = count,
         last_read        = item.last_read,
-        lang             = server.lang,
+        lang             = context.lang,
         cover_url        = item.cover_url,
-        series_cover_url = series.cover_url,
+        series_cover_url = context.series_cover_url,
     }
     -- `dir` and `path` from above, deliberately not recomputed. `dirFor` reads
     -- only the server name and the series, and `pathFor` only the title and the
@@ -1635,12 +1532,12 @@ local function planMarker(server, series, item)
     -- consults the directory it is about to write into. One question, one
     -- answer, handed on to `saveAt`.
     return {
-        item     = item,
-        server   = server,
-        desc     = desc,
-        path     = path,
-        existing = false,
-        count    = count,
+        item        = item,
+        server_name = context.server_name,
+        desc        = desc,
+        path        = path,
+        existing    = false,
+        count       = count,
     }
 end
 
@@ -1657,12 +1554,17 @@ function commitMarker(plan)
     if not file then
         return nil
     end
-    Catalog.setMarkerPath(plan.item.id, file)
+    -- Nothing is remembered about where it went. The catalog used to keep the
+    -- marker's path per item, which is how an open found a file whose location
+    -- the current settings no longer derive — and that is gone: `markerPathFor`
+    -- recomputes the same answer from the same two functions that chose it. The
+    -- cost is accepted and named in CLAUDE.md: a reader who changes the save
+    -- folder gets a second marker for a book they had already opened.
 
     -- Same credentials this book will be fetched with, kept in memory only so
     -- the very first page does not race the built-in plugin's own settings
     -- flush. Never written into the marker.
-    local conn = Sources.connection(plan.server.name)
+    local conn = Sources.connection(plan.server_name)
     if conn then
         Sources.remember(file, conn.username, conn.password)
     end
@@ -1706,17 +1608,7 @@ end
 --- rather than at every call site — the two functions below want those shapes,
 --- and building them once keeps a caller from inventing a third.
 function Open.openItemSilently(host, context, item)
-    local server = {
-        name = context.server_name,
-        kind = context.server_kind,
-        lang = context.lang,
-    }
-    local series = {
-        remote_id = context.series_remote_id,
-        name      = context.series_name,
-        cover_url = context.series_cover_url,
-    }
-    local plan = planMarker(server, series, item)
+    local plan = planMarker(context, item)
     if not plan then
         return nil
     end
@@ -1760,9 +1652,13 @@ end
 --- which is the one thing asking the server was supposed to prevent. The cost
 --- this trades back is one feed fetch per open, `Net.RESUME_*`-bounded and only
 --- when the network is up.
-local function currentResumeTarget(server, series)
-    local driver = server and server.kind and Base.forKind(server.kind)
-    local conn = server and Sources.connection(server.name)
+local function currentResumeTarget(context)
+    -- `context` is `Marker.seriesContext`'s shape — what a marker says about its
+    -- series — so this reads the same fields whether the book came from a marker
+    -- or from a browse that has just identified its series.
+    local kind = context and context.server_kind
+    local driver = kind and Base.forKind(kind)
+    local conn = context and Sources.connection(context.server_name)
     local why = "no driver for this server's kind"
     if not conn then
         why = "no saved catalog for this server"
@@ -1770,7 +1666,11 @@ local function currentResumeTarget(server, series)
         why = "no connection"
     elseif driver then
         why = "the feed could not be fetched"
-        local ctx = { lang = Catalog.serverLang(server.name) }
+        -- The language the marker was written with. It used to be looked up per
+        -- server, which is what made a *defaulted* language possible; the marker
+        -- carries the one the reader was actually browsing in, so a translation
+        -- they are not reading cannot be reported.
+        local ctx = { lang = context.lang }
         -- The server's own read flag, when it has one. Asked for as a *filter*
         -- rather than read off the full feed, because the flag is not in the
         -- feed's own data: a chapter the server flags read keeps whatever page
@@ -1779,7 +1679,7 @@ local function currentResumeTarget(server, series)
         local filter = driver.unreadFilter
 
         local function fetch(which)
-            local url = driver.catalogURL(conn.url, series.remote_id, ctx, which)
+            local url = driver.catalogURL(conn.url, context.series_remote_id, ctx, which)
             local ok, feed = pcall(Net.fetchFeed, url, {
                 username = conn.username,
                 password = conn.password,
@@ -1819,7 +1719,7 @@ local function currentResumeTarget(server, series)
                 -- `firstIn` returns `sequence[1]`, so a nil answer means the
                 -- feed was empty and nothing more.
                 local ok_fresh, target = pcall(freshResumeTarget,
-                    driver, feed, url, ctx, series, firstIn)
+                    driver, feed, url, ctx, context, firstIn)
                 if ok_fresh and target then
                     return target
                 end
@@ -1834,7 +1734,7 @@ local function currentResumeTarget(server, series)
 
         local feed, url = fetch(nil)
         if feed then
-            local ok_fresh, target = pcall(freshResumeTarget, driver, feed, url, ctx, series,
+            local ok_fresh, target = pcall(freshResumeTarget, driver, feed, url, ctx, context,
                 -- `lastIn` when the server already said there is nothing unread.
                 -- Passing nil leaves `freshResumeTarget` its own default.
                 server_says_all_read and lastIn or nil)
@@ -1847,14 +1747,17 @@ local function currentResumeTarget(server, series)
         end
     end
 
-    -- The catalog only knows what the last sync saw, plus whichever chapters
-    -- were opened since, so this answer can lag badly — which is the whole
-    -- reason the fresh read above exists. Which of the two produced the answer
-    -- is otherwise invisible, and the two need opposite fixes.
-    logger.info("Meguru: resume point from the catalog, not the feed (",
-        why, ")")
-    local found = Catalog.resumeTarget(series.id)
-    return found and found.item or nil
+    -- **No degraded answer is left, and that is deliberate.** There used to be
+    -- one: the catalog's furthest row with any progress, which lagged badly and
+    -- answered a different question — the last row *any* reading had touched,
+    -- where the fresh read answers "the first chapter not finished". It was
+    -- worth having while it existed, because a stale position beats a dialog
+    -- with no server button at all. With no catalog there is nothing to be stale
+    -- *from*, so the honest answer is none, and `offerResume` simply offers no
+    -- server position. Which path produced the answer is otherwise invisible, so
+    -- the reason is said out loud.
+    logger.info("Meguru: no resume point from the server (", why, ")")
+    return nil
 end
 
 --- Open a catalog item whose stream is already known — the file-manager and
@@ -1888,13 +1791,13 @@ end
 --- The shape is a catalog row (what `Catalog.itemByKey` and `registerBook`'s
 --- `resume` both return), not a `{ item, page }` pair: only `item_key` and
 --- `last_read` are read off it.
-function Open.openCatalogItem(host, server, series, item, target)
-    local plan = planMarker(server, series, item)
+function Open.openCatalogItem(host, context, item, target)
+    local plan = planMarker(context, item)
     if not plan then
         return nil
     end
 
-    Open.offerResume(host, server, series, item, {
+    Open.offerResume(host, context, item, {
         count = plan.count,
         -- The path, not the file: `offerResume` reads the sidecar to decide what
         -- to say, and a sidecar is found by path. The write is `openPlanned`'s.
@@ -1934,22 +1837,22 @@ function Open.offerResumeForFile(file, host, proceed)
         return
     end
 
-    -- `resolveMarker` returns the item and the series, not the server — the
-    -- server row is reached through the series. Reading it as a third return
-    -- would leave `server` nil, which is silent here: the fresh fetch would just
-    -- not happen, and the chapter button would fail on `server.name` only once
-    -- the reader tapped it.
-    local item, series = Catalog.resolveMarker(desc.server_name,
-        desc.series_remote_id, desc.item_key)
-    local server = series and Catalog.server(series.server_id) or nil
+    -- **The marker is the whole of what is known about this book.** There used
+    -- to be a lookup here — the marker resolved against the catalog for its item
+    -- and series rows — and a book whose series had never been catalogued got no
+    -- server position at all. Now the descriptor answers for itself, and a book
+    -- opened from History with no network still knows which series it belongs to
+    -- and can be asked about the next chapter the moment there is one.
+    local context = Marker.seriesContext(desc)
 
-    Open.offerResume(host, server, series, item or desc, {
+    Open.offerResume(host, context, desc, {
         -- The page comes from the marker itself, so it is free and works
         -- offline. The chapter target cannot: it is a fact about the whole
-        -- series, and the catalog's copy of it is a snapshot from the last sync.
+        -- series, so it is fetched — and when there is no network, or the server
+        -- has nothing to say, the dialog simply offers no server position.
         count = tonumber(desc.count),
         file = file,
-        target = series and currentResumeTarget(server, series) or nil,
+        target = currentResumeTarget(context),
         open = proceed,
         -- This one has no feed behind it, so it plans the marker and hands that
         -- file to whoever is opening this one.
@@ -1957,7 +1860,7 @@ function Open.offerResumeForFile(file, host, proceed)
         -- Deliberately *not* through `handToReader`: `proceed` is the wrap's own
         -- unwrapped opener, so there is no second `showReader` to arm against.
         open_item = function(target)
-            local plan = planMarker(server, series, target)
+            local plan = planMarker(context, target)
             if not plan then
                 return
             end
@@ -2036,10 +1939,13 @@ function Open.openAsBook(browser, item, stream)
         return
     end
     local kind, kind_source = Open.serverKindFor(browser)
+    -- The language the reader is browsing in. It used to be remembered per
+    -- server so a later open from History could ask Suwayomi for the same
+    -- translation; it now travels in the marker the open writes, which is
+    -- strictly better — a book keeps *its own* language, where one entry per
+    -- server made a library browsed in two languages report whichever was seen
+    -- last.
     local lang = langFromBrowser(browser)
-    if lang then
-        Catalog.setServerLang(server_name, lang)
-    end
     local ctx = { lang = lang }
 
     local raw_entry = rawEntryFor(browser, stream)
@@ -2075,28 +1981,31 @@ function Open.openAsBook(browser, item, stream)
             "(catalog=" .. tostring(server_name) .. ", retained=" .. retained .. ")")
     end
 
+    -- `registered.context` is already the shape `Marker.seriesContext` produces,
+    -- so the two halves come together with no renaming. `kind` is the fallback
+    -- for a book that could not be identified at all: this open's own sniff is
+    -- still worth carrying even when nothing else about the series is.
+    local ctx = registered and registered.context or {}
     local desc = Marker.new{
-        server_name      = server_name,
-        series_remote_id = registered and registered.series.remote_id or nil,
-        series_name      = registered and registered.series.name or nil,
-        -- `kind` is this open's own sniff when it has one, and `registerBook`
-        -- has already stored that on the server row by now, so the two agree.
-        server_kind      = registered and registered.server.kind or kind,
+        server_name      = ctx.server_name or server_name,
+        series_remote_id = ctx.series_remote_id,
+        series_name      = ctx.series_name,
+        server_kind      = ctx.server_kind or kind,
         item_key         = registered and registered.item.item_key or nil,
         title            = Naming.stripAliasPrefix(item.title or item.text),
         template         = stream.href,
         count            = tonumber(stream.count) or 0,
         last_read        = tonumber(stream.last_read) or nil,
-        lang             = lang,
+        lang             = ctx.lang or lang,
         cover_url        = registered and registered.item.cover_url or nil,
-        series_cover_url = registered and registered.series.cover_url or nil,
+        series_cover_url = ctx.series_cover_url,
     }
 
     -- A marker that names no item is still a valid book; it just cannot be
-    -- looked up. Deriving the fallback key from the stream URL is safe *here*
-    -- and nowhere else: nothing ever looks this key up, so the API-key rotation
-    -- that makes URL-derived keys dangerous in the catalog cannot duplicate
-    -- anything — it only renames one unconcatenated marker.
+    -- matched against a feed. Deriving the fallback key from the stream URL is
+    -- safe *here* and nowhere else: nothing ever looks this key up, so the
+    -- API-key rotation that makes URL-derived keys dangerous elsewhere cannot
+    -- duplicate anything — it only renames one unconcatenated marker.
     --
     -- 64 bits, not `keySuffix`'s 32, because this key is no longer only a name:
     -- it is the whole of this book's identity — with no series to disambiguate
@@ -2108,13 +2017,14 @@ function Open.openAsBook(browser, item, stream)
         logger.info("Meguru: book has no catalog identity; marker stays flat")
     end
 
-    local series = registered and registered.series or nil
+    local series = registered and registered.context or nil
     local dir = Marker.dirFor(desc, series, {
         -- No `base_dir`: the default is `Marker.baseDir()`, i.e. the stored
-        -- preference, which is what `planMarker` uses too.
+        -- preference, which is what `planMarker` uses too. No
+        -- `series_folder_claimed` either: it asked the catalog whether another
+        -- series had taken this folder name, and two series sharing a folder is
+        -- now accepted — `Marker.pathFor` still disambiguates the *file*.
         server_folder = Settings.get("marker_server_dir") and true or false,
-        series_folder_claimed = registered and Catalog.folderClaimedByOther(
-            registered.server.id, series.name, series.id) or false,
     })
     -- Planned here, written on the answer — see `planMarker`. The marker is what
     -- puts the book in the library and in History, so writing it before the
@@ -2136,18 +2046,18 @@ function Open.openAsBook(browser, item, stream)
     --
     -- `currentResumeTarget` fetches, so it is reached only when `registerBook`
     -- declined to answer — a server that flags chapters read, where the feed on
-    -- screen by construction cannot. Nil either way means the catalog answers,
-    -- which is `offerResume`'s own fallback.
+    -- screen by construction cannot. Nil either way means the dialog offers no
+    -- server answer, which is the honest thing to do when nothing has one.
     local resume_target = registered and registered.resume or nil
     if not resume_target and registered and registered.server_target then
-        resume_target = currentResumeTarget(registered.server, registered.series)
+        resume_target = currentResumeTarget(registered.context)
     end
 
     -- The resume question comes before the handoff, not inside it: the two
     -- handoffs below are alternatives and both are terminal, so the choice has
     -- to be made while there is still something to choose about.
-    Open.offerResume(host, registered and registered.server, series,
-        -- `or desc` so a book that could not be catalogued still gets its own
+    Open.offerResume(host, registered and registered.context,
+        -- `or desc` so a book that could not be identified still gets its own
         -- name on the buttons instead of "this book". Safe: `position` comes from
         -- `registered` on this path, so it is nil exactly when `item` is, and the
         -- `item_key` comparison in `offerResume` is never reached with a flat
@@ -2176,52 +2086,27 @@ function Open.openAsBook(browser, item, stream)
                     })
                     return
                 end
-                if registered then
-                    Catalog.setMarkerPath(registered.item.id, file)
-                end
                 Sources.remember(file,
                     browser.root_catalog_username, browser.root_catalog_password)
 
                 -- Prefer the built-in plugin's own open path: it closes the
                 -- browser cleanly and hands the marker to ReaderUI.
-                --
-                -- One tail for both branches rather than a `return` and a
-                -- fallthrough: the walk below has to start on the path OPDS
-                -- actually takes, and that path used to leave here.
-                local handed
                 if manager and type(manager.openDownloadedFile) == "function"
                     and manager.opds_browser then
                     -- Not through `handToReader`, so this is the second place the
                     -- one-shot is armed — same reason and same instant: the dialog
                     -- above has already asked, and the `showReader` wrap must not
                     -- ask again.
-                    handed = handOff(file, function() manager:openDownloadedFile(file) end)
+                    handOff(file, function() manager:openDownloadedFile(file) end)
                 else
-                    handed = openPrepared(host, file) ~= nil
+                    openPrepared(host, file)
                 end
-
-                -- Only when the book reached a reader. A handoff that failed
-                -- leaves the reader in the browser, and the reason this walk
-                -- exists — a book added, its series unpopulated — has not
-                -- happened.
-                --
-                -- Deferred, because `SyncJob.run` calls `Sync.prepare`
-                -- synchronously and that is a database read plus, on refusal, an
-                -- UPDATE. Neither belongs inside the tap that is still building
-                -- a reader.
-                if handed then
-                    UIManager:nextTick(function()
-                        -- pcall'd so a mistake in here can never cost the reader
-                        -- the book that just opened — but not *silently*: a
-                        -- swallowed error would look exactly like a walk that
-                        -- was never due, and those two need opposite fixes.
-                        local ok_start, err = pcall(startBackgroundSync, registered)
-                        if not ok_start then
-                            logger.warn("Meguru: the background sync could not"
-                                .. " be started:", err)
-                        end
-                    end)
-                end
+                -- **No walk follows, and that is the change.** Adding a book used
+                -- to start a background walk that filled its series in, so a
+                -- reader who added a volume had neighbours a few seconds later
+                -- without asking. There is nothing to fill: a neighbour is fetched
+                -- when the reader asks for one, and the marker of the book just
+                -- opened carries everything that walk would have needed.
             end,
         })
 end
