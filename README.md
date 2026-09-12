@@ -137,10 +137,14 @@ no database. The only thing Meguru creates is markers.
 
 **Opening a book needs no network and no configuration** — everything required to
 open the marker is inside the file, and Meguru has no database and no cache to be
-missing. Reading is a different matter: the pages come from the server, so offline
-you can look at the page already on screen and no further. Looking for the next
-chapter also needs the network, because it means reading the series' chapter list
-from the server.
+missing. Reading is a different matter: the pages come from the server, so a page
+that has not already been fetched cannot be shown. When one is missing, **the
+reason is written where the page would be** instead of a blank page — no
+connection, a server that is not answering, an error the server returned — and
+the log says the same. Turning the page tries again, and so does reconnecting:
+the page you are looking at fills in by itself once the Wi-Fi is back. Looking for the next chapter also
+needs the network, because it means reading the series' chapter list from the
+server.
 
 ## Limitations
 

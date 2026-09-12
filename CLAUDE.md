@@ -454,6 +454,57 @@ stock's screen-fit shape rather than to nothing: a long-press that does nothing
 is a worse failure than a softer panel. That path is `pcall`ed for the same
 reason every other wrap here is.
 
+**A page that could not be loaded says so, in the place the page would be.**
+There are four ways to have no page — no connection, a server that never
+answered, a server that answered 404, a page that arrived and would not decode —
+and until this they were one gray rectangle and one `warn` per repaint. Three
+things changed, and each is small on its own:
+
+- **No socket is opened without a connection.** `MeguruDocument:hasConnection`
+  (the same check `analyseAhead` had inlined) gates `fetchPage` and
+  `getCoverPageImage`. It is a *device* state, not a probe: Wi-Fi off can only
+  fail, and on some backends it fails only after sitting through the socket
+  timeout with the UI thread blocked. It says nothing about a server that is
+  down with Wi-Fi up — that is the case the timeout and the memo below are for.
+  The cover path matters most here: browsing a folder of `.meguru` files is one
+  request per book, made while the FileManager waits to draw its mosaic.
+- **A failed fetch is remembered, and not attempted again until something clears
+  it.** `self.fetch_failed[pageno]` holds `{ reason, code }`. This is not
+  tidiness: `ReaderView:drawSinglePage` reaches `document:drawPage` on *every*
+  repaint, so a page that failed once paid a socket timeout — and logged a line
+  — on every menu opening, zoom step and crop toggle, against a server that had
+  already said no. `clearFetchFailures` is the whole of the retry story, and
+  exactly two things call it: a page turn (`plugin.onPageUpdate`, which is the
+  reader asking for a page again) and the connection coming back
+  (`plugin.onNetworkConnected`, which also repaints if anything had failed —
+  the event fires once at startup too, hence the return value). A **page turn is
+  the retry**; there is no button, and no dialog.
+- **The page is replaced by a sentence that names the reason.** The document
+  paints the box and passes the `fetch_failed` entry to `self.missing_painter`,
+  installed by `ui/reader.lua` — the wording, the font and the layout live there,
+  so a document with no reader in front of it (the mosaic's cover path) still
+  gets its plain box. One sentence per reason, because the fixes differ:
+  connecting Wi-Fi does nothing about a 404, and waiting does nothing about
+  Wi-Fi that is off. It is *in the page* rather than over it, which is what a
+  browser does and what needs no dismissing — the reader can carry on turning
+  pages, and the pages that do load keep loading.
+  **There was a drawing here — Meguru-chan lying across a big "404" — and it was
+  removed deliberately.** The reason is the one thing a picture cannot carry, and
+  the picture's own claim was wrong: a 404 is the internet's shorthand for
+  "broken page", and in Meguru's four cases it is literally right in exactly one
+  (the server answered 404) and wrong for the two commonest, which never had an
+  HTTP status to show at all — no Wi-Fi, and a server that never answered. An
+  error page whose headline is the wrong error is worse than a line of prose, and
+  a second line of prose under it to say what the picture just got wrong is worse
+  still. The asset was deleted with the code that drew it: nothing here keeps a
+  file because it might be wanted again (it is in the history), and the whole
+  episode is worth knowing because the same four sentences were written for it,
+  and they are what is left.
+`paintMissingPage` no longer logs. It runs on every repaint of a broken page,
+and the failure was already logged once where it happened (`fetchPage`,
+`ensureNativeBB`) — the same frequency argument that moved `crop skip`, and the
+one line of that rule this change had to apply rather than remove.
+
 **Reading progress is not mirrored anywhere.** It is read lazily, per book, from
 the sidecar beside the marker: `DocSettings:findSidecarFile` then
 `openSettingsFile`, reading `percent_finished`. That is the only place it lives,
@@ -1590,8 +1641,42 @@ Each step must pass before the next:
     and the page's bytes aged out of the store still shows a panel, softer,
     through the `Document:drawPagePart` fallback.
 
+19. **A book that cannot get its pages says why, once, and stops asking.** With
+    the wifi off, open a marker: the page area holds *Can't load this page /
+    You're offline right now. Connect to Wi-Fi and try again.* — the reason, in
+    the place the page would be. Check the two cases that must not be confused:
+    with the wifi *on* and the server stopped it must read *Kavita isn't
+    responding…*, and with a marker whose catalog was deleted (a 404) *Kavita
+    returned an error (404)…*. In `-d` the same two cases are `(no response)`
+    and `(HTTP 404)`. Then the rest, which is about not asking twice: one
+    `Meguru: no connection, cannot fetch page N` in the log rather than one per
+    repaint; open the ⋮ menu and close it, zoom, toggle a crop setting — the
+    page repaints but nothing is fetched and nothing more is logged; turn the
+    page and back — one fresh attempt, so `fetchPage` runs again and fails
+    again; turn the wifi on — the page fills in **without a page turn**, from
+    `onNetworkConnected`. In the FileManager with the wifi off, open a folder of
+    markers: no cover is fetched at all (no log lines from `getCoverPageImage`),
+    and the mosaic fills in on the next browse once the wifi is back. Nothing
+    was written to disk through any of it.
+
 ## Known open items
 
+- **A page is decoded at its file's stated density, not at its pixels.**
+  `renderMuPDFPage` sizes the render from
+  `page:getSize()`, which is `fz_bound_page` — points at 72 dpi — and for an
+  *image document* MuPDF computes that box as `pixels x 72 / density`, assuming
+  **96** when the file says nothing. Measured on a 768-square PNG: 768 pt at
+  72 dpi, 576 with no density, 184 at 300 dpi. So a density-less 1600x2400 scan
+  is decoded at 1200x1800 — 25% below its pixels — and a scan carrying 300 dpi
+  at a quarter, silently, because the budget below is an *area* cap and reports
+  the same capped numbers either way. The `MuPDF page render WxH -> WxH` line
+  cannot show it either: both of its sizes come from the same space. What keeps
+  this from being visible today is that `renderRegionDirect` re-renders a
+  magnified region from the source, and a fit-to-screen page is usually still
+  covered at 75% — which is exactly why it should be measured before it is
+  "fixed": the fix is either teaching the decode the density (PNG `pHYs`, JPEG
+  JFIF) or moving the plugin's whole coordinate space to pixels, and every
+  geometry path shares that space. It wants its own pass on a device.
 - **Kavita granularity** is resolved in PROTOCOL.md (entry ↔ stream is 1:1).
   `driver/komga.lua` and `driver/generic.lua` are not written yet; see Layout.
 

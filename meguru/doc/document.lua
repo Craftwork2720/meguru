@@ -890,6 +890,17 @@ function MeguruDocument:init()
     -- OOM kill.
     self.dead_pages = {}
 
+    -- Pages whose *fetch* failed, and why: `{ reason = "offline"|"network"|
+    -- "http", code = <status or nil> }`. A paint is not a place to discover
+    -- that the server is down — `drawSinglePage` reaches `fetchPage` on every
+    -- repaint, so a page that failed once would otherwise pay a socket timeout
+    -- on every menu open, zoom step and crop toggle *and* log a line for each,
+    -- against a server that has already said no. This makes one attempt per
+    -- page per look at it: `clearFetchFailures` is what starts the next look
+    -- (a page turn, or the connection coming back), and the entry doubles as
+    -- the reason the placeholder page shows the reader.
+    self.fetch_failed = {}
+
     self.mod_time = FS.mtime(self.file)
 
     -- Two opening modes, chosen by the file suffix BEFORE anything is parsed —
@@ -1278,12 +1289,54 @@ function MeguruDocument:streamCredentials()
     return Sources.credentials(desc.server_name, self.file)
 end
 
+--- Whether a page could be fetched at all right now.
+---
+--- A *device* state, not a probe: Wi-Fi off means the socket call can only fail,
+--- and on some backends only after sitting through its timeout with the UI
+--- thread blocked. It says nothing about whether the server will answer — Wi-Fi
+--- on and a dead server is exactly the case this cannot see, and that is the one
+--- the fetch timeout and `fetch_failed` are for.
+---
+--- `isConnected` is true by construction on a device with no Wi-Fi to toggle
+--- (desktop, emulator), so this never blocks a fetch that could have worked.
+function MeguruDocument:hasConnection()
+    if self.local_cbz then
+        return true
+    end
+    local ok, NetworkMgr = pcall(require, "ui/network/manager")
+    return ok and NetworkMgr ~= nil and NetworkMgr:isConnected()
+end
+
+--- Forget that any page failed to fetch, so the next look at one tries again.
+---
+--- Called for the two things that mean "try now": the reader turning to a page,
+--- and the connection having come back. Without it a page that failed during an
+--- outage stays a placeholder for the rest of the session — the entries would
+--- outlive the outage they describe, which is the same failure as a copy written
+--- once and never repaired, one page down.
+---
+--- Returns whether there was anything to clear, which is what tells the
+--- connection-restored caller that a repaint would be worth asking for: the
+--- event also arrives at startup, on a device that was already online.
+function MeguruDocument:clearFetchFailures()
+    local had = next(self.fetch_failed) ~= nil
+    self.fetch_failed = {}
+    return had
+end
+
 -- Make sure the raw bytes of `pageno` are available (fetched over HTTP if not
 -- in the byte LRU yet). Returns the bytes, or nil on failure.
+--
+-- A failed page is remembered in `self.fetch_failed` and **not attempted again
+-- until something clears that** — see the field's comment in init. The warning
+-- is logged once, with the attempt, for the same reason.
 function MeguruDocument:fetchPage(pageno)
     local data = self:readCachedPage(pageno)
     if data then
         return data
+    end
+    if self.fetch_failed[pageno] then
+        return nil
     end
     local url = self.desc.template
         and PSE.pageURL(self.desc.template, pageno - 1,
@@ -1292,19 +1345,38 @@ function MeguruDocument:fetchPage(pageno)
     if not url then
         return nil
     end
+    if not self:hasConnection() then
+        self.fetch_failed[pageno] = { reason = "offline" }
+        logger.warn("Meguru: no connection, cannot fetch page", pageno)
+        return nil
+    end
     local user, pass = self:streamCredentials()
     local ok, bytes, code = pcall(PSE.fetchPage, url, { username = user, password = pass })
     if not ok or not bytes then
-        if ok then
-            logger.warn("Meguru: failed to fetch page", pageno,
-                "(HTTP " .. tostring(code) .. ")")
+        -- A `code` here is an HTTP answer and its absence is everything else —
+        -- and "everything else" is two things that must not be read as one:
+        -- `PSE.fetchPage` returns the status `Net.get` got, and `Net.get`
+        -- returns nothing at all (rather than a status) when the socket never
+        -- connected, having already logged why. So `ok` with no `code` is a
+        -- transport failure, not a server that answered. The page message is
+        -- built from this, and "did not answer" and "answered 404" are
+        -- problems with different fixes.
+        local reason, detail
+        if ok and code then
+            reason, detail = "http", "(HTTP " .. tostring(code) .. ")"
+        elseif ok then
+            reason, detail = "network", "(no response)"
         else
-            logger.warn("Meguru: failed to fetch page", pageno,
-                "(error: " .. tostring(bytes) .. ")")
+            reason, detail = "network", "(error: " .. tostring(bytes) .. ")"
         end
+        -- `code` is nil on the two network paths, and the message only reads it
+        -- in the branch where it is a number.
+        self.fetch_failed[pageno] = { reason = reason, code = code }
+        logger.warn("Meguru: failed to fetch page", pageno, detail)
         return nil
     end
     -- Stored only once the fetch has succeeded, so a failed one writes nothing.
+    self.fetch_failed[pageno] = nil
     self:cachePage(pageno, bytes)
     return bytes
 end
@@ -1435,6 +1507,15 @@ end
 function MeguruDocument:getCoverPageImage()
     if self.local_cbz then
         return self:_localCoverPageImage()
+    end
+    -- No connection, no cover — and no attempt. A cover is fetched once per book
+    -- while the FileManager waits to draw its mosaic, which is the one place
+    -- this plugin runs a request per file in a *folder*: offline, every book
+    -- spent a socket call and a warning to find out what `isConnected` already
+    -- said. The mosaic fills in when the network is back, on the next browse —
+    -- nothing here is remembered, so there is nothing to invalidate.
+    if not self:hasConnection() then
+        return nil
     end
     -- Both cover links are the marker's own fields, written when it was. The
     -- fallback below — page 1 of the stream, which on OPDS-PSE servers is usually
@@ -2829,11 +2910,8 @@ function MeguruDocument:analyseAhead(pageno)
     if self.dead_pages[pageno] then
         return
     end
-    if not self.local_cbz then
-        local ok, NetworkMgr = pcall(require, "ui/network/manager")
-        if not ok or not NetworkMgr or not NetworkMgr:isConnected() then
-            return
-        end
+    if not self:hasConnection() then
+        return
     end
     -- pcall: this runs in an event nothing is waiting on, so a throw in a
     -- heuristic must cost a crop, not the book.
@@ -2874,7 +2952,7 @@ end
 function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
     local tile = self:renderPage(pageno, rect, zoom, rotation, gamma, saturation)
     if not tile then
-        self:paintMissingPage(target, rect, x, y)
+        self:paintMissingPage(target, rect, x, y, pageno)
         return
     end
     local dx = rect.x - tile.excerpt.x
@@ -2904,7 +2982,7 @@ end
 function MeguruDocument:drawPageInverted(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
     local tile = self:renderPage(pageno, rect, zoom, rotation, gamma, saturation)
     if not tile then
-        self:paintMissingPage(target, rect, x, y)
+        self:paintMissingPage(target, rect, x, y, pageno)
         return
     end
     local dx = rect.x - tile.excerpt.x
@@ -2919,14 +2997,39 @@ function MeguruDocument:drawPageInverted(target, x, y, rect, pageno, zoom, rotat
     target:invertRect(x, y, rect.w, rect.h)
 end
 
-function MeguruDocument:paintMissingPage(target, rect, x, y)
-    logger.warn("Meguru: page unavailable, painting placeholder")
+-- A page that could not be rendered. Stock's documents have no equivalent —
+-- their renderPage cannot come back empty — so this is where a streamed book
+-- puts what a browser puts in place of a page it could not fetch.
+--
+-- The box is painted here, always; what goes *in* it is not. `missing_painter`
+-- is installed by whoever is drawing a reader (`ui/reader.lua`), which is where
+-- the wording and the font live — a document that has no reader in front of it
+-- (the mosaic's cover path, say) gets the plain gray box and nothing to read.
+-- The reason travels with the call: this is the only place that knows which of
+-- "you are offline", "the server did not answer" and "the server said no" the
+-- reader is actually looking at.
+--
+-- Deliberately **no log line per paint**. The failure was logged once where it
+-- happened (`fetchPage`, `ensureNativeBB`); this function runs on every repaint
+-- of a broken page — a pan, a zoom step, a menu opening — so a line here is a
+-- line per repaint for as long as the reader looks at it, which is what buried
+-- the rare warnings under `crop skip` before that one moved to `dbg` too.
+--
+-- The fill is **white**, which is what the sentence drawn on it is written for:
+-- black on white, the way the page the reader was looking at was. It was light
+-- grey while an error *drawing* stood here, and the drawing is gone while the
+-- white is not — an unloaded page is still a page, and this is what one looks
+-- like. See `ui/reader.lua`'s `installPageErrorPage` for why the drawing went.
+function MeguruDocument:paintMissingPage(target, rect, x, y, pageno)
     if not rect then
         return
     end
     local w = rect.w or 1
     local h = rect.h or 1
-    target:paintRect(x, y, w, h, Blitbuffer.COLOR_LIGHT_GRAY)
+    target:paintRect(x, y, w, h, Blitbuffer.COLOR_WHITE)
+    if self.missing_painter then
+        self.missing_painter(target, rect, x, y, pageno and self.fetch_failed[pageno])
+    end
 end
 
 return MeguruDocument

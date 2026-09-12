@@ -31,9 +31,11 @@ hang it on — which is why it is guarded by a module flag.
 local ConfirmBox = require("ui/widget/confirmbox")
 local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
+local Font = require("ui/font")
 local KoptOptions = require("ui/data/koptoptions")
 local NetworkMgr = require("ui/network/manager")
 local Notification = require("ui/widget/notification")
+local TextBoxWidget = require("ui/widget/textboxwidget")
 local UIManager = require("ui/uimanager")
 local Screen = require("device").screen
 local logger = require("logger")
@@ -493,6 +495,150 @@ local function installPanelZoom(ui)
         local ds = self.ui and self.ui.doc_settings
         if ds and type(ds.delSetting) == "function" then
             ds:delSetting("panel_zoom_enabled")
+        end
+    end
+
+    return true
+end
+
+-- The page a failed fetch leaves behind ----------------------------------------
+
+--- What happened, and what to do about it: one sentence per reason.
+---
+--- The reasons have different fixes and a reader can only act on the one they
+--- have — connecting Wi-Fi does nothing about a server that answered 404, and
+--- waiting does nothing about Wi-Fi that is off — which is why there are four of
+--- these and no single generic one to fall back on.
+---
+--- The `reason` is the document's, from the fetch that failed (`fetch_failed`);
+--- nil means no fetch failed at all — the page arrived and could not be decoded
+--- — which is why it has its own sentence rather than borrowing the network's.
+local function pageMessageBody(reason, code, server)
+    if reason == "offline" then
+        return _("You're offline right now.\nConnect to Wi-Fi and try again.")
+    elseif reason == "http" and code then
+        return T(_("%1 returned an error (%2).\nTry again in a moment."),
+            server, tostring(code))
+    elseif reason == "network" then
+        return T(_("%1 isn't responding.\nMake sure the server is running, then try again."), server)
+    end
+    return _("Something went wrong loading this page.\nTry again in a moment.")
+end
+
+--- The whole message: a title that says nothing and a reason that says
+--- everything, in that order, because "Can't load this page" is what a reader
+--- reads first and the second line is what they act on. Built from
+--- `pageMessageBody` rather than beside it so the two cannot drift.
+local function pageMessageText(reason, code, server)
+    return _("Can't load this page") .. "\n\n" .. pageMessageBody(reason, code, server)
+end
+
+--- The laid-out message, rebuilt only when it would say something else.
+---
+--- This runs from a *paint*: a pan, a zoom step and a menu opening all repaint
+--- the page, so laying the text out each time would be work per repaint for a
+--- message that cannot have changed. One slot is enough — the message is a
+--- property of the page on screen, and a page shows one reason at a time.
+local function pageMessageWidget(state, key, text, width)
+    local cached = state.message
+    if cached and cached.key == key and cached.width == width then
+        return cached.widget
+    end
+    local widget = TextBoxWidget:new{
+        text = text,
+        face = Font:getFace("cfont", 22),
+        width = width,
+        alignment = "center",
+    }
+    state.message = { key = key, width = width, widget = widget }
+    return widget
+end
+
+--- Install the message, and the two resets that make a retry possible.
+---
+--- The document paints the box and hands over the reason; the wording, the font
+--- and the layout are here, which is the same split as everything else in this
+--- file — the engine does not know what a reader reads. The painter returns
+--- nothing and its answer is not consulted: a document with no painter gets the
+--- plain box, and that is a state (the cover path), not a failure.
+---
+--- **The sentence is the whole of it, and the reason is the point of it.** There
+--- was an error *drawing* here for a while — Meguru-chan lying across a big "404"
+--- — and it was removed deliberately: the reason is the one thing a picture
+--- cannot carry, and that picture claimed the wrong one. A 404 is the internet's
+--- shorthand for "broken page", and in Meguru's four cases it is literally right
+--- in exactly one (the server answered 404) while being wrong for the two
+--- commonest, which never had an HTTP status to show at all. So what a reader
+--- gets is the four sentences below, and the asset went with the code that drew
+--- it rather than sitting unused beside it.
+---
+--- There is no Retry button, and that is the design rather than a gap: a page
+--- turn *is* the reader asking again, and it is the only gesture that always
+--- means it. Turning away and back clears the failed fetches, so the page is
+--- fetched once more; a Wi-Fi connection arriving repaints the page under the
+--- reader's eyes. What there is not, deliberately, is a dialog: the reader asked
+--- for a page and got an explanation in its place, which is the same thing a
+--- browser does and does not need dismissing before the book can be read.
+local function installPageErrorPage(plugin)
+    local ui = plugin.ui
+    local doc = ui and ui.document
+    if not (doc and type(doc.paintMissingPage) == "function") then
+        return false
+    end
+    -- The state the painter carries: the laid-out sentence. Nothing else holds
+    -- it — the closure below is what keeps it alive, and it lives exactly as long
+    -- as the document does.
+    local state = {}
+
+    doc.missing_painter = function(target, rect, x, y, failure)
+        local box_w = rect.w or Screen:getWidth()
+        local box_h = rect.h or Screen:getHeight()
+        local reason = failure and failure.reason
+        local code = failure and failure.code
+        local server = tostring((doc.desc and doc.desc.server_name) or _("The server"))
+        -- A little narrower than the box, so no line ends against the page edge.
+        -- The box is the visible area, so this width is the screen's and stays
+        -- that way through a pan or a zoom — which is what lets the layout below
+        -- be cached at all.
+        local width = math.max(1, math.floor(box_w * 0.8))
+        local widget = pageMessageWidget(state,
+            table.concat({ tostring(reason), tostring(code), server }, "|"),
+            pageMessageText(reason, code, server), width)
+        local size = widget:getSize()
+        widget:paintTo(target,
+            x + math.floor((box_w - size.w) / 2),
+            y + math.floor((box_h - size.h) / 2))
+    end
+
+    -- A page turn is the reader asking for a page again, so it is what starts a
+    -- new attempt at one that failed. `ReaderPaging:onPageUpdate` returns
+    -- nothing, so the event does reach a plugin module registered after it —
+    -- which is the whole reason this can be a module handler rather than another
+    -- wrap on the paging module.
+    plugin.onPageUpdate = function(self)
+        local d = self.ui and self.ui.document
+        if d and type(d.clearFetchFailures) == "function" then
+            d:clearFetchFailures()
+        end
+    end
+
+    -- The connection came back while the reader stayed on the page: clear the
+    -- failures and repaint, so what they are looking at fills in without a
+    -- page turn. Deferred out of the event, which can arrive from inside a
+    -- network callback. Nothing is repainted when nothing had failed — this
+    -- event also fires once at startup on a device that is already online.
+    plugin.onNetworkConnected = function(self)
+        local d = self.ui and self.ui.document
+        if not (d and type(d.clearFetchFailures) == "function") then
+            return
+        end
+        if d:clearFetchFailures() then
+            UIManager:nextTick(function()
+                local u = self.ui
+                if u and u.dialog then
+                    UIManager:setDirty(u.dialog, "full")
+                end
+            end)
         end
     end
 
@@ -991,6 +1137,10 @@ function Reader.install(plugin)
     -- so the value the reader sees is the one this decides and not the one
     -- stock read out of the book's sidecar a moment later.
     installPanelZoom(ui)
+
+    -- Also before the first paint: the painter is what stands between a failed
+    -- page and a reader looking at a gray rectangle with nothing to read.
+    installPageErrorPage(plugin)
 
     curateConfigMenu(plugin)
     installEndOfBookHook(plugin)
