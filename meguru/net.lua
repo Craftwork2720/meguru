@@ -3,8 +3,8 @@ HTTP: one synchronous GET, and getting a parsed OPDS feed out of it.
 
 LuaSocket is synchronous and KOReader has no threads, so every call here blocks
 until it returns. Nothing in this module may be reached from a paint path, and
-callers that fetch in a loop owe the user a progress widget and a Cancel
-(see `meguru/sync.lua`).
+callers that fetch in a loop owe the user a bound on how long it can take —
+`Feed` caps a walk by pages and by `Net` timeout for exactly that reason.
 --]]
 
 local http = require("socket.http")
