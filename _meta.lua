@@ -9,12 +9,12 @@ local _ = require("gettext")
 
 return {
     fullname = _("Meguru"),
-    description = _([[Turns OPDS-PSE page streams (Suwayomi, Kavita, Komga, ...)
-into ordinary KOReader books: a small marker file stands in for the book, so it
-lands in History and keeps normal reading progress, while pages are fetched one
-at a time over HTTP — no CBZ/ZIP is ever downloaded.
+    description = _([[Turns OPDS-PSE page streams (Kavita, Suwayomi) into
+ordinary KOReader books: a small marker file stands in for the book, so it lands
+in History and keeps normal reading progress, while pages are fetched one at a
+time over HTTP — no CBZ/ZIP is ever downloaded.
 
-Series and their chapters are kept in a local SQLite catalog, so the plugin can
-tell you what a series contains and which chapters are new without opening
-anything.]]),
+The marker carries the identity of the book and of its series, and nothing else
+is stored: no database, no page cache. What comes next in a series is read from
+the server's own chapter list when you ask for it.]]),
 }
