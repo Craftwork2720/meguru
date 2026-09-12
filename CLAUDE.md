@@ -103,9 +103,10 @@ exists, an unrecognised server is handled by the absence of a driver rather than
 by a driver that returns nothing useful.
 
 **Nothing is written to disk but markers.** There is no page cache, no cover
-cache and no database: pages live in a small RAM LRU, and a cover is refetched on
-every call. See the covers section below for what that costs the FileManager's
-browsing.
+cache and no database: pages live in a small RAM LRU, a cover is refetched on
+every call, and the panel lists a long-press produces live in a four-entry RAM LRU
+on the document itself, so they are dropped with the book. See the covers section
+below for what that costs the FileManager's browsing.
 
 `meguru.sqlite3` may still be sitting in `settings/` from a version that had one.
 Nothing reads it and nothing sweeps it; delete it by hand once, the way the older
@@ -1376,56 +1377,72 @@ to show exactly one: the region under the finger, in a bare `ImageViewer`. That
 one crop is still what a page *without* a panel grid gets, unchanged — the
 sequence is what the reader gets when there is a sequence to walk.
 
-`meguru/panel.lua` is the detector, and it is pure: a raster goes in
+`meguru/panel.lua` is the detector, and it is pure: a decoded page goes in
 (`Image.rasterFor`), ordered rectangles come out in **full native** coordinates.
 It knows nothing about documents, pages or fetching — `MeguruDocument:getPanelsFromPage`
 is the seam, and it hands over one decoded buffer and takes back a list.
 
-**The map is ink, not brightness, and that is the whole of the port.** The page
-is rendered down to a 480-pixel scan once; the background is the **median
-luminance of the outer one-percent ring** (the median and not the mean, because a
-ring that is three quarters paper and one quarter a bleed has a mean the page does
-not contain anywhere), and a cell is ink when it departs from that by more than
-`PANEL_INK_DELTA`. Everything the reference does with three channels collapses to
-one difference here, because **every buffer this plugin decodes is BB8** — see
-the `setColorRendering(false)` calls this document already makes. The reference's
-`hasWhiteSeparator` fallback and its greyscale-background variant exist to
-recover a paper colour; a border-relative map never loses it in the first place.
+**A panel is a connected body of ink, and the map is relative to the page's own
+background.** The page is scaled to a 480-pixel *width* scan; the background is
+the **median luminance of the outer one-percent ring** — the median and not the
+mean, because a ring that is three quarters paper and one quarter a bleed has a
+mean the page does not contain anywhere — and a cell is ink when it departs from
+it by more than `PANEL_INK_DELTA`. The map is then walked for **8-connected
+components**, and each component's bounding box is scored by how much of its own
+outline is supported by a straight (possibly tilted) line. A speech balloon held
+inside a frame is dropped as a box inside a bigger box; a box with no supporting
+side is merged into the framed neighbour it best overlaps. Everything the
+reference does with three channels collapses to one difference here, because
+**every buffer this plugin decodes is BB8** — see the `setColorRendering(false)`
+calls this document already makes. The one piece of the reference's background
+estimate that is *not* redundant is carried over: a mid-grey median is overridden
+to white when some row or column of the page is genuinely near-white, which is
+what recovers a paper colour dimmed by a scan.
 
-The recursion is the classic cut, and it is short: project ink onto rows and
-columns for one region, trim to the content extent, find the widest gutter on
-each axis, split on the longer one, recurse, and stop when a region has no gutter
-left. `panels_plus` ships the same algorithm. `PANEL_MAX_DEPTH` and
-`PANEL_MAX_PANELS` bound it; the leaves are the panels.
+The scan targets the page's **width**, not its long side, and that is not
+cosmetic. A 1600x2400 page maps to 480x720 — one cell per 3.3 page pixels, so a
+10-pixel printed gutter is 3 cells wide. A ceiling on the long side would give
+320x480, one cell per 5 pixels, and the same gutter 2 cells wide, where diagonal
+bridging starts to close it. `PANEL_SCAN_MAX_CELLS` then caps the cell count, and
+it is the one deviation from the reference's sizing: with the width rule, cells
+grow with the page's aspect ratio, so it first bites past 5.2:1 — a webtoon
+strip, and only a webtoon strip. Without it an 800x20000 page scans at 480x12000,
+some 35 MB of arrays, on a plugin whose whole native budget is 12 MB.
 
-**Two detectors, and merging them would be the mistake.** `getPanelFromPage` — the
-old one — still exists, still answers "which single region is under the finger",
-and is what a long-press falls back to whenever this finds no sequence. They share
-`Image.rasterFor` and `panelNativeFor`, and deliberately **not** a threshold,
-because they fail in opposite directions:
+**There is one detector now, and it replaced two.** `getPanelFromPage` used to
+carry its own conservative gutter scan, kept as the fallback for a page with no
+sequence. It was removed rather than kept, and the reason is worth keeping in its
+place, because "keep the cheap fallback" is the obvious instinct and it was wrong
+here. That detector only ever split on *complete*, axis-aligned white gutters, so
+a wrong guess degraded to "no panel" — but it also could not read a page at all
+when a panel carried a full-width white band *inside its own drawing* (such a
+band is indistinguishable from a gutter) or when the panels were tilted, which it
+had no answer for. A component fails at neither, because connectivity knows
+nothing about axes or interior whites. Two detectors also meant two different
+crops for one page depending on which path asked; now the answer is the same
+wherever it is asked for, and `getPanelFromPage` is a thin wrapper returning the
+panel `Panel.indexAt` finds under the touch. Note it passes a **constant**
+direction: in the detector the mode orders the list and nothing else, and this
+function returns a rectangle rather than an index, so the order cannot reach the
+answer.
 
-| | scan | a gutter it cannot see |
-|---|---|---|
-| `getPanelFromPage` | 256 px | degrades to "no panel", and a hold that finds nothing does nothing |
-| `Panel.detect` | 480 px | **merges two panels into one** |
+**Why the recursive X-Y cut is not here — the part worth reading before
+"improving" this.** It was the first version of this module, taken from
+`panels_plus`'s `src/_segmenter.lua` — where it is **dead code**. Three separate
+places in that plugin force `detector = "components"` (`main.lua`'s setter
+ignores its argument, `_settings.lua` rewrites any stored value on load,
+`src/menu.lua`'s getter returns a constant) and `Segmenter.detectPage` has no
+caller at all; the only live part of that file is `accept`, which the component
+detector calls. Porting the cut therefore meant porting the algorithm the
+reference had already abandoned, and it failed on a device in exactly the two
+ways above — a panel cut in half on white, and no cut at all on a skewed page.
 
-That is why the second scan is finer, and it is not a performance knob dressed up
-as one: the gutter floor is a fraction of the scan, so the scan's resolution *is*
-the smallest gutter the cut can see. A 1600x2400 page with a 10-pixel printed
-gutter is 1.06 cells wide at 256 and 2.0 at 480. `panels_plus` arrived at 480 the
-same way. A fallback that inherited this sensitivity would guess where it must
-not, which is precisely what "degrades to no panel" was buying.
-
-**What was left out of the reference, and the one thing left out knowingly.**
-Gone: the shear search (~185 lines, off by default there too), the comic
-border-stroke split (it needs a whole second plane in the map), the 4-koma centre
-split, and the connected-component detector the reference actually uses live —
-an order of magnitude more code than everything in this file. **Kept out on
-purpose: `looksLikePageFurnitureLayout`.** A contents or credits page can pass
-the coverage tests and be accepted as a bogus sequence; the escape is a swipe
-down, and the `dbg` line names the page and the count, so it is diagnosable from
-a log. It is the one place this reduced version is knowingly worse, and it is
-written down rather than discovered.
+Also **not** ported: the shear search (moot — connectivity is what handles skew,
+and the cut's own tilt search was off by default anyway), the comic border-stroke
+plane (`segment_border_split`, also off by default), and `component_holes`, the
+optional pass that treats enclosed white regions as panels. The last is the
+reference's default being honoured rather than a judgement, and it is the only one
+of the three that leaves a real capability on the table.
 
 **Order is a reading direction, and the direction is the book's.**
 `Panel.sortReadingOrder` groups panels into rows by their **top edge** with a
@@ -1462,19 +1479,57 @@ quietly take over. The hardware keys come free: `ImageViewer:init` binds
 `PgFwd`/`PgBack` to next/previous image and `Back` to close whenever `image` is a
 list, so the reference's entire key-handling apparatus is not needed at all.
 
-**Pre-warming reuses the tile LRU; it does not add a cache.** `drawPagePart`
-already stores what it renders under `page|panel|region`, so rendering the *next*
-panel a moment after showing this one makes the swipe a cache hit rather than
-second work. One scheduled action, re-armed on every panel change, and what it
-warms depends on where the reader is: the next panel mid-page, and the next
-page's **decode** at the end of one, so crossing a boundary does not pay for it
-inside the gesture. The delay is the point — a reader swiping quickly re-arms and
-unschedules faster than it, so the warm never does work they did not ask for. The
-guard is `UIManager:isWidgetShown(self)`, which is the whole bookkeeping: a viewer
-that has been closed or handed off is off the stack, so its queued warm is a
-no-op. Both branches are gated on `dead_pages` and the page branch on
-`hasConnection()` — offline, a fetch inside `getPageDims` would sit through its
-timeout with the UI thread blocked, which is worse than the stall it avoids.
+**Pre-warming is two machines, and neither is new.** The *panel* half reuses the
+tile LRU: `drawPagePart` already stores what it renders under `page|panel|region`,
+so rendering the next panel a moment after showing this one makes the swipe a
+cache hit rather than second work. The *page* half warms the next page's decode
+**and then its panel detection** — in that order, and the order is load-bearing.
+`getPageDims` is the decoder and the thing that fills `self.dims`;
+`getPanelsFromPage` prepares a page through `panelNativeFor`, which fetches and
+decodes but never touches `self.dims`, so calling it first would leave the dims
+cache empty and the page turn the reader is about to make would fetch the same
+page again. Dims first means one fetch, one decode, a native-LRU hit for the
+scan, and both memos filled.
+
+One scheduled action, re-armed on every panel change, and what it warms depends
+on where the reader is: the next panel mid-page, the next page at the end of one.
+The delay is the point — a reader swiping quickly re-arms and unschedules faster
+than it, so the warm never does work they did not ask for. The guard is
+`UIManager:isWidgetShown(self)`, which is the whole bookkeeping: a viewer that has
+been closed or handed off is off the stack, so its queued warm is a no-op. Both
+branches are gated on `dead_pages` and the page branch on `hasConnection()` —
+offline, a fetch inside `getPageDims` would sit through its timeout with the UI
+thread blocked, which is worse than the stall it avoids. **Do not add panel
+detection to `analyseAhead`**: that runs inside every page turn, and a component
+walk per turn is exactly the cost this delay exists to keep out of the gesture.
+
+**The panel cache is four entries, in RAM, keyed on the page *and the direction*.**
+Detection walks a few hundred thousand cells, so the answer is worth keeping — but
+only for the window a reader moves in from the panel viewer, which is "this page,
+the next one, and back again". It caches the **refused** answer too: a refusal
+costs exactly what an acceptance costs, and a refusal is a real answer now (see
+below), so a splash-heavy book would otherwise be rescanned at every press. The
+key carries the reading direction because the direction reorders the list, and a
+Manga-mode flip mid-session must not be answered from the other direction's order.
+It is a **self-ordering array, not `evictOldest`** — that one stamps through
+`self.stamps`, which `native` shares and keys by a bare page number — which is the
+same reason `page_bytes` is shaped that way. A page that could not be *decoded* is
+deliberately not cached: `fetch_failed` and `dead_pages` already remember the two
+ways a page goes missing, and a third answer would be a third thing to keep in
+step.
+
+**A page the detector cannot read opens the whole page, not nothing.**
+`Panel.detect` returns `panels, accepted, reason`, and `panels` is never empty
+once the page was readable: a refused page comes back as one rectangle covering
+the whole page with `accepted` false and the failing test in `reason`. So a
+long-press always has something to open, and the log can always say which of the
+two it is looking at — `K panels` versus `K panels, whole page (<reason>)`. This
+is the behaviour `panels_plus` has, and it is the reason the reader's gate is
+`if not panels` rather than a count: `nil` means exactly one thing now, that the
+page would not decode, and that is the single case that still falls through to
+stock. The cost is that a page the detector *misjudges* shows the whole page where
+stock would have cropped one region; the acceptance tests are what hold that back,
+and the reason string is what makes it diagnosable when they don't.
 
 **`releasePanelTile` is memory, not correctness — and the difference matters,
 because the wrong reason has been written down once already.** `evictOldest`
@@ -1493,8 +1548,9 @@ it** — from bytes still in the page LRU, so still offline, but re-rendered.
 **The page boundary is four statements in a fixed order.** At the last panel,
 forward means the next page; at the first, back means the previous one, opened at
 its last panel. Inside one `tickAfterNext`: resolve the next page's panels
-**first**, so a page with no sequence leaves the reader where they were rather
-than dismissing their viewer and handing them nothing; close the viewer **second**,
+**first**, so a page that will not decode leaves the reader where they were rather
+than dismissing their viewer and handing them nothing (a page merely *refused*
+still opens, as the whole page); close the viewer **second**,
 before the turn, because a page turn can reach `installEndOfBookHook` and swap the
 whole reader out — a viewer still on the stack would float above a different book,
 and closing first makes that impossible by construction rather than by a guard;
@@ -1528,16 +1584,16 @@ same reason the old per-extension row was replaced: Panels+ forces
 book in front of the reader — a control that reads one way while the panels
 behave another.
 
-**Logging follows the frequency rule.** `Meguru: page N panel zoom: K panels
-(mode) in X ms` (the milliseconds are the measurement of the recursive cut, which
-is the only place its cost can be seen), `... no sequence (<reason>)` (the
-fall-through to stock; per press on a book with no gutters, which is the
-`crop skip` case again — `dbg`, not `warn`), and `... handed to page N with no
-sequence` are all `dbg`. The stand-down is `info` — a decision, once per process.
-A detection or handoff that *throws* is `warn`, which is what `crash.log` is read
-for. There is deliberately **no** separate "panel warmed" line: the existing
-`panel zoom on page N, region ... rendered WxH` already fires once per panel
-render, including once per warm.
+**Logging follows the frequency rule.** `Meguru: page N panel zoom: K panels,
+whole page (<reason>) (mode) in X ms` — the milliseconds are the measurement of
+the scan, the component walk and the acceptance tests, and the only place their
+cost can be seen; the bracketed form is what separates a refused page from a page
+that genuinely has one panel, and those need opposite fixes. `... no page
+(<reason>)` is the one case with nothing to open. The stand-down is `info` — a
+decision, once per process. A detection or handoff that *throws* is `warn`, which
+is what `crash.log` is read for. There is deliberately **no** separate "panel
+warmed" line: the existing `panel zoom on page N, region ... rendered WxH` already
+fires once per panel render, including once per warm.
 
 ## Plugin lifecycle facts worth not rediscovering
 
@@ -1944,6 +2000,39 @@ Each step must pass before the next:
     markers: no cover is fetched at all (no log lines from `getCoverPageImage`),
     and the mosaic fills in on the next browse once the wifi is back. Nothing
     was written to disk through any of it.
+
+20. **The panel detector reads connectivity, not gutters.** Four pages, two of
+    which are the failures this detector replaced — if either of those two comes
+    back wrong, the port is wrong and nothing else on this list matters.
+
+    | page | expected |
+    |---|---|
+    | a panel carrying a full-width **white band inside its own drawing** — a splash with a horizon line, a title card with a white rule across it, an illustration with a blank sky band | **ONE panel.** The band must not cut it in two |
+    | a page of **tilted panels** — a skewed scan, or any layout whose gutters are not axis-aligned | **the panels, split** — `K panels` in the log with K what the eye counts |
+    | a normal manga page, 4–6 panels with hairline gutters | the same sequence, in the same reading order, as before |
+    | a splash page with no panels at all | the viewer opens on **the whole page** (1 of 1), no progress bar, and a swipe forward **turns the page** |
+
+    Then the mechanics. In `-d`, one `page N panel zoom: K panels … in X ms` per
+    long-press; a refused page says `K panels, whole page (<reason>)` and the
+    reason must name one of the four tests — `single partial panel`, `page
+    furniture mistaken for panels`, `panels cover too little of the page`, `only
+    N% of the covered area kept`. Compare the milliseconds against the `page N
+    prepared in X ms` line on the same page: the scan sits on top of that decode
+    and should be a fraction of it. Then **toggle Manga mode with a page open and
+    long-press it twice** — the second press must give the mirrored order, which
+    is the whole job of the cache key; and **long-press, close, long-press the
+    same page** — the second must be instant and log the same count (the LRU
+    hit), with nothing new on disk. Then cross a page boundary from the last
+    panel: `getPageDims` for the next page must appear **once** (the warm) and
+    not again during the crossing, and there must be no second `MuPDF page
+    render` line for it — two mean the warm's call order is wrong. Cross back and
+    forth three times: no fetch and no decode after the first. Finally a page
+    that cannot be decoded (wifi off, bytes aged out) shows the page and **no
+    viewer**, logging `no page (…)` — and on a long book of multi-panel pages
+    read on the lowest-RAM device to hand, the Lua heap should be *smaller* than
+    before this change, because the scan arrays are ffi bytes rather than Lua
+    tables; an OOM kill means looking at the ms figure for a page with a huge
+    scan and reaching for `PANEL_SCAN_MAX_CELLS`.
 
 ## Known open items
 

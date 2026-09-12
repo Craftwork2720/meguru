@@ -431,18 +431,24 @@ end
 -- long-press) asks the document for the panel under the finger via
 -- Document:getPanelFromPage. Engine-backed paged documents answer with kopt's
 -- full page segmentation; this document has no engine, so without an override
--- the call would be nil and the reader would crash. This is a light,
--- conservative stand-in:
+-- the call would be nil and the reader would crash.
 --
---   * on a downscaled copy of the page we look for *full-span gutters*: rows
---     that stay within a few percent of the page's paper white across the whole
---     content width, and columns that do the same across the whole content
---     height (that is what separates manga/comic panels that tile edge to
---     edge);
---   * the touch point is then assigned to the gutter-bounded cell around it;
---   * pages with no readable grid (single splash images, dark paper) return
---     nil, exactly like kopt when it cannot find a panel — the long-press then
---     does nothing or falls back to text selection instead of crashing.
+-- **There is one detector now**, in `meguru/panel.lua`, and both entry points
+-- below are thin wrappers over it: `getPanelsFromPage` returns a whole page's
+-- panels in reading order, and `getPanelFromPage` returns the one under a
+-- touch. That replaced a second, conservative gutter detector this file used to
+-- carry, and the reason is worth keeping, because "keep the cheap fallback" is
+-- the obvious instinct and it was wrong here.
+--
+-- The old one only ever split on *complete*, axis-aligned white gutters, so a
+-- wrong guess degraded to "no panel" rather than to a mangled crop. What it
+-- could not do was read a page at all when a panel carried a full-width white
+-- band inside its own drawing — such a band is indistinguishable from a gutter
+-- — or when the panels were tilted, which it had no answer for. The detector it
+-- was backing up fails at neither, because a panel is a *connected body of ink*
+-- there, and connectivity knows nothing about axes or interior whites. Two
+-- detectors also meant two different crops for one page depending on which path
+-- asked; one detector means the answer is the same wherever it is asked for.
 --
 -- Coordinates: ReaderView hands the touch in *full native* page space — the
 -- space getNativePageDimensions/getPageDims report. A margin crop only makes
@@ -451,29 +457,12 @@ end
 -- and the returned {x,y,w,h} are plain native page coordinates, and the
 -- returned rect is what drawPagePart expects. There is no rotation in this
 -- plugin anymore, so no page is ever turned here.
---
--- The detector is intentionally strict: it only ever splits on *complete*
--- white gutters, never on interior white of a single drawing, so a wrong guess
--- degrades to "no panel", never to a mangled crop.
---
--- **That strictness is why there is a second detector.** `getPanelsFromPage`
--- below hands the whole page to `meguru/panel`, which splits recursively and
--- renders its own, finer scan; it is what the panel *sequence* walks. This one
--- is what a long-press falls back to when that finds no sequence, and it is
--- deliberately left alone by that work — a fallback that inherited the
--- sequence's sensitivity would guess where it must not. `meguru/panel` carries
--- the argument in full.
 
-local PANEL_SCAN_TARGET = 256
-local PANEL_GUTTER_FRAC = 0.85 -- gutter pixels must stay above 85% of paper white
-local PANEL_MIN_GUTTER_FRAC = 0.004 -- ignore separators thinner than 0.4% of the span
-local PANEL_MIN_CELL_FRAC = 0.05 -- never report a panel under 5% of the page area
-
--- The raster accessor itself now lives beside the decoder: `Image.rasterFor`
--- (`meguru/doc/image`). It moved because the panel segmenter in
--- `meguru/panel.lua` reads a buffer too, and a module that answers "what is this
--- buffer's byte layout" belongs with the module that produced the buffer — a
--- second copy here would have been the second answer to that question.
+-- The raster accessor itself lives beside the decoder: `Image.rasterFor`
+-- (`meguru/doc/image`). It moved because the panel detector in `meguru/panel.lua`
+-- reads a buffer too, and a module that answers "what is this buffer's byte
+-- layout" belongs with the module that produced the buffer — a second copy here
+-- would have been the second answer to that question.
 
 -- Tighten the coarse auto-crop box to the *exact* outermost content pixel (see
 -- computeContentBox for where the coarse box comes from). The coarse scan runs
@@ -600,108 +589,6 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     return nx0, ny0, nx1, ny1
 end
 
--- Consecutive runs of indices (in [a0, a1)) where clean(i) is true.
-local function collectCleanBands(a0, a1, clean)
-    local bands = {}
-    local start
-    for i = a0, a1 - 1 do
-        if clean(i) then
-            if not start then
-                start = i
-            end
-        elseif start then
-            bands[#bands + 1] = { a = start, b = i - 1 }
-            start = nil
-        end
-    end
-    if start then
-        bands[#bands + 1] = { a = start, b = a1 - 1 }
-    end
-    return bands
-end
-
--- Keep only the bands that are fully interior to the content span (i.e. real
--- separators, not the white margin at an edge) and at least `min_thick` thick.
-local function keepInteriorBands(bands, c0, c1, min_thick)
-    local kept = {}
-    for _, b in ipairs(bands) do
-        if b.a > c0 and b.b < c1 - 1 and b.b - b.a + 1 >= min_thick then
-            kept[#kept + 1] = b
-        end
-    end
-    return kept
-end
-
--- Gutter-bounded cell around (tap_x, tap_y). `cont` is the content rectangle in
--- small-image coordinates (x1/y1 exclusive). Returns { x0, y0, x1, y1 }
--- (x1/y1 exclusive, same coordinate space) or nil when there is no grid.
-local function findPanelBounds(raster, cont, tap_x, tap_y)
-    local paper = 0
-    for y = cont.y0, cont.y1 - 1 do
-        for x = cont.x0, cont.x1 - 1 do
-            local lum = raster.luma(y, x)
-            if lum > paper then
-                paper = lum
-            end
-        end
-    end
-    if paper < 150 then
-        return nil -- dark paper: gutters cannot be told apart from artwork
-    end
-    local threshold = paper * PANEL_GUTTER_FRAC
-    local row_dark = {}
-    local col_dark = {}
-    for y = cont.y0, cont.y1 - 1 do
-        local cnt = 0
-        for x = cont.x0, cont.x1 - 1 do
-            if raster.luma(y, x) <= threshold then
-                cnt = cnt + 1
-                col_dark[x] = (col_dark[x] or 0) + 1
-            end
-        end
-        row_dark[y] = cnt
-    end
-    -- A separator row/column may contain a hair of scan/JPEG noise, but nothing
-    -- more than ~1% of its span.
-    local row_tol = math.max(1, math.floor((cont.x1 - cont.x0) * 0.01))
-    local col_tol = math.max(1, math.floor((cont.y1 - cont.y0) * 0.01))
-    local h_bands = collectCleanBands(cont.y0, cont.y1,
-        function(y) return (row_dark[y] or 0) <= row_tol end)
-    local v_bands = collectCleanBands(cont.x0, cont.x1,
-        function(x) return (col_dark[x] or 0) <= col_tol end)
-    local min_h = math.max(1, math.floor((cont.y1 - cont.y0) * PANEL_MIN_GUTTER_FRAC + 0.5))
-    local min_w = math.max(1, math.floor((cont.x1 - cont.x0) * PANEL_MIN_GUTTER_FRAC + 0.5))
-    h_bands = keepInteriorBands(h_bands, cont.y0, cont.y1, min_h)
-    v_bands = keepInteriorBands(v_bands, cont.x0, cont.x1, min_w)
-    if #h_bands == 0 and #v_bands == 0 then
-        return nil -- splash page / single drawing / plain margins only
-    end
-    -- Narrow the cell down to the nearest gutter above/below and left/right of
-    -- the tap (only gutters that do not contain the tap itself are considered).
-    local top = cont.y0
-    local bottom = cont.y1 - 1
-    local left = cont.x0
-    local right = cont.x1 - 1
-    for _, b in ipairs(h_bands) do
-        if b.b < tap_y then
-            top = math.max(top, b.b + 1)
-        elseif b.a > tap_y then
-            bottom = math.min(bottom, b.a - 1)
-        end
-    end
-    for _, b in ipairs(v_bands) do
-        if b.b < tap_x then
-            left = math.max(left, b.b + 1)
-        elseif b.a > tap_x then
-            right = math.min(right, b.a - 1)
-        end
-    end
-    if top > bottom or left > right then
-        return nil
-    end
-    return { x0 = left, y0 = top, x1 = right + 1, y1 = bottom + 1 }
-end
-
 -- ---------------------------------------------------------------------------
 -- Native decode resolution cap
 -- ---------------------------------------------------------------------------
@@ -808,6 +695,13 @@ local MeguruDocument = Document:extend{
                     --            recency and free a buffer the renderer holds.
     stamp = 0,
     page_bytes = nil, -- raw page bytes, most-recent-first: { pageno =, bytes = }
+    panels = nil,   -- detected panel lists, most-recent-first: { key =, panels =,
+                    --            accepted =, reason = }. An entry is rects and
+                    --            Lua numbers, so dropping the table is the whole
+                    --            of freeing it -- there is no buffer to release.
+                    --            Keyed on "<pageno>|<mode>" and never stamped;
+                    --            see panelCacheKey
+    max_cached_panels = 4,
     dims = nil,     -- pageno -> {w=, h=} full (capped) native page size, as
                     --            delivered by decodeNative (never cropped)
     crops = nil,    -- pageno -> auto content box {x0,y0,x1,y1} in native px
@@ -855,6 +749,7 @@ function MeguruDocument:init()
     self.page_bytes = {}
     self.dims = {}
     self.crops = {}
+    self.panels = {}
     -- Pages whose decode has failed (or that were refused as too large to
     -- decode on this device) are remembered so a doomed full-resolution decode
     -- is never attempted more than once per page — re-attempting it every
@@ -1113,6 +1008,9 @@ function MeguruDocument:clearCaches()
     -- dropping the table drops the last references and the GC reclaims them
     -- with nothing here having to be told to.
     self.page_bytes = {}
+    -- The panel lists are rects and Lua numbers, so the same holds: dropping
+    -- the last references is the whole of the work.
+    self.panels = {}
 end
 
 -- ---------------------------------------------------------------------------
@@ -2177,26 +2075,101 @@ local function panelNativeFor(doc, pageno)
     return doc:ensureNativeBB(pageno, data)
 end
 
--- Every panel on a page, in reading order, for the panel *sequence* viewer.
+-- The panel-list cache, most-recent-first.
 --
--- Separate from `getPanelFromPage` below rather than built on top of it, and
--- that is a decision rather than an oversight — see `meguru/panel` for the long
--- version. The short one: this is the detector that has to be sensitive enough
--- to split on a hairline gutter, and that one is the fallback that must never
--- guess. They share the page preparation above and the raster accessor in
--- `meguru/doc/image`; they do not share a threshold.
+-- Detecting a page's panels walks a few hundred thousand cells, so the answer
+-- is worth keeping — but only for as long as it is plausibly about to be asked
+-- for again. Four entries is not a memory figure (an entry is at most 40 rects
+-- of five numbers, a few kB, against four whole compressed pages in
+-- `max_cached_pages` beside it); it is the window a reader moves in, which from
+-- the panel viewer is "this page, the next one, and back again".
 --
--- Returns an ordered list of `{x,y,w,h}` in **full native** page coordinates —
--- the space `self.dims` lives in, and the space `drawPanel` renders — or nil
--- and the reason there is no sequence. `manga` picks the reading direction and
--- is passed in rather than read from a preference: the document has no view,
--- and which book is on screen is the reader's question.
+-- **A self-ordering array, not `evictOldest`.** That one stamps through
+-- `self.stamps`, which `native` shares and keys by a bare page number, and its
+-- loop holds one fewer than the cap. This is the other shape the file already
+-- uses for a cache that is not `native`'s — `page_bytes` — and the reason is
+-- the same one written there.
+--
+-- The key carries the reading direction because the direction reorders the
+-- list: flipping ⋮ Manga mode and long-pressing the same page must not be
+-- answered from the other direction's order. It carries nothing else — there is
+-- one detector, and no border plane for a variant of one.
+local function panelCacheKey(pageno, manga)
+    return string.format("%d|%s", pageno, manga and "m" or "c")
+end
+
+-- A hit moves the entry to the front; a miss is nil.
+local function readCachedPanels(doc, key)
+    local cache = doc.panels
+    if not cache then
+        return nil
+    end
+    for i, item in ipairs(cache) do
+        if item.key == key then
+            if i > 1 then
+                table.remove(cache, i)
+                table.insert(cache, 1, item)
+            end
+            return item
+        end
+    end
+    return nil
+end
+
+-- Store the answer, refused or not, and trim the tail.
+--
+-- A refusal is cached on purpose. The decision is the expensive part and a
+-- refusal costs exactly what an acceptance costs, so a splash-heavy page would
+-- otherwise be scanned again at every press — and a refusal is a real answer
+-- now, not a gap: `Panel.detect` hands back the whole page as one panel and the
+-- viewer opens on it. `reason` is kept because the callers log it, and a hit
+-- has to log what a miss would have.
+local function cachePanels(doc, key, panels, accepted, reason)
+    if not doc.panels then
+        doc.panels = {}
+    end
+    table.insert(doc.panels, 1, {
+        key = key,
+        panels = panels,
+        accepted = accepted,
+        reason = reason,
+    })
+    while #doc.panels > doc.max_cached_panels do
+        table.remove(doc.panels)
+    end
+end
+
+-- Every panel on a page, in reading order.
+--
+-- Returns `panels, accepted, reason`, and `panels` is **never nil once the page
+-- was readable**: a page the detector could not make sense of comes back as one
+-- rectangle covering the whole page, with `accepted` false and the failing test
+-- in `reason`. A long-press therefore always has something to open, and the log
+-- can always say which of the two it is looking at. `nil` means exactly one
+-- thing — the page could not be decoded — and that is deliberately **not**
+-- cached: `fetch_failed` and `dead_pages` already remember the two ways a page
+-- goes missing, and a third answer to that question would be a third thing to
+-- keep in step.
+--
+-- Coordinates are **full native** page space — the space `self.dims` lives in,
+-- and the space `drawPagePart` renders. `manga` picks the reading direction and
+-- is passed in rather than read from a preference: the document has no view, and
+-- which book is on screen is the reader's question.
 function MeguruDocument:getPanelsFromPage(pageno, manga)
+    local key = panelCacheKey(pageno, manga)
+    local hit = readCachedPanels(self, key)
+    if hit then
+        return hit.panels, hit.accepted, hit.reason
+    end
     local native_bb = panelNativeFor(self, pageno)
     if not native_bb then
-        return nil, "page could not be decoded"
+        return nil, false, "page could not be decoded"
     end
-    return Panel.detect(native_bb, manga)
+    local panels, accepted, reason = Panel.detect(native_bb, manga)
+    if panels then
+        cachePanels(self, key, panels, accepted, reason)
+    end
+    return panels, accepted, reason
 end
 
 -- Drop the tile a panel render left in the tile LRU.
@@ -2234,14 +2207,25 @@ function MeguruDocument:releasePanelTile(pageno, rect)
     return true
 end
 
--- Panel under a touch point, for KOReader's manga/comic "panel zoom" (see the
--- comment block above getPanelFromPage's helpers). Coordinates are in *full
--- native* page space: pos.x/pos.y come from ReaderView already in that space
--- (a margin crop only zooms through the bbox, it never shifts the tap), and
--- the returned {x,y,w,h} is a native rect, exactly what drawPagePart expects.
--- Returns nil when no grid is found (single-panel page, dark paper, decode
--- failure), which lets ReaderHighlight fall through gracefully instead of
--- crashing.
+-- Panel under a touch point, for KOReader's manga/comic "panel zoom".
+--
+-- The public contract: stock's `ReaderHighlight:onPanelZoom` calls this by
+-- name, so it has to exist even though Meguru's own long-press no longer routes
+-- through it — a missing method here is a nil call and a crash in a path that
+-- is otherwise a quiet `false`. It is the *stock* path, reached when Meguru's
+-- wrap hands the gesture back because the page could not be decoded.
+--
+-- A thin wrapper over the one detector: the panels of the page, then the one
+-- under the point. Coordinates are in *full native* page space — pos.x/pos.y
+-- come from ReaderView already in that space (a margin crop only zooms through
+-- the bbox, it never shifts the tap) — and the returned {x,y,w,h} is a native
+-- rect, exactly what drawPagePart expects.
+--
+-- The reading direction passed here is a deliberate constant. In the detector
+-- it orders the list and nothing else, and this function returns a *rectangle*,
+-- not an index, so the order cannot reach the answer: the panel containing a
+-- point is the panel containing it whichever way the page is read. Passing
+-- `false` rather than looking a mode up is honest, not a shortcut.
 function MeguruDocument:getPanelFromPage(pageno, pos)
     if not pos then
         return nil
@@ -2254,58 +2238,12 @@ function MeguruDocument:getPanelFromPage(pageno, pos)
     if px < 0 or py < 0 or px >= dims.w or py >= dims.h then
         return nil
     end
-    local native_bb = panelNativeFor(self, pageno)
-    if not native_bb then
+    local panels = self:getPanelsFromPage(pageno, false)
+    if not panels then
         return nil
     end
-    local full_w, full_h = native_bb:getWidth(), native_bb:getHeight()
-    if not full_w or not full_h or full_w < 1 or full_h < 1 then
-        return nil
-    end
-    -- Downscale for the gutter scan. The content rectangle is the whole page:
-    -- edge margins only add white at the frame, which the interior-gutter
-    -- filter (keepInteriorBands) already discards, and gutters that separate
-    -- panels span the full content width regardless of any margin crop.
-    local small = native_bb
-    local sw, sh = full_w, full_h
-    if full_w > PANEL_SCAN_TARGET or full_h > PANEL_SCAN_TARGET then
-        local scale = PANEL_SCAN_TARGET / math.max(full_w, full_h)
-        sw = math.max(1, math.floor(full_w * scale + 0.5))
-        sh = math.max(1, math.floor(full_h * scale + 0.5))
-        small = RenderImage:scaleBlitBuffer(native_bb, sw, sh, false)
-        if not small then
-            return nil
-        end
-    end
-    local ok_raster, raster = pcall(Image.rasterFor, small)
-    if small ~= native_bb then
-        small:free() -- scan copy is C-side owned; free even if rasterFor threw
-    end
-    if not ok_raster or not raster then
-        return nil
-    end
-    local sx0, sy0 = 0, 0
-    local sx1, sy1 = sw, sh
-    local tap_x = clamp(math.floor(px * sw / full_w), sx0, sx1 - 1)
-    local tap_y = clamp(math.floor(py * sh / full_h), sy0, sy1 - 1)
-    local cell = findPanelBounds(raster, { x0 = sx0, y0 = sy0, x1 = sx1, y1 = sy1 },
-        tap_x, tap_y)
-    if not cell then
-        return nil
-    end
-    -- Map the cell (whole small page == whole native page) back to native.
-    local cx0 = math.max(0, math.floor(cell.x0 * full_w / sw))
-    local cy0 = math.max(0, math.floor(cell.y0 * full_h / sh))
-    local cx1 = math.min(full_w, math.ceil(cell.x1 * full_w / sw))
-    local cy1 = math.min(full_h, math.ceil(cell.y1 * full_h / sh))
-    local cw, ch = cx1 - cx0, cy1 - cy0
-    if cw < 1 or ch < 1 then
-        return nil
-    end
-    if cw * ch < PANEL_MIN_CELL_FRAC * full_w * full_h then
-        return nil
-    end
-    return { x = cx0, y = cy0, w = cw, h = ch }
+    local index = Panel.indexAt(panels, px, py)
+    return index and panels[index] or nil
 end
 
 -- One line per prepared page: what a page turn waited for, split into the two

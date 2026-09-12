@@ -159,8 +159,8 @@ end
 -- after this one". Mid-page it is the next panel, and the call that warms it is
 -- the very call the viewer will make when the reader gets there, which is what
 -- makes it a tile-cache hit rather than a second render. At the end of a page it
--- is the next page's *decode*, so the boundary crossing does not pay for it
--- inside the gesture.
+-- is the next page's decode *and* its panel detection, in that order, so the
+-- boundary crossing pays for a page turn and a repaint and nothing else.
 --
 -- `pcall` on both: nothing is waiting on this, and a throw has to cost a warm,
 -- not the reader. The buffer, if there is one, belongs to the document's LRU —
@@ -190,10 +190,25 @@ function PanelViewer:meguruWarm()
     -- timeout with the UI thread blocked, which is worse than the stall it was
     -- avoiding. A local cbz has no bytes to fetch and says so through
     -- `hasConnection`.
+    --
+    -- **The two calls and their order are the whole point.** `getPageDims` is
+    -- the decoder: it is what fills `self.dims` for the page. `getPanelsFromPage`
+    -- prepares the page through `panelNativeFor`, which fetches and decodes but
+    -- never touches `self.dims`, so calling it first would leave the dims cache
+    -- empty and the page turn the reader is about to make would fetch the same
+    -- page again. Dims first means one fetch, one decode, a native-LRU hit for
+    -- the panel scan, and both memos filled — which is what makes the boundary
+    -- crossing in `meguruHandoff` a cache hit rather than a scan inside a
+    -- gesture. That is the entire reason the panel cache exists.
+    --
+    -- Note `max_cached_native` is 3: warming N+1 while N is live and N-1 may be
+    -- too sits exactly on the cap, so backing up through the viewer can evict
+    -- N-1's decode. That is the existing trade, not a new one.
     local next_page = doc:getNextPage(self.page)
     if next_page and next_page > 0 and not doc.dead_pages[next_page]
         and doc:hasConnection() then
         pcall(doc.getPageDims, doc, next_page)
+        pcall(doc.getPanelsFromPage, doc, next_page, self.mode)
     end
 end
 
@@ -334,7 +349,11 @@ function PanelViewer:meguruHandoff(direction)
             -- and the same reasoning, as `analyseAhead` and the page warm.
             local panels, reason
             if doc:hasConnection() then
-                panels, reason = doc:getPanelsFromPage(page, mode)
+                -- `accepted` is not interesting here: a page the detector
+                -- refused opens the whole page as one panel, and a crossing is a
+                -- crossing either way. Only a page that would not decode has no
+                -- panels at all, and that is what the `else` log line says.
+                panels, _, reason = doc:getPanelsFromPage(page, mode)
             else
                 reason = "no connection"
             end
@@ -344,8 +363,11 @@ function PanelViewer:meguruHandoff(direction)
                 local index = (direction == "next") and 1 or #panels
                 PanelZoom.open(ui, page, panels, index, mode)
             else
-                logger.dbg("Meguru: page", page,
-                    "has no panel sequence:", tostring(reason))
+                -- Only reachable when the page would not decode: a page the
+                -- detector refused comes back as the whole page, so the
+                -- crossing still opens a viewer on it.
+                logger.dbg("Meguru: panel zoom crossed to page", page,
+                    "with no page to show:", tostring(reason))
             end
         end)
         if not ok then

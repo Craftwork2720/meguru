@@ -634,23 +634,33 @@ local function installPanelZoom(ui)
 
         local mode = Reader.panelZoomMode(ui)
         local t_start = nowMs()
-        local ok_detect, panels, reason = pcall(doc.getPanelsFromPage, doc,
-            pos.page, mode)
+        -- Four values: `getPanelsFromPage` returns panels, accepted and reason,
+        -- and `pcall` adds its own. A missing slot here does not fail — it
+        -- shifts `accepted` into `reason` and the reason into nothing, and the
+        -- feature still works — so the count is worth counting.
+        local ok_detect, panels, accepted, reason = pcall(doc.getPanelsFromPage,
+            doc, pos.page, mode)
         if not ok_detect then
             logger.warn("Meguru: panel zoom detection failed:", panels)
             return stock()
         end
         if not panels then
-            -- Repeats per press on a book whose pages have no gutters, which is
-            -- why it is `dbg` and not `warn`: the same frequency argument the
-            -- crop-skip line lost on. The reason names the test that refused.
-            logger.dbg("Meguru: page", pos.page, "panel zoom: no sequence ("
+            -- One meaning only: the page itself could not be decoded, so there
+            -- is neither a sequence nor a page to show as one. `dbg` because a
+            -- book read offline repeats it per press, the same frequency
+            -- argument the crop-skip line lost on.
+            logger.dbg("Meguru: page", pos.page, "panel zoom: no page ("
                 .. tostring(reason) .. ")")
             return stock()
         end
+        -- The count alone cannot tell a real sequence from the whole-page
+        -- fallback, and those need opposite fixes, so a refused page says so and
+        -- names the test that refused.
         logger.dbg(string.format(
-            "Meguru: page %d panel zoom: %d panels (%s) in %d ms",
-            pos.page, #panels, mode, nowMs() - t_start))
+            "Meguru: page %d panel zoom: %d panels%s (%s) in %d ms",
+            pos.page, #panels,
+            accepted and "" or (", whole page (" .. tostring(reason) .. ")"),
+            mode, nowMs() - t_start))
 
         local start = Panel.indexAt(panels, pos.x, pos.y) or 1
         local ok_show, shown = pcall(PanelZoom.open, ui, pos.page, panels, start, mode)
