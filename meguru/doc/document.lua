@@ -1337,7 +1337,7 @@ function MeguruDocument:_catalog()
     local ok, item, series, server = pcall(function()
         local Catalog = require("meguru/catalog")
         local found, found_series = Catalog.resolveMarker(desc.server_name,
-            desc.series_remote_id, desc.item_key, desc.item_id)
+            desc.series_remote_id, desc.item_key)
         if not found_series then
             return found, found_series
         end

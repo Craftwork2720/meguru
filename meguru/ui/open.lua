@@ -1896,7 +1896,7 @@ function Open.offerResumeForFile(file, host, proceed)
     -- not happen, and the chapter button would fail on `server.name` only once
     -- the reader tapped it.
     local item, series = Catalog.resolveMarker(desc.server_name,
-        desc.series_remote_id, desc.item_key, desc.item_id)
+        desc.series_remote_id, desc.item_key)
     local server = series and Catalog.server(series.server_id) or nil
 
     Open.offerResume(host, server, series, item or desc, {

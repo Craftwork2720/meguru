@@ -30,6 +30,11 @@ bitten this codebase, and that a reader cannot reliably catch by eye:
      4 on a call and 6 on a value, so this last shape of the same failure had no
      pass at all: a refactor deleted a buffer local and left four `data:byte`
      call sites behind it, and nothing said a word.
+  8. the marker's field list, which is a contract between the code that writes a
+     marker and the code that reads one. A field read off a descriptor that
+     `Marker.new` does not copy is nil on the device -- and nil is a legitimate
+     answer for several of them, so it surfaces as a feature that quietly does
+     nothing rather than as an error.
 
 Run: python tools/check.py
 """
@@ -621,6 +626,67 @@ def check_receiver_uses(path, text):
 UPSERT_ITEM = re.compile(r"local UPSERT_ITEM = .*?\[\[(.*?)\]\]", re.S)
 
 
+# --------------------------------------------------------------------------
+# The marker's field list is a contract between the code that writes a marker
+# and the code that reads one, and Lua checks neither end. A field read off a
+# descriptor that `Marker.new` does not copy is nil on the device, silently --
+# and nil is a legitimate answer for several of them, so the failure surfaces as
+# a feature that quietly does nothing. That is what happens the first time a
+# field is added to a reader and not to the writer.
+#
+# Scope is the descriptor, named on purpose, for the same reason the upsert
+# check is: `desc` is this plugin's word for a marker and nothing else, so the
+# pattern has no false positives to trade against. A general "every table field
+# is written somewhere" pass would be a much larger and much more
+# false-positive-prone job than the failure this prevents.
+# --------------------------------------------------------------------------
+
+MARKER_NEW_BODY = re.compile(r"function Marker\.new\(fields\)\s*return \{(.*?)\n    \}", re.S)
+MARKER_NEW_CALL = re.compile(r"Marker\.new\s*\{(.*?)\}", re.S)
+# The full identifier, not `[a-z_]+`: a field name with a capital in it -- which
+# is what a typo looks like, and what a field added later might legitimately be
+# -- would otherwise be truncated to its lowercase prefix and reported under a
+# name nobody typed. An injected `desc.seriesXX` was caught as `desc.series`,
+# which is the right verdict for the wrong reason: it fired because `series`
+# happens to be absent too, and would have stayed silent for a field whose
+# prefix *is* a real field name.
+DESC_READ = re.compile(r"\bdesc\.([A-Za-z_][A-Za-z0-9_]*)")
+TABLE_KEY = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", re.M)
+
+
+def marker_fields():
+    """The fields `Marker.new` copies, or None if its shape could not be read."""
+    src = strip((SRC / "marker.lua").read_text(encoding="utf-8"))
+    m = MARKER_NEW_BODY.search(src)
+    if not m:
+        return None
+    return set(TABLE_KEY.findall(m.group(1)))
+
+
+def check_marker_fields(fields):
+    """Report a descriptor field read, or passed, that `Marker.new` drops."""
+    if fields is None:
+        return ["tools/check.py: could not read Marker.new -- "
+                "this check has gone stale"]
+    errors = []
+    files = sorted(SRC.rglob("*.lua")) + [ROOT / "main.lua"]
+    for lua in files:
+        rel = lua.relative_to(ROOT)
+        src = strip(lua.read_text(encoding="utf-8"))
+        for name in sorted(set(DESC_READ.findall(src))):
+            if name not in fields:
+                errors.append(
+                    f"{rel}: `desc.{name}` is read, but Marker.new does not "
+                    f"write that field")
+        for call in MARKER_NEW_CALL.finditer(src):
+            for name in sorted(set(TABLE_KEY.findall(call.group(1)))):
+                if name not in fields:
+                    errors.append(
+                        f"{rel}: Marker.new is handed `{name}`, which it does "
+                        f"not copy")
+    return errors
+
+
 def check_item_upsert():
     """Report a disagreement inside the item upsert, or a column it cannot have."""
     catalog = (SRC / "catalog.lua").read_text(encoding="utf-8")
@@ -693,6 +759,7 @@ def main():
         all_errors += check_value_uses(rel, text)
         all_errors += check_receiver_uses(rel, text)
 
+    all_errors += check_marker_fields(marker_fields())
     all_errors += check_item_upsert()
 
     if all_errors:
