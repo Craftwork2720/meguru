@@ -110,6 +110,53 @@ function Base.kindFromAuthor(author)
     return nil
 end
 
+--- The server kind a *stream template* names, or nil.
+---
+--- The same job as `kindFromAuthor` for a case that has no feed to sniff: a
+--- marker written before the descriptor carried `server_kind`. Without a kind
+--- there is no driver, and without a driver there is no canonical feed URL — so
+--- such a book would have no next chapter for the rest of its life, and the
+--- failure is silent because the book itself opens and reads perfectly.
+---
+--- Each driver declares `streamSignatures`: a list of *sets* of needles, where
+--- every needle in a set must appear. A set rather than a single string because
+--- a stream URL is structured and one loose substring is not enough to claim it
+--- — but plain needles rather than patterns, so this cannot throw on a character
+--- a driver author did not escape.
+---
+--- Conservative by construction: an unrecognised template returns nil, and an
+--- ambiguous one does too. A wrong kind is worse than none — it picks the wrong
+--- driver and builds a canonical feed URL that describes a different series —
+--- which is the same reason `kindFor` refuses to guess.
+function Base.kindFromTemplate(template)
+    if type(template) ~= "string" or template == "" then
+        return nil
+    end
+    local claimed
+    -- Over `kinds()`, which is sorted: two drivers whose needles overlapped
+    -- would otherwise resolve by `pairs` order, which is not stable.
+    for _, kind in ipairs(Base.kinds()) do
+        local signatures = registry[kind].streamSignatures or {}
+        for _, needles in ipairs(signatures) do
+            local all = #needles > 0
+            for _, needle in ipairs(needles) do
+                if not template:find(needle, 1, true) then
+                    all = false
+                    break
+                end
+            end
+            if all then
+                if claimed then
+                    return nil
+                end
+                claimed = kind
+                break
+            end
+        end
+    end
+    return claimed
+end
+
 --- The driver that recognises this entry as its own, or nil.
 ---
 --- The last resort for a server that signs its feeds with an `<author>` no

@@ -28,6 +28,10 @@ local Suwayomi = {}
 --- Matched against the lowercased feed-level `<author>` name and uri.
 Suwayomi.authorSignatures = { "suwayomi" }
 
+--- Two needles, because either alone is a shape other servers use: a manga
+--- stream is `/api/v1/manga/<id>/chapter/<n>/page/<n>`. Both must appear.
+Suwayomi.streamSignatures = { { "/manga/", "/chapter/" } }
+
 local CHAPTER_URN = "^urn:suwayomi:chapter:(.+)$"
 local MANGA_URN = "^urn:suwayomi:manga:(.+)$"
 

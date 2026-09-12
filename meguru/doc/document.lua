@@ -904,25 +904,19 @@ function MeguruDocument:init()
     end
     self.desc = desc
 
-    -- The catalog row behind this marker, if there is one. Its template wins
-    -- over the marker's snapshot — the snapshot is whatever was saved when the
-    -- book was first opened, while the catalog's is what the last sync saw.
-    -- The marker's stays as the fallback, which is the point of it carrying a
-    -- template at all: a book opens and reads with no database. That fallback is
-    -- already a *restored* template by the time it gets here — `Marker.load`
-    -- puts the credential back from `settings/opds.lua`, so the marker sitting
-    -- in the book folder holds a `<redacted>` one and this never sees it. Which
-    -- is why the fallback needs the catalog *configured* rather than only the
-    -- database absent; see `meguru/credential`.
+    -- **The marker's own template is the only one, and nothing here fetches.**
+    -- A catalog row used to win over it — the row held whatever the last walk
+    -- resolved, while the marker held whatever was saved when the book was first
+    -- opened, and for Suwayomi that difference is correctness: the stored
+    -- template carries a chapter position the server can renumber.
     --
-    -- Nothing here goes to the network. A catalog row with no template is a
-    -- chapter that was synced but never opened; it is resolved when the series
-    -- view opens it, not here — opening a book from History must not depend on
-    -- being online.
-    local item = self:_catalog()
-    if item and type(item.template) == "string" and item.template ~= "" then
-        desc.template = item.template
-    end
+    -- That is now `Feed.resolveStream`'s job, called from the open path where
+    -- there is a moment to spend a request, and deliberately not here: `init`
+    -- runs inside the document open, where a dead server would hold the screen.
+    -- So this function stays what it always was underneath the override — a
+    -- marker that opens and reads offline, with `template` already restored from
+    -- `settings/opds.lua` by `Marker.load`. Which is why it needs the catalog
+    -- *configured* rather than only the database present; see `meguru/credential`.
 
     local count
     if self.local_cbz then
@@ -1314,60 +1308,21 @@ function MeguruDocument:_localTitle()
     return (name:gsub("%.[^.]*$", ""))
 end
 
---- The catalog rows behind this marker: the item and its series, or nil.
+--- What this book's marker says about its series, or nil.
 ---
---- Nil is an ordinary answer, not a failure — no database, a series that was
---- never synced, or a catalog rebuilt underneath the marker. Everything that
---- calls this must read as if the catalog were simply not there.
+--- Nil is an ordinary answer, not a failure: a local cbz has no descriptor at
+--- all, and a marker written before the series fields existed has none of them.
+--- Everything that calls this reads as if the series were simply not there.
 ---
---- Resolved at most once per document: the open path asks several times, and
---- each miss costs three queries plus, on a cold start, opening the database.
-function MeguruDocument:_catalog()
-    if self.catalog_checked then
-        return self.catalog_item, self.catalog_series
-    end
-    self.catalog_checked = true
-
-    local desc = self.desc
-    if not desc then
+--- This replaced a lookup that resolved the marker against the catalog and
+--- memoised three rows. It is now a projection of `self.desc`, which is what
+--- makes a book opened from History — with no browser, no database and possibly
+--- no network — able to answer where it sits in its series.
+function MeguruDocument:seriesContext()
+    if not self.desc then
         return nil
     end
-    -- pcall: this runs inside an open, and a missing sqlite binding or a
-    -- corrupt database must cost the reader its next/prev rows, not the book.
-    local ok, item, series, server = pcall(function()
-        local Catalog = require("meguru/catalog")
-        local found, found_series = Catalog.resolveMarker(desc.server_name,
-            desc.series_remote_id, desc.item_key)
-        if not found_series then
-            return found, found_series
-        end
-        return found, found_series, Catalog.server(found_series.server_id)
-    end)
-    if not ok then
-        logger.info("Meguru: catalog unavailable for this book:", tostring(item))
-        return nil
-    end
-    if item and item.hint_mismatch then
-        -- The rowid in the marker is not the row its item_key names, so the
-        -- database was rebuilt and rowids moved. The key decided; this is just
-        -- the paper trail.
-        logger.warn("Meguru: marker item_id disagrees with item_key; using the key")
-    end
-    self.catalog_item, self.catalog_series = item, series
-    self.catalog_server = server
-    return item, series
-end
-
---- The item, series and server behind this book, or nil when the marker's
---- series was never catalogued. For callers outside the engine — the reader
---- menu's navigation rows, the end-of-book hook — which need the same rows the
---- engine resolved without repeating the lookup.
-function MeguruDocument:catalogContext()
-    local item, series = self:_catalog()
-    if not (item and series) then
-        return nil
-    end
-    return { item = item, series = series, server = self.catalog_server }
+    return Marker.seriesContext(self.desc)
 end
 
 function MeguruDocument:getDocumentProps()
@@ -1384,20 +1339,20 @@ function MeguruDocument:getDocumentProps()
 
     -- A Suwayomi chapter is titled after the chapter alone ("Chapter 84"), so
     -- History would list a bare "Chapter 84" with no manga to place it. The
-    -- series name comes from the catalog, since the marker deliberately carries
-    -- no series metadata, and is used only when the title does not already
-    -- start with it — a Kavita volume title names its own series.
-    local _, series = self:_catalog()
-    local name = series and series.name
+    -- series name is the marker's own field now, and is used only when the title
+    -- does not already start with it — a Kavita volume title names its own
+    -- series. A marker written before the field existed answers nil, and History
+    -- shows the book's own title, which is what a book with no catalog row got.
+    local name = desc.series_name
     if type(name) == "string" and name ~= ""
         and type(title) == "string" and title ~= ""
         and title:sub(1, #name) ~= name then
         title = name .. " - " .. title
     end
 
-    -- No authors, deliberately. The catalog does not store them, and both
-    -- supported servers stamp placeholders ("Unknown", "Unknown Author") often
-    -- enough that a guessed author would be worse than an empty field.
+    -- No authors, deliberately. Neither server publishes one worth showing, and
+    -- both stamp placeholders ("Unknown", "Unknown Author") often enough that a
+    -- guessed author would be worse than an empty field.
     return { title = title }
 end
 
@@ -1458,19 +1413,18 @@ function MeguruDocument:getCoverPageImage()
     if self.local_cbz then
         return self:_localCoverPageImage()
     end
-    -- Both cover links come from the catalog, not the marker: a cover belongs
-    -- to a book and to a series, and the catalog is where each of those lives,
-    -- so neither is copied into every marker. Without a catalog the fallback
-    -- below — page 1 of the stream, which on OPDS-PSE servers is usually the
-    -- cover — still applies.
+    -- Both cover links are the marker's own fields, written when it was. The
+    -- fallback below — page 1 of the stream, which on OPDS-PSE servers is usually
+    -- the cover — still applies, and is what a marker written before the fields
+    -- existed gets.
     --
     -- The book's own artwork wins. Most feeds publish only a series image, so
     -- for them this changes nothing; Kavita publishes one per volume, and
     -- preferring the series there is what made every book of a series render
     -- with the same picture.
-    local item, series = self:_catalog()
+    local desc = self.desc or {}
     local cover_url
-    for _, candidate in ipairs{ item and item.cover_url, series and series.cover_url } do
+    for _, candidate in ipairs{ desc.cover_url, desc.series_cover_url } do
         if type(candidate) == "string" and candidate ~= "" then
             cover_url = candidate
             break

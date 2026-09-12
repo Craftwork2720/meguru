@@ -442,6 +442,49 @@ function Feed.plan(server, opts)
     }
 end
 
+--- `Feed.plan` for a book, from the marker that describes it.
+---
+--- The one place a *descriptor* becomes a *server*, so no caller has to know how
+--- a book names its server or what to do when it does not. Three things are
+--- folded in here, and each is a case a caller would otherwise re-derive and get
+--- subtly different:
+---
+---   * `server_kind` is what the marker was written with. A marker written
+---     before the field existed has none, and a v1 book must not lose its next
+---     chapter for that — so the template it does carry is asked instead
+---     (`Base.kindFromTemplate`), which is the same evidence `discover` uses.
+---   * `server_name` is the catalog title credentials are looked up by, which is
+---     the marker's field of exactly that meaning.
+---   * `lang` is per server and was learned when the reader browsed, so it comes
+---     from the marker rather than being defaulted here.
+---
+--- Returns `plan, nil` or `nil, reason`, like `Feed.plan`.
+function Feed.planForMarker(desc, opts)
+    if type(desc) ~= "table" then
+        return nil, "no marker"
+    end
+    local kind = desc.server_kind
+    if not kind then
+        kind = Base.kindFromTemplate(desc.template)
+        if kind then
+            logger.info("Meguru: this marker names no server kind; its stream"
+                .. " template says", kind)
+        end
+    end
+    return Feed.plan({
+        name = desc.server_name,
+        kind = kind,
+    }, {
+        remote_id    = desc.series_remote_id,
+        lang         = desc.lang,
+        max_pages    = opts and opts.max_pages,
+        on_page      = opts and opts.on_page,
+        is_cancelled = opts and opts.is_cancelled,
+        timeout      = opts and opts.timeout,
+        on_failure   = opts and opts.on_failure,
+    })
+end
+
 --- Resolve the page stream for an item, refreshing it from the server when the
 --- driver needs to.
 ---

@@ -39,7 +39,6 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 local Base = require("meguru/driver/base")
-local Catalog = require("meguru/catalog")
 local Marker = require("meguru/marker")
 local Open = require("meguru/ui/open")
 local Reader = require("meguru/ui/reader")
@@ -164,21 +163,27 @@ end
 
 -- Reader -----------------------------------------------------------------------
 
---- `context, neighbours` for the book on screen. Both are nil for a marker with
---- no database behind it, which still reads — it just has no next or previous.
---- The context alone is what tells "this series is unknown" (nothing can be
---- done) apart from "this series is known but not synced" (its neighbours are
---- one walk away).
-local function neighbors(ui)
+--- What the book on screen says about its series, or nil.
+---
+--- Nil is the answer for a marker that names no series at all — a flat book with
+--- no catalog ancestry — and for a v1 marker written before the fields existed.
+--- Both still read perfectly; they just have nothing to navigate to, and the
+--- rows below say "find" rather than naming a book.
+---
+--- **There is no second return value any more.** It used to be the neighbours the
+--- catalog already held, which is what let the rows be *named*. Nothing holds a
+--- neighbour list now: one is fetched when the reader asks, so a row that names a
+--- book would be a promise the menu cannot keep at the moment it is drawn.
+local function seriesOf(ui)
     local doc = ui and ui.document
-    if not (doc and type(doc.catalogContext) == "function") then
-        return nil, nil
+    if not (doc and type(doc.seriesContext) == "function") then
+        return nil
     end
-    local context = doc:catalogContext()
-    if not (context and context.server) then
-        return nil, nil
+    local context = doc:seriesContext()
+    if not (context and context.server_name) then
+        return nil
     end
-    return context, Catalog.neighbors(context.series.id, context.item.item_key)
+    return context
 end
 
 --- One "open the next/previous item in this series" row.
@@ -193,32 +198,17 @@ end
 --- catalogued any other way (the row at the top of a feed), and on a server with
 --- no driver to walk with. `Reader.openNeighbor` answers it by
 --- syncing the series first.
-local function addNeighborRow(plugin, rows, context, found, which, title_of)
-    local item = found and found[which]
-    if not item then
-        if not context then
-            return
-        end
-        rows[#rows + 1] = {
-            text = which == "next"
-                and _("Find the next chapter")
-                or _("Find the previous chapter"),
-            callback = function()
-                -- Deferred: the sync opens the chapter itself, possibly
-                -- replacing this document, and this handler belongs to it.
-                UIManager:nextTick(function()
-                    pcall(Reader.openNeighbor, plugin, which)
-                end)
-            end,
-        }
+local function addNeighborRow(plugin, rows, context, which)
+    if not context then
         return
     end
     rows[#rows + 1] = {
-        text = title_of(item),
+        text = which == "next"
+            and _("Find the next chapter")
+            or _("Find the previous chapter"),
         callback = function()
-            -- Deferred: opening the neighbour replaces the document, which
-            -- tears down the reader this menu handler belongs to. The call
-            -- opens the book itself, so nothing switches a second time here.
+            -- Deferred: the walk opens the chapter itself, possibly replacing
+            -- this document, and this handler belongs to it.
             UIManager:nextTick(function()
                 pcall(Reader.openNeighbor, plugin, which)
             end)
@@ -233,26 +223,24 @@ function Menu.addReaderItems(plugin, menu_items)
         return
     end
 
-    -- One query for the whole submenu: the rows below, and whether the
+    -- One lookup for the whole submenu: the rows below, and whether the
     -- auto-open toggle has anything to govern.
-    local context, found = neighbors(ui)
+    local context = seriesOf(ui)
 
     local rows = {}
-    -- The book on the row is `bookLabel`'s short form, for the reason the resume
-    -- dialog's buttons already use it: the series is the one *already open*, so
-    -- the volume token is the whole of what the row has to say, and the full
-    -- entry title overflows it. It never returns nil, so there is no bare
-    -- "Open next in series" to fall back to.
-    addNeighborRow(plugin, rows, context, found, "next", function(item)
-        return T(_("Open next in series: %1"), Open.bookLabel(item))
-    end)
-    addNeighborRow(plugin, rows, context, found, "previous", function(item)
-        return T(_("Open previous in series: %1"), Open.bookLabel(item))
-    end)
+    -- The rows name no book, and that is the honest shape now: a neighbour is
+    -- fetched when the reader asks for one, so naming one here would be a
+    -- promise made before the walk that would have to keep it. The label that
+    -- used to be here was `bookLabel`'s short form — the volume token, because
+    -- the full entry title overflows the row.
+    addNeighborRow(plugin, rows, context, "next")
+    addNeighborRow(plugin, rows, context, "previous")
 
-    -- Only meaningful when there is somewhere to go; without a next item the
-    -- toggle would govern a behaviour that can never trigger.
-    if found and found.next then
+    -- Only meaningful when there is somewhere to go. A series the marker cannot
+    -- name has no feed to walk, so the toggle would govern a behaviour that can
+    -- never trigger — but a known series always *has* a possible next, it is
+    -- simply one walk away, so the gate is the context and not a neighbour.
+    if context then
         rows[#rows + 1] = {
             text = _("Auto-open next at the end"),
             keep_menu_open = true,

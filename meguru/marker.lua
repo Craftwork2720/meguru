@@ -132,6 +132,11 @@ function Marker.seriesContext(desc)
         server_kind      = desc.server_kind,
         series_remote_id = desc.series_remote_id,
         series_name      = desc.series_name,
+        -- The book's own identity within that series, which is how a feed
+        -- answers "which entry is this one" without a rowid: it is the same
+        -- key the drivers derive, so a walk and a marker cannot disagree
+        -- about which chapter a book is.
+        item_key         = desc.item_key,
         lang             = desc.lang,
         cover_url        = desc.cover_url,
         series_cover_url = desc.series_cover_url,

@@ -43,11 +43,10 @@ local _ = require("gettext")
 local C_ = _.pgettext
 local T = require("ffi/util").template
 
-local Catalog = require("meguru/catalog")
+local Feed = require("meguru/feed")
 local Defaults = require("meguru/doc/defaults")
 local Open = require("meguru/ui/open")
 local Settings = require("meguru/settings")
-local SyncJob = require("meguru/ui/syncjob")
 
 local Reader = {}
 
@@ -650,93 +649,58 @@ end
 --- just has no neighbours.
 local function seriesContext(ui)
     local doc = ui and ui.document
-    if not (doc and type(doc.catalogContext) == "function") then
+    if not (doc and type(doc.seriesContext) == "function") then
         return nil
     end
-    local context = doc:catalogContext()
-    if not (context and context.server) then
+    local context = doc:seriesContext()
+    if not (context and context.server_name) then
         return nil
     end
     return context
 end
 
---- `context, neighbours` for the book on screen, either of which may be nil.
---- `Catalog.neighbors` is nil only when the item itself is absent from the
---- catalog — a row removed underneath a book that is already open.
-local function neighborsOf(ui)
-    local context = seriesContext(ui)
-    if not context then
-        return nil, nil
+--- Ask this series' own feed for the item either side of the one being read.
+---
+--- **The feed is the only source, and it is read on the ask.** A marker holds no
+--- sibling list: the design that put one there is the one this plugin replaced,
+--- and it failed for a reason that has nothing to do with where the list lived.
+--- A copy is written once and never repaired, so it answers with the series as
+--- it was — silently, for as long as the file exists, and in the old plugin it
+--- was copied forward into every marker an auto-open created. Asking the feed
+--- cannot go stale, and it costs one walk in a gesture that asked for one.
+---
+--- `Feed.planForMarker` turns the marker into a driver and a canonical feed URL
+--- (falling back to the stream template for a marker that predates
+--- `server_kind`), `Feed.walk` fetches it, `Feed.ordered` puts it in reading
+--- order and `Feed.neighbor` picks. Nothing is written: the neighbour gets a
+--- marker of its own when it is opened, and this book's is left as it was.
+---
+--- Bounded like the row above a series feed bounds its own walk, because this
+--- runs inside a tap and a walk is a run of synchronous HTTP requests.
+---
+--- Returns the item, or nil plus a reason.
+local function neighborFromFeed(doc, context, which)
+    local plan, reason = Feed.planForMarker(doc.desc, {
+        max_pages = Feed.TAP_PAGES,
+        timeout   = "resume",
+        on_failure = function(why)
+            logger.info("Meguru: cannot look for a neighbour of",
+                tostring(context.series_name), "-", why)
+        end,
+    })
+    if not plan then
+        return nil, reason
     end
-    return context, Catalog.neighbors(context.series.id, context.item.item_key)
+    local walker = Feed.walker(plan.url, plan.walker_opts)
+    while walker:step() do end
+    if not walker.complete then
+        return nil, tostring(walker.reason)
+    end
+    local sequence = Feed.ordered(Feed.collect(walker, plan))
+    return Feed.neighbor(sequence, context.item_key, which)
 end
 
---- Sync `context`'s series, then hand `which`'s neighbour to the reader.
----
---- Called when the reader asks for a neighbour the catalog does not have yet —
---- which used to be the normal state of a series catalogued from the OPDS
---- browser, and is now the state while that add's background walk is still
---- running, or after it failed or was refused.
----
---- **The once-per-series guard lives in `SyncJob`, not here.** It used to be a
---- module-level scalar in this file, which had two problems a per-series guard
---- in the module all three walkers pass through does not: it refused a request
---- for one series because a walk was running for another, and it could not see
---- the walks the browser path starts — including the very ones this file's
---- `syncThenOpen` needs protection *from*. Two guards for one
---- invariant is how they drift, so there is one.
----
---- A refusal arrives as `on_done(false, "busy")` and is deliberately silent here
---- (the `if not ok then return end` below): a walk for this series is already
---- running, which is the state this call wanted. It does mean the neighbour is
---- **not** opened when that walk ends — the walk opens whatever its own
---- initiator asked for — and that is the behaviour before this change too.
----
---- The completion runs on the tick the walk ends, with SyncJob's dialog already
---- closed and the database already written to, so the requery below sees the
---- rows the walk just added. Only **one** sync is attempted: a series whose
---- canonical feed genuinely has no neighbour after a successful sync has none,
---- and retrying would walk the same feed again for the same answer.
-local function syncThenOpen(plugin, context, which)
-    local ui = plugin.ui
-    local series = context.series
-    SyncJob.run(context.server, series, function(ok)
-        -- The reader this was asked for may be gone by now (the walk is tens of
-        -- seconds and the plugin instance is per-document). Switching documents
-        -- then would replace whatever is on screen with a book nobody asked for.
-        if plugin.ui ~= ui then
-            return
-        end
-        if not ok then
-            -- SyncJob has already said why, in more detail than is available
-            -- here. A second popup would only repeat it.
-            return
-        end
-        local refreshed = Catalog.series(series.id) or series
-        local after = Catalog.neighbors(series.id, context.item.item_key)
-        local item = after and after[which] or nil
-        if not item then
-            UIManager:show(InfoMessage:new{
-                text = which == "next"
-                    and T(_("%1 has no next chapter."), refreshed.name)
-                    or T(_("%1 has no previous chapter."), refreshed.name),
-            })
-            return
-        end
-        -- Deferred for the same reason the tap that got here was: opening
-        -- replaces the document, and this runs inside the walk's own tick.
-        --
-        -- Silent, like the direct path below: this is the same neighbour the
-        -- reader asked for, arriving a sync later. Asking now would put a
-        -- question in front of a request that was not one.
-        UIManager:nextTick(function()
-            Open.openItemSilently(plugin, context.server, refreshed, item)
-        end)
-    end)
-end
-
---- Open the item before or after this one in the series. Returns whether the
---- document was handed to the reader **on this call**.
+--- Open the neighbour this reader asked for, from the series' own feed.
 ---
 --- **This replaces the document.** `Open.openItemSilently` writes the marker and
 --- switches the reader to it, so a caller must not switch again afterwards, and
@@ -750,44 +714,25 @@ end
 --- and the dialog could answer with a different chapter than the one tapped —
 --- most visibly on "previous chapter" while the server sat further along.
 ---
---- A `false` return therefore means "nothing was opened *now*", not "there is
---- nothing there": when the series has no such neighbour yet, this syncs it and
---- opens the neighbour from the sync's completion, a tick or a walk later.
+--- A `false` return means "nothing was opened" — there is no chapter that way,
+--- the walk failed, or there is no connection. It never means "try again later
+--- on your own": the walk is synchronous and its answer is final.
 ---
---- This is where the catalog pays for itself: the old plugin kept a copy of the
---- sibling list inside every marker and had to scan it by volume number, with a
---- special case for the alias entry that shared the real volume's stream. Here
---- the next item is one query, and identity is the same `item_key` the sync
---- uses, so an alias cannot exist to be skipped.
+--- The feed is asked every time, so there is no state here to go stale and no
+--- guard to keep two walks apart. What replaced the old per-series guard is that
+--- there are no longer two walkers: the background walk an OPDS add used to
+--- start is gone with the catalog it was filling.
 function Reader.openNeighbor(plugin, which)
-    local context = seriesContext(plugin.ui)
+    local ui = plugin and plugin.ui
+    local doc = ui and ui.document
+    local context = seriesContext(ui)
     -- No context: the marker carries no series identity. There is nothing to
-    -- sync — the series is not known, so no feed can be built for it. This is
-    -- the marker-written-without-a-database case, and it is meant to read
+    -- walk — no server, no series id, so no feed URL can be built for it. This
+    -- is the marker-written-without-a-catalog case, and it is meant to read
     -- without neighbours rather than prompt for anything.
     if not context then
         return false
     end
-    local found = Catalog.neighbors(context.series.id, context.item.item_key)
-    -- `neighbors` is nil only when the *current* item is itself absent from the
-    -- catalog — a row deleted underneath a book that is open. Syncing would
-    -- re-add it, but the requery after the walk keys on that same missing row,
-    -- so there is no neighbour to be found at the end of it.
-    if not found then
-        return false
-    end
-    if found[which] then
-        -- openItemSilently reports its own failures, in more detail than a caller
-        -- could; all that is wanted back here is whether it worked.
-        return Open.openItemSilently(plugin, context.server, context.series, found[which]) ~= nil
-    end
-    -- Reachable when the reader is asked twice before the connection prompt is
-    -- answered: both re-runs land on the same tick, and the second must not start
-    -- a second walk over the same feed. That is now `SyncJob`'s per-series guard
-    -- rather than a scalar here — see `syncThenOpen` — and it needs no test at
-    -- this point: a refusal comes back through `on_done(false, "busy")`, which
-    -- the callback returns on, and the return below is `false` either way.
-
     -- A walk is a run of HTTP requests, so it needs a connection the same way a
     -- page fetch does; the manager prompts for one rather than letting the walk
     -- fail on its first request, and only re-runs this once one exists.
@@ -797,10 +742,22 @@ function Reader.openNeighbor(plugin, which)
         end)
         return false
     end
-
-    syncThenOpen(plugin, context, which)
-    return false
+    local item, reason = neighborFromFeed(doc, context, which)
+    if not item then
+        logger.info("Meguru: no neighbour of", tostring(context.series_name),
+            "towards", which, "-", tostring(reason))
+        UIManager:show(InfoMessage:new{
+            text = which == "next"
+                and T(_("%1 has no next chapter."), tostring(context.series_name or ""))
+                or T(_("%1 has no previous chapter."), tostring(context.series_name or "")),
+        })
+        return false
+    end
+    -- openItemSilently reports its own failures, in more detail than a caller
+    -- could; all that is wanted back here is whether it worked.
+    return Open.openItemSilently(plugin, context, item) ~= nil
 end
+
 
 --- When a book reaches its end, open the next one instead of showing KOReader's
 --- stock end-of-book dialog.
@@ -822,20 +779,29 @@ local function installEndOfBookHook(plugin)
         if not Settings.get("auto_next_item") then
             return orig(status_self, ev)
         end
-        -- Deliberately only the neighbour the catalog already has. This is not
-        -- a tap: reaching the end of the last known chapter would otherwise
-        -- start a network walk nobody asked for, every time the book is
-        -- finished. Asking for a neighbour the catalog lacks is a menu row.
+        -- **This walks, and that reverses an earlier refusal.** It used to take
+        -- only the neighbour the catalog already held, on the grounds that
+        -- reaching the end of a volume would otherwise start a network walk
+        -- nobody asked for. That reasoning rested on the catalog: a background
+        -- walk after an OPDS add meant the neighbour was normally already there,
+        -- so falling through cost nothing but a stock dialog.
         --
-        -- That refusal stays, and what changed around it is *when the neighbour
-        -- arrives*: a series added from the OPDS browser is walked in the
-        -- background right after the add, so by the time a reader reaches the
-        -- end of that volume the catalog normally has the next chapter and this
-        -- branch is the normal one. Falling through to KOReader's own
-        -- end-of-book dialog means that walk was refused, failed, or never
-        -- started — not that the series is one book long.
-        local _, found = neighborsOf(ui)
-        if not (found and found.next) then
+        -- With no catalog there is nothing to already hold, so keeping the
+        -- refusal would not preserve the behaviour — it would make the toggle
+        -- govern something that can never happen. And the walk here *is* asked
+        -- for: the reader turned `auto_next_item` on and finished a volume.
+        -- The cost is one bounded walk per finished book, and only for a reader
+        -- who opted in.
+        --
+        -- Anything short of "there is a next chapter" falls through to
+        -- KOReader's own dialog rather than reporting: an end-of-book is not the
+        -- moment for a popup saying the series has no more.
+        local context = seriesContext(ui)
+        if not (context and NetworkMgr:isConnected()) then
+            return orig(status_self, ev)
+        end
+        local ok_walk, next_item = pcall(neighborFromFeed, ui.document, context, "next")
+        if not (ok_walk and next_item) then
             return orig(status_self, ev)
         end
         -- Replicate the auto-marking the stock handler would have done, so the
@@ -857,8 +823,12 @@ local function installEndOfBookHook(plugin)
             status_self._meguru_auto_pending = true
             UIManager:nextTick(function()
                 status_self._meguru_auto_pending = false
-                -- Opens the next item itself; do not switch again here.
-                pcall(Reader.openNeighbor, plugin, "next")
+                -- Opened from the item the walk already returned, not through
+                -- `Reader.openNeighbor`: that would walk the same feed a second
+                -- time and, finding nothing, put a popup over a reader who has
+                -- just finished a book. Opens the item itself; do not switch
+                -- again here.
+                pcall(Open.openItemSilently, plugin, context, next_item)
             end)
         end
         return true

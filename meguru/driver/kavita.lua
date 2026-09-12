@@ -22,6 +22,11 @@ local Kavita = {}
 --- signs every feed it serves with its own name.
 Kavita.authorSignatures = { "kavita" }
 
+--- The stream template a Kavita marker carries. `chapterId` is the query
+--- parameter that is also this driver's `item_key` (see PROTOCOL.md), so a
+--- template carrying it is one only Kavita emits.
+Kavita.streamSignatures = { { "chapterId=" } }
+
 local STORYLINE_SUFFIX = " - Storyline"
 
 --- One parameter out of a URL's query string, or nil.

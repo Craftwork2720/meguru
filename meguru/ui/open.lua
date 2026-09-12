@@ -1508,8 +1508,19 @@ function Open.offerResume(host, server, series, item, opts)
                     -- `openCatalogItem` — which would plan the marker and then
                     -- put the same question again about the book they chose — is
                     -- exactly the wrong call here.
+                    -- `openItemSilently` takes what a *marker* says about its
+                    -- series, and this path still holds catalog rows — the
+                    -- dialog half of the open has not moved yet. The names
+                    -- differ, so the shape is built here rather than at the
+                    -- call, and it disappears with the rows.
                     local open_target = opts.open_item or function(chosen)
-                        Open.openItemSilently(host, server, series, chosen)
+                        Open.openItemSilently(host, {
+                            server_name      = server and server.name,
+                            server_kind      = server and server.kind,
+                            series_remote_id = series and series.remote_id,
+                            series_name      = series and series.name,
+                            series_cover_url = series and series.cover_url,
+                        }, chosen)
                     end
                     once(function() open_target(jump) end)
                 end,
@@ -1552,20 +1563,38 @@ end
 ---
 --- Returns the plan, or nil after reporting why.
 local function planMarker(server, series, item)
-    if type(item.marker_path) == "string" and item.marker_path ~= ""
-        and FS.exists(item.marker_path) then
-        -- `count` is read back rather than resolved: `Feed.resolveStream` costs a
-        -- request for a Suwayomi chapter, and the marker already knows. It used
+    -- **The path is recomputed rather than read off a row.** It used to be
+    -- `item.marker_path`, remembered in the catalog when the marker was written,
+    -- which answered "is this book already on disk" in one column. With no
+    -- catalog it is answered by asking the same two functions that would name
+    -- the file anyway — so the answer cannot drift from the write, because it is
+    -- the write's own path. `title` and `item_key` are the whole of what
+    -- `pathFor` and `naturalKey` read; no template is needed, which is what
+    -- lets this happen *before* `resolveStream` and keep its saving.
+    local identity = {
+        server_name      = server.name,
+        series_remote_id = series.remote_id,
+        item_key         = item.item_key,
+        title            = item.title,
+    }
+    local dir = Marker.dirFor(identity, series, {
+        base_dir      = Marker.baseDir(),
+        server_folder = Settings.get("marker_server_dir") and true or false,
+    })
+    local path = Marker.pathFor(dir, identity)
+    if FS.exists(path) and Marker.matches(path, identity) then
+        -- `count` is read back rather than resolved: `Feed.resolveStream` costs
+        -- a request for a Suwayomi chapter, and the marker already knows. It used
         -- to be dropped here entirely, which is why the server's page button
         -- appeared for a freshly made marker and vanished on the second open of
         -- the same book — the same question answered differently by the second
         -- and third opens, with `offerResume`'s `usablePage` refusing a page it
         -- had no count to bound.
-        local existing = Marker.load(item.marker_path)
+        local existing = Marker.load(path)
         return {
             item     = item,
             server   = server,
-            path     = item.marker_path,
+            path     = path,
             existing = true,
             count    = existing and tonumber(existing.count) or nil,
         }
@@ -1582,9 +1611,9 @@ local function planMarker(server, series, item)
     end
 
     -- Everything the marker needs to answer "what series is this, and what
-    -- feed describes it" without a catalog. Written here, at the one place a
-    -- marker is built, from rows that are already in hand — `server` and
-    -- `series` are arguments, so none of this costs a query.
+    -- feed describes it" without a catalog. `server` and `series` are arguments
+    -- -- a marker context or the shim `openItemSilently` builds from one -- so
+    -- none of this costs a query.
     local desc = Marker.new{
         server_name      = server.name,
         series_remote_id = series.remote_id,
@@ -1595,21 +1624,21 @@ local function planMarker(server, series, item)
         template         = template,
         count            = count,
         last_read        = item.last_read,
-        lang             = Catalog.serverLang(server.name),
+        lang             = server.lang,
         cover_url        = item.cover_url,
         series_cover_url = series.cover_url,
     }
-    local dir = Marker.dirFor(desc, series, {
-        base_dir              = Marker.baseDir(),
-        server_folder         = Settings.get("marker_server_dir") and true or false,
-        series_folder_claimed = Catalog.folderClaimedByOther(
-            server.id, series.name, series.id),
-    })
+    -- `dir` and `path` from above, deliberately not recomputed. `dirFor` reads
+    -- only the server name and the series, and `pathFor` only the title and the
+    -- natural key — all of which `identity` carries and `desc` repeats verbatim
+    -- — so a second call could only ever return the same answer, and `pathFor`
+    -- consults the directory it is about to write into. One question, one
+    -- answer, handed on to `saveAt`.
     return {
         item     = item,
         server   = server,
         desc     = desc,
-        path     = Marker.pathFor(dir, desc),
+        path     = path,
         existing = false,
         count    = count,
     }
@@ -1671,7 +1700,22 @@ end
 --- sidesteps the ordering entirely.
 ---
 --- Returns the marker path, or nil after reporting why.
-function Open.openItemSilently(host, server, series, item)
+--- `context` is what a marker says about its series (`Marker.seriesContext`):
+--- the server it came from and the series it belongs to. It used to be a pair of
+--- catalog rows, which is why `server` and `series` are unpacked from it here
+--- rather than at every call site — the two functions below want those shapes,
+--- and building them once keeps a caller from inventing a third.
+function Open.openItemSilently(host, context, item)
+    local server = {
+        name = context.server_name,
+        kind = context.server_kind,
+        lang = context.lang,
+    }
+    local series = {
+        remote_id = context.series_remote_id,
+        name      = context.series_name,
+        cover_url = context.series_cover_url,
+    }
     local plan = planMarker(server, series, item)
     if not plan then
         return nil
