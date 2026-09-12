@@ -1246,10 +1246,10 @@ Two invariants when touching these rows:
   (Meguru used to have three plain-`Menu` surfaces of its own — library, series,
   servers — and with them went the reason `separator` was ever unsafe here.)
 - **A `Settings` submenu, one level deep, on both surfaces** — the reader's holds
-  five rows (auto-open, hide status bar, save folder, per-server subfolder,
-  default reader for `.cbz`), the FileManager's the three that are not about a
-  book already open. The FileManager's depth is a deliberate cost, paid so the
-  two menus read the same. Nothing nestles deeper, and no `sorting_hint` exists
+  six rows (auto-open, panel zoom, hide status bar, save folder, per-server
+  subfolder, default reader for `.cbz`), the FileManager's the three that are not
+  about a book already open. The FileManager's depth is a deliberate cost, paid so
+  the two menus read the same. Nothing nestles deeper, and no `sorting_hint` exists
   below the top-level `meguru` item — the sorter only ever orders a page's own
   rows.
 - **`meguru/association.lua` owns Meguru being the reader for `.cbz`, and it is
@@ -1283,59 +1283,87 @@ Two invariants when touching these rows:
 - **The separator is *under* the row that carries it** (`touchmenu.lua:714`), and
   is dropped when that row is last on a page (`touchmenu.lua:713`) — so a
   separator is a hint about the list, never a guarantee about the screen. Two
-  lines used to split the reader's submenu into three groups before `Settings`
-  existed; one survives, on `Hide status bar`, marking the seam between the
-  behaviour rows and the destination rows *inside* `Settings`.
+  lines split `Settings` into its three groups, and each sits on the row that
+  *ends* a group: `Hide status bar` (behaviour, above; where books are saved,
+  below) and `Subfolder per server` (storage, above; what opens a book, below).
+  The FileManager gets both but only the second has anything above it there.
 - **The FileManager's `Meguru` submenu carries nothing but that `Settings` row.**
   Both surfaces use the key `meguru`, which is safe because the two `menu_items`
   tables are per-surface and never shared, and `Meguru:addToMainMenu` dispatches
   on whether a document is open — so only one is ever written. A saved menu order
   in `settings/` then means the same thing on both.
 
-### Panel zoom is KOReader's switch, and it is the *reader's*
+### Panel zoom: KOReader's cascade, with Meguru's preference as its floor
 
-Meguru adds no row for it. The switch is the stock one — ⋮ →
-**Panel zoom (manga/comic)** → *Allow panel zoom* — and `ui/reader.lua`'s
-`installPanelZoom` only decides what that row reads and where its answer is
-written. What it looks like in the menu, and the long-press that sets an
-extension's default, stay KOReader's.
+**One preference, and the stock cascade left exactly where it is.** What a file
+gets is KOReader's own rule — the answer in the file's sidecar if it has one, and
+otherwise the fallback:
 
-Stock keeps the answer on two levels: a global keyed by **file extension**
-(`G_reader_settings:getSettingForExt("panel_zoom_enabled", ext)`) and a copy in
-the book's sidecar that **shadows** it from the moment a book has one. The second
-level is the wrong level here, and this is the whole of the change. A streamed
-book is one chapter of one series, so a per-book copy answers for that one file
-and leaves every other one to the global it was shadowing — which is why panel
-zoom was on in exactly the book it had last been switched on in. So the global is
-read on open, **written the moment the row is flipped**, and never copied into a
-sidecar — the copy-written-once failure this plugin exists to avoid, in its
-smallest form. Three wraps, one job each:
+```
+the file's own answer (sidecar), if it has one
+otherwise  Settings.panel_zoom        -- the menu row, default on
+```
+
+The stock switch is ⋮ → **Panel zoom (manga/comic)** → *Allow panel zoom*, and
+`ui/menu.lua`'s `Panel zoom in Meguru books` reads and writes the fallback through
+`Reader.panelZoomEnabled` / `Reader.setPanelZoom`. The stock row therefore shows
+the *resolved* value — with the preference off, it reads off too — while flipping
+it answers for one file and never touches the preference. Two rows, two different
+jobs, and neither owns the other.
+
+**This replaced a design that named an extension, and the reason is a bug the
+naming caused.** The row used to govern KOReader's per-*extension* entry for
+`meguru`: read on open, written the moment the row was flipped, and the sidecar
+copy deleted so nothing could contradict it. That gave one answer for all of a
+series' chapters — right — but the plugin also opens `.cbz`, and the menu appears
+for those too, because the gate is `doc.provider == "meguru"` and `MeguruDocument`
+is the provider for both. So a reader looking at a `.cbz` was shown the answer for
+markers while the book in front of them followed the `cbz` entry: **the row said
+"off" while the panels worked.** A preference for everything Meguru opens has no
+such gap, and needs no extension arithmetic at all.
+
+Three wraps, and the third is the one that will be forgotten:
 
 | wrap | job |
 |---|---|
-| `onReadSettings` | the value is the global, **after** stock read the sidecar; the text-selection fallback is forced off |
-| `onTogglePanelZoomSetting` | the flip is persisted to the extension setting immediately |
-| `onSaveSettings` | the per-book copy stock just wrote is deleted, so nothing on disk contradicts the setting |
+| `onReadSettings` | remember whether the file answered for itself, and when it did not, put the preference where stock put the extension entry; the text-selection fallback is forced off |
+| `onTogglePanelZoomSetting` | record that the reader just answered for **this** file |
+| `onSaveSettings` | delete the per-file copy stock just wrote — unless that file answered for itself |
 
-The ordering is what makes it possible at all: plugins load
-(`readerui.lua:464`) **before** the `ReadSettings` event (`:484`), so both the
-instance wrap and the reader's first look at the value are in place before stock
-computes one. `installPanelZoom` is called from `Reader.install` for that reason,
-and it matters no less for the `.cbz` this engine also opens: there the extension
-is `cbz`, whose stock default is already on, and the two readers of that file
-agree because the suffix is read off the file rather than assumed to be a
-marker's.
+The ordering is what makes the first one possible at all: plugins load
+(`readerui.lua:464`) **before** the `ReadSettings` event (`:484`), so the wrap is
+in place before stock computes a value. `installPanelZoom` is called from
+`Reader.install` for that reason.
 
-**The default is on, because it is the default `cbz`/`cbt` get.** A marker is a
-stream of page images, which is what an archive of page images is, and a
-long-press that silently does nothing on a comic is a surprise rather than a
-neutral state. An extension that has never been switched reads as on; only an
-explicit `false` — written by the row — turns it off.
+**The line those wraps must not cross: a file that was only *opened* may not come
+away with an answer of its own.** Stock writes the live field into the sidecar on
+every save, so without that third wrap a book opened while the preference was on
+would be pinned on for good — and would survive the reader turning the preference
+off. That is the same failure the extension design was built to avoid, arriving
+from the other side, and it is why "delete unless pinned" is not the same thing as
+the old unconditional delete.
+
+**Two costs are accepted here, deliberately, and neither is a defect to tidy:**
+a file the reader switches with the stock row keeps a copy that outlives any
+change to the preference; and a `.cbz` opened through Meguru can answer
+differently from the same `.cbz` opened by KOReader's own reader, whenever nobody
+has answered for that file. Both follow from "the preference is the fallback for
+everything Meguru opens", which is what was asked for.
+
+The preference's default is **on**, because that is KOReader's own default for
+`cbz`/`cbt` and was this plugin's for markers: a marker is a stream of page
+images, which is what an archive of page images is, and a long-press that
+silently does nothing on a comic is a surprise rather than a neutral state.
 
 The fallback to text selection is forced off with it: nothing on a streamed page
 is text, and that fallback reaches `getImageFromPosition`, which no engine-less
 paging document answers. A hold that found no panel would land in a text
 selection that cannot exist here.
+
+**The `panel_zoom_enabled` entry for `meguru` that the old row wrote is now dead.**
+Nothing reads it. It sits in `settings.reader.lua` on any device that ran the
+build that wrote one, and nothing sweeps it — delete it by hand, or ignore it, the
+way `meguru.sqlite3` and `cache/meguru/` are handled.
 
 ## Plugin lifecycle facts worth not rediscovering
 
@@ -1624,15 +1652,16 @@ Each step must pass before the next:
     `Settings` row. Nothing anywhere offers a cover, a cache to clear, a library
     or a server list.
     Inside `Settings`, on both surfaces: `Auto-open next in series` (reader only,
-    and only when the marker names a series), `Hide status bar`, a line,
-    `Main folder for .meguru streams: …`, `Subfolder per server`,
+    and only when the marker names a series), `Panel zoom in Meguru books`
+    (reader only), `Hide status bar` + a line, `Main folder for .meguru
+    streams: …`, `Subfolder per server` + a line,
     `Set Meguru as default reader for .cbz`. The folder row opens the picker and
     shows the new path afterwards; the toggle's checkbox survives a restart and
     so does the folder; a new book lands in `<base>/<server>/<series>` when the
-    toggle is on. Holding `Auto-open next in series`, `Subfolder per server` or
-    the `.cbz` row shows its `help_text` — the others have none, and that one
-    line is the only separator left. With a PDF open there is no Meguru row and
-    nothing logs `menu id not found`.
+    toggle is on. Holding `Auto-open next in series`, `Panel zoom in Meguru
+    books`, `Subfolder per server` or the `.cbz` row shows its `help_text` — the
+    others have none, and those two lines are the only separators left. With a
+    PDF open there is no Meguru row and nothing logs `menu id not found`.
 
     Then the `.cbz` row, which is the one with device-wide consequences and
     starts **on**. On a fresh install — no `provider` key in
@@ -1679,17 +1708,36 @@ Each step must pass before the next:
     series list (`firstUnread`'s `filtered` branch) and from the same book opened
     from History — three entries into one answer.
 
-17. **Panel zoom is one switch for every Meguru book.** With no
-    `panel_zoom_enabled` entry for `meguru` in `settings.reader.lua`, open a
-    book and long-press a panel: it zooms, without anything having been turned
-    on first. Turn it off in ⋮ → *Panel zoom (manga/comic)* → *Allow panel
-    zoom*, close the book, and check that `meguru` is now `false` in
-    `settings.reader.lua` **and that the book's own sidecar has no
-    `panel_zoom_enabled` at all** — that key is the copy this does not keep.
-    Open a *different* Meguru book: off, which is the half that a per-book
-    answer would have got wrong. Also worth one line: open a `.cbz` through
-    "Open with… → Meguru" and confirm it reports what the same file opened by
-    MuPDF does, since both read the `cbz` entry.
+17. **Panel zoom: the preference is the floor, and a file may stand on it.**
+    Start from a device with `panel_zoom_enabled` removed from
+    `settings.reader.lua` *and* from the sidecars of the books in play, so nothing
+    has answered for anything. Then, one row at a time:
+
+    | situation | expected |
+    |---|---|
+    | preference off, a fresh marker | no zoom on long-press, and the **stock ⋮ row reads off too** |
+    | same file, stock row tapped on | zoom works — and `Panel zoom in Meguru books` **still reads off** |
+    | close and reopen that file | zoom **still works**: the file answered |
+    | preference off, a *different* marker | no zoom |
+    | preference on, a fresh file | zoom works |
+    | …then preference off, reopen that file | **no zoom** |
+
+    The last row is the one that matters, and it is the whole reason
+    `onSaveSettings` still deletes something: a file that was only *opened* must
+    not come away with an answer of its own. Confirm it on disk — open and close
+    that file under the preference on, then check its sidecar has **no**
+    `panel_zoom_enabled`, and that reopening it under the preference off does not
+    zoom.
+    Also confirm the preference applies **live** to a file with no answer of its
+    own: with such a book open, toggle `Panel zoom in Meguru books` and long-press
+    a panel without reopening. And confirm it does **not** apply to a file that
+    has answered — toggle the preference with a stamped book open and the panels
+    must not move.
+    Finally `.cbz`, where the two readings are allowed to differ: one opened
+    through Meguru with no answer of its own follows the preference, while the
+    same file opened by KOReader's own reader follows the `cbz` entry. A `.cbz`
+    KOReader's reader stamped keeps its answer in both. None of this touches the
+    dead `panel_zoom_enabled.meguru` entry, which nothing reads.
 
 18. **Panel zoom is a crop of the page, not of the screen.** On a book whose
     pages are bigger than the screen (a Kavita volume; anything at or under

@@ -24,6 +24,15 @@ local DEFAULTS = {
     auto_next_item    = true,
     manga_order       = true,
 
+    -- The default answer to "does a long-press zoom into a panel" for everything
+    -- Meguru opens — markers, and the `.cbz` files this engine also reads.
+    --
+    -- It is only the *default*: a file that answered for itself, which is what
+    -- KOReader's own ⋮ row makes it do, keeps its own answer and this one never
+    -- overrides it. `true` because that is KOReader's own default for `cbz`/`cbt`
+    -- and was this plugin's for markers.
+    panel_zoom        = true,
+
     -- Whether the one-time claim of `.cbz` by `meguru/association` has been made.
     -- A record rather than a preference: it says "the offer was made", not "the
     -- answer is yes", and it is what keeps turning the menu row off from being

@@ -3,16 +3,19 @@ The two menu surfaces Meguru adds.
 
 Both carry the same `Settings` submenu, which is every preference the plugin has:
 where a *new* book is written (the folder, and whether a per-server subfolder is
-added), whether Meguru is the reader for `.cbz`, and — on the reader only — the
-two reading-behaviour switches. They are preferences, and they used to be a
+added), whether Meguru is the reader for `.cbz`, and — on the reader only —
+three reading-behaviour switches. They are preferences, and they used to be a
 dialog asked at every single open; a value that changes once does not belong in
 the path of a tap.
 
 The **reader** gets a ⋮ "Meguru" submenu, and only while a Meguru book is open.
-It holds the series-navigation rows and a `Settings` submenu holding all five
+It holds the series-navigation rows and a `Settings` submenu holding all six
 rows. The per-book *rendering* choices — crop, fit, reading direction —
 deliberately live in the bottom ConfigDialog instead, where every other stock
 per-book option lives; see `ui/reader.lua`.
+Panel zoom is the one row that is a *default* rather than a switch of its own:
+it is what a Meguru-opened file follows when it has no answer of its own, and
+KOReader's own ⋮ row still answers for one book at a time.
 
 The **FileManager** gets the same `Settings` submenu and nothing else, which for
 it is the three rows that are not about reading a book that is already open. It
@@ -148,6 +151,9 @@ local function destinationRows()
             text = _("Subfolder per server"),
             help_text = _("New streams go in a folder named after the OPDS server (e.g. \"kavita\"), then their series. Streams already saved are not moved."),
             keep_menu_open = true,
+            -- Ends the storage group: where a new book is written, above; what
+            -- opens it, below.
+            separator = true,
             checked_func = function()
                 return Settings.get("marker_server_dir")
             end,
@@ -326,6 +332,18 @@ function Menu.addReaderItems(plugin, menu_items)
             end,
         }
     end
+
+    -- A default for everything Meguru opens, not an override of anything: the
+    -- stock ⋮ row still answers per book, and a book that has an answer keeps it.
+    settings[#settings + 1] = {
+        text = _("Panel zoom in Meguru books"),
+        help_text = _("The default for everything Meguru opens, streams and .cbz alike. A book you switch individually with KOReader's own ⋮ → Panel zoom (manga/comic) keeps its own answer; this is what the rest follow."),
+        keep_menu_open = true,
+        checked_func = Reader.panelZoomEnabled,
+        callback = function()
+            Reader.setPanelZoom(plugin.ui, not Reader.panelZoomEnabled())
+        end,
+    }
 
     settings[#settings + 1] = {
         text = _("Hide status bar"),

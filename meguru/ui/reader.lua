@@ -44,10 +44,6 @@ local _ = require("gettext")
 -- file that skips this line gets a nil call only when the row is built.
 local C_ = _.pgettext
 local T = require("ffi/util").template
--- `getFileNameSuffix`, the same call `ReaderHighlight:onReadSettings` makes to
--- key its panel-zoom setting by. Same module, so the two cannot spell a `.cbz`
--- differently.
-local util = require("util")
 
 local Feed = require("meguru/feed")
 local Defaults = require("meguru/doc/defaults")
@@ -388,61 +384,63 @@ end
 
 -- Panel zoom -------------------------------------------------------------------
 
---- The extension KOReader keys its own panel-zoom preference by, or nil for a
---- document whose file name says nothing.
+--- Meguru's own default for panel zoom, read and written from the menu row.
 ---
---- Read off the file rather than assumed to be a marker's, because this engine
---- also opens a local `.cbz`: that one must answer with the same setting a
---- MuPDF-opened `.cbz` does, and the file name is what makes it.
-local function panelZoomExt(ui)
-    local file = ui and ui.document and ui.document.file
-    if type(file) ~= "string" then
-        return nil
-    end
-    return util.getFileNameSuffix(file)
+--- **A default, not an override.** What a file gets is KOReader's own cascade —
+--- the answer in the file's sidecar if it has one, and this only when it does
+--- not. So the stock ⋮ row keeps working exactly as it always has, one book at a
+--- time, and this is what decides for the books nobody has answered for.
+---
+--- This was once KOReader's per-*extension* entry, which was wrong for a reason
+--- worth keeping: the plugin opens `.cbz` too, so a reader looking at a `.cbz`
+--- was being shown the answer for markers while the book in front of them
+--- followed `cbz`. One preference for everything Meguru opens has no such gap.
+function Reader.panelZoomEnabled()
+    return Settings.get("panel_zoom") == true
 end
 
---- Whether panel zoom is on for this extension: KOReader's own answer, with the
---- default it gives `cbz`/`cbt` when the extension has never been switched.
+--- Set it, live for the book on screen — unless that book answered for itself.
 ---
---- A marker is a stream of page images, which is the thing an archive of page
---- images is, so the honest default is the one that gets. A long-press that
---- does nothing on a comic is a surprise rather than a neutral state.
-local function panelZoomGlobal(ext)
-    local g = rawget(_G, "G_reader_settings")
-    if not (g and type(g.getSettingForExt) == "function") then
-        return true
+--- `panel_zoom_enabled` is the very field the stock row flips, so a book with no
+--- answer of its own follows immediately rather than on the next open. A book
+--- that *has* one keeps it: the preference is what it falls back to, and a
+--- fallback that overrode the answer would not be one.
+function Reader.setPanelZoom(ui, on)
+    Settings.set("panel_zoom", on == true)
+    local hl = ui and ui.highlight
+    if hl and not hl._meguru_panel_zoom_pinned then
+        hl.panel_zoom_enabled = on == true
     end
-    local value = g:getSettingForExt("panel_zoom_enabled", ext)
-    if value == nil then
-        return true
-    end
-    return value == true
 end
 
---- Hand panel zoom over to KOReader's own switch, and make that switch the
---- reader's rather than the book's.
+--- Leave KOReader's own cascade alone, and put Meguru's preference underneath it.
 ---
---- The switch is the stock "⋮ → Panel zoom (manga/comic) → Allow panel zoom",
---- and stock keeps its answer on two levels: an extension-keyed global, and a
---- per-book copy in the sidecar that **shadows** the global from the moment a
---- book has one. The second level is the wrong level here. A streamed book is
---- one chapter of one series, so a per-book copy answers for that one file and
---- leaves every other one to the global it was shadowing — which is why panel
---- zoom was off in every book but the one it was last switched on in.
+--- The switch is the stock "⋮ → Panel zoom (manga/comic) → Allow panel zoom", and
+--- stock keeps its answer on two levels: a per-file copy in the sidecar, and a
+--- per-extension entry that answers for every file that has none. **Both levels
+--- stay exactly where they are.** All this changes is what the second one is: for
+--- a file Meguru opened, "nobody has answered for this" resolves to
+--- `Settings.panel_zoom` rather than to whatever KOReader has for the extension.
 ---
---- So the global is read on open, written the moment the reader flips the row,
---- and never copied into a sidecar. That last part is the point of the whole
---- arrangement: a copy is written once and never repaired, and this one would
---- go on answering for a book long after the reader had said otherwise for
---- every book.
+--- That is the whole of it, and the reason it is this small is worth keeping from
+--- the design it replaces. An earlier version made the extension entry
+--- authoritative for markers — read on open, written the moment the row was
+--- flipped, and the sidecar copy deleted so nothing could contradict it. That
+--- gave one answer for all of a series' chapters, which is right, but it did it
+--- by naming an *extension*, and this engine opens `.cbz` too: a reader looking
+--- at a `.cbz` was shown the answer for markers while the book in front of them
+--- followed `cbz`. A preference for everything Meguru opens has no such gap, and
+--- costs no machinery.
 ---
---- Nothing here adds a row, and nothing here names a default of its own beyond
---- the extension's: the menu item, its label and its gesture are KOReader's.
+--- The line the wraps below must not cross: a file that was only *opened* may not
+--- come away with an answer of its own. Stock writes the live field into the
+--- sidecar on every save, so without the third wrap a book opened while the
+--- preference was on would be pinned on for good, and would survive the reader
+--- turning it off — which is precisely the failure the design above was built to
+--- avoid, arriving from the other side.
 local function installPanelZoom(ui)
     local hl = ui and ui.highlight
-    local ext = panelZoomExt(ui)
-    if not (hl and ext and ui.paging) then
+    if not (hl and ui.paging) then
         return false
     end
     if hl._meguru_panel_zoom_installed then
@@ -450,16 +448,27 @@ local function installPanelZoom(ui)
     end
     hl._meguru_panel_zoom_installed = true
 
-    -- `...` rather than the stock signature: events reach a module as
-    -- `module.handler(module, unpack(event.args))`, so a build that hands this
-    -- one an extra argument must not lose it here.
+    -- `config` is named rather than reached through `...`, because the cascade
+    -- turns on `config:has(...)`. The rest is still forwarded, so a build that
+    -- hands this one an extra argument does not lose it here.
     local orig_read = hl.onReadSettings
-    hl.onReadSettings = function(self, ...)
+    hl.onReadSettings = function(self, config, ...)
         if type(orig_read) == "function" then
-            orig_read(self, ...)
+            orig_read(self, config, ...)
         end
-        -- After the stock read, so this is the answer and not the sidecar's.
-        self.panel_zoom_enabled = panelZoomGlobal(ext)
+        -- Did this file answer for itself? Stock has just said so, and its answer
+        -- is the one that keeps winning.
+        local own = type(config) == "table" and type(config.has) == "function"
+            and config:has("panel_zoom_enabled")
+        -- Remembered for `onSaveSettings` below, which needs to know whether this
+        -- file is allowed to keep a copy. A file answered in an earlier session
+        -- counts exactly as much as one answered in this one.
+        self._meguru_panel_zoom_pinned = own and true or false
+        if not own then
+            -- Stock put the per-extension entry here. This preference is the only
+            -- default this plugin recognises.
+            self.panel_zoom_enabled = Settings.get("panel_zoom")
+        end
         -- Nothing on a streamed page is text, and the fallback reaches
         -- `getImageFromPosition`, which no engine-less paging document
         -- answers — a hold that found no panel would land in a text selection
@@ -467,34 +476,31 @@ local function installPanelZoom(ui)
         self.panel_zoom_fallback_to_text_selection = false
     end
 
-    -- The stock row only flips the field above; what persists it is the stock
-    -- save, into the book. Write the reader's extension setting instead, at the
-    -- moment it is flipped, so the switch is remembered whatever becomes of the
-    -- book it was flipped in.
+    -- The stock row flips the live field and nothing else — and that flip is the
+    -- reader answering for *this* file. The one place that is worth knowing from.
     local orig_toggle = hl.onTogglePanelZoomSetting
     hl.onTogglePanelZoomSetting = function(self, ...)
         if type(orig_toggle) == "function" then
             orig_toggle(self, ...)
         end
-        local g = rawget(_G, "G_reader_settings")
-        if g and type(g.saveSettingForExt) == "function" then
-            g:saveSettingForExt("panel_zoom_enabled",
-                self.panel_zoom_enabled == true, ext)
-        end
+        self._meguru_panel_zoom_pinned = true
     end
 
-    -- The stock save writes the per-book copy, and the read above ignores it —
-    -- so it is a value on disk that nothing consults and nothing repairs.
-    -- Removed rather than left to rot, so a build that ever loses the wrap
-    -- above reads the reader's answer and not one book's.
+    -- Stock writes the live field into the sidecar on every save, so a file
+    -- nobody switched would be pinned to whatever the preference happened to be
+    -- at the moment it was opened, and would hold that answer after the
+    -- preference moved. The copy is kept only by the file that answered for
+    -- itself; the rest fall back to the preference, every time.
     local orig_save = hl.onSaveSettings
     hl.onSaveSettings = function(self, ...)
         if type(orig_save) == "function" then
             orig_save(self, ...)
         end
-        local ds = self.ui and self.ui.doc_settings
-        if ds and type(ds.delSetting) == "function" then
-            ds:delSetting("panel_zoom_enabled")
+        if not self._meguru_panel_zoom_pinned then
+            local ds = self.ui and self.ui.doc_settings
+            if ds and type(ds.delSetting) == "function" then
+                ds:delSetting("panel_zoom_enabled")
+            end
         end
     end
 

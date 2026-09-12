@@ -77,10 +77,11 @@ Changing the folder does not move books you have already saved.
 > Tap a setting to apply it to the book you are reading. Long-press it to make it
 > the default for every new book Meguru opens.
 
-**Panel zoom** is the exception, and deliberately: its switch is KOReader's own —
-**⋮ → Panel zoom (manga/comic) → *Allow panel zoom*** — and there is one of it
-for every Meguru book. Flip it once and it stays flipped, exactly as it does for
-a `.cbz`. It starts on.
+**Panel zoom** is the exception: it belongs to KOReader —
+**⋮ → Panel zoom (manga/comic) → *Allow panel zoom*** — and Meguru sets only its
+default. A book you switch there keeps its own answer; every other book Meguru
+opens — streams and `.cbz` alike — follows *Settings* → *Panel zoom in Meguru
+books*, which starts on.
 
 The reader's **⋮ → Tools → Meguru** menu holds the rest:
 
@@ -88,8 +89,8 @@ The reader's **⋮ → Tools → Meguru** menu holds the rest:
   fetches the series' chapter list and opens it;
 - ***Settings*** — the same submenu the file browser shows, and the only place
   any of these live: *Auto-open next in series* (opens the next chapter by itself
-  when you finish one), *Hide status bar*, the two folder rows, and
-  *Set Meguru as default reader for .cbz* (below).
+  when you finish one), *Panel zoom in Meguru books*, *Hide status bar*, the two
+  folder rows, and *Set Meguru as default reader for .cbz* (below).
 
 ## Where to start reading
 
