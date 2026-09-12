@@ -8,7 +8,6 @@ local Menu = require("meguru/ui/menu")
 local Open = require("meguru/ui/open")
 local Paths = require("meguru/paths")
 local Reader = require("meguru/ui/reader")
-local Store = require("meguru/store")
 
 -- DocumentRegistry:addProvider only ever appends, so a second call would leave
 -- two providers for the same extension and a "Open with…" list with the entry
@@ -29,15 +28,6 @@ local Meguru = WidgetContainer:extend{
 function Meguru:init()
     if self.ui and self.ui.menu then
         self.ui.menu:registerToMainMenu(self)
-    end
-
-    -- Open the catalog at startup purely so a broken database is visible in the
-    -- log instead of surfacing much later, in the middle of opening a book.
-    -- Nothing here touches the network: this runs before KOReader is on screen,
-    -- so a sync would have neither connectivity nor a UI to report progress to.
-    if Store.ensure() then
-        logger.info("Meguru: catalog ready (schema v" .. Store.schemaVersion()
-            .. ") at " .. Paths.dbFile())
     end
 
     -- Wrap the built-in OPDS browser so a browsed stream can be opened as a

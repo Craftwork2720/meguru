@@ -18,23 +18,23 @@ bitten this codebase, and that a reader cannot reliably catch by eye:
      a `local function handToReader` further down the file. A `local` enters
      scope from its own statement onwards, so the call site resolves a global and
      finds nil. Loads fine, crashes when the branch runs.
-  5. the item upsert's column list, `?` placeholders and `bind` arguments agree.
-     Four separate edits have to stay in step and Lua checks none of them, so a
-     mismatch is a runtime error on the first sync, on the device.
-  6. a name read as a *value* -- `pcall(renderMuPDFPage, ...)`, or `MAX_X / 1024`
+  5. a name read as a *value* -- `pcall(renderMuPDFPage, ...)`, or `MAX_X / 1024`
      -- that is bound nowhere in the file. Checks 3 and 4 both key on the shape
      of the use, so a name handed over as an argument or an operand slips past
      both and reads as a global nil.
-  7. a lowercase name reached through a `.` or a `:` -- `data:byte(off + 1)`
-     with no `local data` anywhere. Checks 3 keys on a capitalized module table,
-     4 on a call and 6 on a value, so this last shape of the same failure had no
+  6. a lowercase name reached through a `.` or a `:` -- `data:byte(off + 1)`
+     with no `local data` anywhere. Checks 2 keys on a capitalized module table,
+     3 on a call and 5 on a value, so this last shape of the same failure had no
      pass at all: a refactor deleted a buffer local and left four `data:byte`
      call sites behind it, and nothing said a word.
-  8. the marker's field list, which is a contract between the code that writes a
+  7. the marker's field list, which is a contract between the code that writes a
      marker and the code that reads one. A field read off a descriptor that
      `Marker.new` does not copy is nil on the device -- and nil is a legitimate
      answer for several of them, so it surfaces as a feature that quietly does
      nothing rather than as an error.
+
+The item-upsert check is gone with the catalog it belonged to: it compared
+`UPSERT_ITEM` against the `items` DDL, and neither exists.
 
 Run: python tools/check.py
 """
@@ -183,14 +183,22 @@ USE = re.compile(r"\b(\w+)\.(\w+)\b")
 
 
 def module_members():
-    """Return (module -> members, file stem -> module).
+    """Return (module -> members, file stem -> module, every stem seen).
 
     The second map is what lets `require("meguru/doc/defaults")` be resolved to
     the `Defaults` local, whose members are the first map's value.
+
+    The third is what keeps a *stale* require apart from a module this pass
+    simply cannot read: `doc/document.lua` is a `Document:extend{...}`
+    subclass, so it has no `local MegumuDocument = {}` and no members to check
+    -- and `main.lua` requires it perfectly legitimately. Only a stem no file
+    provides at all means a reference to something that was deleted.
     """
     members = {}
     by_stem = {}
+    stems = set()
     for lua in sorted(SRC.rglob("*.lua")):
+        stems.add(lua.stem)
         text = strip(lua.read_text(encoding="utf-8"))
         # The module's own local, e.g. `local Defaults = {}` in defaults.lua.
         #
@@ -218,10 +226,10 @@ def module_members():
                     found.add(m.group(2))
         members[name] = found
         by_stem[lua.stem] = name
-    return members, by_stem
+    return members, by_stem, stems
 
 
-def check_members(path, text, raw, members, by_stem):
+def check_members(path, text, raw, members, by_stem, stems):
     """Every `Mod.member` for a required meguru module must be declared."""
     errors = []
     required = {}
@@ -232,8 +240,25 @@ def check_members(path, text, raw, members, by_stem):
         alias, mod = m.group(1), m.group(2)
         # Require("meguru/doc/defaults") resolves to the `Defaults` local.
         name = by_stem.get(mod.split("/")[-1])
-        if name:
-            required[alias] = name
+        if not name:
+            # **A require of a module that no longer exists is an error, not a
+            # skip.** This used to fall through silently, which meant that once a
+            # module was deleted every `Catalog.foo` left behind became
+            # *unchecked* rather than reported: the alias never entered
+            # `required`, so the loop below never looked at it. That is the worst
+            # possible failure for a checker whose whole job is catching
+            # references to things that no longer exist, and it lands exactly when
+            # a refactor is deleting modules.
+            #
+            # A stem that some file *does* provide is a different case and not an
+            # error: the module is real, this pass just cannot read its exports
+            # (see `module_members`).
+            if mod.split("/")[-1] not in stems:
+                errors.append(
+                    f'{path}: `require("{mod}")` names no module in meguru/ '
+                    f'-- is it a stale import?')
+            continue
+        required[alias] = name
     if not required:
         return errors
     for lineno, line in enumerate(text.split("\n"), 1):
@@ -517,7 +542,7 @@ def check_value_uses(path, text):
 
 
 # --------------------------------------------------------------------------
-# Check 7: a lowercase name used as a table, bound nowhere in the file.
+# Check 6: a lowercase name used as a table, bound nowhere in the file.
 # --------------------------------------------------------------------------
 
 # Check 3 covers `Geom:new{...}` — a capitalized module table used without being
@@ -605,40 +630,18 @@ def check_receiver_uses(path, text):
 
 
 # --------------------------------------------------------------------------
-# Check 5: the item upsert's columns, placeholders and binds stay in step.
-# --------------------------------------------------------------------------
-
-# `Catalog.upsertItems` is the one statement every sync and every open writes
-# through, and it is spread over four places that must agree: the INSERT column
-# list, the `?` placeholders in VALUES, the positional `stmt:bind(...)` call, and
-# the `DO UPDATE SET` list. Lua checks none of them, and getting one wrong is not
-# a load-time error -- it is "NOT NULL constraint failed" or "table items has no
-# column named X" on the first sync, on the device.
+# Check 7: the marker's field list is a contract between the code that writes a
+# marker and the code that reads one, and Lua checks neither end. A field read
+# off a descriptor that `Marker.new` does not copy is nil on the device,
+# silently -- and nil is a legitimate answer for several of them, so the failure
+# surfaces as a feature that quietly does nothing. That is what happens the
+# first time a field is added to a reader and not to the writer.
 #
-# This one has not bitten yet. It was written the moment adding a column meant
-# editing all four by hand, with no interpreter on this machine to confirm it --
-# the hand-check is the check, so it is worth keeping.
-#
-# Scope is deliberately one statement, named. A general "every bind matches its
-# SQL" pass would need to pair each `prepare` with its `bind` across files, and
-# that is a different, much larger, and much more false-positive-prone job than
-# the one failure this exists to prevent.
-UPSERT_ITEM = re.compile(r"local UPSERT_ITEM = .*?\[\[(.*?)\]\]", re.S)
-
-
-# --------------------------------------------------------------------------
-# The marker's field list is a contract between the code that writes a marker
-# and the code that reads one, and Lua checks neither end. A field read off a
-# descriptor that `Marker.new` does not copy is nil on the device, silently --
-# and nil is a legitimate answer for several of them, so the failure surfaces as
-# a feature that quietly does nothing. That is what happens the first time a
-# field is added to a reader and not to the writer.
-#
-# Scope is the descriptor, named on purpose, for the same reason the upsert
-# check is: `desc` is this plugin's word for a marker and nothing else, so the
-# pattern has no false positives to trade against. A general "every table field
-# is written somewhere" pass would be a much larger and much more
-# false-positive-prone job than the failure this prevents.
+# Scope is the descriptor, named on purpose: `desc` is this plugin's word for a
+# marker and nothing else, so the pattern has no false positives to trade
+# against. A general "every table field is written somewhere" pass would be a
+# much larger and much more false-positive-prone job than the failure this
+# prevents.
 # --------------------------------------------------------------------------
 
 MARKER_NEW_BODY = re.compile(r"function Marker\.new\(fields\)\s*return \{(.*?)\n    \}", re.S)
@@ -687,65 +690,8 @@ def check_marker_fields(fields):
     return errors
 
 
-def check_item_upsert():
-    """Report a disagreement inside the item upsert, or a column it cannot have."""
-    catalog = (SRC / "catalog.lua").read_text(encoding="utf-8")
-    store = (SRC / "store.lua").read_text(encoding="utf-8")
-    errors = []
-
-    lit = UPSERT_ITEM.search(catalog)
-    if not lit:
-        return ["tools/check.py: UPSERT_ITEM not found in catalog.lua -- "
-                "this check has gone stale"]
-    sql = lit.group(1)
-
-    m = re.search(r"INSERT INTO items \((.*?)\)\s*VALUES \((.*?)\)", sql, re.S)
-    if not m:
-        return ["tools/check.py: could not read the INSERT from UPSERT_ITEM -- "
-                "this check has gone stale"]
-    cols = [c.strip() for c in m.group(1).split(",") if c.strip()]
-    values = [v.strip() for v in m.group(2).split(",") if v.strip()]
-    holders = [v for v in values if v == "?"]
-    literals = [v for v in values if v != "?"]
-
-    bind = re.search(r"stmt:bind\((.*?)\)\s*\n", catalog, re.S)
-    if not bind:
-        return ["tools/check.py: could not read stmt:bind -- "
-                "this check has gone stale"]
-    args = [a.strip() for a in bind.group(1).split(",") if a.strip()]
-
-    # A literal in VALUES (there is one: `removed_at` is written as NULL, since
-    # a row written by an upsert is by definition not removed) takes a column
-    # but no placeholder and no argument.
-    expected = len(cols) - len(literals)
-    if not (expected == len(holders) == len(args)):
-        errors.append(
-            f"catalog.lua: UPSERT_ITEM is out of step -- {len(cols)} columns "
-            f"with {len(literals)} literal(s) need {expected}, but VALUES has "
-            f"{len(holders)} placeholder(s) and bind has {len(args)} argument(s)")
-
-    # Every DO UPDATE SET target must be a column `items` actually has, or the
-    # statement dies with "no such column" the first time a row already exists.
-    ddl = re.search(r"CREATE TABLE IF NOT EXISTS items \((.*?)\n\);", store, re.S)
-    if not ddl:
-        errors.append("tools/check.py: could not read the items DDL -- "
-                      "this check has gone stale")
-        return errors
-    declared = set(re.findall(r"^\s*([a-z_]+)\s+(?:INTEGER|TEXT|REAL|BLOB)",
-                              ddl.group(1), re.M))
-    targets = re.findall(r"^\s{4}([a-z_]+)\s*=", sql, re.M)
-    for name in targets:
-        if name not in declared:
-            errors.append(
-                f"catalog.lua: UPSERT_ITEM sets `{name}`, which is not a column "
-                f"of items")
-    return errors
-
-
-# --------------------------------------------------------------------------
-
 def main():
-    members, by_stem = module_members()
+    members, by_stem, stems = module_members()
     all_errors = []
     files = sorted(SRC.rglob("*.lua")) + [ROOT / "main.lua"]
     for lua in files:
@@ -753,14 +699,13 @@ def main():
         text = strip(raw)
         rel = lua.relative_to(ROOT)
         all_errors += check_balance(rel, text)
-        all_errors += check_members(rel, text, raw, members, by_stem)
+        all_errors += check_members(rel, text, raw, members, by_stem, stems)
         all_errors += check_globals(rel, text)
         all_errors += check_lowercase_calls(rel, text)
         all_errors += check_value_uses(rel, text)
         all_errors += check_receiver_uses(rel, text)
 
     all_errors += check_marker_fields(marker_fields())
-    all_errors += check_item_upsert()
 
     if all_errors:
         for e in all_errors:

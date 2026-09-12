@@ -273,12 +273,12 @@ end
 --- The item shape every driver returns, with the display fields derived here so
 --- two drivers cannot disagree about how a title becomes a label.
 ---
---- `ordinal` is deliberately left nil by both v1 drivers, whose canonical feeds
---- are already in reading order: `feed_index` then orders them, and a provider
---- renumbering a chapter is followed automatically instead of being fought by a
---- stored number. The ordinal machinery is kept because a driver that *does*
---- have a dependable ordinal (Komga's `bookId` ordering, a generic server) will
---- need it.
+--- **A driver names no position.** It used to carry `feed_index`, `ordinal` and
+--- `ordinal_source`, all three of which existed so a catalog could sort a series
+--- without re-reading a feed. Nothing stores a position now: reading order is
+--- `Feed.ordered`'s, derived per walk from each entry's own path position and
+--- the number in its title, and a server that renumbers a chapter is followed
+--- automatically instead of being fought by a stored number.
 function Base.item(fields)
     local title = fields.title or ""
     local display = Naming.cleanTitle(title)
@@ -286,9 +286,6 @@ function Base.item(fields)
     return {
         item_key        = fields.item_key,
         item_key_source = fields.item_key_source,
-        feed_index      = fields.feed_index,
-        ordinal         = fields.ordinal,
-        ordinal_source  = fields.ordinal_source or "feed",
         title           = title,
         display_title   = display ~= "" and display or title,
         volume_label    = fields.volume_label or label,

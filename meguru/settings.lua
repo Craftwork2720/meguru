@@ -23,25 +23,6 @@ local DEFAULTS = {
     hide_status_bar   = true,
     auto_next_item    = true,
     manga_order       = true,
-    sync_enabled      = true,
-    -- How stale a series may get before the background walk after an OPDS add
-    -- will re-walk it. Read by `ui/open.lua`'s `startBackgroundSync` and handed
-    -- to `Sync.plan`, which is why it is no longer a preference that decides
-    -- nothing.
-    sync_ttl_seconds  = 6 * 60 * 60,
-    -- Pixel budget for one decoded page. The page is reduced by AREA (both
-    -- axes by the same factor) until it fits, so the memory is bounded
-    -- absolutely rather than by the square of a per-axis cap. Capping the
-    -- longest edge instead punished tall pages without measure: an 800x20000
-    -- strip lost 9.8x of its width while a 4000x5000 scan lost 2.4x, and width
-    -- is all a reader sees of a strip.
-    --
-    -- The default is 8 Mi px (8.39 Mpx). It keeps three of the largest pages in
-    -- RAM well under 25 MB of 8bpp gray, and costs a 2600x3700 spread 6.6% per
-    -- axis. The figures quoted in this file's own history were computed against
-    -- a decimal 8 000 000 and so read slightly worse than the code does: the
-    -- same spread was called 9%, and an 800x20000 strip 566 px of width where
-    -- the arithmetic here yields 579.
     max_native_pixels = 8 * 1024 * 1024,
 
     -- How the page is fitted to the screen. Semantic rather than KOReader's own

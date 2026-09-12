@@ -25,7 +25,6 @@ local DataStorage = require("datastorage")
 local LuaSettings = require("luasettings")
 local logger = require("logger")
 
-local Credential = require("meguru/credential")
 local FS = require("meguru/fs")
 
 local Sources = {}
@@ -43,10 +42,6 @@ function Sources.remember(marker_path, username, password)
     if marker_path and (username ~= nil or password ~= nil) then
         session[marker_path] = { username = username, password = password }
     end
-end
-
-function Sources.forget(marker_path)
-    session[marker_path] = nil
 end
 
 function Sources.settingsFile()
@@ -121,33 +116,6 @@ function Sources.credentials(server_name, marker_path)
         return entry.username, entry.password
     end
     return nil
-end
-
---- Host of a catalog, for the `servers.host` diagnostic column. Never includes
---- the path, which is where Kavita keeps its API key.
-function Sources.host(url_str)
-    if type(url_str) ~= "string" then
-        return nil
-    end
-    return url_str:match("^%a+://([^/]+)")
-end
-
---- A catalog root with any credential removed, for the `servers.root_url`
---- diagnostics column.
----
---- The rule itself lives in `meguru/credential`, which is also what the marker
---- and the log use, so there is one definition of what a credential looks like
---- in a URL rather than three. What belongs *here* is why this column exists at
---- all: **nothing fetches from it.** The real root is read from
---- `settings/opds.lua` at the moment a request is made and is never stored — so
---- a heuristic that redacts a segment too many costs a cosmetic word in a
---- column no code reads, which is exactly why the broad rule is right for this
---- caller and wrong for a stream template.
-function Sources.redactedRoot(url_str)
-    if type(url_str) ~= "string" or url_str == "" then
-        return nil
-    end
-    return Credential.redact(url_str)
 end
 
 return Sources

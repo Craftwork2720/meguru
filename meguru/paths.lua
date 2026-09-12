@@ -9,10 +9,6 @@ local DataStorage = require("datastorage")
 
 local Paths = {}
 
-function Paths.dbFile()
-    return DataStorage:getSettingsDir() .. "/meguru.sqlite3"
-end
-
 --- The last-resort folder for a marker, when neither the configured nor the
 --- device home folder can be used (see `Marker.homeDir`). It is the only
 --- directory the plugin can create unilaterally, so it must stay derivable.

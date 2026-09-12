@@ -304,21 +304,6 @@ function Naming.deriveSeries(raw_title)
     return nil
 end
 
---- A sort key for a series name: case-folded, punctuation and whitespace runs
---- collapsed to single spaces.
----
---- `string.lower` only touches ASCII, so multibyte characters pass through
---- untouched — continuation bytes are 0x80..0xBF and cannot be mistaken for
---- 'A'..'Z'. That is the behaviour wanted here: a name is folded enough to sort
---- predictably without being mangled.
-function Naming.sortKey(name)
-    if type(name) ~= "string" then
-        return nil
-    end
-    local s = name:lower():gsub("[%p%s]+", " ")
-    return (s:gsub("^%s+", ""):gsub("%s+$", ""))
-end
-
 --- Dependable 32-bit hash (djb2), for disambiguating names that would otherwise
 --- collide. Not a security primitive — it only has to be stable across restarts
 --- and spread similar inputs apart.
