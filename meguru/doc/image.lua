@@ -70,11 +70,14 @@ end
 -- path had, never worse.
 --
 -- Pages that already fit the budget come back at their natural resolution, so
--- normal-sized books are completely unaffected — a 2600x3700 spread is 9.6 Mpx
--- and the default budget is 8.39 Mpx, which costs it 6.6% per axis. What the
+-- every page that fits a screen is completely unaffected — a 1600x2400 page is
+-- 3.8 Mpx and the default budget is 4 Mpx, so it is decoded as it is. What the
 -- budget buys is the other shape of page: an 800x20000 strip used to be capped
--- on its LONG edge to 82 px of width; under the same budget it keeps 579. See
--- `cappedDim`, and `meguru/settings` for where those two numbers come from.
+-- on its LONG edge to 82 px of width; under this budget it keeps 410. What the
+-- budget costs is resolution on an oversized page — a 2600x3700 spread (9.6
+-- Mpx) loses 34% per axis, which is the trade `meguru/settings` records the
+-- reasoning for. See `cappedDim` for the rule and `meguru/settings` for the
+-- number.
 
 -- The working size of one decoded page: its own size, reduced until it fits the
 -- budget — or unchanged, if it already does.
@@ -219,7 +222,13 @@ local function renderMuPDFPage(doc, pageno, refuse_oversize)
             local ok_draw, rendered = pcall(page.draw_new, page, dc, cw, ch, 0, 0)
             if ok_draw and rendered then
                 bb = rendered
-                logger.dbg(string.format(
+                -- info, not dbg: this is the line that says whether the budget
+                -- bit on this page at all. An oversized page and a page that
+                -- fits show up here as different numbers, which is the only
+                -- place the decode cost is visible without a profiler — and
+                -- `budget` is only ever moved by hand (no menu writes it), so
+                -- the log is how a reader checks that their edit took.
+                logger.info(string.format(
                     "Meguru: MuPDF page render %dx%d -> %dx%d (budget %d px)",
                     fw, fh, cw, ch, budget))
             else

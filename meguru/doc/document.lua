@@ -46,9 +46,19 @@ local PSE = require("meguru/pse")
 local Settings = require("meguru/settings")
 local Sources = require("meguru/sources")
 local util = require("util")
+local ffiutil = require("ffi/util")
 
 local function clamp(v, lo, hi)
     return math.max(lo, math.min(hi, v))
+end
+
+-- Monotonic milliseconds, for the timing fields in the log lines below.
+-- `os.clock` is CPU time, so it would miss a network wait entirely — the one
+-- cost here that a reader cannot do anything about — and `os.time` is whole
+-- seconds. `ffi/util`'s `gettime` is the clock KOReader measures with itself.
+local function nowMs()
+    local secs, usecs = ffiutil.gettime()
+    return secs * 1000 + usecs / 1000
 end
 
 -- ---------------------------------------------------------------------------
@@ -103,8 +113,8 @@ local AUTOCROP_MIN_KEEP_FRAC = 0.02
 
 -- Diagnostic: a page is being kept as-is although the crop refused (visible
 -- as "the white frame stays"). Logged at warn level (not dbg) so it shows up
--- in crash.log without -d; pageno (when known) makes the line matchable to a
--- "fetching page …?pageNumber=N" log.
+-- in crash.log without -d; pageno (when known) makes the line matchable to the
+-- "page N prepared in …" line `getPageDims` logs, which is that page's turn.
 local function cropSkipWarn(pageno, ...)
     if pageno then
         logger.warn("Meguru: crop skip (page", pageno, "):", ...)
@@ -960,33 +970,36 @@ function MeguruDocument:init()
     -- We cannot know beforehand how big pages are, so we scale decoded
     -- BlitBuffers to the requested size.
     self:updateColorRendering()
-    -- Whether to software-dither every tile->screen blit. This is the device's
-    -- own answer, not ours, and `Screen.sw_dithering` is where it has already
-    -- worked it out: `framebuffer.lua`'s `setupDithering` turns SW dithering on
-    -- only when there is no hardware dither to do the job, and off whenever
-    -- there is — including when the reader has flipped the `dev_no_hw_dither`
-    -- setting, which re-enables it. PicDocument and `ReaderView:onDitheringUpdate`
-    -- defer to the same machinery; this document used to override it with a
-    -- hard `true`.
+    -- Dither every tile->screen blit, unconditionally — deliberately, and back
+    -- to what this document did before `d40e52e` re-pointed the flag at
+    -- `Screen.sw_dithering`.
     --
-    -- Forcing it on was justified by a claim that the cached tiles are colour
-    -- (RGB24) buffers, so that every paint would be a colour->gray *converting*
-    -- blit that a dither could improve. That claim is false: `doc.color` is
-    -- falsy for a streamed page, so MuPDF's `draw_new` allocates BB8 and the
-    -- tiles are 8bpp grayscale already. Blitting those to a BB8 screen is a
-    -- same-format copy, and running a dither over it is not a conversion — it is
-    -- `dither_o8x8` (blitbuffer.c) re-quantising a full 8-bit source down to 16
-    -- levels on a fixed 8x8 pattern, on every pixel of every page. On a device
-    -- whose controller dithers an 8-bit framebuffer itself, that pass burns in a
-    -- dot grid and throws four bits of tone away for nothing.
+    -- What that commit established still holds and is worth keeping in view
+    -- rather than deleting: the cached tiles are 8bpp grayscale, not colour
+    -- (`doc.color` is falsy, so MuPDF's `draw_new` allocates BB8), so blitting
+    -- them to a BB8 screen is a same-format copy, and `ditherblitFrom` over it
+    -- is not a conversion — it is `dither_o8x8` (blitbuffer.c) re-quantising a
+    -- full 8-bit source down to 16 levels on a fixed 8x8 pattern. On a device
+    -- whose controller dithers an 8-bit framebuffer itself, that pass burns in
+    -- a dot grid and drops four bits of tone for nothing. The claim that made
+    -- this look like a no-op conversion ("our tiles are RGB24") was simply
+    -- false, and `d40e52e` was right about that.
     --
-    -- It stays a dither where it is genuinely a conversion: a tile that is not
-    -- BB8 (a future colour decode) still reaches a grayscale screen through
-    -- one, and `ditherblitFrom` is what keeps its gradients from banding.
-    self.sw_dithering = Screen.sw_dithering == true
+    -- It is forced on anyway, on the reader's decision, and the reason is the
+    -- one thing the correction does not touch: the dithered look is what the
+    -- pages have always had here, and it is the shape the rest of this file is
+    -- tuned around (a tile that is ever colour again still reaches a grayscale
+    -- screen through a real conversion, where the dither earns its keep). On
+    -- the reporting device `hw_dither` is false, so `Screen.sw_dithering` was
+    -- already true and this changes nothing; on a device whose controller
+    -- dithers an 8-bit framebuffer itself, the page is now quantised to 16
+    -- levels *before* that controller gets it, and the four bits it would have
+    -- dithered are already gone. That is recorded rather than argued: if it
+    -- ever hurts on some screen, this flag is the whole switch, and
+    -- `Screen.sw_dithering` is the answer it would take back.
+    self.sw_dithering = true
     logger.info(string.format(
-        "Meguru: tile->screen dithering %s (sw_dithering; eink=%s, fb_bpp=%s, hw_dither=%s)",
-        self.sw_dithering and "ON" or "off",
+        "Meguru: tile->screen dithering forced ON (sw_dithering; eink=%s, fb_bpp=%s, hw_dither=%s)",
         tostring(Device:hasEinkScreen()), tostring(Screen.fb_bpp),
         tostring(Device:canHWDither())))
 
@@ -2150,11 +2163,30 @@ function MeguruDocument:getPanelFromPage(pageno, pos)
     return { x = cx0, y = cy0, w = cw, h = ch }
 end
 
+-- One line per prepared page: what a page turn waited for, split into the two
+-- costs that have different fixes. The fetch is the server's (and the only one
+-- a reader cannot tune); the decode is `max_native_pixels`, which is exactly
+-- what a slow big page is a question about. `dims` is printed with them because
+-- it is what says whether the budget bit on this page at all.
+--
+-- A local cbz page has no fetch — it renders out of the open archive — so that
+-- field is simply absent, rather than reported as 0 and read as instant.
+function MeguruDocument:_logPrepared(pageno, dims, t_start, fetch_ms, decode_ms)
+    logger.info(string.format(
+        "Meguru: page %d prepared in %d ms%s (decode %d ms, %dx%d)",
+        pageno, nowMs() - t_start,
+        fetch_ms and string.format(", fetch %d ms", fetch_ms) or "",
+        decode_ms or 0, dims.w, dims.h))
+end
+
 function MeguruDocument:getPageDims(pageno)
     local cached = self.dims[pageno]
     if cached then
         return cached
     end
+    -- This call is what a page turn waits for (see `analyseAhead`), and it is a
+    -- fetch followed by a decode. Both are timed so `_logPrepared` below can
+    -- tell them apart; the cost is two clock reads per page.
     -- Fetch (if needed) and decode the page once to learn its size. The size
     -- reported is the *full* (capped) native page — decodeNative downscales
     -- oversized scans to the cap, so the decode never holds a huge buffer.
@@ -2170,7 +2202,9 @@ function MeguruDocument:getPageDims(pageno)
         -- very buffer whose size is reported here, so geometry, every pan/zoom
         -- tile and the auto content-box scan share one render — the same
         -- one-whole-page-render profile as the streamed mode.
+        local t_start, t0 = nowMs(), nowMs()
         local native_bb = self:ensureNativeBB(pageno)
+        local decode_ms = nowMs() - t0
         if not native_bb then
             local fallback = { w = Screen:getWidth(), h = Screen:getHeight() }
             self.dims[pageno] = fallback
@@ -2181,18 +2215,26 @@ function MeguruDocument:getPageDims(pageno)
             h = math.max(1, native_bb:getHeight()),
         }
         self.dims[pageno] = dims
+        -- Logged before the GC below, so `prepared in` is exactly the fetch and
+        -- the decode: the parts then sum to the whole, and a line where they do
+        -- not is a line that has drifted from what it measures.
+        self:_logPrepared(pageno, dims, t_start, nil, decode_ms)
         pcall(collectgarbage, "collect")
         return dims
     end
     -- Fetched unconditionally, with no `hasNative` guard: this is the decoder,
     -- and a live native would have answered from `self.dims` at the top.
+    local t_start, t0 = nowMs(), nowMs()
     local data = self:fetchPage(pageno)
+    local fetch_ms = nowMs() - t0
     local fallback = { w = Screen:getWidth(), h = Screen:getHeight() }
     if not data then
         self.dims[pageno] = fallback
         return fallback
     end
+    t0 = nowMs()
     local res = Image.decode(data)
+    local decode_ms = nowMs() - t0
     if res == nil or res == Image.DECODE_TOO_LARGE then
         if res == Image.DECODE_TOO_LARGE then
             logger.warn(string.format(
@@ -2221,6 +2263,9 @@ function MeguruDocument:getPageDims(pageno)
     -- on its long edge), so the native LRU can never
     -- hold a huge scan at full res.
     self:cacheNative(pageno, bb)
+    -- Same placement as the local branch above: before the GC, so the parts of
+    -- this line add up to its total.
+    self:_logPrepared(pageno, dims, t_start, fetch_ms, decode_ms)
     -- Drop this local's reference to the page's raw bytes before forcing the GC
     -- below: it is a multi-MB Lua allocation on a big scan and, still referenced,
     -- a collect right now would not reclaim it. What is kept by this file is the
@@ -2559,16 +2604,22 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
     -- made a page narrower than the screen look soft: its pixels were magnified
     -- out of the working buffer rather than fetched from the file.
     local bb
+    -- Which of the two ways this paint took, and — when the direct render was
+    -- *wanted* and came back empty — why it did not run. That reason is not
+    -- optional detail: this is the path that should have run, and a caught throw
+    -- that quietly degrades to a slower render is how the page-number bug (see
+    -- `_regionSource`) survived its own first run on a device. It travels into
+    -- the log line below rather than dying in a `logger.dbg` nobody reads.
+    local method, why = "scale", nil
+    local paint_ms
     if tw > cw or th > ch then
+        local t0 = nowMs()
         local direct, reason = self:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th)
+        paint_ms = nowMs() - t0
         if direct then
-            bb = direct
+            bb, method = direct, "direct"
         else
-            -- Not silent, even though the fallback is correct: this is the path
-            -- that *should* have run, and a caught throw that quietly degrades
-            -- to a slower render is how the page-number bug (see `_regionSource`)
-            -- survived its own first run on a device.
-            logger.dbg("Meguru: direct region render skipped:", reason)
+            why = reason
         end
     end
     if not bb then
@@ -2587,8 +2638,33 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
                 return nil
             end
         end
+        local t0 = nowMs()
         bb = self:decodeRegion(pageno, cx, cy, cw, ch, tw, th, data)
+        paint_ms = nowMs() - t0
     end
+
+    -- One line per rendered tile, at info because it is the only place this
+    -- choice is visible on a device — and the choice is not cosmetic: `direct`
+    -- renders the region from the page's own bytes once, `scale` slices the
+    -- retained decode and resamples it. A tile-cache hit returns further up, so
+    -- this tracks real renders rather than repaints: once or twice a page turn,
+    -- once per pan or zoom step.
+    --
+    -- `page %dx%d` is `dims`, the *retained* working size — the decode budget
+    -- (`meguru/settings`) made visible, which is what says whether a given page
+    -- cost a full decode or a reduced one. `region` and `tile` are what the
+    -- predicate compares, so the line also shows why this paint took this path.
+    -- The millisecond count is the render alone, not the decision around it: it
+    -- is what `direct` costs against `scale` on this device, which is the whole
+    -- reason the threshold exists.
+    logger.info(string.format(
+        "Meguru: page %d paint %s%s in %d ms (zoom %.3f, page %dx%d, region %d,%d+%dx%d, tile %dx%d)",
+        pageno,
+        bb and ("via " .. method) or ("FAILED (" .. method .. ")"),
+        why and (" [direct failed: " .. tostring(why) .. "]") or "",
+        paint_ms or 0,
+        safe_zoom, dims.w, dims.h, cx, cy, cw, ch, tw, th))
+
     if not bb then
         return nil
     end
@@ -2712,12 +2788,13 @@ function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gam
     local dy = rect.y - tile.excerpt.y
     local configurable = self.configurable
     local invert = configurable and configurable.nightmode_document == 1 and Screen.night_mode
-    -- Blit, or dither-and-blit, on the device's own answer from init. The two
-    -- differ only where the tile has to be *converted* on its way to the screen:
-    -- a same-format blit through `ditherblitFrom` runs `dither_o8x8`
-    -- (blitbuffer.c) and quantises an already-8-bit page down to 16 levels on a
-    -- fixed 8x8 pattern, which is a loss with nothing on the other side of it.
-    -- See init for why the tiles are BB8 and why this flag is not ours to force.
+    -- Dither-and-blit, unconditionally — the flag init sets is `true` and is the
+    -- whole switch, so this branch is the same call it has always been. What it
+    -- costs is on init: over a same-format (BB8->BB8) copy `ditherblitFrom` runs
+    -- `dither_o8x8` (blitbuffer.c) and re-quantises an already-8-bit page to 16
+    -- levels on a fixed 8x8 pattern, which is a loss with nothing on the other
+    -- side of it. It is done anyway, by decision — see init for why, and for
+    -- what the alternative (`Screen.sw_dithering`) was.
     if self.sw_dithering then
         target:ditherblitFrom(tile.bb, x, y, dx, dy, rect.w, rect.h)
     else
@@ -2739,8 +2816,8 @@ function MeguruDocument:drawPageInverted(target, x, y, rect, pageno, zoom, rotat
     end
     local dx = rect.x - tile.excerpt.x
     local dy = rect.y - tile.excerpt.y
-    -- Same dither decision as drawPage (see its comment): the flag is the
-    -- device's, and the invert below is applied to the target either way.
+    -- Same forced dither as drawPage (see its comment): the invert below is
+    -- applied to the target either way, so the two are independent.
     if self.sw_dithering then
         target:ditherblitFrom(tile.bb, x, y, dx, dy, rect.w, rect.h)
     else

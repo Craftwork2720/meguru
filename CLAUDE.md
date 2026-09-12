@@ -246,23 +246,35 @@ Three consequences that are easy to trip over:
   `Paths.cacheDir` itself survives: it is the last-resort folder for a marker
   when the home folder is unusable (`Marker.homeDir`).
 
-**A decoded page is 8bpp grayscale, and `sw_dithering` is the device's call, not
-ours.** Both halves are one story. `Mupdf.openDocumentFromText` never sets
-`doc.color`, and `decodeNativeMupdf` calls `setColorRendering(false)` besides, so
-`page:draw_new` takes its `or BlitBuffer.TYPE_BB8` arm and the cached tiles are
-BB8 — not the RGB24 an earlier comment here and in `meguru/doc/image` claimed.
-That mattered because the false premise was the whole justification for forcing
-`sw_dithering = true` and calling `ditherblitFrom` with no branch: a *converting*
-blit is what dithering is for, and ours is a same-format copy. On a BB8
-destination `ditherblitFrom` runs `dither_o8x8` (blitbuffer.c), which quantises a
-full 8-bit page to **16 levels on a fixed 8x8 pattern** — a burnt-in dot grid and
-four bits of tone gone, on every pixel of every page. The flag is now read from
-`Screen.sw_dithering`, which is `framebuffer.lua`'s `setupDithering` answer: on
-only where there is no hardware dither, off where the controller does it — the
-same machinery `PicDocument` and `ReaderView:onDitheringUpdate` defer to. The
-`if self.sw_dithering` branch in `drawPage`/`drawPageInverted` must stay; a tile
-that is ever colour again reaches a grayscale screen through a real conversion,
-and there the dither earns its keep.
+**A decoded page is 8bpp grayscale, and the dither is forced on anyway.** Both
+halves are one story, and the second half is a decision with a cost — recorded
+here so it is not "corrected" a third time without knowing what it is.
+`Mupdf.openDocumentFromText` never sets `doc.color`, and `decodeNativeMupdf`
+calls `setColorRendering(false)` besides, so `page:draw_new` takes its
+`or BlitBuffer.TYPE_BB8` arm and the cached tiles are BB8 — not the RGB24 an
+earlier comment here and in `meguru/doc/image` claimed. That mattered because
+the false premise was the whole justification for forcing `sw_dithering = true`
+and calling `ditherblitFrom` with no branch: a *converting* blit is what
+dithering is for, and ours is a same-format copy. On a BB8 destination
+`ditherblitFrom` runs `dither_o8x8` (blitbuffer.c), which quantises a full 8-bit
+page to **16 levels on a fixed 8x8 pattern** — a burnt-in dot grid and four bits
+of tone gone, on every pixel of every page.
+
+`d40e52e` therefore read the flag from `Screen.sw_dithering`, which is
+`framebuffer.lua`'s `setupDithering` answer: on only where there is no hardware
+dither, off where the controller does it — the same machinery `PicDocument` and
+`ReaderView:onDitheringUpdate` defer to. That remains the more defensible
+arrangement, and it is **not** what this document does: `init` sets
+`self.sw_dithering = true`, unconditionally, by decision — the dithered look is
+what these pages have always had here. On the reporting device the two coincide
+(`hw_dither=false`, so `Screen.sw_dithering` was true), which is why the change
+is invisible there; on a device whose controller dithers, this now re-quantises
+a page the hardware was about to dither properly. One line in `init` is the
+whole switch, and `Screen.sw_dithering` is the answer it would take back.
+
+The `if self.sw_dithering` branch in `drawPage`/`drawPageInverted` must stay; a
+tile that is ever colour again reaches a grayscale screen through a real
+conversion, and there the dither earns its keep.
 
 The night-mode invert stays on the *destination* (`target:invertRect`) rather
 than `invertblitFrom` on the tile. With BB8 tiles the latter would now be legal,
@@ -298,6 +310,61 @@ invents nothing, and a slice of a cached buffer is far cheaper than a second
 open-and-render. That matters because a tile miss is a pan or a zoom step as
 often as it is a page turn.
 
+**The threshold is about the paint, not the page, and the two are not the same
+test.** A page that is downscaled as a whole takes the slice-and-scale path at
+fit-to-screen — that is what `tw > cw` being false means — but a paint that
+magnifies *part* of it (a zoom past 1, a panel, a crop box) crosses back over
+and goes direct, on a page whose whole-page cost is still that of a shrunk page.
+Nothing in the predicate is a statement about the page, and reading it as one is
+how "large pages use the old engine" comes to be true only while nobody zooms.
+What the page-level questions actually need is the next paragraph.
+
+**For a page being shrunk, what a paint costs is set by the decode budget, not
+by the path.** The retained decode is what `decodeRegion` slices and what every
+analysis reads — the margin scan (`autoContentBox`), the page-number strip, the
+blank check — so `max_native_pixels` (`meguru/settings`) is the per-page cost of
+a large page, paid on every turn whatever the reader does. Its history is worth
+one line: `adb6445` capped the long edge at 2048 px, `db39a93` replaced that
+with an area budget — correctly, because a long-edge cap punished a tall strip
+without measure — and raised the retained size for an oversized scan with it.
+The default is now **4 Mpx**, which puts an oversized page back near the 2048
+cap's work (a 3000x4500 page: 1365x2048 then, 1633x2450 now, 2366x3549 at 8.39)
+while the area rule keeps a 800x20000 strip at 410 px of width, against 82 under
+the cap it replaced. Pages at or under 4 Mpx — which is every page that fits a
+screen — come back at natural size and are unaffected, so the direct render
+above still works from real pixels where it matters.
+
+Three log lines make both of those decidable from a device log, and all three
+are at `info` (KOReader's default level, so no `-d` needed):
+
+- `Meguru: page N prepared in X ms (fetch F ms, decode D ms, WxH)` — what a page
+  turn waited for, split into the two costs with different fixes: the fetch is
+  the server's and the only one a reader cannot tune; the decode is
+  `max_native_pixels`. `F + D` adds up to `X` by construction — the line is
+  logged before the `collectgarbage` that follows the decode, precisely so it
+  keeps meaning fetch-plus-decode. A local cbz page has no fetch, so the field
+  is absent rather than 0 (which would read as instant).
+- `Meguru: page N paint via direct|scale in X ms (zoom, page, region, tile)` —
+  one per *rendered* tile, not per repaint, because a tile-cache hit returns
+  before it. Which is why it is also the line that says whether a given paint
+  crossed the threshold, with the numbers the predicate compared — and the
+  millisecond count is what `direct` costs against `scale` on that device, which
+  is the only thing that can say whether the threshold is set right.
+- `Meguru: MuPDF page render WxH -> WxH (budget N px)` — whether the decode
+  budget bit on this page at all, which is the only way to check a hand-edited
+  `meguru_max_native_pixels` took effect (no menu writes it, and a stored value
+  wins over the default).
+
+The millisecond fields come from `ffi/util`'s `gettime` and not `os.clock`,
+which is CPU time and would miss the network wait — the one cost a reader cannot
+do anything about — entirely.
+
+When the direct render is *wanted* and fails, its reason rides out on the paint
+line (`[direct failed: no bytes cached]`) rather than dying in a `logger.dbg`
+nobody reads. That is the path that should have run, and a caught throw that
+quietly degrades to a slower render is how the page-number bug below survived
+its own first run on a device.
+
 `decodeRegion` stays, and stays first-class: it is still the only path for
 `_meguruAnalysisBB`, where a strip wants a cut of a page *already decoded* and
 must not pay a fresh open and render per strip.
@@ -318,7 +385,7 @@ for anything reaching a streamed page through a fresh document: **the page
 number is 1, and the page is identified by the bytes, never by a number.**
 
 That failure is also why `renderRegionDirect` returns a *reason* alongside its
-nil, and why `renderPage`'s diagnostic prints it. A caught throw that silently
+nil, and why `renderPage`'s paint line prints it. A caught throw that silently
 degrades to a slower path is survivable and invisible at the same time; the two
 must not both be true, so the reason travels rather than being logged at a level
 nobody is reading.
@@ -1284,7 +1351,15 @@ Each step must pass before the next:
 
 4. **Page fetching.** One log line per page with a rising `pageNumber` plus
    prefetch, and **no** fetch of a whole archive. `cache/meguru/` does not grow
-   while reading — nothing is written there at all any more. Then turn back one
+   while reading — nothing is written there at all any more. Alongside it, one
+   `Meguru: page N prepared in X ms (fetch F ms, decode D ms, WxH)` per page
+   turn, one `Meguru: MuPDF page render WxH -> WxH (budget N px)` per *decoded*
+   page, and one `Meguru: page N paint via direct|scale in X ms` per rendered
+   tile: on a manga page that fits the screen the render line shows the page
+   uncapped and the paint line says `direct`; on an oversized scan the render
+   line shows the reduced size — that pair is the whole check that the budget is
+   doing what `meguru/settings` says, and the two millisecond counts say what
+   the budget is worth on that device. Then turn back one
    page and force a repaint (open/close ⋮, toggle a crop setting): **no fetch**,
    because the page's decoded buffer is still live and the bytes are not needed
    for it. Turn back past the four-entry store and a fetch *is* expected — that

@@ -23,7 +23,29 @@ local DEFAULTS = {
     hide_status_bar   = true,
     auto_next_item    = true,
     manga_order       = true,
-    max_native_pixels = 8 * 1024 * 1024,
+
+    -- The pixel budget for ONE decoded page — `meguru/doc/image`'s `cappedDim`
+    -- reduces a page by area until it fits this. It bounds *retained*
+    -- resolution, and with it everything downstream that reads the retained
+    -- buffer: the margin scan, the page-number strip, the blank check, and
+    -- every tile's crop-and-scale. It does NOT bound the decode peak — MuPDF
+    -- decides that, and a lossless page is still decoded at full size inside
+    -- the library (see `image.lua`'s DECODE_TOO_LARGE). So this is the knob for
+    -- how much work a big page costs, and the price of lowering it is sharpness
+    -- only when the reader magnifies past the reduced size.
+    --
+    -- 4 Mpx is deliberately below what an oversized scan would get: for a page
+    -- with a long edge over ~2048 it restores the per-page work of the 2048
+    -- long-edge cap this replaced (`db39a93`), while the area rule still treats
+    -- a tall strip far better than that cap did. Pages at or under 4 Mpx —
+    -- which is every manga page that fits a screen — come back at their natural
+    -- size and are unaffected.
+    --
+    -- No menu writes this, so the only way to move it is by hand: set
+    -- `meguru_max_native_pixels` in KOReader's `settings.reader.lua`. A stored
+    -- value beats this default (`Settings.get`), which is also why a build that
+    -- changes the default does not move a device that already stored one.
+    max_native_pixels = 4 * 1024 * 1024,
 
     -- How the page is fitted to the screen. Semantic rather than KOReader's own
     -- zoom_mode names, because the mapping is what changes when the crop
