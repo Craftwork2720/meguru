@@ -42,6 +42,10 @@ local _ = require("gettext")
 -- file that skips this line gets a nil call only when the row is built.
 local C_ = _.pgettext
 local T = require("ffi/util").template
+-- `getFileNameSuffix`, the same call `ReaderHighlight:onReadSettings` makes to
+-- key its panel-zoom setting by. Same module, so the two cannot spell a `.cbz`
+-- differently.
+local util = require("util")
 
 local Feed = require("meguru/feed")
 local Defaults = require("meguru/doc/defaults")
@@ -377,6 +381,121 @@ local function setWideRotate(state, ui, value, text)
     if text then
         UIManager:show(Notification:new{ text = text, timeout = 2 })
     end
+    return true
+end
+
+-- Panel zoom -------------------------------------------------------------------
+
+--- The extension KOReader keys its own panel-zoom preference by, or nil for a
+--- document whose file name says nothing.
+---
+--- Read off the file rather than assumed to be a marker's, because this engine
+--- also opens a local `.cbz`: that one must answer with the same setting a
+--- MuPDF-opened `.cbz` does, and the file name is what makes it.
+local function panelZoomExt(ui)
+    local file = ui and ui.document and ui.document.file
+    if type(file) ~= "string" then
+        return nil
+    end
+    return util.getFileNameSuffix(file)
+end
+
+--- Whether panel zoom is on for this extension: KOReader's own answer, with the
+--- default it gives `cbz`/`cbt` when the extension has never been switched.
+---
+--- A marker is a stream of page images, which is the thing an archive of page
+--- images is, so the honest default is the one that gets. A long-press that
+--- does nothing on a comic is a surprise rather than a neutral state.
+local function panelZoomGlobal(ext)
+    local g = rawget(_G, "G_reader_settings")
+    if not (g and type(g.getSettingForExt) == "function") then
+        return true
+    end
+    local value = g:getSettingForExt("panel_zoom_enabled", ext)
+    if value == nil then
+        return true
+    end
+    return value == true
+end
+
+--- Hand panel zoom over to KOReader's own switch, and make that switch the
+--- reader's rather than the book's.
+---
+--- The switch is the stock "⋮ → Panel zoom (manga/comic) → Allow panel zoom",
+--- and stock keeps its answer on two levels: an extension-keyed global, and a
+--- per-book copy in the sidecar that **shadows** the global from the moment a
+--- book has one. The second level is the wrong level here. A streamed book is
+--- one chapter of one series, so a per-book copy answers for that one file and
+--- leaves every other one to the global it was shadowing — which is why panel
+--- zoom was off in every book but the one it was last switched on in.
+---
+--- So the global is read on open, written the moment the reader flips the row,
+--- and never copied into a sidecar. That last part is the point of the whole
+--- arrangement: a copy is written once and never repaired, and this one would
+--- go on answering for a book long after the reader had said otherwise for
+--- every book.
+---
+--- Nothing here adds a row, and nothing here names a default of its own beyond
+--- the extension's: the menu item, its label and its gesture are KOReader's.
+local function installPanelZoom(ui)
+    local hl = ui and ui.highlight
+    local ext = panelZoomExt(ui)
+    if not (hl and ext and ui.paging) then
+        return false
+    end
+    if hl._meguru_panel_zoom_installed then
+        return true
+    end
+    hl._meguru_panel_zoom_installed = true
+
+    -- `...` rather than the stock signature: events reach a module as
+    -- `module.handler(module, unpack(event.args))`, so a build that hands this
+    -- one an extra argument must not lose it here.
+    local orig_read = hl.onReadSettings
+    hl.onReadSettings = function(self, ...)
+        if type(orig_read) == "function" then
+            orig_read(self, ...)
+        end
+        -- After the stock read, so this is the answer and not the sidecar's.
+        self.panel_zoom_enabled = panelZoomGlobal(ext)
+        -- Nothing on a streamed page is text, and the fallback reaches
+        -- `getImageFromPosition`, which no engine-less paging document
+        -- answers — a hold that found no panel would land in a text selection
+        -- that cannot exist here. Off is what stock does for a `.cbz` too.
+        self.panel_zoom_fallback_to_text_selection = false
+    end
+
+    -- The stock row only flips the field above; what persists it is the stock
+    -- save, into the book. Write the reader's extension setting instead, at the
+    -- moment it is flipped, so the switch is remembered whatever becomes of the
+    -- book it was flipped in.
+    local orig_toggle = hl.onTogglePanelZoomSetting
+    hl.onTogglePanelZoomSetting = function(self, ...)
+        if type(orig_toggle) == "function" then
+            orig_toggle(self, ...)
+        end
+        local g = rawget(_G, "G_reader_settings")
+        if g and type(g.saveSettingForExt) == "function" then
+            g:saveSettingForExt("panel_zoom_enabled",
+                self.panel_zoom_enabled == true, ext)
+        end
+    end
+
+    -- The stock save writes the per-book copy, and the read above ignores it —
+    -- so it is a value on disk that nothing consults and nothing repairs.
+    -- Removed rather than left to rot, so a build that ever loses the wrap
+    -- above reads the reader's answer and not one book's.
+    local orig_save = hl.onSaveSettings
+    hl.onSaveSettings = function(self, ...)
+        if type(orig_save) == "function" then
+            orig_save(self, ...)
+        end
+        local ds = self.ui and self.ui.doc_settings
+        if ds and type(ds.delSetting) == "function" then
+            ds:delSetting("panel_zoom_enabled")
+        end
+    end
+
     return true
 end
 
@@ -867,6 +986,11 @@ function Reader.install(plugin)
             end)
         end
     end
+
+    -- Installed here, before the `ReadSettings` event reaches ReaderHighlight,
+    -- so the value the reader sees is the one this decides and not the one
+    -- stock read out of the book's sidecar a moment later.
+    installPanelZoom(ui)
 
     curateConfigMenu(plugin)
     installEndOfBookHook(plugin)

@@ -21,6 +21,7 @@ than in the page size.
 --]]
 
 local Blitbuffer = require("ffi/blitbuffer")
+local CanvasContext = require("document/canvascontext")
 local Document = require("document/document")
 local DrawContext = require("ffi/drawcontext")
 local Geom = require("ui/geometry")
@@ -2398,9 +2399,10 @@ end
 -- uses `decodeRegion`, which is always correct.
 --
 -- The whole point is that no intermediate exists on this path: MuPDF paints the
--- region at the size the screen wants, once, from the source. See
--- `Image.renderRegion` for how the region is expressed to MuPDF and why the
--- coordinate mapping is rederived rather than passed in.
+-- region once, from the source, at the size asked for. See `Image.renderRegion`
+-- for how the region is expressed to MuPDF and why the coordinate mapping is
+-- rederived rather than passed in — including what leaving `tw`/`th` out asks
+-- for, which is the region at its own size in the page's pixels.
 function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th)
     -- A dead page stays dead, and this guard is load-bearing rather than tidy:
     -- DECODE_TOO_LARGE is one of the ways a page dies, and it is set for a
@@ -2427,6 +2429,88 @@ function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th)
         return nil, "MuPDF produced no buffer"
     end
     return bb
+end
+
+-- Panel zoom: what a long-press hands the ImageViewer.
+--
+-- Stock's `Document:drawPagePart` picks `zoom = min(canvas / rect)` — the largest
+-- zoom that still fits the panel on screen — so the tile arrives screen-sized,
+-- and its comment says why: "so that ImageViewer doesn't have to rescale
+-- further". For a document behind an *engine* that is the right trade, because
+-- rasterising the region costs the same at any target size and the viewer is
+-- going to fit it to the screen regardless. A streamed page is not that. It *is*
+-- a bitmap, so a panel bigger than the screen — a splash page, a spread, a large
+-- art panel — reached the reader already reduced to the screen's pixels, with
+-- everything past them gone: magnifying it in the viewer was magnifying a
+-- resample of the file rather than a crop of it. So this asks for the region at
+-- its own size instead (see `Image.renderRegion`), and the viewer starts out
+-- scaled to fit either way. A panel smaller than the screen comes back smaller
+-- than it used to and is upscaled by the viewer exactly as it was by MuPDF
+-- before — those pixels were never being thrown away, which is why the change is
+-- invisible on them.
+--
+-- Bounded by the same `max_native_pixels` budget as every other render here, so a
+-- panel covering a 3000x4500 page cannot become the one allocation this plugin
+-- never limits (`meguru/doc/image`). The rotation decision is stock's, on the
+-- same setting, because it is about the panel's *shape* against the screen's and
+-- nothing about it changed.
+--
+-- The tile goes through this document's own LRU, which is what owns it: the
+-- viewer is handed `image_disposable = false` and never frees what it is given,
+-- and a BlitBuffer is malloc'd outside the Lua heap, so a buffer rendered outside
+-- the cache would simply be lost. `cacheTile` is also what frees it later, on
+-- eviction or on `clearCaches`.
+function MeguruDocument:drawPagePart(pageno, native_rect, rotation)
+    if not native_rect then
+        return nil, false
+    end
+    local rect = Geom:new(native_rect)
+
+    local rotate = false
+    local g = rawget(_G, "G_reader_settings")
+    if g and type(g.isTrue) == "function" and g:isTrue("imageviewer_rotate_auto_for_best_fit") then
+        local canvas = CanvasContext:getSize()
+        rotate = (canvas.w > canvas.h) ~= (rect.w > rect.h)
+    end
+
+    -- Keyed by the region, not by the tile's size: the size is not known until
+    -- the render has run, and the region is what identifies the tile anyway.
+    local key = string.format("%d|panel|%d,%d+%dx%d",
+        pageno, rect.x, rect.y, rect.w, rect.h)
+    local cached = self.tiles[key]
+    if cached and cached.bb_free ~= true then
+        bump(self, key)
+        return cached.bb, rotate
+    end
+    self.tiles[key] = nil
+
+    local bb = self:renderRegionDirect(pageno, rect.x, rect.y, rect.w, rect.h)
+    if not bb then
+        -- Nothing to render the region from — the page's bytes have aged out of
+        -- the store, or MuPDF refused it. Stock's shape still has the saved
+        -- working decode to cut the panel out of, so falling back to it is what
+        -- keeps a long-press working offline; the panel is softer where the cap
+        -- bit, which is the right way for this to fail.
+        local ok, image, fallback_rotate = pcall(Document.drawPagePart,
+            self, pageno, native_rect, rotation)
+        if ok and image then
+            return image, fallback_rotate
+        end
+        logger.warn("Meguru: no panel image for page", pageno)
+        return nil, rotate
+    end
+
+    local tw, th = bb:getWidth(), bb:getHeight()
+    logger.dbg(string.format(
+        "Meguru: panel zoom on page %d, region %d,%d+%dx%d rendered %dx%d",
+        pageno, rect.x, rect.y, rect.w, rect.h, tw, th))
+    self:cacheTile(key, {
+        bb = bb,
+        excerpt = Geom:new{ x = 0, y = 0, w = tw, h = th },
+        pageno = pageno,
+        doc_path = self.file,
+    })
+    return bb, rotate
 end
 
 -- Decode (and, when needed, crop+scale) a page region out of the saved working

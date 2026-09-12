@@ -70,11 +70,16 @@ Changing the folder does not move books you have already saved.
 | Auto-rotate | Wide double-page spreads rotate the screen to fit |
 | Night mode | Keeps colours natural instead of a harsh negative |
 | Hidden status bar | Removes clutter while you read |
-| Panel zoom | Long-press a panel to zoom into it |
+| Panel zoom | Long-press a panel to zoom into it (on by default) |
 
 > [!TIP]
 > Tap a setting to apply it to the book you are reading. Long-press it to make it
 > the default for every new book Meguru opens.
+
+**Panel zoom** is the exception, and deliberately: its switch is KOReader's own —
+**⋮ → Panel zoom (manga/comic) → *Allow panel zoom*** — and there is one of it
+for every Meguru book. Flip it once and it stays flipped, exactly as it does for
+a `.cbz`. It starts on.
 
 The reader's **⋮ → Tools → Meguru** menu holds the rest:
 

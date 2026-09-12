@@ -381,13 +381,26 @@ end
 -- passed in, so the two cannot drift apart: were they to, the crop would land
 -- somewhere else on the page, silently and by however much the cap moved.
 --
+-- **`tw`/`th` are the size of the buffer to produce — leave both out (`nil`) and
+-- the region is rendered at its own size in page pixels**, bounded by the same
+-- budget the whole-page decode gets. That is what panel zoom wants and what a
+-- paint does not: a paint is going to a known screen rectangle and wants exactly
+-- that many pixels, while the ImageViewer is going to magnify what it is given,
+-- so handing it the region's own pixels is the difference between magnifying the
+-- file and magnifying a picture of the screen. The size is derived here, from
+-- the same `f`, rather than by the caller — the one place that knows how far the
+-- caller's space is from the page's.
+--
 -- Returns a BlitBuffer, or nil on any failure (the caller then falls back to the
 -- saved working-resolution decode, which is always correct, just softer).
 function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th)
     if not Mupdf or not doc then
         return nil
     end
-    if not (nx and ny and nw and nh) or nw < 1 or nh < 1 or tw < 1 or th < 1 then
+    if not (nx and ny and nw and nh) or nw < 1 or nh < 1 then
+        return nil
+    end
+    if (tw ~= nil and tw < 1) or (th ~= nil and th < 1) then
         return nil
     end
     local ok_page, page = pcall(doc.openPage, doc, pageno)
@@ -401,16 +414,23 @@ function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th)
         local fw = math.max(1, math.floor(pw + 0.5))
         local fh = math.max(1, math.floor(ph + 0.5))
         -- The caller's space, rederived exactly as the decode derived it.
-        local space_w = cappedDim(fw, fh, Settings.get("max_native_pixels"))
+        local budget = Settings.get("max_native_pixels")
+        local space_w = cappedDim(fw, fh, budget)
         if space_w and space_w > 0 then
             local f = fw / space_w -- caller's space -> the MuPDF page's own
-            local zoom = tw / (nw * f)
+            local out_w, out_h = tw, th
+            if not (out_w and out_h) then
+                out_w = math.max(1, math.floor(nw * f + 0.5))
+                out_h = math.max(1, math.floor(nh * f + 0.5))
+                out_w, out_h = cappedDim(out_w, out_h, budget)
+            end
+            local zoom = out_w / (nw * f)
             if zoom > 0 then
                 local dc = DrawContext.new()
                 dc:setZoom(zoom)
                 local ox = math.floor(zoom * nx * f + 0.5)
                 local oy = math.floor(zoom * ny * f + 0.5)
-                local ok_draw, rendered = pcall(page.draw_new, page, dc, tw, th, ox, oy)
+                local ok_draw, rendered = pcall(page.draw_new, page, dc, out_w, out_h, ox, oy)
                 if ok_draw and rendered then
                     bb = rendered
                 else

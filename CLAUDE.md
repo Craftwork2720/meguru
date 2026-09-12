@@ -334,8 +334,8 @@ the cap it replaced. Pages at or under 4 Mpx — which is every page that fits a
 screen — come back at natural size and are unaffected, so the direct render
 above still works from real pixels where it matters.
 
-Three log lines make both of those decidable from a device log. **All three are
-at `dbg`, and were at `info` for as long as they were being used** — a line that
+Four log lines make both of those decidable from a device log. **All four are at
+`dbg`, and were at `info` for as long as they were being used** — a line that
 fires once per page or per paint is worth reading while the render path is under
 a microscope and is noise afterwards, and `-d` is what brings them back:
 
@@ -356,6 +356,14 @@ a microscope and is noise afterwards, and `-d` is what brings them back:
   budget bit on this page at all, which is the only way to check a hand-edited
   `meguru_max_native_pixels` took effect (no menu writes it, and a stored value
   wins over the default).
+- `Meguru: panel zoom on page N, region X,Y+WxH rendered WxH` — one per
+  long-press, and the only line that says what the viewer was actually handed.
+  The first pair is the region in the space `self.dims` lives in and the second
+  is what came back, so a panel rendered *smaller* than its region is the budget
+  having bitten and a panel rendered smaller than the screen is the ordinary
+  case, not a fault. It is the fourth of these lines; a fourth `dbg` line is not
+  a drift in the rule above, because a long-press is a gesture rather than a page
+  turn.
 
 The millisecond fields come from `ffi/util`'s `gettime` and not `os.clock`,
 which is CPU time and would miss the network wait — the one cost a reader cannot
@@ -368,7 +376,7 @@ bug below survived its own first run on a device.
 
 **What stays at `info` and `warn` is the other half of that rule.** A line goes
 to `dbg` when it fires on the *normal* path and repeats — per page, per paint,
-per decode: that is the render-path trio above, the whole of the crop and
+per decode: that is the render-path lines above, the whole of the crop and
 page-number analysis (`crop skip`, `no page number`, `mostly blank`), the paint
 and prepare timings, and the `hooked …` notes `hook.lua` writes once at load. It
 stays at `info`/`warn` when it marks a **decision, a refusal or a failure** —
@@ -414,6 +422,37 @@ oversized page is the *capped* size — smaller than MuPDF's own page. It recomp
 the factor between them with the same `cappedDim` the decode used, so the two
 cannot drift: were they to, the crop would land on a different part of the page,
 silently and by however much the cap had moved.
+
+**Panel zoom is its third caller, and asks for a size the other two do not.**
+`Image.renderRegion`'s `tw`/`th` are the buffer to produce; leaving both out asks
+for **the region's own size in page pixels**, bounded by `max_native_pixels`. A
+paint always knows the rectangle it is painting to and wants exactly that many
+pixels, so it always passes a size — but the ImageViewer magnifies what it is
+given, so the size it should be given is the region's own. The derivation lives
+in the same function, from the same `f`, because that is the only place that
+knows how far the caller's space is from the page's.
+
+`MeguruDocument:drawPagePart` is why. Stock's `Document:drawPagePart` picks
+`zoom = min(canvas / rect)` — the largest zoom that still fits the panel on
+screen — so the tile arrives screen-sized, which for a document behind an engine
+is the right trade (rasterising costs the same at any target size, and the viewer
+fits it to the screen anyway). A streamed page is a *bitmap*: a panel bigger than
+the screen — a splash page, a spread, a large art panel — reached the reader
+already reduced to the screen's pixels, so magnifying it in the viewer was
+magnifying a resample of the file. Now it is a crop of it, and pinching in
+reaches 1:1 with the page rather than 1:1 with the screen. **A panel smaller than
+the screen comes back smaller than it used to** and is upscaled by the viewer
+instead of by MuPDF — the same pixels either way, which is why the change is
+invisible on them, and worth knowing before anyone "fixes" the size back.
+
+Two things about it are load-bearing and not tidiness. The tile goes through this
+document's own LRU: the viewer is handed `image_disposable = false` and never
+frees what it is given, so a buffer rendered outside `cacheTile` would be lost —
+BlitBuffers are malloc'd outside the Lua heap. And when there is no source to
+render from (the page's bytes have aged out of the store), it falls back to
+stock's screen-fit shape rather than to nothing: a long-press that does nothing
+is a worse failure than a softer panel. That path is `pcall`ed for the same
+reason every other wrap here is.
 
 **Reading progress is not mirrored anywhere.** It is read lazily, per book, from
 the sidecar beside the marker: `DocSettings:findSidecarFile` then
@@ -1158,6 +1197,51 @@ Two invariants when touching these rows:
   ever written. A saved menu order in `settings/` then means the same thing on
   both.
 
+### Panel zoom is KOReader's switch, and it is the *reader's*
+
+Meguru adds no row for it. The switch is the stock one — ⋮ →
+**Panel zoom (manga/comic)** → *Allow panel zoom* — and `ui/reader.lua`'s
+`installPanelZoom` only decides what that row reads and where its answer is
+written. What it looks like in the menu, and the long-press that sets an
+extension's default, stay KOReader's.
+
+Stock keeps the answer on two levels: a global keyed by **file extension**
+(`G_reader_settings:getSettingForExt("panel_zoom_enabled", ext)`) and a copy in
+the book's sidecar that **shadows** it from the moment a book has one. The second
+level is the wrong level here, and this is the whole of the change. A streamed
+book is one chapter of one series, so a per-book copy answers for that one file
+and leaves every other one to the global it was shadowing — which is why panel
+zoom was on in exactly the book it had last been switched on in. So the global is
+read on open, **written the moment the row is flipped**, and never copied into a
+sidecar — the copy-written-once failure this plugin exists to avoid, in its
+smallest form. Three wraps, one job each:
+
+| wrap | job |
+|---|---|
+| `onReadSettings` | the value is the global, **after** stock read the sidecar; the text-selection fallback is forced off |
+| `onTogglePanelZoomSetting` | the flip is persisted to the extension setting immediately |
+| `onSaveSettings` | the per-book copy stock just wrote is deleted, so nothing on disk contradicts the setting |
+
+The ordering is what makes it possible at all: plugins load
+(`readerui.lua:464`) **before** the `ReadSettings` event (`:484`), so both the
+instance wrap and the reader's first look at the value are in place before stock
+computes one. `installPanelZoom` is called from `Reader.install` for that reason,
+and it matters no less for the `.cbz` this engine also opens: there the extension
+is `cbz`, whose stock default is already on, and the two readers of that file
+agree because the suffix is read off the file rather than assumed to be a
+marker's.
+
+**The default is on, because it is the default `cbz`/`cbt` get.** A marker is a
+stream of page images, which is what an archive of page images is, and a
+long-press that silently does nothing on a comic is a surprise rather than a
+neutral state. An extension that has never been switched reads as on; only an
+explicit `false` — written by the row — turns it off.
+
+The fallback to text selection is forced off with it: nothing on a streamed page
+is text, and that fallback reaches `getImageFromPosition`, which no engine-less
+paging document answers. A hold that found no panel would land in a text
+selection that cannot exist here.
+
 ## Plugin lifecycle facts worth not rediscovering
 
 - `ReaderUI:showReaderCoroutine` builds a **new** `ReaderUI`, so the plugin loop
@@ -1479,6 +1563,32 @@ Each step must pass before the next:
     not reach `catalogURL`. The same chapter must come from the row above the
     series list (`firstUnread`'s `filtered` branch) and from the same book opened
     from History — three entries into one answer.
+
+17. **Panel zoom is one switch for every Meguru book.** With no
+    `panel_zoom_enabled` entry for `meguru` in `settings.reader.lua`, open a
+    book and long-press a panel: it zooms, without anything having been turned
+    on first. Turn it off in ⋮ → *Panel zoom (manga/comic)* → *Allow panel
+    zoom*, close the book, and check that `meguru` is now `false` in
+    `settings.reader.lua` **and that the book's own sidecar has no
+    `panel_zoom_enabled` at all** — that key is the copy this does not keep.
+    Open a *different* Meguru book: off, which is the half that a per-book
+    answer would have got wrong. Also worth one line: open a `.cbz` through
+    "Open with… → Meguru" and confirm it reports what the same file opened by
+    MuPDF does, since both read the `cbz` entry.
+
+18. **Panel zoom is a crop of the page, not of the screen.** On a book whose
+    pages are bigger than the screen (a Kavita volume; anything at or under
+    4 Mpx is not capped and is the same picture either way), long-press a panel
+    that covers a good part of the page. In `-d` the `panel zoom on page N,
+    region … rendered WxH` line must show an output larger than the screen — for
+    a panel that is half the page, roughly half the page's own size — and the
+    image must stay sharp when pinched in the viewer, which is the whole point:
+    before this it was handed a screen-sized resample and had nothing left to
+    magnify. Two things to check while there: a panel *smaller* than the screen
+    still looks right (it comes back small and the viewer upscales it — that is
+    the intended shape, not a regression), and a long-press with the wifi off
+    and the page's bytes aged out of the store still shows a panel, softer,
+    through the `Document:drawPagePart` fallback.
 
 ## Known open items
 
