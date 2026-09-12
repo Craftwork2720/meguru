@@ -438,17 +438,17 @@ end
 -- panels in reading order, and `getPanelFromPage` returns the one under a
 -- touch. That replaced a second, conservative gutter detector this file used to
 -- carry, and the reason is worth keeping, because "keep the cheap fallback" is
--- the obvious instinct and it was wrong here.
+-- the obvious instinct and it was wrong here: two detectors meant two different
+-- crops for one page depending on which path asked, and the fallback's own
+-- sensitivity was the thing that could not read these pages.
 --
--- The old one only ever split on *complete*, axis-aligned white gutters, so a
--- wrong guess degraded to "no panel" rather than to a mangled crop. What it
--- could not do was read a page at all when a panel carried a full-width white
--- band inside its own drawing — such a band is indistinguishable from a gutter
--- — or when the panels were tilted, which it had no answer for. The detector it
--- was backing up fails at neither, because a panel is a *connected body of ink*
--- there, and connectivity knows nothing about axes or interior whites. Two
--- detectors also meant two different crops for one page depending on which path
--- asked; one detector means the answer is the same wherever it is asked for.
+-- What the one detector *is* — the recursive cut, and why its thresholds come
+-- from 1.3 rather than from the reference's later version — is documented in
+-- the module itself and in CLAUDE.md. One caveat belongs here too, because this
+-- is where a reader of the two entry points will be looking for it: whether the
+-- cut is the right answer for a panel carrying a full-width white band *inside
+-- its own drawing* is an **open question, not a settled one**. See "Known open
+-- items" in CLAUDE.md before changing anything about the detector.
 --
 -- Coordinates: ReaderView hands the touch in *full native* page space — the
 -- space getNativePageDimensions/getPageDims report. A margin crop only makes

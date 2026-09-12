@@ -86,8 +86,9 @@ floats; see the comment there.
 
 ## Two things about the ffi arrays
 
-The ink map, the four projection accumulators and the queue-free BFS are all
-`ffi.new` arrays, and this is the only place in the plugin that reaches for one.
+The ink map and the two projection accumulators — one per axis, reused by every
+node of the recursion — are all `ffi.new` arrays, and this is the only place in
+the plugin that reaches for one.
 That is deliberate — a map is dense (every cell is read, many times), it must be
 **0-based** to keep the reference's index arithmetic faithful, and a 480x720 scan
 as a Lua table would be megabytes of heap on a device that already holds three

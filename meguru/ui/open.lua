@@ -160,7 +160,16 @@ function Open.noteFeed(browser, feed_url, catalog)
     -- spent a while doing, to the effect that no feed was ever retained and every
     -- book came out uncatalogued, with the author sniff silently failing too.
     local feed = Net.feedFrom(catalog)
-    logger.dbg("Meguru: feed parsed", feed_url, "(catalog=" .. tostring(name)
+    -- Through `Net.redactUrl`, like every other URL this plugin logs: a
+    -- catalog's feed URL is one of Kavita's, and Kavita puts its API key in a
+    -- path segment of everything it publishes. Guarded, because a throw here
+    -- would be swallowed by the caller's `pcall` and cost the whole retention.
+    local shown_url = feed_url
+    if type(feed_url) == "string" then
+        shown_url = Net.redactUrl(feed_url)
+    end
+    logger.dbg("Meguru: feed parsed", shown_url,
+        "(catalog=" .. tostring(name)
         .. ", entries=" .. tostring(feed and #(feed.entry or {}) or "not a table") .. ")")
     if not name then
         return
