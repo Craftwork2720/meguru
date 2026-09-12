@@ -52,8 +52,8 @@ local Reader = require("meguru/ui/reader")
 local Settings = require("meguru/settings")
 
 -- Registering the drivers is what makes `Base.kinds()` able to answer; it is
--- idempotent (`require` caches), and `sync.lua` and `ui/open.lua` do the same
--- at their own load, so the order this module is reached in does not matter.
+-- idempotent (`require` caches), and `ui/open.lua` does the same at its own
+-- load, so the order this module is reached in does not matter.
 Base.loadDrivers()
 
 local Menu = {}

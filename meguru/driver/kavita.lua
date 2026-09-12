@@ -77,9 +77,8 @@ function Kavita.discover(entry, stream, _ctx)
     }
 end
 
---- The canonical series feed. 0/46 series paginate, so this is normally the
---- whole series in one response — the `rel=next` walker in sync.lua handles it
---- either way.
+--- The canonical series feed. 0/3473 series paginate, so this is normally the
+--- whole series in one response — `Feed.walker` follows `rel=next` either way.
 function Kavita.catalogURL(base_url, series_remote_id, _ctx)
     return string.format("%s/series/%s", base_url, series_remote_id)
 end

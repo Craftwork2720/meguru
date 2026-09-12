@@ -26,13 +26,21 @@ PSE.STREAM_REL = "http://vaemendis.net/opds-pse/stream"
 ---
 --- **A `lastRead` of 0 is returned as 0, not as nil**, and the difference is
 --- load-bearing. Kavita marks a chapter unread by writing `lastRead="0"` rather
---- than by dropping the attribute, so collapsing the two loses the only signal
---- that says "this is no longer read". `Catalog.upsertItem` writes progress with
---- `COALESCE(excluded.last_read, items.last_read)`, so a nil leaves whatever was
---- stored there — which meant a volume marked unread on the server stayed the
---- furthest-read one here forever, and the resume dialog kept offering to
---- continue from it. Absent still means nil: that is a feed not publishing
---- progress at all, which must not overwrite what a better feed recorded.
+--- than by dropping the attribute, so the two are different states: 0 is "this
+--- server has an opinion and it is nowhere", and nil is "this feed publishes no
+--- progress at all".
+---
+--- What makes the distinction bite is `PSE.samePlace`, which asks whether a
+--- recorded page is meaningfully ahead of a local one. A recorded 0 answers "no"
+--- — `0 - n` is never ahead — so the server is not offered as a place to go. A
+--- nil fails that function's own test and reports *not* the same place, which is
+--- the right reading for a server that said nothing, and would be wrong for a
+--- chapter it explicitly marked unread. (0 is truthy in Lua, which is what lets
+--- the two travel differently through a `not recorded` guard.)
+---
+--- The rule used to be enforced one layer in, by a `COALESCE` that kept a stored
+--- value when a walk sent nil; with no store, this function is the only place it
+--- lives, and it is therefore the place that has to keep saying it.
 ---
 --- Returning 0 is safe everywhere by construction: every consumer asks
 --- `> 0` or `> 1` before treating the number as a page.

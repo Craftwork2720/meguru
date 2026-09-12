@@ -284,10 +284,12 @@ local function progressFromSummary(summary)
     end
     -- 0 is returned as 0, and that is the whole point: Suwayomi writes progress
     -- as "0 of 31" for a chapter that is not read, including one that *was* read
-    -- and has been reset. Returning nil there would leave `Catalog.upsertItem`'s
-    -- COALESCE holding the old value, so a chapter marked unread would stay the
-    -- furthest-read one here forever. See `PSE.attributesFromLink`, which carries
-    -- the same rule for Kavita's `lastRead="0"`.
+    -- and has been reset. Returning nil there would say this feed publishes no
+    -- progress for the chapter, which is a different statement — and one
+    -- `PSE.samePlace` reads differently, because a recorded 0 is never ahead of
+    -- the reader's own page while a nil is not "the same place" at all. See
+    -- `PSE.attributesFromLink`, which carries the same rule for Kavita's
+    -- `lastRead="0"`.
     -- The total is returned too, and that is the point of returning two values:
     -- `read` alone cannot tell a *finished* chapter from a *started* one, and the
     -- difference is exactly the chapter a reader wants offered next. Discarding it

@@ -292,13 +292,11 @@ local function driverItemFor(driver, feed, feed_url, stream, ctx)
     if type(items) ~= "table" then
         return nil
     end
-    -- Drivers leave `feed_index` to the engine, and the column is NOT NULL, so
-    -- a page that never went through a sync once died at the insert on the
-    -- constraint — after the series row had already been written. That is now
-    -- `Catalog.upsertItem`'s business, and it is the right place for it: a
-    -- metadata-feed page is one entry deep, so numbering it here would say the
-    -- chapter is the first of its series. See `Catalog.upsertItem` for why an
-    -- open may not number anything.
+    -- Nothing here numbers anything, and the reason outlived the catalog that
+    -- first forced it: a metadata-feed page is one entry deep, so a position
+    -- taken from *this* page would say the chapter is the first of its series.
+    -- Reading order belongs to `Feed.ordered`, derived per walk, and no caller
+    -- stores one — `Base.item` has no field for it.
     local wanted = stream and stream.href
     for _, item in ipairs(items) do
         if wanted and item.template == wanted then
@@ -551,9 +549,9 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
     }
     -- Said out loud because every way this can fail says so, and the success was
     -- the only silent outcome — which makes "is it catalogued?" unanswerable from
-    -- the log. Note what it counts: **one** item. The siblings arrive from a sync,
-    -- never from this function — `startBackgroundSync` below is what starts one,
-    -- and `openAsBook` calls it only after the book has been handed over.
+    -- the log. Note what it counts: **one** item. Its siblings are not this
+    -- function's business and never were: nothing walks a series on an open's
+    -- behalf, and a neighbour is found when the reader asks for one.
     --
     -- Every field goes through `tostring`: a status line must never be able to
     -- take down the operation it exists to report on, which it once did here.
@@ -566,17 +564,16 @@ end
 
 --- Ask an open reader to rebuild its menu, if it is showing a Meguru book.
 ---
---- **The reader menu is built once per document, and ours is derived from the
---- catalog.** `ReaderMenu:onShowMenu` calls `setUpdateItemTable` only while
---- `tab_item_table` is nil, and nothing clears it but a new document or a
---- keyboard reconnection — so every plugin's rows are frozen at the state of
---- the world when the reader first opened ⋮. That is fine for a setting that
---- does not change under it, and wrong for the neighbour rows: they are built
---- from `Catalog.neighbors`, and the walk below is *about to change exactly
---- that*. Without this the reader is offered "Open next in series" for a
---- series whose next chapter is already in the catalog, and never sees the
---- "Auto-open next in series" row — which exists only when there is somewhere
---- to go, and so was decided once, when there was not.
+--- **The reader menu is built once per document.** `ReaderMenu:onShowMenu` calls
+--- `setUpdateItemTable` only while `tab_item_table` is nil, and nothing clears it
+--- but a new document or a keyboard reconnection — so every plugin's rows are
+--- frozen at the state of the world when the reader first opened ⋮. That is fine
+--- for a setting that does not change under it, and wrong for the neighbour rows:
+--- whether this series has a next chapter is exactly what the walk below is about
+--- to change. Without this the reader is offered "Open next in series" for a
+--- series they are already moving into, and never sees the "Auto-open next in
+--- series" row — which exists only when there is somewhere to go, and so was
+--- decided once, when there was not.
 ---
 --- Reached through `ReaderUI.instance` rather than through `meguru/ui/reader`:
 --- that module requires this one, so requiring it back would be a cycle, and
@@ -1632,11 +1629,12 @@ end
 --- for — a neighbour tap, the end of a book, the server's own "continue" button
 --- pointing at another volume.
 ---
---- **This is what the jump button used to get wrong.** It called
---- `openCatalogItem`, which prepares the marker for the chosen item and then runs
---- `offerResume` for it with no `target` of its own — so the position was
---- re-resolved from `Catalog.resumeTarget` and a fresh dialog was built for a
---- book the reader had just named.
+--- **This is what the jump button used to get wrong.** It ran `offerResume` for
+--- the chosen item with no `target` of its own, so the reader's position was
+--- resolved a second time — and, against a stale answer, a fresh dialog was built
+--- asking about a book the reader had just named. `target` is the caller's
+--- obligation for that reason: a caller that has just answered "where is this
+--- reader" must hand the answer over rather than let it be asked again.
 ---
 --- Exported rather than local, even though nothing outside this file's lower
 --- half calls it: the jump button's default reaches it from inside `offerResume`,
@@ -1671,20 +1669,22 @@ end
 --- volume 3 offered volume 5" happen. One request buys a current answer.
 ---
 --- Only when the network is up, only with `Net.RESUME_*` limits, and **never
---- without the stored language**: Suwayomi serves one library's translations from
---- one URL and selects between them by `?lang=`, so a defaulted language would
---- confidently report the progress of a translation the reader is not reading —
---- the trap `Catalog.serverLang` already carries a warning about.
+--- without the book's own language**: Suwayomi serves one library's translations
+--- from one URL and selects between them by `?lang=`, so a defaulted language
+--- would confidently report the progress of a translation the reader is not
+--- reading. The language travels in the marker (`Marker.seriesContext` hands it
+--- over as `context.lang`) rather than being remembered per server, which is why
+--- this reads it off the book.
 ---
 --- **Two fetches, not one, when the server reports nothing unread.** A series
 --- read to the end returns an empty `filter=unread` feed, and an empty feed is
 --- not an answer — so the canonical feed is asked the other question, "where does
---- this series end". Without that second fetch the answer came from
---- `Catalog.resumeTarget`, whose knowledge ends at the last sync, and the same
---- tap gave two different chapters a moment apart: the first before the
---- background walk landed, the second after. The extra request costs one
---- `Net.RESUME_*`-bounded fetch, and only for a fully read series — which is
---- exactly where the catalogue's answer was worst.
+--- this series end". Without that second fetch, "nothing unread" was once taken
+--- for a finished series and the answer came from a position stored by an earlier
+--- walk, so the same tap gave two different chapters a moment apart. The extra
+--- request costs one `Net.RESUME_*`-bounded fetch, and only for a fully read
+--- series — which is exactly where a stored answer was worst, because a store's
+--- knowledge ends at its last walk rather than at the series' last chapter.
 ---
 --- Falls back to the catalog on any failure. A slightly stale answer beats a
 --- dialog that never opens.
@@ -1761,9 +1761,10 @@ local function currentResumeTarget(context)
         --     counters are the only evidence there is, and
         --     `firstUnfinishedOrLast` is the honest reading of them.
         --
-        -- On the empty path the answer is still fetched rather than taken from
-        -- `Catalog.resumeTarget`, whose knowledge ends at the last sync — the
-        -- last *row* it had rather than the last chapter.
+        -- On the empty path the answer is still fetched rather than left to a
+        -- derivation from elsewhere: a stored answer's knowledge ends at the last
+        -- walk — the last row it had rather than the last chapter — and there is
+        -- no store now in any case.
         local filtered_why, server_says_all_read
         if filter then
             local feed, url, reason = fetch(filter)
@@ -1828,21 +1829,18 @@ end
 --- file until the reader answers.
 ---
 --- `target` is the caller's *fresh* answer to "where is this reader in this
---- series", and a caller that has one is obliged to pass it. Omitting it does
---- not mean "no answer" — it means "ask the catalog", and the catalog answers a
---- different question: `Catalog.resumeTarget` is the furthest row with any
---- progress, where the fresh read is the first *unfinished* one. On a series read
---- to volume 6 with 7 and 8 both started, those are volume 8 and volume 7, and
---- the reader got a row that opened volume 7 while the dialog's only "Continue"
---- button pointed at volume 8. That is the split `readingOrder` and
---- `firstUnfinished` exist to prevent, surviving on the one path that kept asking
---- the catalog. Every surviving caller passes a `target`; omitting it is kept
---- only because "no fresh answer available" is a state that can legitimately
---- recur.
+--- series", and a caller that has one is obliged to pass it. Omitting it does not
+--- mean "no answer" — it means "work it out again", and a second derivation can
+--- answer a different question: the furthest-read entry, where the fresh read is
+--- the first *unfinished* one. On a series read to volume 6 with 7 and 8 both
+--- started, those are volume 8 and volume 7, and the reader got a row that opened
+--- volume 7 while the dialog's only "Continue" button pointed at volume 8. That
+--- is the split `readingOrder` and `firstUnfinished` exist to prevent. Every
+--- surviving caller passes a `target`; omitting it is kept only because "no fresh
+--- answer available" is a state that can legitimately recur.
 ---
---- The shape is a catalog row (what `Catalog.itemByKey` and `registerBook`'s
---- `resume` both return), not a `{ item, page }` pair: only `item_key` and
---- `last_read` are read off it.
+--- The shape is what `registerBook`'s `resume` returns, not a `{ item, page }`
+--- pair: only `item_key` and `last_read` are read off it.
 function Open.openCatalogItem(host, context, item, target)
     local plan = planMarker(context, item)
     if not plan then

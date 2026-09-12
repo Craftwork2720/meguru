@@ -160,12 +160,6 @@ The series-feed `<title>` is `<Series> - Storyline`. Strip the ` - Storyline`
 suffix. (The `deriveSeries` fallback on entry titles still applies to aggregate
 feeds, where there is no series feed title.)
 
-### Series name
-
-The series-feed `<title>` is `<Series> - Storyline`. Strip the ` - Storyline`
-suffix. (The old `deriveSeries` fallback on entry titles still applies to
-aggregate feeds, where there is no series feed title.)
-
 ## Suwayomi
 
 Navigation: `root → /library/series → /series/{mangaId}/chapters → per-chapter metadata`.
@@ -173,13 +167,40 @@ Navigation: `root → /library/series → /series/{mangaId}/chapters → per-cha
 | Feed | Paginates | Notes |
 |---|---|---|
 | `/` (root) | no | `library/series`, `sources`, `categories`, `genres`, `statuses`, `languages`, `explore`, `library-updates`, `history` |
-| `/library/series` | **no** — 11 entries is the whole library | the canonical series list |
-| `/series/{id}/chapters` | **yes**, 100/page, `rel=next` = `?pageNumber=2` | `rel=first`/`rel=last` too; `thr:count` on the active facet is the total |
+| `/library/series` | **not established** — see below | the canonical series list |
+| `/series/{id}/chapters` | **yes**, 100/page, `rel=next` = `?pageNumber=2` | `rel=first`/`rel=last` too; `thr:count` carries all three facet totals |
 | `/series/{id}/chapter/{n}/metadata` | no | a **feed with one entry** carrying the stream |
 | `/history`, `/library-updates` | yes, 100/page, `rel=next` | chapter-level aggregates |
 
 Every URL carries `?lang=`, including `rel=next` links — follow `rel=next`
-verbatim and never rebuild the URL.
+verbatim and never rebuild the URL. Confirmed again 2026-09-12: the chain keeps
+the `sort` and the `filter` it was entered with (`…?pageNumber=2&sort=number_asc&filter=all&lang=en`).
+
+### `/library/series` was said not to paginate, and that was never provable
+
+This document claimed 11 entries was the whole library. It is 16 now, still with
+no `rel=next` — but that is not evidence of anything: the page size is 100, and
+both numbers are far below it. The feed's own `<id>` ends in `page1`
+(`urn:suwayomi:feed:library:series:en:page1:`), which is a shape that *has* a page
+2 to name. So the honest entry in the table above is "not established", and a
+library that grows past 100 series is what would settle it.
+
+### `thr:count` states all three facets, always
+
+Not "the active facet's total" — the feed emits the same three numbers whatever
+`filter` asked for, and the order is `all`, `unread`, `read`:
+
+```
+filter=all    -> 36 entries,  thr:count="36" "1" "35"
+filter=unread ->  1 entry,    thr:count="36" "1" "35"
+filter=read   -> 35 entries,  thr:count="36" "1" "35"
+```
+
+So the first is the series' total either way, and the other two are a free
+independent check: `unread + read == all` (1 + 35 = 36, and 0 + 177 = 177 on a
+series that is entirely read). Nothing reads them today — `Feed` counts what it
+walked — but they are the second opinion that first caught the pagination
+question.
 
 ### The chapters feed paginates, and this document said it did not
 
@@ -243,14 +264,35 @@ human-readable `<summary>`:
 <summary type="text">My Girlfriend is 8 Meters Tall | Chapter 63| Przez Unknown| Postęp: 0 z 31</summary>
 ```
 
-Four `|`-separated fields: title, chapter label, author, progress. The progress
-is the **last** field, and `?lang=` localises its prose without touching its
-digits — so the last two integers of that field are `read` and `total` whichever
-language was asked for, and `driver/suwayomi.lua` reads only the digits. (The
-second number is also the chapter's page count, but it is deliberately *not*
-taken as `page_count`: `pse:count` states that authoritatively once the stream is
-resolved, and a figure scraped out of prose must not displace one the server
-said.)
+Four `|`-separated fields: **series name**, chapter label, author, progress. The
+progress is the **last** field, and `?lang=` localises its prose without touching
+its digits — so the last two integers of that field are `read` and `total`
+whichever language was asked for, and `driver/suwayomi.lua` reads only the
+digits. (The second number is also the chapter's page count, but it is
+deliberately *not* taken as `page_count`: `pse:count` states that authoritatively
+once the stream is resolved, and a figure scraped out of prose must not displace
+one the server said.)
+
+**The first field is the series, not the chapter, and its prefix changes with the
+language** — which is more than localised prose, and is the one thing here that
+a reader of this document could not have guessed:
+
+```
+lang=en  Series: Apocalypse Bringer Mynoghra - World Conquest … | Chapter 33.1| By Unknown| Progress: 0 of 25
+lang=pl  Apocalypse Bringer Mynoghra - World Conquest … | Chapter 33.1| Przez Unknown| Postęp: 0 z 25
+```
+
+`Series: ` is present in English and absent in Polish; two spaces follow the
+colon in one and one in the other. Nothing in the driver depends on it —
+`progressFromSummary` takes the *last* field, and `Naming.stripSeriesLabel`
+already tolerates the prefix where a name is read — but a parser that keyed on
+field *position* would have to be right in both languages and would not be.
+
+A chapter's own cover *is* reachable — from the metadata feed only:
+`rel=http://opds-spec.org/image` → `/api/v1/manga/{id}/chapter/{n}/page/0`.
+Nothing spends it, deliberately (one request per chapter — see `CLAUDE.md`), and
+the chapter-list entry carries no image at all. Recorded so that absence is not
+read as a gap in the extraction.
 
 Kavita needs none of this — its series feed puts `p5:lastRead` on every entry,
 machine-readable, which is why `items.last_read` is populated for one server and
@@ -271,6 +313,15 @@ The href is path-only, so it must be made absolute against the metadata URL's
 base. This is the lazy per-chapter fetch the plan anticipated: `resolveStream`
 is an I/O operation for Suwayomi and a no-op for Kavita, which is why it takes
 the `fetch` callback.
+
+**`pse:lastRead` is conditional, and this document showed it unconditionally.**
+It appears only once the chapter has progress — the example above is a chapter
+sitting at 34 of 35, which is why it has one. A chapter nobody has opened
+publishes `pse:count` alone. Nothing depends on the distinction here (the
+chapter list's `<summary>` is where Suwayomi's progress is read, and the driver
+never takes `last_read` off this link), but the attribute's absence is not a
+server that tracks nothing. Komga behaves the same way for the same reason — see
+its section.
 
 **The `subsection` href is absolute against the *host*, not against the catalog
 root** — it reads `/api/opds/v1.2/series/3649/chapter/1/metadata?lang=en`,
