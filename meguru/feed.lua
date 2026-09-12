@@ -467,7 +467,7 @@ function Feed.planForMarker(desc, opts)
     if not kind then
         kind = Base.kindFromTemplate(desc.template)
         if kind then
-            logger.info("Meguru: this marker names no server kind; its stream"
+            logger.dbg("Meguru: this marker names no server kind; its stream"
                 .. " template says", kind)
         end
     end

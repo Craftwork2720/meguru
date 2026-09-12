@@ -228,7 +228,7 @@ local function renderMuPDFPage(doc, pageno, refuse_oversize)
                 -- place the decode cost is visible without a profiler — and
                 -- `budget` is only ever moved by hand (no menu writes it), so
                 -- the log is how a reader checks that their edit took.
-                logger.info(string.format(
+                logger.dbg(string.format(
                     "Meguru: MuPDF page render %dx%d -> %dx%d (budget %d px)",
                     fw, fh, cw, ch, budget))
             else

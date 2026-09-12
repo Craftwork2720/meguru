@@ -112,14 +112,23 @@ local AUTOCROP_MIN_KEEP_FRAC = 0.02
 -- with an alpha channel). Anything else (BB4, exotic) makes us bail out.
 
 -- Diagnostic: a page is being kept as-is although the crop refused (visible
--- as "the white frame stays"). Logged at warn level (not dbg) so it shows up
--- in crash.log without -d; pageno (when known) makes the line matchable to the
--- "page N prepared in …" line `getPageDims` logs, which is that page's turn.
-local function cropSkipWarn(pageno, ...)
+-- as "the white frame stays"). `pageno` (when known) makes the line matchable
+-- to that page's own turn in the log.
+--
+-- **dbg, and it used to be warn on the argument that the symptom is
+-- reader-visible so the line should be too.** The argument is good and the level
+-- was still wrong, because of how *often* it fires: a book whose pages are
+-- full-bleed has no light border to find on any of them, so this is one warning
+-- per page for the whole book -- which buries the warnings that are rare and
+-- that matter. A reader chasing a white frame reads this with `-d`.
+--
+-- The old argument, kept because it is the reason to hesitate:
+--     Logged at warn level (not dbg) so it shows up in crash.log without -d.
+local function cropSkipLog(pageno, ...)
     if pageno then
-        logger.warn("Meguru: crop skip (page", pageno, "):", ...)
+        logger.dbg("Meguru: crop skip (page", pageno, "):", ...)
     else
-        logger.warn("Meguru: crop skip:", ...)
+        logger.dbg("Meguru: crop skip:", ...)
     end
 end
 
@@ -206,7 +215,7 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         -- Even the lightest-typical ring sample is dark: the page truly has no
         -- light border to anchor on (full-bleed dark page / dark frame). The
         -- crop refuses so it never crops *into* artwork.
-        cropSkipWarn(pageno, "border not light enough (bg=",
+        cropSkipLog(pageno, "border not light enough (bg=",
             math.floor(bg), ") — page kept as-is")
         return nil -- dark border / full-bleed dark page: keep it untouched
     end
@@ -274,7 +283,7 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         -- A light border but no row/column clears the content bar anywhere: the
         -- whole page reads as uniform background (or the content bar is too
         -- low — see row_min/col_min). This is the "blank page" case.
-        cropSkipWarn(pageno, "no content found anywhere (page blank?)")
+        cropSkipLog(pageno, "no content found anywhere (page blank?)")
         return nil -- blank page
     end
     -- Suspicious case worth flagging: a *light* border (bg above) yet the
@@ -287,7 +296,7 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         -- much resolution there was to find it with. A page scanned at 128 px
         -- across is a page whose margins were judged coarsely, and that is not
         -- visible from the page size alone.
-        cropSkipWarn(pageno, "detected content spans the whole page",
+        cropSkipLog(pageno, "detected content spans the whole page",
             "(bg=", math.floor(bg), ", page ", page_w, "x", page_h,
             ", scanned at ", w, "x", h, ") — nothing to trim")
     end
@@ -1950,7 +1959,7 @@ function MeguruDocument:_meguruPagenumStrip(pageno)
     self._meguru_pagenum_cache[pageno] = 0 -- "busy / none yet" mark
     local page_size = self:getNativePageDimensions(pageno)
     if not (page_size and page_size.w > 0 and page_size.h > 0) then
-        logger.info("Meguru: page", pageno, "no page number [no render: page size]")
+        logger.dbg("Meguru: page", pageno, "no page number [no render: page size]")
         return 0
     end
 
@@ -2033,10 +2042,10 @@ function MeguruDocument:_meguruPagenumStrip(pageno)
     end
 
     if crop_y > 0 then
-        logger.info("Meguru: page", pageno, "page-number crop y =",
+        logger.dbg("Meguru: page", pageno, "page-number crop y =",
             string.format("%.1f", crop_y))
     else
-        logger.info("Meguru: page", pageno, "no page number [", detail, "]")
+        logger.dbg("Meguru: page", pageno, "no page number [", detail, "]")
     end
     self._meguru_pagenum_cache[pageno] = crop_y
     return crop_y
@@ -2055,7 +2064,7 @@ function MeguruDocument:_meguruPageMostlyBlank(pageno)
     self._meguru_pagenum_blank_cache[pageno] = false
     local page_size = self:getNativePageDimensions(pageno)
     if not (page_size and page_size.w > 0 and page_size.h > 0) then
-        logger.info("Meguru: page", pageno, "blank check skipped [no render: page size]")
+        logger.dbg("Meguru: page", pageno, "blank check skipped [no render: page size]")
         return false
     end
     local zoom = math.min(
@@ -2071,7 +2080,7 @@ function MeguruDocument:_meguruPageMostlyBlank(pageno)
     if ok and type(mostly_blank) == "boolean" then
         self._meguru_pagenum_blank_cache[pageno] = mostly_blank
         if mostly_blank then
-            logger.info("Meguru: page", pageno, "mostly blank -> no crop")
+            logger.dbg("Meguru: page", pageno, "mostly blank -> no crop")
         end
         return mostly_blank
     end
@@ -2172,7 +2181,7 @@ end
 -- A local cbz page has no fetch — it renders out of the open archive — so that
 -- field is simply absent, rather than reported as 0 and read as instant.
 function MeguruDocument:_logPrepared(pageno, dims, t_start, fetch_ms, decode_ms)
-    logger.info(string.format(
+    logger.dbg(string.format(
         "Meguru: page %d prepared in %d ms%s (decode %d ms, %dx%d)",
         pageno, nowMs() - t_start,
         fetch_ms and string.format(", fetch %d ms", fetch_ms) or "",
@@ -2657,7 +2666,7 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
     -- The millisecond count is the render alone, not the decision around it: it
     -- is what `direct` costs against `scale` on this device, which is the whole
     -- reason the threshold exists.
-    logger.info(string.format(
+    logger.dbg(string.format(
         "Meguru: page %d paint %s%s in %d ms (zoom %.3f, page %dx%d, region %d,%d+%dx%d, tile %dx%d)",
         pageno,
         bb and ("via " .. method) or ("FAILED (" .. method .. ")"),

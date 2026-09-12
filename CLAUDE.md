@@ -334,8 +334,10 @@ the cap it replaced. Pages at or under 4 Mpx — which is every page that fits a
 screen — come back at natural size and are unaffected, so the direct render
 above still works from real pixels where it matters.
 
-Three log lines make both of those decidable from a device log, and all three
-are at `info` (KOReader's default level, so no `-d` needed):
+Three log lines make both of those decidable from a device log. **All three are
+at `dbg`, and were at `info` for as long as they were being used** — a line that
+fires once per page or per paint is worth reading while the render path is under
+a microscope and is noise afterwards, and `-d` is what brings them back:
 
 - `Meguru: page N prepared in X ms (fetch F ms, decode D ms, WxH)` — what a page
   turn waited for, split into the two costs with different fixes: the fetch is
@@ -360,10 +362,26 @@ which is CPU time and would miss the network wait — the one cost a reader cann
 do anything about — entirely.
 
 When the direct render is *wanted* and fails, its reason rides out on the paint
-line (`[direct failed: no bytes cached]`) rather than dying in a `logger.dbg`
-nobody reads. That is the path that should have run, and a caught throw that
-quietly degrades to a slower render is how the page-number bug below survived
-its own first run on a device.
+line (`[direct failed: no bytes cached]`) rather than dying in the render itself.
+A caught throw that quietly degrades to a slower render is how the page-number
+bug below survived its own first run on a device.
+
+**What stays at `info` and `warn` is the other half of that rule.** A line goes
+to `dbg` when it fires on the *normal* path and repeats — per page, per paint,
+per decode: that is the render-path trio above, the whole of the crop and
+page-number analysis (`crop skip`, `no page number`, `mostly blank`), the paint
+and prepare timings, and the `hooked …` notes `hook.lua` writes once at load. It
+stays at `info`/`warn` when it marks a **decision, a refusal or a failure** —
+every fetch and decode failure, every refused open, every "the feed has nothing
+to say" — because that is the line someone reads a `crash.log` for, and it is
+usually the only trace of it.
+
+The one that was argued the other way and lost is `crop skip`. It was `warn` on
+the grounds that the symptom is reader-visible so the line should be too, which
+is a good argument about *importance* and a bad one about *frequency*: a book
+whose pages are full-bleed has no light border to find on any of them, so it
+fires once per page for the whole book and buries the warnings that are rare.
+Frequency wins; see the comment on `cropSkipLog`.
 
 `decodeRegion` stays, and stays first-class: it is still the only path for
 `_meguruAnalysisBB`, where a strip wants a cut of a page *already decoded* and

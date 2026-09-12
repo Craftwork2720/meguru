@@ -74,7 +74,7 @@ function Hook.install()
             end
             return catalog
         end
-        logger.info("Meguru: hooked OPDSBrowser:parseFeed (feed retention, kind sniffing)")
+        logger.dbg("Meguru: hooked OPDSBrowser:parseFeed (feed retention, kind sniffing)")
     end
 
     -- Two more wraps, for the row at the top of a series feed. Both are needed:
@@ -142,7 +142,7 @@ function Hook.install()
         end
     end
 
-    logger.info("Meguru: hooked OPDSBrowser:showDownloads")
+    logger.dbg("Meguru: hooked OPDSBrowser:showDownloads")
 
     -- The third wrap, and the most careful one: `ReaderUI:showReader` is how
     -- *every* document in KOReader is opened. A marker opened from the file
@@ -214,7 +214,7 @@ function Hook.install()
                 open_instead()
             end
         end
-        logger.info("Meguru: hooked ReaderUI:showReader (resume on file open)")
+        logger.dbg("Meguru: hooked ReaderUI:showReader (resume on file open)")
     else
         logger.warn("Meguru: unexpected ReaderUI:showReader, resume-on-open disabled")
     end

@@ -206,7 +206,7 @@ local function rotateTo(ui, mode)
         end
         ui:handleEvent(Event:new("InitScrollPageStates"))
     end
-    logger.info("Meguru: wide page, screen rotation", cur, "->", mode)
+    logger.dbg("Meguru: wide page, screen rotation", cur, "->", mode)
 end
 
 --- Return the screen to the base orientation this session left it in, but only
