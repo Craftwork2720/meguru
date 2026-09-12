@@ -32,6 +32,17 @@ Suwayomi.authorSignatures = { "suwayomi" }
 --- stream is `/api/v1/manga/<id>/chapter/<n>/page/<n>`. Both must appear.
 Suwayomi.streamSignatures = { { "/manga/", "/chapter/" } }
 
+--- This server's feed order is **not** reading order, so a chapter's position
+--- has to be recovered from the entry itself — the `/chapter/{n}/` in its
+--- metadata link first, and the number in its title when that link is missing.
+--- See `Feed.ordered`.
+---
+--- **Set here, and deliberately not set by Kavita or Komga.** Both of those
+--- hand back a feed their server already sorted into reading order, and letting
+--- the title override that is what mixed `Volume 1…3` with `Chapter 1…3` into
+--- `1, 1, 2, 2, 3, 3` on 25 series out of one 3473-series library.
+Suwayomi.orderFromTitles = true
+
 local CHAPTER_URN = "^urn:suwayomi:chapter:(.+)$"
 local MANGA_URN = "^urn:suwayomi:manga:(.+)$"
 

@@ -416,7 +416,11 @@ local function freshResumeTarget(driver, feed, feed_url, ctx, context, select)
     -- Handed on as a feed in its own right: `parseCatalogPage` reads
     -- `feed.entry` and nothing else, so a one-field table is all it needs.
     local parsed = driver.parseCatalogPage({ entry = mine }, feed_url, ctx)
-    local sequence, positioned = readingOrder(parsed)
+    -- Handed the driver so `Feed.ordered` can ask whether this server's titles
+    -- carry a usable position at all — see `Feed.ordered`, and
+    -- `Suwayomi.orderFromTitles` for the one that says yes.
+    local sequence, positioned = readingOrder(parsed,
+        { title_order = driver and driver.orderFromTitles })
     local best = select(sequence, positioned)
     if not best then
         -- Nothing to choose from: the feed carried no entry of this series, or
@@ -962,7 +966,7 @@ end
 --- is where a reader of a finished series would carry on — and the effect was a
 --- row that promises the first unread chapter and silently opens the last one, at
 --- its last page. A row that cannot do what it says says nothing instead.
-local function firstUnread(parsed, filtered)
+local function firstUnread(parsed, filtered, driver)
     -- The ordering, the predicate and the selection all live elsewhere now, and
     -- that is the point: `freshResumeTarget`'s default selector is
     -- `firstUnfinished` and this is the same call, so the row above a series
@@ -972,7 +976,8 @@ local function firstUnread(parsed, filtered)
     -- `readingOrder` is still shared with `freshResumeTarget` for the same
     -- reason: "where does this reader actually stand?" is one question asked
     -- from two screens.
-    local sequence = readingOrder(parsed)
+    local sequence = readingOrder(parsed,
+        { title_order = driver and driver.orderFromTitles })
     if filtered then
         -- The server already answered it: every entry of this feed is one it
         -- flags unread, so the earliest is the answer and the page counter is
@@ -1188,7 +1193,7 @@ function Open.openFirstUnread(browser, info)
     -- target" deliberately: both mean the row has nothing to offer.
     local target
     if basis ~= "empty" then
-        target = firstUnread(parsed, basis == "flag")
+        target = firstUnread(parsed, basis == "flag", info.driver)
     end
     if not target then
         UIManager:show(InfoMessage:new{

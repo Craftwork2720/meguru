@@ -181,6 +181,14 @@ end
 -- `resolveStream` is left to the default in base.lua: the stream arrives with
 -- the entry, so there is nothing to fetch on open.
 --
+-- `orderFromTitles` is deliberately not set either, and unlike `unreadFilter`
+-- that is a positive claim about this server rather than an absence: Komga sorts
+-- a series' books by `metadata.numberSort` ascending before it emits them
+-- (`OpdsController.kt`, `getOneSeries`), so the feed arrives in reading order and
+-- the number in a title may only ever fight it. Leaving it unset is what gives
+-- `Feed.ordered` feed order — see `Suwayomi.orderFromTitles` for the server that
+-- does the opposite.
+--
 -- `unreadFilter` is deliberately not set. Komga has no "unread" feed to ask —
 -- its OPDS read flag is not a filter, it is a per-book `pse:lastRead` that
 -- arrives on the ordinary feed — so the page-progress rules are the right ones

@@ -3,8 +3,10 @@
 Observed wire format of the three v1 servers, captured against live instances by
 walking the real feeds: **2776 Kavita series / 21217 feed entries** and the full
 Suwayomi library (2026-09-10), and Komga (2026-09-12, cross-checked against its
-source). This is the evidence the drivers are written against — where it
-disagrees with an assumption, the observation wins.
+source). **Kavita was re-walked on 2026-09-12 — all 3473 series of a larger
+library** — and the sections that changed carry that date. This is the evidence
+the drivers are written against — where it disagrees with an assumption, the
+observation wins.
 
 Credentials are never written here. Kavita's API key is shown as `<KEY>`; it is
 a path segment (`/api/opds/<KEY>/...`) and appears inside every stream URL.
@@ -23,10 +25,10 @@ Navigation: `root → /libraries → /libraries/{id} → /series/{id}`.
 
 | Feed | Paginates | Notes |
 |---|---|---|
-| `/` (root) | no | sections: `on-deck`, `recently-updated`, `recently-added`, `reading-list`, `want-to-read`, `libraries`, `collections`, `smart-filters` |
+| `/` (root) | no | sections: `on-deck`, `recently-updated`, `recently-added`, `reading-list`, `want-to-read`, `libraries`, `collections`. `smart-filters` appears on some builds and not others — **read the root, never a fixed list** |
 | `/libraries` | no | the libraries themselves (5 here), `entry.id` = library id |
 | `/libraries/{id}` | **yes**, 20/page, `rel=next` = `?pageNumber=2` | the canonical series list |
-| `/series/{id}` | **no** (0/46 checked) | the whole series in one response |
+| `/series/{id}` | **no** (0/3473 checked) | the whole series in one response |
 
 ### The canonical series list is the only authoritative one
 
@@ -44,6 +46,18 @@ collected volume or a loose chapter. Either way it carries its own
 entry.id   296595                       <- opaque; NOT the chapterId
 title      '⭘ Are You Okay ... - Chapter 1'
 updated    2026-09-10T15:28:22
+summary    'File Type: x-cbz - 520.51 MB'
+extent     '520.51 MB'    (dcterms)     <- decoration; nothing reads these
+format     'Archive'      (dcterms)
+content    'application/x-cbz'
+
+link rel=http://opds-spec.org/image/thumbnail
+     href /api/image/chapter-cover?chapterId=176915&apiKey=<KEY>
+link rel=http://opds-spec.org/image
+     href /api/image/chapter-cover?chapterId=176915&apiKey=<KEY>
+link rel=http://opds-spec.org/acquisition/open-access
+     href /api/opds/<KEY>/series/…/volume/114712/chapter/176915/download/<name>.cbz
+     p5:count=207 type=application/x-cbz     <- yes, the count is on this one too
 link rel=http://vaemendis.net/opds-pse/stream
      href /api/opds/<KEY>/image?libraryId=39&seriesId=17086&volumeId=114712
                               &chapterId=176915&pageNumber={pageNumber}
@@ -55,8 +69,34 @@ Three different numbers, none interchangeable:
 | | value | role |
 |---|---|---|
 | `entry.id` | `296595` | opaque; do not use |
-| `volumeId` | `114712` | **not unique** — 132/2776 series put many entries on one volume |
+| `volumeId` | `114712` | **not unique** — 132/2776 series put many entries on one volume (re-checked 2026-09-12: 6 of 127) |
 | `chapterId` | `176915` | unique per real chapter — **this is `item_key`** |
+
+### The API key is in the path, and once more in a query parameter
+
+The stream and every feed carry the key as a path segment
+(`/api/opds/<KEY>/…`). **The artwork does not** — it carries it as `apiKey=`:
+
+```
+rel=http://opds-spec.org/image  (book)
+  /api/image/chapter-cover?chapterId=175451&apiKey=<KEY>
+rel=http://opds-spec.org/image  (feed level, i.e. the series cover)
+  /api/image/series-cover?seriesId=16872&apiKey=<KEY>
+```
+
+Neither contains `/opds/` anywhere, which matters because
+`Credential.redactTemplate` used to look only there — so a marker written before
+2026-09-12 stored both cover URLs with the key in plain text. It has a second
+rule for the `apiKey` parameter now.
+
+Two things this settles for anyone tempted to "just drop the parameter":
+
+- **`apiKey` is not removable.** `/api/image/series-cover?seriesId=…` without it
+  answers **401 even with HTTP Basic credentials supplied** — the query parameter
+  is the whole authentication for that endpoint. The key has to be redacted and
+  restored, not deleted.
+- **`crash.log` was never the leak.** `Net.redactUrl` reduces a query to its byte
+  count (`…?97 bytes of query`), so no log line ever printed it.
 
 ### `seriesId` is recoverable from the stream URL
 
@@ -69,26 +109,56 @@ an aggregate — resolves to its series without extra context.
 ### Byte-identical duplicate entries
 
 151/2776 series emit each chapter **twice**: same `entry.id`, same `title`, same
-`updated`, same `chapterId`, same stream, back to back. Not an alias and not
-distinguishable by any field — `title` never begins with "Continue Reading
-from: " in any of the 21217 entries examined.
+`updated`, same `chapterId`, same stream, back to back — a rate the 2026-09-12
+re-check confirms but does not reproduce exactly (2 series of a 127-series
+sample). Not an alias and not distinguishable by any field.
 
-Nothing needs to de-duplicate these in code: `UNIQUE(series_id, item_key)` on
-`chapterId` collapses them at insert. The old plugin de-duplicated by template
-in Lua; the schema does it for free.
-
-**Consequence for sync:** `series.item_count` must be set from the number of
-**distinct items**, not from the number of entries walked — otherwise the 50%
-shortening gate compares a duplicate-inflated denominator against a later
-de-duplicated walk and reads a healthy sync as a catastrophic shrink.
+Nothing de-duplicates these in code any more. The catalog collapsed them with
+`UNIQUE(series_id, item_key)` at insert, and there is no catalog; `Feed.collect`
+drops a repeated `item_key` per walk instead, which is where the reader's own
+arithmetic needs it.
 
 ### The feed is already in reading order
 
-0/46 series were out of ascending order, so `feed_index` is the honest ordering
-key. Titles mix granularity in 1/46 series (`Volume N` and `Chapter N` in the
-same feed), so numbers parsed out of titles would risk *reordering* a list the
-server already ordered correctly. Kavita therefore uses
-**`ordinal_source = 'feed'`** (ordinal NULL), not `'volume'`/`'chapter'`.
+**Measured, not assumed:** across all 3473 series of a live library, 0 feeds are
+out of ascending order, so a walk's own order is the reading order and nothing
+needs to be derived.
+
+This is what `Feed.ordered` gets wrong if it is left to guess. Kavita feeds
+routinely **mix granularity** — 116 series (3,3 %) put `Volume N` and `Chapter N`
+in one feed, and `Moimon` is the clean case:
+
+```
+Volume 1, Volume 2, Volume 3, Chapter 1, Chapter 2, Chapter 3   <- feed order
+1, 1, 2, 2, 3, 3                                                 <- numbered by title
+```
+
+25 series change order that way. Titles are also not always numberable at all, and
+those are parked at the **end**: `Chapter 128x1` yields nothing, and so does a
+volume whose name is followed by nothing but release groups
+(`The Liminal Zone (2022) (Digital) (1r0n)`). `Volume 22-24` does *not* — it
+yields 22, because an omnibus indexes from its first number.
+`driver/kavita.lua` therefore leaves
+`orderFromTitles` unset, and only Suwayomi sets it, because only Suwayomi
+publishes its feed newest-first.
+
+### Alias entries
+
+Kavita emits, beside the entry for the volume last read, a second entry whose
+title is prefixed `Continue Reading from: ` (and, on the wire, often two spaces
+after the colon). It carries the **same stream** as the real entry, so the two
+describe one book. `Naming.stripAliasPrefix` drops the prefix for naming and
+series derivation so both map to one marker; the stream is what makes them the
+same file, not the title.
+
+Note what this is *not*: the duplicated entries above are a different thing, and
+carry no prefix at all.
+
+### Series name
+
+The series-feed `<title>` is `<Series> - Storyline`. Strip the ` - Storyline`
+suffix. (The `deriveSeries` fallback on entry titles still applies to aggregate
+feeds, where there is no series feed title.)
 
 ### Series name
 

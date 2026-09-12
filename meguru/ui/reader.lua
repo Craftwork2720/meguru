@@ -1135,7 +1135,10 @@ local function neighborFromFeed(doc, context, which)
     if not walker.complete then
         return nil, tostring(walker.reason)
     end
-    local sequence = Feed.ordered(Feed.collect(walker, plan))
+    -- `title_order` comes off the driver: whether this server's feed is already
+    -- in reading order is its answer to give, not this function's to guess.
+    local sequence = Feed.ordered(Feed.collect(walker, plan),
+        { title_order = plan.driver and plan.driver.orderFromTitles })
     return Feed.neighbor(sequence, context.item_key, which)
 end
 

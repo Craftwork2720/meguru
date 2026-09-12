@@ -189,12 +189,25 @@ end
 ---
 --- **Order from the server's own list position, which is in the path.** A
 --- Suwayomi entry links to `/series/{id}/chapter/{n}/metadata`, and `{n}` is the
---- position on the server's list — that is, its reading order. The title is a
---- fallback only, and a poor one: `Prologue 1` carries no chapter token at all,
---- so numbering by title parked it *after* every numbered chapter, when a
---- prologue belongs before them. Kavita has no path to use (its entries link to
---- no metadata feed), and its canonical feed is already in reading order, so
---- there the feed order is the right answer and is what is left.
+--- position on the server's list — that is, its reading order.
+---
+--- **Whether the number in a title may be used at all is the server's answer,
+--- and `opts.title_order` is how a driver gives it.** It used to be taken
+--- whenever the path was silent, and that was wrong for the one server whose
+--- feed is *already* in reading order: Kavita's. Kavita feeds routinely mix
+--- granularity — `Volume 1, Volume 2, Volume 3, Chapter 1, Chapter 2, Chapter 3`
+--- is one series in this library — and numbering that by title sorts it
+--- `1, 1, 2, 2, 3, 3`, interleaving chapters into volumes the server had already
+--- put in the right order. Measured across 3473 series: 25 change order, and 116
+--- mix the two styles. Titles that yield no number at all were worse still — the
+--- tail is where they went, so a mid-series chapter was offered last. Both shapes
+--- exist in that library: `Chapter 128x1`, and a volume with nothing but release
+--- groups after its name.
+---
+--- So a driver that does not set `opts.title_order` gets feed order, which is
+--- the honest reading of a feed its server sorts. Suwayomi does set it, because
+--- there the feed is newest-first and the title is the only fallback left once
+--- the path is gone.
 ---
 --- Returns the sequence and `positioned`, the length of its ordered prefix.
 --- Everything after index `positioned` had no position anywhere and is in feed
@@ -202,19 +215,33 @@ end
 --- without meaning to: feed order is *not* reading order in general, and for
 --- Suwayomi it is its exact reverse.
 ---
+--- **`positioned` is legitimately 0 for a server that orders by feed**, and
+--- every selector over this sequence survives it: `firstUnfinished` ignores the
+--- second argument, `lastIn` falls through to its second pass
+--- (`positioned + 1 … #sequence`) and answers with the last entry in feed order,
+--- and `firstIn` is `sequence[1]`.
+---
 --- Extracted from `firstUnread` rather than copied, because the consumer that
 --- was missing it is the bug this exists for. `freshResumeTarget` picked the
 --- furthest-read chapter by *feed* order, which is right on the canonical feed
 --- and backwards on the page the browser holds — the same series, the same
 --- question, two opposite answers depending on which screen asked. Sharing the
 --- ordering is what keeps them from disagreeing again.
-function Feed.ordered(parsed)
+function Feed.ordered(parsed, opts)
     local Naming = require("meguru/naming")
+    opts = opts or {}
     local ordered, fallback_position = {}, {}
     for index, item in ipairs(parsed or {}) do
         local path_position = type(item.detail_url) == "string"
             and tonumber(item.detail_url:match("/chapter/(%d+)/")) or nil
-        local _, _, title_number = Naming.deriveSeries(item.title or "")
+        -- Not even derived when the server has not vouched for it: `Naming` is
+        -- a lazy require for the sake of one edge in this file, and there is no
+        -- reason to walk a title for a number nobody will read.
+        local title_number
+        if opts.title_order then
+            local _, _, number = Naming.deriveSeries(item.title or "")
+            title_number = number
+        end
         local position = path_position or title_number
         if position then
             ordered[#ordered + 1] = { item = item, position = position }

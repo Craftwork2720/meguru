@@ -2,30 +2,43 @@
 What a credential looks like inside a URL, and how to take it out and put it
 back.
 
-Kavita is the reason this exists. Its API key is not a query parameter but a
-**path segment** (`/api/opds/<key>/…`), so a URL-shaped redaction that keeps the
-path keeps the key — and every Kavita URL has one: the catalogue root, every
-feed, every stream template, every page. It is written to the marker file in the
-reader's book folder, and `Net.get` logs a URL on every failed request.
+Kavita is the reason this exists, and it puts its API key in **two different
+places** depending on which kind of URL it is.
+
+  * The stream and every feed carry it as a **path segment**
+    (`/api/opds/<key>/…`), so a URL-shaped redaction that keeps the path keeps
+    the key.
+  * **The artwork carries it as a query parameter**
+    (`/api/image/series-cover?seriesId=…&apiKey=<key>`, and `chapter-cover` the
+    same way). A rule that only walks the path sees nothing here, which is how
+    the key came to be written into marker files in plain text — see the
+    `apiKey` rule below.
+
+Both are written to the marker file in the reader's book folder, and `Net.get`
+logs a URL on every failed request. (`Net.redactUrl` reduces a query to its byte
+count, so a log line was never the leak; a marker was.)
 
 This is a leaf: it requires nothing, logs nothing, and reads no settings. Callers
 decide what to do with an answer.
 
-**Two rules, and callers must take the one they mean.**
+**Three rules, and callers must take the one they mean.**
 
   * the segment after `opds/` names a *position*. Kavita puts its key there, and
     the catalogue root puts the same key in the same place — which is what makes
     this rule exactly invertible.
+  * the `apiKey` **query parameter** names the same key again, in the URLs that
+    do not go through `/opds/`. Also a position, also exactly invertible.
   * any UUID-shaped segment is a *guess* (Kavita's key happens to be a UUID).
 
-`redact` applies both, for a log line or a diagnostics column: a false positive
-there costs one redacted word in a line nobody fetches from. `redactTemplate`
-applies only the first, and that asymmetry is load-bearing. A stream template is
-fetched *from*, so a guess that fires on something else — a future driver whose
-book id is a UUID — would blank a part of the URL that `restoreTemplate` cannot
-put back, because the only thing it knows is the catalogue root's key. The book
-would break permanently, in a way no configuration repairs. The positional rule
-cannot do that: it replaces what it can name, and names it the same way back.
+`redact` applies all three, for a log line or a diagnostics column: a false
+positive there costs one redacted word in a line nobody fetches from.
+`redactTemplate` applies the first two and not the third, and that asymmetry is
+load-bearing. A stream template is fetched *from*, so a guess that fires on
+something else — a future driver whose book id is a UUID — would blank a part of
+the URL that `restoreTemplate` cannot put back, because the only thing it knows
+is the catalogue root's key. The book would break permanently, in a way no
+configuration repairs. The two positional rules cannot do that: they replace what
+they can name, and name it the same way back.
 --]]
 
 local Credential = {}
@@ -43,6 +56,23 @@ local UUID_SEGMENT = "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%
 -- splice the key over an adjacent byte and return a URL that is wrong by one
 -- character with no error anywhere to say so.
 local PLACEHOLDER_PATTERN = Credential.PLACEHOLDER:gsub("%W", "%%%0")
+
+--- `scheme://host:port` of a URL, with no path — the part two URLs must share
+--- before one's credential may be spliced into the other.
+---
+--- Read as a pattern rather than through `socket.url`, because this module is a
+--- leaf that requires nothing (see the docblock) and because `url.parse` returns
+--- a table whose `host` drops the port that this comparison has to keep: two
+--- servers behind one hostname are told apart by their port and by nothing else.
+---
+--- Returns nil, or the empty string for a string that is not a URL at all;
+--- `restoreTemplate` treats both as a refusal.
+local function originOf(url_str)
+    if type(url_str) ~= "string" then
+        return nil
+    end
+    return url_str:match("^(%a[%w+.-]*://[^/]+)")
+end
 
 --- The credential the catalogue root carries, and where.
 ---
@@ -72,15 +102,34 @@ function Credential.keyFromRoot(root)
     return key, from
 end
 
---- `str` with the credential-bearing path segment removed, positionally.
+--- Matches Kavita's artwork URLs: `?apiKey=<key>`, or `&apiKey=<key>` further in.
 ---
---- This is what a marker file stores. See the module docblock for why the UUID
---- guess is deliberately not applied here.
+--- The value is cut at `&` and at `#` — a fragment would otherwise swallow the
+--- rest of the URL into the placeholder, and `restoreTemplate` cannot put back
+--- what it replaced as part of a larger match.
+local APIKEY_PATTERN = "([?&]apiKey=)[^&#]*"
+
+--- `str` with every credential-bearing position removed.
+---
+--- This is what a marker file stores. Two rules, because Kavita uses two
+--- places, and the second one was missing for as long as only the first was
+--- written down:
+---
+---   * the segment after `/opds/` — the stream template and every feed;
+---   * the `apiKey` query parameter — every cover, which is why `cover_url`
+---     and `series_cover_url` are in `CREDENTIAL_FIELDS` and needed this rule
+---     to earn their place there. A cover URL contains no `/opds/` at all, so
+---     the positional rule passed it through untouched and the key went to disk
+---     inside a marker.
+---
+--- See the module docblock for why the UUID guess is deliberately not applied
+--- here.
 function Credential.redactTemplate(str)
     if type(str) ~= "string" or str == "" then
         return str
     end
-    return (str:gsub("(/opds/)[^/?]+", "%1" .. Credential.PLACEHOLDER))
+    local out = str:gsub("(/opds/)[^/?]+", "%1" .. Credential.PLACEHOLDER)
+    return (out:gsub(APIKEY_PATTERN, "%1" .. Credential.PLACEHOLDER))
 end
 
 --- `str` with every credential-shaped segment removed. For logs and diagnostics.
@@ -104,17 +153,26 @@ end
 --- that is the healthy case (no placeholder to begin with — a Suwayomi marker)
 --- or the broken one (a placeholder is still there).
 ---
---- **The prefix guard is the whole safety of this function.** The key goes back
---- only when the text before the template's first placeholder is byte-identical
---- to the text before the root's key. For Kavita both are
---- `http://host:port/api/opds/`, so it holds. It refuses when `server_name` now
---- names a *different* catalogue — a renamed entry, a second server reusing the
---- title, a server that moved host — and refusing is the point: without this
---- comparison the function would splice catalogue B's key into a URL that still
---- points at host A, which is **sending one server's credential to another**.
---- That is the worst outcome this module can produce, and one string comparison
---- prevents it. A refusal costs a visible `<redacted>` in the URL and a warning
---- in the log, which is self-describing.
+--- **The origin guard is the whole safety of this function.** The key goes back
+--- only when the placeholder sits inside the same `scheme://host:port` the
+--- catalogue root is on — and refusing is the point: without the comparison the
+--- function would splice catalogue B's key into a URL that still points at host
+--- A, which is **sending one server's credential to another**. That is the worst
+--- outcome this module can produce, and one comparison prevents it. A refusal
+--- costs a visible `<redacted>` in the URL and a warning in the log, which is
+--- self-describing.
+---
+--- **It used to require the prefix to be byte-identical to the root's, and that
+--- was narrowed to the origin when the `apiKey` rule arrived.** The old test
+--- worked only because a Kavita *stream* URL and its catalogue root share the
+--- prefix `…/api/opds/`; a cover URL shares none of it (`…/api/image/…`), so the
+--- identical-prefix test refused every cover and they would have been restored
+--- to a literal `<redacted>` — a 404 the reader would see as a missing cover.
+---
+--- What was given up is smaller than it looks. Two Kavita catalogues on one
+--- host have byte-identical prefixes anyway (`http://host/api/opds/`), so the
+--- old test could not tell them apart either; the origin still refuses the case
+--- the guard exists for, which is the key surviving a move to another host.
 function Credential.restoreTemplate(template, root)
     if type(template) ~= "string" or template == "" then
         return template, 0
@@ -123,11 +181,18 @@ function Credential.restoreTemplate(template, root)
     if not at then
         return template, 0
     end
-    local key, key_at = Credential.keyFromRoot(root)
+    -- Everything before the placeholder, which the origin covers rather than
+    -- equals: see the docblock for what that widened and what it did not.
+    local prefix = template:sub(1, at - 1)
+    local key = Credential.keyFromRoot(root)
     if not key then
         return template, 0
     end
-    if template:sub(1, at - 1) ~= root:sub(1, key_at - 1) then
+    local origin = originOf(root)
+    -- `#origin` is 0 for a string that matched nothing, and `prefix:sub(1, 0)`
+    -- is the empty string, which would compare equal — so an unparseable root
+    -- is refused explicitly rather than by luck.
+    if not origin or origin == "" or prefix:sub(1, #origin) ~= origin then
         return template, 0
     end
     -- A *function* replacement, not a string: `string.gsub` gives `%` special

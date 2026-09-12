@@ -158,11 +158,16 @@ artwork lives solely in its metadata feed, one request per chapter, which nothin
 spends. So `driver/suwayomi.lua` sets none and its chapters fall back to the series
 cover, deliberately.
 
-**Both links go through the same redaction as the stream template.** Kavita puts
-its API key in the path of every URL it emits, covers included, and a marker lives
-in the reader's *book* folder rather than in `settings/` — so `CREDENTIAL_FIELDS`
-in `meguru/marker.lua` lists all three, and a field added to `Marker.new` without
-being added there is written to disk with the key in it.
+**Both links go through the same redaction as the stream template, and they are
+why that redaction needs two rules rather than one.** Kavita puts its key in the
+path of its stream and every feed, but **in the query of its artwork** —
+`/api/image/series-cover?seriesId=…&apiKey=…`, with no `/opds/` in it anywhere.
+A rule that walked only the path left both cover fields untouched and wrote the
+key into markers in plain text; `Credential.redactTemplate` has an `apiKey` rule
+now, and PROTOCOL.md carries the evidence. A marker lives in the reader's *book*
+folder rather than in `settings/`, so `CREDENTIAL_FIELDS` in `meguru/marker.lua`
+lists all three, and a field added to `Marker.new` without being added there is
+written to disk with the key in it.
 
 `MeguruDocument:getCoverPageImage` resolves a book as **its own artwork → the
 series' → page 1 of its stream**, so a missing item cover is not a missing cover,
@@ -549,11 +554,17 @@ the view is what was removed.
 
 `Feed.ordered` is worth reading before touching anything that picks a chapter. It
 orders by the server's own **list position** — the `{n}` in Suwayomi's
-`/series/{id}/chapter/{n}/metadata` — falling back to the number
-`Naming.deriveSeries` pulls from the title, and to feed order only for entries with
-neither. The title alone is not enough: `Prologue 1` carries no chapter token, so
-ordering by title parks it *after* every numbered chapter, when a prologue belongs
-before them. Its second return, the length of the ordered prefix, is load-bearing
+`/series/{id}/chapter/{n}/metadata` — and, **only for a driver that says its
+titles can be trusted** (`Suwayomi.orderFromTitles`), falling back to the number
+`Naming.deriveSeries` pulls from the title. Everything else gets feed order.
+
+That driver flag is the fix for a bug that had no other shape. Kavita feeds are
+already in reading order and routinely mix granularity, so numbering them by
+title sorted `Volume 1…3, Chapter 1…3` into `1, 1, 2, 2, 3, 3` — 25 of 3473
+series — and a title with no number in it (`Chapter 128x1`) was parked at the
+end of the series. The title is a fallback for a server whose feed is
+newest-first, which is Suwayomi and only Suwayomi. Its second return, the length
+of the ordered prefix, is load-bearing
 for any caller that looks *backwards*: the unpositioned tail is in feed order, which
 for Suwayomi is the exact reverse of reading order.
 
@@ -1617,11 +1628,16 @@ plugin seeds 1, which matches what a fresh book actually got.
 
 - **No secret is in a marker file, and `Marker.saveAt` is what enforces it.**
   `server_name` is a catalog title; Kavita's API key is a path segment of the stream
-  template — **and of every URL it publishes, covers included** — so all three URL fields
-  are replaced with `<redacted>` on the way to disk and put back by `Marker.load` from
-  `settings/opds.lua`. One member of the pair on each side, and one list
-  (`CREDENTIAL_FIELDS`) naming the fields both halves walk, so a URL field added to
-  `Marker.new` cannot be redacted out and forgotten back.
+  template **and of every feed** — but in the **query** of the artwork
+  (`/api/image/series-cover?…&apiKey=…`). Both positions are redacted, by the two rules
+  in `Credential.redactTemplate`, so all three URL fields go to disk as `<redacted>` and
+  come back through `Marker.load` from `settings/opds.lua`. One list
+  (`CREDENTIAL_FIELDS`) names the fields both halves walk, so a URL field added to
+  `Marker.new` cannot be redacted out and forgotten back — and one *list of positions*
+  is what the `apiKey` rule was missing when covers were first declared covered.
+  `restoreTemplate`'s guard is an **origin** comparison, not a prefix one, because the
+  cover's prefix (`…/api/image/…`) has nothing in common with the root's
+  (`…/api/opds/…`); it still refuses a key whose catalogue has moved to another host.
 - **On Komga the same machinery redacts an API version, and that is not a bug to
   fix.** Komga authenticates with HTTP Basic, so there is no secret in any of its
   URLs — but its paths read `…/opds/v1.2/books/…`, and `Credential.redactTemplate`
