@@ -1382,67 +1382,93 @@ sequence is what the reader gets when there is a sequence to walk.
 It knows nothing about documents, pages or fetching — `MeguruDocument:getPanelsFromPage`
 is the seam, and it hands over one decoded buffer and takes back a list.
 
-**A panel is a connected body of ink, and the map is relative to the page's own
-background.** The page is scaled to a 480-pixel *width* scan; the background is
+**A panel is a band of a page, and the cut finds it by slicing on the widest
+empty band.** The page is scaled to a 480-pixel *width* scan; the background is
 the **median luminance of the outer one-percent ring** — the median and not the
 mean, because a ring that is three quarters paper and one quarter a bleed has a
 mean the page does not contain anywhere — and a cell is ink when it departs from
-it by more than `PANEL_INK_DELTA`. The map is then walked for **8-connected
-components**, and each component's bounding box is scored by how much of its own
-outline is supported by a straight (possibly tilted) line. A speech balloon held
-inside a frame is dropped as a box inside a bigger box; a box with no supporting
-side is merged into the framed neighbour it best overlaps. Everything the
-reference does with three channels collapses to one difference here, because
-**every buffer this plugin decodes is BB8** — see the `setColorRendering(false)`
-calls this document already makes. The one piece of the reference's background
-estimate that is *not* redundant is carried over: a mid-grey median is overridden
-to white when some row or column of the page is genuinely near-white, which is
-what recovers a paper colour dimmed by a scan.
+it by more than `PANEL_INK_DELTA`. The map is then sliced recursively: find the
+widest empty band across the region, split there, recurse into both halves, and
+stop when a region has no empty band left. Comic and manga pages are laid out as
+nested bands — a page splits into tiers, a tier into panels — so the cut
+reproduces that structure directly. Everything the reference does with three
+channels collapses to one difference here, because **every buffer this plugin
+decodes is BB8** — see the `setColorRendering(false)` calls this document already
+makes. The one piece of the reference's background estimate that is *not*
+redundant is carried over: a mid-grey median is overridden to white when some row
+or column of the page is genuinely near-white, which is what recovers a paper
+colour dimmed by a scan.
+
+**Two things complicate the cut, and both are ported.** Panels are rarely drawn
+square, and a gutter tilted by two degrees leaves no column empty from top to
+bottom — enough to stop the straight cut dead. When no straight gutter exists and
+an axis already has a near-empty line, a ladder of slopes from 2 to 8 degrees
+either way is tried instead and the projection is taken along the slanted line.
+Both children then get the whole projected band, so each panel keeps its own
+artwork and gains a thin wedge of its neighbour rather than losing a corner — the
+panels overlap slightly along a sheared split, which is that trade and not a
+duplicate. The other is page furniture: a scanlation credit line clears both size
+floors comfortably, so `emitLeaf` rejects it on the *conjunction* of elongated
+and nearly inkless. Neither test works alone, and that function's comment carries
+the four-row measurement that says so.
 
 The scan targets the page's **width**, not its long side, and that is not
 cosmetic. A 1600x2400 page maps to 480x720 — one cell per 3.3 page pixels, so a
 10-pixel printed gutter is 3 cells wide. A ceiling on the long side would give
-320x480, one cell per 5 pixels, and the same gutter 2 cells wide, where diagonal
-bridging starts to close it. `PANEL_SCAN_MAX_CELLS` then caps the cell count, and
-it is the one deviation from the reference's sizing: with the width rule, cells
-grow with the page's aspect ratio, so it first bites past 5.2:1 — a webtoon
-strip, and only a webtoon strip. Without it an 800x20000 page scans at 480x12000,
-some 35 MB of arrays, on a plugin whose whole native budget is 12 MB.
+320x480, one cell per 5 pixels, and the same gutter 2 cells wide, against a
+`min_gutter` of two cells. `PANEL_SCAN_MAX_CELLS` then caps the cell count, and it
+is the one deviation from the reference's sizing: with the width rule, cells grow
+with the page's aspect ratio, so it first bites past 5.2:1 — a webtoon strip, and
+only a webtoon strip. Without it an 800x20000 page scans at 480x12000, some 35 MB
+of arrays, on a plugin whose whole native budget is 12 MB.
 
-**There is one detector now, and it replaced two.** `getPanelFromPage` used to
-carry its own conservative gutter scan, kept as the fallback for a page with no
-sequence. It was removed rather than kept, and the reason is worth keeping in its
-place, because "keep the cheap fallback" is the obvious instinct and it was wrong
-here. That detector only ever split on *complete*, axis-aligned white gutters, so
-a wrong guess degraded to "no panel" — but it also could not read a page at all
-when a panel carried a full-width white band *inside its own drawing* (such a
-band is indistinguishable from a gutter) or when the panels were tilted, which it
-had no answer for. A component fails at neither, because connectivity knows
-nothing about axes or interior whites. Two detectors also meant two different
-crops for one page depending on which path asked; now the answer is the same
-wherever it is asked for, and `getPanelFromPage` is a thin wrapper returning the
-panel `Panel.indexAt` finds under the touch. Note it passes a **constant**
+**The thresholds are 1.3's, and this is the part to read before "improving"
+anything here.** This detector has been wrong three times on a device, and two of
+the three were caused by *defaults* rather than by the algorithm. `panels_plus`
+ships this same cut; its later version loosened `segment_gutter_ink_ratio` from
+0.005 to 0.05, doubled the minimum panel area and switched `segment_shear` off.
+Porting that later version's code *with its own numbers* produced exactly what a
+reader would report: a panel cut in half on a white band inside its own drawing,
+because at 0.05 anything faintly bright counted as empty; and no cut at all on a
+skewed page, because the only answer to tilt had been turned off. The numbers
+here come from the version that was read from for a long time without either
+problem:
+
+| | 1.3 — used here | later version |
+|---|---|---|
+| gutter ink ratio | **0.005** | 0.05 |
+| shear | **on** | off |
+| min panel area | **0.005** | 0.01 |
+| live detector | this cut | connected components |
+
+**The connected-component detector is the third failure, and the reason it is
+deliberately not ported.** It groups ink into connected bodies and keeps each one
+as a box, merging only boxes that entirely contain one another — its own comment
+says "It does not merge partial overlaps". So a component and the panel it sits
+inside stay two boxes, and the reader sees the same panel twice with slightly
+different crops. The cut cannot produce that: its leaves are disjoint by
+construction, each one a region no gutter divides. That is the whole argument,
+and it is why "the reference's live detector" is not by itself a reason to port
+something — the reference's live detector is whatever its authors last switched
+on, not a verdict.
+
+**There is still one detector, and it replaced two.** `getPanelFromPage` used to
+carry its own conservative gutter scan, kept as the fallback. It was removed
+rather than kept, because two detectors meant two different crops for one page
+depending on which path asked; `getPanelFromPage` is now a thin wrapper returning
+the panel `Panel.indexAt` finds under the touch. Note it passes a **constant**
 direction: in the detector the mode orders the list and nothing else, and this
 function returns a rectangle rather than an index, so the order cannot reach the
 answer.
 
-**Why the recursive X-Y cut is not here — the part worth reading before
-"improving" this.** It was the first version of this module, taken from
-`panels_plus`'s `src/_segmenter.lua` — where it is **dead code**. Three separate
-places in that plugin force `detector = "components"` (`main.lua`'s setter
-ignores its argument, `_settings.lua` rewrites any stored value on load,
-`src/menu.lua`'s getter returns a constant) and `Segmenter.detectPage` has no
-caller at all; the only live part of that file is `accept`, which the component
-detector calls. Porting the cut therefore meant porting the algorithm the
-reference had already abandoned, and it failed on a device in exactly the two
-ways above — a panel cut in half on white, and no cut at all on a skewed page.
-
-Also **not** ported: the shear search (moot — connectivity is what handles skew,
-and the cut's own tilt search was off by default anyway), the comic border-stroke
-plane (`segment_border_split`, also off by default), and `component_holes`, the
-optional pass that treats enclosed white regions as panels. The last is the
-reference's default being honoured rather than a judgement, and it is the only one
-of the three that leaves a real capability on the table.
+Also **not** ported: the comic border-stroke plane (`segment_border_split`), and
+the component pipeline with its `component_holes` pass. The border pass is off in
+1.3's own defaults and the source gives a good reason to leave it there — at map
+resolution a shared border between two bled panels and a black line drawn
+*through* one panel (a horizon, a caption rule, a letterbox band) produce
+byte-identical maps, so the pass splits real panels in half on any page carrying
+such a line, while off those pages read correctly and genuinely bled layouts fall
+back to "one panel instead of two".
 
 **Order is a reading direction, and the direction is the book's.**
 `Panel.sortReadingOrder` groups panels into rows by their **top edge** with a
@@ -1586,7 +1612,7 @@ behave another.
 
 **Logging follows the frequency rule.** `Meguru: page N panel zoom: K panels,
 whole page (<reason>) (mode) in X ms` — the milliseconds are the measurement of
-the scan, the component walk and the acceptance tests, and the only place their
+the scan, the cut and the acceptance tests, and the only place their
 cost can be seen; the bracketed form is what separates a refused page from a page
 that genuinely has one panel, and those need opposite fixes. `... no page
 (<reason>)` is the one case with nothing to open. The stand-down is `info` — a
@@ -2009,14 +2035,15 @@ Each step must pass before the next:
     |---|---|
     | a panel carrying a full-width **white band inside its own drawing** — a splash with a horizon line, a title card with a white rule across it, an illustration with a blank sky band | **ONE panel.** The band must not cut it in two |
     | a page of **tilted panels** — a skewed scan, or any layout whose gutters are not axis-aligned | **the panels, split** — `K panels` in the log with K what the eye counts |
+    | a page whose three failures are the three the log would name | **no panel appears twice**, in either direction, and the count matches the eye |
     | a normal manga page, 4–6 panels with hairline gutters | the same sequence, in the same reading order, as before |
     | a splash page with no panels at all | the viewer opens on **the whole page** (1 of 1), no progress bar, and a swipe forward **turns the page** |
 
     Then the mechanics. In `-d`, one `page N panel zoom: K panels … in X ms` per
     long-press; a refused page says `K panels, whole page (<reason>)` and the
-    reason must name one of the four tests — `single partial panel`, `page
-    furniture mistaken for panels`, `panels cover too little of the page`, `only
-    N% of the covered area kept`. Compare the milliseconds against the `page N
+    reason must name one of the four tests — `no panels`, `single partial
+    panel`, `panels cover too little of the page`, `only N% of the covered area
+    kept`. Compare the milliseconds against the `page N
     prepared in X ms` line on the same page: the scan sits on top of that decode
     and should be a fraction of it. Then **toggle Manga mode with a page open and
     long-press it twice** — the second press must give the mirrored order, which
