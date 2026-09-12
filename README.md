@@ -7,7 +7,7 @@ your device.
 
 > [!NOTE]
 > Meguru needs a server that supports **OPDS page streaming** (OPDS-PSE).
-> Kavita and Suwayomi are supported today.
+> Kavita, Suwayomi and Komga are supported today.
 
 ## Why use it
 
@@ -137,9 +137,17 @@ Each saved book is a small **marker file** with the `.meguru` extension. It is n
 an archive and holds no pages — just enough to find the stream again: the server
 it came from, which chapter it is, the page URL template and the page count.
 
-**Nothing else is written.** Pages are kept in memory as you read and are gone
-when you close the book; there is no page cache and no cover cache on disk, and
-no database. The only thing Meguru creates is markers.
+**Almost nothing else is written.** Pages are kept in memory as you read and are
+gone when you close the book; there is no page cache and no cover cache on disk,
+and no database.
+
+The one other file is a **`.cover.jpg`** left in a series folder, so that
+something *other* than KOReader — a file browser, a backup, a different reader —
+has a picture for the series. It is written once, when the first of its volumes
+is saved, and never updated or removed. KOReader itself does not draw folder
+covers, so it will not show it to you. You can turn it off per server under
+*Settings* → *Covers for folders*; turning a server off stops new files and
+leaves the ones already written.
 
 > [!WARNING]
 > Because a book is a marker and not an archive, it needs the server to be
@@ -162,6 +170,12 @@ server.
 
 - **OPDS 1.x catalogs with page streaming.** Entries that only offer a file
   download keep their normal download buttons, untouched.
+- **On Komga, browse to a series to open a book — not to "Latest books", "On
+  Deck" or "Keep Reading".** Kavita publishes a series id on every chapter, so a
+  book opened from one of its aggregate lists still knows what it belongs to;
+  Komga publishes none anywhere, so those lists cannot say which series a book is
+  from. Rather than guess, Meguru opens nothing and says so. Everything reached
+  through *All series* works normally.
 - **The next chapter is fetched when you ask for it.** There is no background
   crawling of your libraries, so a series you have just added knows only the
   chapter you opened until you ask for a neighbour.
@@ -184,6 +198,7 @@ meguru/
   pse.lua          OPDS-PSE: finding the stream link, building a page URL
   net.lua          HTTP and feed parsing
   credential.lua   what a credential looks like in a URL: redact / restore
+  seriescover.lua  the series cover kept in the series folder
   sources.lua      read-only view of KOReader's OPDS settings
   settings.lua     plugin-wide preferences
   association.lua  Meguru's claim on .cbz: the file-type reader association
@@ -191,12 +206,13 @@ meguru/
   fs.lua           filesystem predicates and directory creation
   naming.lua       titles, series names, folder-safe names, stable keys
   hook.lua         runtime wraps on the built-in OPDS browser
-  driver/          per-server knowledge (Kavita, Suwayomi)
+  driver/          per-server knowledge (Kavita, Suwayomi, Komga)
   doc/             the document itself: rendering, decoding, per-book defaults
   ui/              the open flow, the reader integration, the two menus
 ```
 
 **No file belonging to KOReader or to another plugin is ever modified.** Meguru
 wraps a few methods of the built-in OPDS plugin in memory — restarting KOReader
-removes the wraps — and writes two things: marker files, and the same per-book
-settings file KOReader keeps beside every document it opens.
+removes the wraps — and writes three things: marker files, the `.cover.jpg` a
+series folder may get, and the same per-book settings file KOReader keeps beside
+every document it opens.
