@@ -327,21 +327,19 @@ function Marker.pickerStartDir()
 end
 
 --- The folder a marker for this book belongs in: `<base>[/<Server>]/<Series>`.
+--- `opts.server_folder` adds the catalog component from `desc.server_name`, and
+--- the series component comes from `desc.series_name` when the descriptor has
+--- one.
 ---
---- `series` is `{ name = ..., remote_id = ... }` or nil. The
---- `series_folder_claimed` option says a *different* series on this server
---- already owns the plain series component; the newcomer is then suffixed
---- rather than sharing a folder with it.
----
---- The claim is passed in rather than looked up here so this module needs no
---- database — and so a marker write still works when the catalog is gone.
----
---- Suffixing only ever affects the book being saved now. A series that already
---- has markers keeps its folder even when it is the one that "should" have been
---- suffixed, because moving it would orphan the DocSettings sidecars that hold
---- its reading progress. A collision that goes unnoticed (no catalog to ask) is
---- therefore harmless: two series share a folder, exactly as the old plugin did,
---- and no file is ever overwritten.
+--- **Two series may share a folder, and no file is overwritten when they do.**
+--- A folder name used to be checked against the catalog so the second series
+--- could be suffixed, and that check is gone with the catalog. What remains is
+--- `pathFor`'s disambiguation of the *file*, which is the part that matters:
+--- nothing is clobbered, and a reader whose two same-named series share a folder
+--- sees both books in it. Suffixing a *folder* was never the protection anyway —
+--- moving an existing series' folder would orphan the DocSettings sidecars that
+--- hold its reading progress, which is why the check only ever applied to the
+--- book being saved.
 ---
 --- **Pure: it returns where a marker would go and creates nothing.** It used to
 --- `FS.ensureDir` each component as it built the path, which was right while the
@@ -356,6 +354,7 @@ end
 --- defaults to `Marker.baseDir()`, which does create it, because "is this folder
 --- usable" is the question it exists to answer and a path on unplugged media has
 --- to be rejected before anything is planned around it.
+---
 --- **One shape in, and it is the marker's own.** This took a descriptor *and* a
 --- series row, and read the series' name from the row — `series.name` — while
 --- every caller had already moved to passing what a marker says about its series
