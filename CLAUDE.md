@@ -65,6 +65,7 @@ meguru/
   paths.lua               every path: markers, and the last-resort folder
   fs.lua                  filesystem predicates and directory creation
   settings.lua            plugin-wide preferences in G_reader_settings
+  association.lua         Meguru's claim on .cbz: the file-type reader association
   sources.lua             read-only view on settings/opds.lua (catalogs + credentials)
   net.lua                 HTTP GET, feed fetch + parse
   naming.lua              sanitizeComponent / deriveSeries / alias / glyph / identity digest
@@ -1251,24 +1252,34 @@ Two invariants when touching these rows:
   two menus read the same. Nothing nestles deeper, and no `sorting_hint` exists
   below the top-level `meguru` item — the sorter only ever orders a page's own
   rows.
-- **"Set Meguru as default reader for .cbz" writes KOReader's own file-type
-  association, and the mechanism is worth knowing before touching it.** Meguru
-  registers `cbz` at **weight 1** (`main.lua`), the lowest, so without this row
-  it is reachable only through "Open with…". The row calls
-  `DocumentRegistry:setProvider(name, provider, true)`, which is the same call
-  the stock dialog's "Always open with…" checkbox makes, and stores
-  `G_reader_settings["provider"]["cbz"] = "meguru"`. That association is read by
-  `DocumentRegistry:getProvider` **before** it falls back to the highest-weighted
-  provider (`documentregistry.lua:91-101`) — which is the whole of why a
-  weight-1 provider can win. Turning the row off is the same call with no
-  provider, which is what the dialog's "Reset default for … files" does.
-  Two traps: the API takes a **file**, not an extension (it reads the suffix off
-  the name, so the row passes a name with no file behind it), and
-  `setProvider(file, nil, true)` means *reset* — so a provider the registry does
-  not know yet would silently turn the row off while appearing to turn it on,
-  which is why the row looks it up first and refuses loudly instead. A per-file
-  choice made in "Open with…" still wins: `getAssociatedProviderKey` reads the
-  sidecar before the file type.
+- **`meguru/association.lua` owns Meguru being the reader for `.cbz`, and it is
+  the third thing that is a *claim* rather than a preference.** Meguru registers
+  `cbz` at **weight 1** (`main.lua`), the lowest, so registration alone leaves
+  MuPDF the default and this engine reachable only through "Open with…". The
+  claim is KOReader's own **file-type association** — the same
+  `G_reader_settings["provider"]["cbz"] = "meguru"` the stock dialog's "Always
+  open with…" checkbox writes, read by `DocumentRegistry:getProvider` *before*
+  it falls back to the highest-weighted provider
+  (`documentregistry.lua:91-101`), which is the whole of why a weight-1 provider
+  can win. Releasing is the same call with no provider, i.e. what "Reset default
+  for … files" does.
+  **It is claimed once, on first run** (`Association.claimOnce`, called from
+  `registerProvider`), and given back from the menu row. The record of that is
+  `Settings.cbz_default_claimed`, and the record is load-bearing: releasing
+  leaves `provider.cbz` **absent**, which is byte for byte what a device that
+  never chose a reader looks like — so "no association" cannot be read as "not
+  yet claimed", and a rule of that shape would re-claim the extension on the
+  next start after the reader turned the row off. The one case the record cannot
+  tell apart is a device upgrading from the build that had the row and no
+  record, where the claim is made once more; a one-tap surprise beats a row that
+  turns itself back on forever.
+  Two traps in the API itself: it takes a **file**, not an extension (it reads
+  the suffix off the name, so the module passes a name with no file behind it),
+  and `setProvider(file, nil, true)` means *reset* — so a provider the registry
+  does not know yet would silently do the opposite of what was asked, which is
+  why the claim looks it up first and refuses loudly. A per-file choice made in
+  "Open with…" still wins: `getAssociatedProviderKey` reads the sidecar before
+  the file type.
 - **The separator is *under* the row that carries it** (`touchmenu.lua:714`), and
   is dropped when that row is last on a page (`touchmenu.lua:713`) — so a
   separator is a hint about the list, never a guarantee about the screen. Two
@@ -1623,14 +1634,18 @@ Each step must pass before the next:
     line is the only separator left. With a PDF open there is no Meguru row and
     nothing logs `menu id not found`.
 
-    Then the `.cbz` row, which is the one with device-wide consequences: turn it
-    on, close the menu and restart, and **every** `.cbz` opens as a Meguru book
-    — including one the FileManager has never seen. `settings.reader.lua` must
-    now hold `provider = { cbz = "meguru" }`. Set a single file's reader through
-    "Open with… → Always open with this file" and confirm the row still reads
-    ticked but that one file opens the other way — the per-file choice is read
-    first. Turn the row off: `cbz` disappears from `provider` entirely and the
-    next `.cbz` opens in KOReader's own reader again.
+    Then the `.cbz` row, which is the one with device-wide consequences and
+    starts **on**. On a fresh install — no `provider` key in
+    `settings.reader.lua`, no `meguru_cbz_default_claimed` — the first start must
+    write `provider = { cbz = "meguru" }` and log `Meguru: is now the default
+    reader for .cbz`; **every** `.cbz` then opens as a Meguru book, including one
+    the FileManager has never seen. Then the half that matters more: turn the row
+    off, restart, and it must **stay off** — `cbz` gone from `provider` and
+    `meguru_cbz_default_claimed` true, so the claim is not made again. Guard the
+    other direction too: with `provider.cbz` set to something else (or a `.cbz`
+    opened once through "Open with… → Always open with this file"), the claim
+    must leave it alone, while the row still reads ticked for a per-file choice
+    and unticked for a file-type one that is not Meguru.
 
 13. **No destination dialog anywhere.** `▶ Meguru this series` with the wifi off
     still prompts for a connection and then opens, straight into the resume

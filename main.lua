@@ -1,6 +1,7 @@
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 
+local Association = require("meguru/association")
 local Defaults = require("meguru/doc/defaults")
 local Hook = require("meguru/hook")
 local MeguruDocument = require("meguru/doc/document")
@@ -53,9 +54,13 @@ end
 --- asks for it.
 ---
 --- A marker is claimed outright — nothing else can open one. The .cbz
---- registration is at the lowest weight, so MuPDF stays the default and this
---- engine is reached only through KOReader's own "Open with…" dialog. That is
---- the local-archive mode: same reading pipeline as a stream, no network.
+--- registration is at the lowest weight, so the *registration* alone leaves
+--- MuPDF the default and this engine reachable only through KOReader's own
+--- "Open with…" dialog. Being the reader for `.cbz` is a separate matter, and
+--- `meguru/association` is where it lives: a file-type association, claimed once
+--- on the first run and given back from the menu. The registration comes first
+--- because the claim looks the provider up by key and refuses to name one that
+--- is not registered.
 function Meguru:registerProvider()
     if provider_registered then
         return
@@ -67,6 +72,7 @@ function Meguru:registerProvider()
         MeguruDocument, 1)
     logger.info("Meguru: registered ." .. Paths.MARKER_EXT
         .. " and .cbz document providers")
+    Association.claimOnce()
 end
 
 --- A book is being opened and its settings have been read. Anything that was

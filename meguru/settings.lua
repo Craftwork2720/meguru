@@ -24,6 +24,13 @@ local DEFAULTS = {
     auto_next_item    = true,
     manga_order       = true,
 
+    -- Whether the one-time claim of `.cbz` by `meguru/association` has been made.
+    -- A record rather than a preference: it says "the offer was made", not "the
+    -- answer is yes", and it is what keeps turning the menu row off from being
+    -- undone on the next start. See that module for why the association itself
+    -- cannot answer this question.
+    cbz_default_claimed = false,
+
     -- The pixel budget for ONE decoded page — `meguru/doc/image`'s `cappedDim`
     -- reduces a page by area until it fits this. It bounds *retained*
     -- resolution, and with it everything downstream that reads the retained

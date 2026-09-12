@@ -118,14 +118,17 @@ night mode and page-turning behaviour as a streamed book. Use **Open with… →
 Meguru** from the file browser.
 
 > [!IMPORTANT]
-> To make Meguru the reader for **every** `.cbz` on the device, turn on
-> ***Settings*** → *Set Meguru as default reader for .cbz* in the Meguru menu.
-> The same thing can be set from the "Open with…" dialog by ticking *Always use
-> this engine for file type*.
+> **Meguru makes itself the reader for every `.cbz` on first run.** That is a
+> one-time claim: it happens when the plugin is installed, leaves a reader you
+> had already chosen alone, and never happens again.
 >
-> Either way, a `.cbz` you set individually — *Always use this engine for this
-> file* — keeps its own choice, and turning the menu row off gives the extension
-> back to KOReader's own reader.
+> To undo it — or to turn it back on — use ***Settings*** → *Set Meguru as
+> default reader for .cbz*. The same thing can be set from the "Open with…"
+> dialog by ticking *Always use this engine for file type*, and either way that
+> setting wins over the claim.
+>
+> A `.cbz` you set individually — *Always use this engine for this file* — keeps
+> its own choice regardless.
 
 ## What is actually on your disk
 

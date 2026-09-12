@@ -35,13 +35,13 @@ Two rules are worth stating, because breaking either is silent:
     row inside `Settings`, above the destination rows.
 --]]
 
-local DocumentRegistry = require("document/documentregistry")
 local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
+local Association = require("meguru/association")
 local Base = require("meguru/driver/base")
 local Marker = require("meguru/marker")
 local Open = require("meguru/ui/open")
@@ -158,67 +158,23 @@ local function destinationRows()
     }
 end
 
--- The `.cbz` row ----------------------------------------------------------------
-
---- The extension this row is about, and a name carrying it.
----
---- `setProvider` takes a *file*, not an extension: it reads the suffix off the
---- name it is handed and never touches anything behind it. So a name with no
---- file under it is the whole of what this row needs, and inventing one is the
---- only way to say "every .cbz" through that API.
-local CBZ_SAMPLE = "book.cbz"
-
---- Is Meguru the registered reader for `.cbz` here?
----
---- Asked of the registry rather than of `G_reader_settings` directly, because
---- `getAssociatedProviderKey` also insists the key names a provider that is
---- actually registered — so an entry left behind by a Meguru that has since
---- been uninstalled reads as nil, which is the honest answer.
-local function meguruReadsCbz()
-    return DocumentRegistry:getAssociatedProviderKey(CBZ_SAMPLE, true) == "meguru"
-end
-
 --- One row: hand `.cbz` to Meguru, or give the extension back.
 ---
---- Meguru registers `.cbz` at weight 1 — the lowest — so without this it is
---- reachable only through "Open with…". This writes the very file-type
---- association that dialog's "Always open with…" checkbox writes, and turning it
---- off is the same call with no provider, which is what "Reset default for …
---- files" does. Both land in `G_reader_settings["provider"]["cbz"]`, where
---- `DocumentRegistry:getProvider` reads them *before* it falls back to the
---- highest-weighted provider — which is the whole of why this works.
----
---- A per-file choice still wins over it: `getProvider` reads the book's sidecar
---- before the file type, so a `.cbz` opened once with "Always open with this
---- file" keeps that answer.
+--- The mechanism is not here. It is a file-type association KOReader already
+--- has a vocabulary for, and it is claimed on its own at first run, so
+--- `meguru/association` owns it and both callers share one answer. What is left
+--- in this file is a checkbox over it.
 local function defaultReaderRow()
     return {
         text = _("Set Meguru as default reader for .cbz"),
         help_text = _("Every .cbz on this device opens in Meguru instead of KOReader's own reader, until you turn this off. A file you set individually with “Open with…” keeps its own choice."),
         keep_menu_open = true,
-        checked_func = meguruReadsCbz,
+        checked_func = Association.holds,
         callback = function()
-            if meguruReadsCbz() then
-                DocumentRegistry:setProvider(CBZ_SAMPLE, nil, true)
+            if Association.holds() then
+                Association.release()
             else
-                -- `setProvider(file, nil, true)` means *reset*, so a provider
-                -- the registry has never heard of would silently turn the row
-                -- off while appearing to turn it on. Say so instead.
-                local provider = type(DocumentRegistry.getProviderFromKey) == "function"
-                    and DocumentRegistry:getProviderFromKey("meguru") or nil
-                if not provider then
-                    logger.warn("Meguru: the provider is not registered, so the "
-                        .. "default reader for .cbz cannot be set")
-                    return
-                end
-                DocumentRegistry:setProvider(CBZ_SAMPLE, provider, true)
-            end
-            -- `setProvider` mutates the table it read and never saves it — the
-            -- stock dialog gets away with that because something flushes later.
-            -- A setting the reader just changed gets written now.
-            local g = rawget(_G, "G_reader_settings")
-            if g then
-                g:flush()
+                Association.claim()
             end
         end,
     }
