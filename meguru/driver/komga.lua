@@ -149,6 +149,39 @@ function Komga.parseCatalogPage(feed, base_url, _ctx)
     return items
 end
 
+--- The series' own artwork, which the feed does not carry.
+---
+--- **Komga publishes no series image in OPDS at any level** — not on a series
+--- entry at `/series`, and not on the feed of `/series/{id}`, whose only links
+--- are `self`, `start` and `next`. The images there belong to *books*. So
+--- without this hook `Base.coverFromFeed` falls through to the entry's artwork,
+--- and a value stored once per series is taken from whichever volume happened to
+--- be opened first — a different picture depending on the order a reader taps.
+---
+--- The real one is in Komga's REST surface, and it is the same server the rest
+--- of this driver already assumes: `/api/v1/series/{id}/thumbnail`, a JPEG.
+--- Smaller than a volume's cover (211x300 against 844x1200), and worth it for
+--- being *the* series' picture rather than *a* volume's.
+---
+--- Everything needed is already in `base_url`, which is why this takes no `ctx`.
+---
+--- **The OPDS path is rewritten, not the origin taken.** A Komga behind a
+--- reverse proxy with a path prefix keeps that prefix on both of its surfaces
+--- (`http://host/komga/opds/…` and `http://host/komga/api/v1/…`), so rebuilding
+--- from `scheme://host:port` would drop it and the cover would 404 — the same
+--- trap `Komga.catalogURL` documents for `/catalog`, one surface over. Keeping
+--- whatever precedes `/opds/v1.2/` keeps the prefix.
+function Komga.seriesCover(_feed, _entry, base_url)
+    if type(base_url) ~= "string" or base_url == "" then
+        return nil
+    end
+    local prefix, remote_id = base_url:match("^(.*)/opds/v1%.2/series/([^/?]+)")
+    if not prefix or not remote_id then
+        return nil
+    end
+    return string.format("%s/api/v1/series/%s/thumbnail", prefix, remote_id)
+end
+
 --- The series name from the series feed's own `<title>`, which Komga writes as
 --- the series title and nothing else.
 ---

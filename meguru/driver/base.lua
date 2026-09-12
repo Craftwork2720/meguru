@@ -230,12 +230,25 @@ local OPDS_THUMBNAIL_REL = "http://opds-spec.org/image/thumbnail"
 
 --- Artwork that can stand in as a series cover, as an absolute URL.
 ---
---- The feed is asked first: a series feed's own image is the *series*' artwork.
---- Only when it has none does the entry's image serve, which is the only thing
---- a chapter-level feed can offer — the chapter's own cover, usually the same
---- artwork, and better than leaving the book with no cover at all. Callers
---- store the result with COALESCE so a later, better value always wins.
-function Base.coverFromFeed(feed, entry, base_url)
+--- **A driver whose server publishes a series cover the feed cannot express
+--- gets first say**, through the optional `seriesCover(feed, entry, base_url)`
+--- hook. Komga is the reason it exists: its series feed carries no image at any
+--- level, so the fallback below reaches for the *entry's* artwork — a volume's
+--- cover, which is a different picture for every volume, while this answer is
+--- stored once per series. A hook that returns nothing, or a driver without one,
+--- falls straight through to the feed.
+---
+--- Then the feed is asked: a series feed's own image is the *series*' artwork —
+--- which is what Kavita and Suwayomi publish at feed level. Only when there is
+--- none does the entry's image serve, which is the only thing a chapter-level
+--- feed can offer, and better than leaving the book with no cover at all.
+function Base.coverFromFeed(feed, entry, base_url, driver)
+    if driver and driver.seriesCover then
+        local url = driver.seriesCover(feed, entry, base_url)
+        if type(url) == "string" and url ~= "" then
+            return url
+        end
+    end
     local link = Base.link(feed, OPDS_IMAGE_REL, OPDS_THUMBNAIL_REL)
         or Base.link(entry, OPDS_IMAGE_REL, OPDS_THUMBNAIL_REL)
     if not link then
@@ -334,6 +347,13 @@ end
 --   catalogURL(base_url, remote_id, ctx)  -> string
 --   parseCatalogPage(feed, base_url, ctx) -> { item, ... }
 --   seriesName(feed, entry, ctx)          -> string
+--
+-- Optional, and only one so far:
+--
+--   seriesCover(feed, entry, base_url)    -> url | string, or nil to defer
+--     For a server whose series artwork is not in the feed at all. Komga's is
+--     in REST, and without this the feed fallback would key the series to one
+--     volume's cover. Asked by `Base.coverFromFeed`, before the feed.
 --
 -- `ctx` carries `lang` — the translation the reader was browsing in, which only
 -- Suwayomi selects on — and `url`, the URL of the feed the entry was read out

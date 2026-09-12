@@ -20,6 +20,22 @@ Settings.UNSET = UNSET
 local DEFAULTS = {
     marker_dir        = UNSET,        -- base folder for new markers; unset => home folder
     marker_server_dir = false,        -- nest markers under a per-catalog folder
+
+    -- Whether a series folder gets a `.cover.jpg` beside its markers, per server.
+    --
+    -- One key per kind rather than a table, because everything here is read and
+    -- written a scalar at a time and `DEFAULTS` has to name the key it is the
+    -- default *for*: `Settings.get` warns and returns nil for a name it does not
+    -- know. `meguru/seriescover` owns the list of kinds and asks for these by
+    -- name, so a new driver adds a line here and one there.
+    --
+    -- On by default, all three: writing the file is the feature, and a reader
+    -- who does not want it in a given folder says so in the menu. See
+    -- `meguru/seriescover` for what the file is and is not.
+    folder_cover_suwayomi = true,
+    folder_cover_kavita   = true,
+    folder_cover_komga    = true,
+
     hide_status_bar   = true,
     auto_next_item    = true,
     manga_order       = true,

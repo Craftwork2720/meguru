@@ -46,6 +46,7 @@ local T = require("ffi/util").template
 
 local Association = require("meguru/association")
 local Base = require("meguru/driver/base")
+local SeriesCover = require("meguru/seriescover")
 local Marker = require("meguru/marker")
 local Open = require("meguru/ui/open")
 local Reader = require("meguru/ui/reader")
@@ -186,12 +187,49 @@ local function defaultReaderRow()
     }
 end
 
+--- One row: which servers get a `.cover.jpg` in their series folders.
+---
+--- A submenu rather than one row per server, and it is the only place below
+--- `Settings` that nests — see `settingsRow` for what that costs and why it is
+--- paid here. Three flat rows would take `Settings` from six entries to nine for
+--- a single feature, and a reader looking for "covers" would find three rows
+--- that each name a server instead of one that names the thing.
+---
+--- The rows come from `SeriesCover.KINDS`, so the list of servers lives in the
+--- module that has to know it anyway. A driver added there gets a row here and a
+--- default in `meguru/settings`, and nothing in this file changes.
+local function coverRow()
+    local rows = {}
+    for _, kind in ipairs(SeriesCover.KINDS) do
+        local key = SeriesCover.settingFor(kind)
+        rows[#rows + 1] = {
+            -- The name of a server, shown as it spells itself. Not wrapped for
+            -- translation: it is a proper noun, and a translated one would name
+            -- a different product.
+            text = kind:sub(1, 1):upper() .. kind:sub(2),
+            keep_menu_open = true,
+            checked_func = function() return Settings.get(key) end,
+            callback = function() Settings.toggle(key) end,
+        }
+    end
+    return {
+        text = _("Covers for folders"),
+        help_text = _("Leaves a .cover.jpg in a series folder, once, for programs other than KOReader — a file browser, a backup, another reader. KOReader itself does not draw folder covers. Turning a server off stops new files and leaves the ones already written."),
+        sub_item_table = rows,
+    }
+end
+
 --- The `Settings` row both surfaces hang their preferences on.
 ---
---- One level of nesting, and only one. The rows it holds used to sit in the same
---- flat list as everything else, with `separator` lines claiming that some of
---- them belonged together; a line can show that a group exists but not what it
---- is, and `Settings` says it.
+--- One level of nesting, and only one — with a single exception, `Covers for
+--- folders`, whose three switches would otherwise be three rows in a list that
+--- is about preferences in general rather than about covers. The rule is what
+--- keeps the menu navigable; the exception is a group of its own with a name
+--- that says so, which is the thing the rule is protecting.
+---
+--- The rows it holds used to sit in the same flat list as everything else, with
+--- `separator` lines claiming that some of them belonged together; a line can
+--- show that a group exists but not what it is, and `Settings` says it.
 ---
 --- Both surfaces get it, including the FileManager where it holds only three
 --- rows. That is a deliberate cost — a level of nesting for three taps — bought
@@ -220,6 +258,7 @@ end
 --- menu order in `settings/` then means the same thing on both surfaces.
 function Menu.addFileManagerItems(plugin, menu_items)
     local settings = destinationRows()
+    settings[#settings + 1] = coverRow()
     settings[#settings + 1] = defaultReaderRow()
 
     menu_items.meguru = {
@@ -380,6 +419,7 @@ function Menu.addReaderItems(plugin, menu_items)
     for _, row in ipairs(destinationRows()) do
         settings[#settings + 1] = row
     end
+    settings[#settings + 1] = coverRow()
     settings[#settings + 1] = defaultReaderRow()
 
     rows[#rows + 1] = settingsRow(settings)

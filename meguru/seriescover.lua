@@ -17,39 +17,68 @@ in `device.lua`, for the screensaver. Whoever came here hoping for folder covers
 in the file browser should know that is a different feature, in a different
 program.
 
-**Suwayomi only, and that is a deliberate exception rather than an oversight.**
-Kavita and Komga publish a real JPEG for a series and the same call would cover
-them for free; they are left alone because this was asked for one server at a
-time and a rule that quietly grew to three would be a rule nobody chose. The
-gate is one line — see `SeriesCover.KIND` — and moving it is a decision, not a
-bug fix.
+**A reader chooses which servers this runs for**, in ⋮ → Meguru → Settings →
+`Covers for folders`, one switch per server. `SeriesCover.KINDS` is the list,
+and it answers two questions at once: who may be written for at all, and which
+settings keys to ask. On by default for all three — writing the file is the
+feature, and someone who does not want it says so there.
+
+**What the bytes are is the server's business, and the three disagree.** The
+file is named `.cover.jpg` whatever arrives:
+
+| server | where the series artwork comes from | what arrives |
+|---|---|---|
+| Suwayomi | feed-level image on the chapter list | WebP 400x600 |
+| Kavita | feed-level image on the series feed | WebP 639x908 |
+| Komga | `driver.seriesCover` → REST, since OPDS has none | JPEG 211x300 |
+
+So the name lies about two of the three. Chosen knowingly: most readers sniff
+the header and are fine, and the ones that trust the extension are the price.
+Converting is not an option this plugin has — MuPDF here can *read* WebP but
+KOReader carries no JPEG encoder — so a real fix would mean writing one, which
+is a different job.
 
 Written once per series and never rewritten: the file is made only when it is
 absent, and nothing in this plugin removes it. That is the whole of "once per
 series", and it is why the check is `FS.exists` rather than a remembered flag —
 a flag would have to live somewhere, and there is nowhere left to put one.
-
-What the bytes are is Suwayomi's business and it says **WebP** — 400x600, for
-every series, with `Accept: image/jpeg` ignored and `?size=` ignored. The file is
-named `.cover.jpg` anyway, which is a name that lies about its contents, chosen
-knowingly: most readers sniff the header and are fine, and the ones that trust
-the extension are the price. Converting it is not an option this plugin has —
-MuPDF here can *read* WebP but KOReader carries no JPEG encoder — so a real fix
-would mean writing one, which is a different job.
+Turning a server off does not remove what it already wrote; it stops new ones.
 --]]
 
 local logger = require("logger")
 
 local FS = require("meguru/fs")
 local Net = require("meguru/net")
+local Settings = require("meguru/settings")
 local Sources = require("meguru/sources")
 
 local SeriesCover = {}
 
 SeriesCover.FILENAME = ".cover.jpg"
 
---- The one server this runs for. See the module docblock.
-SeriesCover.KIND = "suwayomi"
+--- The servers this may run for, and the list `ui/menu` builds its rows from.
+---
+--- Closed on purpose. A kind that is not here is not asked about its setting —
+--- `Settings.get` warns and returns nil for a name it does not know, so a driver
+--- outside this list would log a complaint on every open if the gate went
+--- straight to the key.
+SeriesCover.KINDS = { "suwayomi", "kavita", "komga" }
+
+--- The settings key a kind's switch is stored under.
+local function settingFor(kind)
+    return "folder_cover_" .. kind
+end
+SeriesCover.settingFor = settingFor
+
+--- Whether this kind is both known and switched on.
+local function wanted(kind)
+    for _, known in ipairs(SeriesCover.KINDS) do
+        if known == kind then
+            return Settings.get(settingFor(kind)) and true or false
+        end
+    end
+    return false
+end
 
 --- Whether there is a network to fetch from.
 ---
@@ -77,7 +106,7 @@ function SeriesCover.save(marker_path, desc)
     if type(desc) ~= "table" or type(marker_path) ~= "string" then
         return nil
     end
-    if desc.server_kind ~= SeriesCover.KIND then
+    if not wanted(desc.server_kind) then
         return nil
     end
     local url = desc.series_cover_url

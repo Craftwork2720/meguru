@@ -95,13 +95,26 @@ by a driver that returns nothing useful.
 
 **Nothing is written to disk but markers** — and one exception, named here
 because the sentence above it is the kind that gets quoted: `meguru/seriescover`
-leaves a `.cover.jpg` in a Suwayomi series folder, for whatever *outside*
-KOReader reads that folder. It is not a cache and nothing reads it back; KOReader
-will not display it either (`coverbrowser` draws a directory as a name and a
-count, and never looks for a file beside a document), and the plugin never
-removes it. **Suwayomi only**, and that is an exception rather than a rule —
-Kavita and Komga publish real JPEGs and the same call would cover them, but a
-rule that quietly grew would be one nobody chose.
+leaves a `.cover.jpg` in a series folder, for whatever *outside* KOReader reads
+it. It is not a cache and nothing reads it back; KOReader will not display it
+either (`coverbrowser` draws a directory as a name and a count, and never looks
+for a file beside a document), and the plugin never removes it — turning a server
+off in the menu stops new files and leaves what is already written.
+
+**The file's name is not its format, and the three servers disagree** — worth
+knowing before someone "fixes" the extension:
+
+| server | where the series artwork comes from | what arrives |
+|---|---|---|
+| Suwayomi | feed-level image on the chapter list | WebP 400x600 |
+| Kavita | feed-level image on the series feed | **WebP** 639x908 |
+| Komga | `driver.seriesCover` → REST, because OPDS has none | JPEG 211x300 |
+
+Kavita's *volume* cover is a JPEG and its *series* cover is not — an earlier
+version of this document and of `seriescover.lua` got that backwards and used it
+to justify a Suwayomi-only rule. Which servers get the file is now the reader's
+choice, in ⋮ → Meguru → Settings → `Covers for folders`, one switch per server,
+all on by default.
 
 Leaving that aside: there is no page cache, no cover cache and no database.
 Pages live in a small RAM LRU, a cover is refetched on every call, and the panel
@@ -610,7 +623,18 @@ catalogURL(base_url, remote_id, ctx)  -> the canonical, paginated feed URL
 parseCatalogPage(feed, base_url, ctx) -> normalised items
 seriesName(feed, entry, ctx)
 resolveStream(item, fetch, ctx)       -> template, count
+
+seriesCover(feed, entry, base_url)    -> url, or nil to defer   [optional]
 ```
+
+`seriesCover` is the one optional hook, and it exists because one server
+publishes its series artwork somewhere the feed cannot reach: **Komga's series
+feed carries no image at any level**, so the generic fallback would key a
+series' artwork to whichever of its volumes happened to be opened first. A
+driver that returns nothing — or has no such hook — falls through to the feed,
+which is what Kavita and Suwayomi want, since both publish the series image at
+feed level. It is asked by `Base.coverFromFeed`, whose fourth argument is the
+driver.
 
 `catalogURL` is a pure function of the server and the series id and is **never**
 derived from whatever the user happened to be browsing. Kavita's History / On Deck /
@@ -1238,12 +1262,19 @@ Invariants when touching these rows:
   so both fields are usable in these rows. `text_func` renders on either, which is why
   the destination rows carry their state in the text rather than in a `mandatory` value
   slot.
-- **A `Settings` submenu, one level deep, on both surfaces** — the reader's holds six
-  rows (auto-open, panel zoom, hide status bar, save folder, per-server subfolder,
-  default reader for `.cbz`), the FileManager's the three that are not about a book
+- **A `Settings` submenu on both surfaces** — the reader's holds seven rows (auto-open,
+  panel zoom, hide status bar, save folder, per-server subfolder, `Covers for folders`,
+  default reader for `.cbz`), the FileManager's the four that are not about a book
   already open. The FileManager's depth is a deliberate cost, paid so the two menus
-  read the same. Nothing nestles deeper, and no `sorting_hint` exists below the
-  top-level `meguru` item — the sorter only ever orders a page's own rows.
+  read the same. No `sorting_hint` exists below the top-level `meguru` item — the
+  sorter only ever orders a page's own rows.
+- **`Covers for folders` is the one thing below `Settings`, and it is an exception
+  rather than a precedent.** Its three rows are switches for one feature, and as flat
+  rows they would take `Settings` from six entries to nine while naming servers instead
+  of the thing they belong to. The level is bought back by the row above them saying
+  what the group *is* — which is the whole job `Settings` does one level up, and the
+  reason "one level deep" existed. A second such submenu should have to make the same
+  argument.
 - **The separator is *under* the row that carries it** (`touchmenu.lua:714`), and is
   dropped when that row is last on a page (`touchmenu.lua:713`) — so a separator is a
   hint about the list, never a guarantee about the screen. Two lines split `Settings`

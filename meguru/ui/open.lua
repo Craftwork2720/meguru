@@ -523,7 +523,10 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
         server_kind      = kind,
         series_remote_id = found.series_remote_id,
         series_name      = series_name,
-        series_cover_url = Base.coverFromFeed(feed, raw_entry, feed_url or stream.href),
+        -- Handed the driver so a server whose series artwork is not in the feed
+        -- at all can supply it — see `driver.seriesCover`. Komga is that server.
+        series_cover_url = Base.coverFromFeed(feed, raw_entry,
+            feed_url or stream.href, driver),
         item_key         = item.item_key,
         lang             = ctx and ctx.lang,
     }
@@ -1168,7 +1171,8 @@ function Open.openFirstUnread(browser, info)
         server_kind      = info.kind,
         series_remote_id = info.remote_id,
         series_name      = series_name,
-        series_cover_url = Base.coverFromFeed(info.feed, info.first_entry, info.feed_url),
+        series_cover_url = Base.coverFromFeed(info.feed, info.first_entry,
+            info.feed_url, info.driver),
         lang             = info.ctx and info.ctx.lang,
     }
 
