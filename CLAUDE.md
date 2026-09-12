@@ -1245,11 +1245,30 @@ Two invariants when touching these rows:
   (Meguru used to have three plain-`Menu` surfaces of its own — library, series,
   servers — and with them went the reason `separator` was ever unsafe here.)
 - **A `Settings` submenu, one level deep, on both surfaces** — the reader's holds
-  four rows (auto-open, hide status bar, save folder, per-server subfolder), the
-  FileManager's the two destination rows. The FileManager's depth is a deliberate
-  cost, paid so the two menus read the same. Nothing nestles deeper, and no
-  `sorting_hint` exists below the top-level `meguru` item — the sorter only ever
-  orders a page's own rows.
+  five rows (auto-open, hide status bar, save folder, per-server subfolder,
+  default reader for `.cbz`), the FileManager's the three that are not about a
+  book already open. The FileManager's depth is a deliberate cost, paid so the
+  two menus read the same. Nothing nestles deeper, and no `sorting_hint` exists
+  below the top-level `meguru` item — the sorter only ever orders a page's own
+  rows.
+- **"Set Meguru as default reader for .cbz" writes KOReader's own file-type
+  association, and the mechanism is worth knowing before touching it.** Meguru
+  registers `cbz` at **weight 1** (`main.lua`), the lowest, so without this row
+  it is reachable only through "Open with…". The row calls
+  `DocumentRegistry:setProvider(name, provider, true)`, which is the same call
+  the stock dialog's "Always open with…" checkbox makes, and stores
+  `G_reader_settings["provider"]["cbz"] = "meguru"`. That association is read by
+  `DocumentRegistry:getProvider` **before** it falls back to the highest-weighted
+  provider (`documentregistry.lua:91-101`) — which is the whole of why a
+  weight-1 provider can win. Turning the row off is the same call with no
+  provider, which is what the dialog's "Reset default for … files" does.
+  Two traps: the API takes a **file**, not an extension (it reads the suffix off
+  the name, so the row passes a name with no file behind it), and
+  `setProvider(file, nil, true)` means *reset* — so a provider the registry does
+  not know yet would silently turn the row off while appearing to turn it on,
+  which is why the row looks it up first and refuses loudly instead. A per-file
+  choice made in "Open with…" still wins: `getAssociatedProviderKey` reads the
+  sidecar before the file type.
 - **The separator is *under* the row that carries it** (`touchmenu.lua:714`), and
   is dropped when that row is last on a page (`touchmenu.lua:713`) — so a
   separator is a hint about the list, never a guarantee about the screen. Two
@@ -1595,13 +1614,23 @@ Each step must pass before the next:
     or a server list.
     Inside `Settings`, on both surfaces: `Auto-open next in series` (reader only,
     and only when the marker names a series), `Hide status bar`, a line,
-    `Main folder for .meguru streams: …`, `Subfolder per server`. The folder row
-    opens the picker and shows the new path afterwards; the toggle's checkbox
-    survives a restart and so does the folder; a new book lands in
-    `<base>/<server>/<series>` when the toggle is on. Holding `Auto-open next in
-    series` or `Subfolder per server` shows its `help_text` — the other rows have
-    none, and that one line is the only separator left. With a PDF open there is
-    no Meguru row and nothing logs `menu id not found`.
+    `Main folder for .meguru streams: …`, `Subfolder per server`,
+    `Set Meguru as default reader for .cbz`. The folder row opens the picker and
+    shows the new path afterwards; the toggle's checkbox survives a restart and
+    so does the folder; a new book lands in `<base>/<server>/<series>` when the
+    toggle is on. Holding `Auto-open next in series`, `Subfolder per server` or
+    the `.cbz` row shows its `help_text` — the others have none, and that one
+    line is the only separator left. With a PDF open there is no Meguru row and
+    nothing logs `menu id not found`.
+
+    Then the `.cbz` row, which is the one with device-wide consequences: turn it
+    on, close the menu and restart, and **every** `.cbz` opens as a Meguru book
+    — including one the FileManager has never seen. `settings.reader.lua` must
+    now hold `provider = { cbz = "meguru" }`. Set a single file's reader through
+    "Open with… → Always open with this file" and confirm the row still reads
+    ticked but that one file opens the other way — the per-file choice is read
+    first. Turn the row off: `cbz` disappears from `provider` entirely and the
+    next `.cbz` opens in KOReader's own reader again.
 
 13. **No destination dialog anywhere.** `▶ Meguru this series` with the wifi off
     still prompts for a connection and then opens, straight into the resume

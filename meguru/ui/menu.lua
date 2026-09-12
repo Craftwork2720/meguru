@@ -1,23 +1,23 @@
 --[[--
 The two menu surfaces Meguru adds.
 
-Both carry the same two rows deciding where a *new* book is written — the
-folder, and whether a per-catalog subfolder is added. They are preferences, and
-they used to be a dialog asked at every single open; a value that changes once
-does not belong in the path of a tap.
+Both carry the same `Settings` submenu, which is every preference the plugin has:
+where a *new* book is written (the folder, and whether a per-server subfolder is
+added), whether Meguru is the reader for `.cbz`, and — on the reader only — the
+two reading-behaviour switches. They are preferences, and they used to be a
+dialog asked at every single open; a value that changes once does not belong in
+the path of a tap.
 
 The **reader** gets a ⋮ "Meguru" submenu, and only while a Meguru book is open.
-It holds the series-navigation rows and a `Settings` submenu, and the submenu
-holds the four preferences: the two plugin-wide reading-behaviour switches
-(auto-open the next item, hide the status bar) and the two destination rows. The
-per-book *rendering* choices — crop, fit, reading direction — deliberately live
-in the bottom ConfigDialog instead, where every other stock per-book option
-lives; see `ui/reader.lua`.
+It holds the series-navigation rows and a `Settings` submenu holding all five
+rows. The per-book *rendering* choices — crop, fit, reading direction —
+deliberately live in the bottom ConfigDialog instead, where every other stock
+per-book option lives; see `ui/reader.lua`.
 
 The **FileManager** gets the same `Settings` submenu and nothing else, which for
-it is the two destination rows. It used to hold a library view and a
-server-administration screen; both are gone, along with the manual server-kind
-override the latter existed for.
+it is the three rows that are not about reading a book that is already open. It
+used to hold a library view and a server-administration screen; both are gone,
+along with the manual server-kind override the latter existed for.
 
 Two rules are worth stating, because breaking either is silent:
 
@@ -35,6 +35,7 @@ Two rules are worth stating, because breaking either is silent:
     row inside `Settings`, above the destination rows.
 --]]
 
+local DocumentRegistry = require("document/documentregistry")
 local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
@@ -157,6 +158,72 @@ local function destinationRows()
     }
 end
 
+-- The `.cbz` row ----------------------------------------------------------------
+
+--- The extension this row is about, and a name carrying it.
+---
+--- `setProvider` takes a *file*, not an extension: it reads the suffix off the
+--- name it is handed and never touches anything behind it. So a name with no
+--- file under it is the whole of what this row needs, and inventing one is the
+--- only way to say "every .cbz" through that API.
+local CBZ_SAMPLE = "book.cbz"
+
+--- Is Meguru the registered reader for `.cbz` here?
+---
+--- Asked of the registry rather than of `G_reader_settings` directly, because
+--- `getAssociatedProviderKey` also insists the key names a provider that is
+--- actually registered — so an entry left behind by a Meguru that has since
+--- been uninstalled reads as nil, which is the honest answer.
+local function meguruReadsCbz()
+    return DocumentRegistry:getAssociatedProviderKey(CBZ_SAMPLE, true) == "meguru"
+end
+
+--- One row: hand `.cbz` to Meguru, or give the extension back.
+---
+--- Meguru registers `.cbz` at weight 1 — the lowest — so without this it is
+--- reachable only through "Open with…". This writes the very file-type
+--- association that dialog's "Always open with…" checkbox writes, and turning it
+--- off is the same call with no provider, which is what "Reset default for …
+--- files" does. Both land in `G_reader_settings["provider"]["cbz"]`, where
+--- `DocumentRegistry:getProvider` reads them *before* it falls back to the
+--- highest-weighted provider — which is the whole of why this works.
+---
+--- A per-file choice still wins over it: `getProvider` reads the book's sidecar
+--- before the file type, so a `.cbz` opened once with "Always open with this
+--- file" keeps that answer.
+local function defaultReaderRow()
+    return {
+        text = _("Set Meguru as default reader for .cbz"),
+        help_text = _("Every .cbz on this device opens in Meguru instead of KOReader's own reader, until you turn this off. A file you set individually with “Open with…” keeps its own choice."),
+        keep_menu_open = true,
+        checked_func = meguruReadsCbz,
+        callback = function()
+            if meguruReadsCbz() then
+                DocumentRegistry:setProvider(CBZ_SAMPLE, nil, true)
+            else
+                -- `setProvider(file, nil, true)` means *reset*, so a provider
+                -- the registry has never heard of would silently turn the row
+                -- off while appearing to turn it on. Say so instead.
+                local provider = type(DocumentRegistry.getProviderFromKey) == "function"
+                    and DocumentRegistry:getProviderFromKey("meguru") or nil
+                if not provider then
+                    logger.warn("Meguru: the provider is not registered, so the "
+                        .. "default reader for .cbz cannot be set")
+                    return
+                end
+                DocumentRegistry:setProvider(CBZ_SAMPLE, provider, true)
+            end
+            -- `setProvider` mutates the table it read and never saves it — the
+            -- stock dialog gets away with that because something flushes later.
+            -- A setting the reader just changed gets written now.
+            local g = rawget(_G, "G_reader_settings")
+            if g then
+                g:flush()
+            end
+        end,
+    }
+end
+
 --- The `Settings` row both surfaces hang their preferences on.
 ---
 --- One level of nesting, and only one. The rows it holds used to sit in the same
@@ -189,10 +256,8 @@ end
 --- a document. Reusing the name is better than inventing a second one: a saved
 --- menu order in `settings/` then means the same thing on both surfaces.
 function Menu.addFileManagerItems(plugin, menu_items)
-    local settings = {}
-    for _, row in ipairs(destinationRows()) do
-        settings[#settings + 1] = row
-    end
+    local settings = destinationRows()
+    settings[#settings + 1] = defaultReaderRow()
 
     menu_items.meguru = {
         text = _("Meguru"),
@@ -321,12 +386,13 @@ function Menu.addReaderItems(plugin, menu_items)
             plugin:onMeguruHideStatusBar(on)
         end,
     }
-    -- The same two settings the FileManager's submenu carries, for the same
-    -- reason they are there: they decide where the *next* book lands, and a
+    -- The same three rows the FileManager's submenu carries, for the same reason
+    -- they are there: they decide where a book lands and what opens it, and a
     -- reader who wants to change that should not have to close the book first.
     for _, row in ipairs(destinationRows()) do
         settings[#settings + 1] = row
     end
+    settings[#settings + 1] = defaultReaderRow()
 
     rows[#rows + 1] = settingsRow(settings)
 

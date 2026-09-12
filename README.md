@@ -88,7 +88,8 @@ The reader's **⋮ → Tools → Meguru** menu holds the rest:
   fetches the series' chapter list and opens it;
 - ***Settings*** — the same submenu the file browser shows, and the only place
   any of these live: *Auto-open next in series* (opens the next chapter by itself
-  when you finish one), *Hide status bar*, and the two folder rows.
+  when you finish one), *Hide status bar*, the two folder rows, and
+  *Set Meguru as default reader for .cbz* (below).
 
 ## Where to start reading
 
@@ -117,8 +118,14 @@ night mode and page-turning behaviour as a streamed book. Use **Open with… →
 Meguru** from the file browser.
 
 > [!IMPORTANT]
-> You can pick *Always use this engine for filetype* to make Meguru your default
-> CBZ reader, or just once without changing your default.
+> To make Meguru the reader for **every** `.cbz` on the device, turn on
+> ***Settings*** → *Set Meguru as default reader for .cbz* in the Meguru menu.
+> The same thing can be set from the "Open with…" dialog by ticking *Always use
+> this engine for file type*.
+>
+> Either way, a `.cbz` you set individually — *Always use this engine for this
+> file* — keeps its own choice, and turning the menu row off gives the extension
+> back to KOReader's own reader.
 
 ## What is actually on your disk
 
