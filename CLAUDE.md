@@ -1030,6 +1030,14 @@ reader sees the same panel twice with slightly different crops. The cut cannot p
 that: its leaves are disjoint by construction. That is the whole argument, and it is
 why "the reference's live detector" is not by itself a reason to port something — the
 reference's live detector is whatever its authors last switched on, not a verdict.
+
+That argument was once contested from the other side, and the contest is settled.
+`05790d1` replaced the cut with the component detector on the grounds that a genuinely
+white band *inside* a panel was being cut in two; `9c9f042` put the cut back, on the
+grounds that the component detector showed the same panel twice — and neither commit
+had a device reading behind it. The cut has since been exercised on a device and stands,
+so **the thresholds are the part to keep and the algorithm is not the part to swap**.
+Anyone reaching for the component pipeline again is re-litigating a settled question.
 Also not ported: the comic border-stroke plane (`segment_border_split`), off in 1.3's
 own defaults and for a good reason — at map resolution a shared border between two
 bled panels and a black line drawn *through* one panel produce byte-identical maps, so
@@ -1534,8 +1542,8 @@ Each step must pass before the next:
     wifi off, open a folder of markers: no cover is fetched at all, and the mosaic fills
     in on the next browse once the wifi is back.
 20. **The panel detector.** Five pages, and the first two are the failures this detector
-    was chosen for — see the open item below, which is why they are worth running before
-    anything else in this area is touched.
+    was chosen for — the two whose outcome once decided which detector lived here, so
+    they are worth re-running before anything in this area is touched again.
 
     | page | expected |
     |---|---|
@@ -1563,17 +1571,6 @@ Each step must pass before the next:
 
 ## Known open items
 
-- **The panel detector on the white-band page is unresolved, and it is the first thing
-  to settle before touching anything in the panel area.** The live detector is the
-  recursive cut described above. `05790d1` replaced it with a connected-component
-  detector precisely because a genuinely white band *inside* a panel was being cut in
-  two — and `9c9f042` put the cut back, on the argument that the connected-component
-  detector showed the same panel twice. The two commits contradict each other, and only
-  one of them was ever read off a device. Checklist item 20 still asserts that the
-  white-band page comes back as **one** panel; that expectation has never been confirmed
-  against the live detector. Run that page first, and if it does come back cut in two,
-  the choice is between the shear ladder's numbers and going back to components — not
-  another round of threshold "tidying".
 - **A page is decoded at its file's stated density, not at its pixels.**
   `renderMuPDFPage` sizes the render from `page:getSize()`, which is `fz_bound_page` —
   points at 72 dpi — and for an *image document* MuPDF computes that box as `pixels x 72

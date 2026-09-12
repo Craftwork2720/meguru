@@ -444,11 +444,12 @@ end
 --
 -- What the one detector *is* — the recursive cut, and why its thresholds come
 -- from 1.3 rather than from the reference's later version — is documented in
--- the module itself and in CLAUDE.md. One caveat belongs here too, because this
--- is where a reader of the two entry points will be looking for it: whether the
--- cut is the right answer for a panel carrying a full-width white band *inside
--- its own drawing* is an **open question, not a settled one**. See "Known open
--- items" in CLAUDE.md before changing anything about the detector.
+-- the module itself and in CLAUDE.md. `05790d1` once replaced this cut with a
+-- connected-component detector, on the grounds that a panel carrying a
+-- full-width white band inside its own drawing was coming back cut in two;
+-- `9c9f042` put the cut back. The cut has since been exercised on a device and
+-- stands, so that contest is settled — the thresholds are the part not to move,
+-- and the detector is not the part to swap.
 --
 -- Coordinates: ReaderView hands the touch in *full native* page space — the
 -- space getNativePageDimensions/getPageDims report. A margin crop only makes
