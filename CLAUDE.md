@@ -1224,13 +1224,17 @@ Two invariants when touching these rows:
   every other plugin's row with it. `ui/menu.lua` picks it in one place
   (`showUnderTools`, which falls back to no hint rather than a crash), and the
   hint is `"tools"`, which resolves unconditionally in both order tables.
-- **A hint alone does not put a row at the top of its page.** It is appended to
-  the end of that page's row list — for `tools`, below `more_tools`, i.e. below
-  Developer options. Landing above them means naming the id in that page's order
-  list, which is what `showUnderTools` does for both surfaces. That is also the
-  mechanism core ships (`ui/plugin/insert_menu.lua`), though it targets
+- **A hint alone does not place a row at all.** It is appended to the end of
+  that page's row list — for `tools`, below `more_tools`, i.e. below Developer
+  options. Naming the id in that page's order list is what decides otherwise,
+  and `showUnderTools` does it for both surfaces, putting `meguru` **directly
+  below `profiles`** (or at the top where a build has no such id). That is also
+  the mechanism core ships (`ui/plugin/insert_menu.lua`), though it targets
   `more_tools`, the position being avoided here. Both edits are safe: an order id
   with no matching item is skipped by the sorter, and a duplicate insert is inert.
+  Position is named by neighbour rather than by index on purpose — everything
+  above this row is whatever the user has enabled, so an index would land
+  somewhere different on the next device.
 - **`separator` and `checked_func` are `TouchMenu`-only; `mandatory` is
   plain-`Menu`-only.** Both menus Meguru registers are `TouchMenu`s on a touch
   device — the reader ⋮ menu and the FileManager's, which falls back to the plain
@@ -1240,20 +1244,23 @@ Two invariants when touching these rows:
   rows carry their state in the text rather than in a `mandatory` value slot.
   (Meguru used to have three plain-`Menu` surfaces of its own — library, series,
   servers — and with them went the reason `separator` was ever unsafe here.)
-- **The reader's submenu is three groups split by two `separator` lines** — where
-  to navigate, how reading behaves, where a new book lands. The lines are the
-  only grouping: there are no caption rows, and a `separator` sits *under* the
-  row that carries it (`touchmenu.lua:714`), which is why the "previous chapter"
-  row and the `Hide status bar` row wear one and the others do not. It is
-  dropped when its row is the last on a page (`touchmenu.lua:713`), so a
-  separator is a hint about the list rather than a guarantee about the screen.
-- **The FileManager has one `Meguru` submenu, not flat rows**, and it carries
-  nothing but the two destination rows (save folder, per-server subfolder) —
-  the same two the reader's carries. Both surfaces use the key `meguru`, which is
-  safe because the two `menu_items` tables are per-surface and never shared, and
-  `Meguru:addToMainMenu` dispatches on whether a document is open — so only one is
-  ever written. A saved menu order in `settings/` then means the same thing on
-  both.
+- **A `Settings` submenu, one level deep, on both surfaces** — the reader's holds
+  four rows (auto-open, hide status bar, save folder, per-server subfolder), the
+  FileManager's the two destination rows. The FileManager's depth is a deliberate
+  cost, paid so the two menus read the same. Nothing nestles deeper, and no
+  `sorting_hint` exists below the top-level `meguru` item — the sorter only ever
+  orders a page's own rows.
+- **The separator is *under* the row that carries it** (`touchmenu.lua:714`), and
+  is dropped when that row is last on a page (`touchmenu.lua:713`) — so a
+  separator is a hint about the list, never a guarantee about the screen. Two
+  lines used to split the reader's submenu into three groups before `Settings`
+  existed; one survives, on `Hide status bar`, marking the seam between the
+  behaviour rows and the destination rows *inside* `Settings`.
+- **The FileManager's `Meguru` submenu carries nothing but that `Settings` row.**
+  Both surfaces use the key `meguru`, which is safe because the two `menu_items`
+  tables are per-surface and never shared, and `Meguru:addToMainMenu` dispatches
+  on whether a document is open — so only one is ever written. A saved menu order
+  in `settings/` then means the same thing on both.
 
 ### Panel zoom is KOReader's switch, and it is the *reader's*
 
@@ -1580,19 +1587,21 @@ Each step must pass before the next:
     unsynced series: the walk runs, the chapter opens, no dialog. Finish a volume
     with `Auto-open next in series` on: the next volume opens with no dialog.
 
-12. **The menu lands where it should.** FileManager → Tools → `Meguru` at the top
-    of the page, holding `Main folder for .meguru streams: …` and the subfolder
-    toggle and nothing else, with no separator lines between them; the reader's
-    ⋮ → Tools → `Meguru` likewise — `Open next in series`, `Open previous in
-    series`, a line, `Auto-open next in series`, `Hide status bar`, a line,
-    `Main folder for .meguru streams: …`, `Subfolder per server`.
-    Nothing anywhere offers a cover, a cache to clear, a library or a server list.
-    The folder row opens the picker and shows the new path afterwards; the
-    toggle's checkbox survives a restart; a new book lands in
-    `<base>/<server>/<series>` when it is on. Holding `Auto-open next in series`
-    or `Subfolder per server` shows its `help_text` — the other rows have none,
-    and the two lines are the only grouping. With a PDF open there is no Meguru
-    row and nothing logs `menu id not found`.
+12. **The menu lands where it should.** FileManager → Tools → `Meguru` directly
+    below `Profiles` (and at the top where the build has no `Profiles` row),
+    holding a single `Settings` row and nothing else; the reader's ⋮ → Tools →
+    `Meguru` holds `Open next in series`, `Open previous in series` and the same
+    `Settings` row. Nothing anywhere offers a cover, a cache to clear, a library
+    or a server list.
+    Inside `Settings`, on both surfaces: `Auto-open next in series` (reader only,
+    and only when the marker names a series), `Hide status bar`, a line,
+    `Main folder for .meguru streams: …`, `Subfolder per server`. The folder row
+    opens the picker and shows the new path afterwards; the toggle's checkbox
+    survives a restart and so does the folder; a new book lands in
+    `<base>/<server>/<series>` when the toggle is on. Holding `Auto-open next in
+    series` or `Subfolder per server` shows its `help_text` — the other rows have
+    none, and that one line is the only separator left. With a PDF open there is
+    no Meguru row and nothing logs `menu id not found`.
 
 13. **No destination dialog anywhere.** `▶ Meguru this series` with the wifi off
     still prompts for a connection and then opens, straight into the resume

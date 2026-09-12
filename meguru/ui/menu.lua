@@ -7,15 +7,17 @@ they used to be a dialog asked at every single open; a value that changes once
 does not belong in the path of a tap.
 
 The **reader** gets a ⋮ "Meguru" submenu, and only while a Meguru book is open.
-It holds the series-navigation rows, the two plugin-wide reading-behaviour
-switches (auto-open the next item at the end, hide the status bar) and the
-destination rows. The per-book *rendering* choices — crop, fit, reading
-direction — deliberately live in the bottom ConfigDialog instead, where every
-other stock per-book option lives; see `ui/reader.lua`.
+It holds the series-navigation rows and a `Settings` submenu, and the submenu
+holds the four preferences: the two plugin-wide reading-behaviour switches
+(auto-open the next item, hide the status bar) and the two destination rows. The
+per-book *rendering* choices — crop, fit, reading direction — deliberately live
+in the bottom ConfigDialog instead, where every other stock per-book option
+lives; see `ui/reader.lua`.
 
-The **FileManager** gets the destination rows and nothing else. It used to hold
-a library view and a server-administration screen; both are gone, along with the
-manual server-kind override the latter existed for.
+The **FileManager** gets the same `Settings` submenu and nothing else, which for
+it is the two destination rows. It used to hold a library view and a
+server-administration screen; both are gone, along with the manual server-kind
+override the latter existed for.
 
 Two rules are worth stating, because breaking either is silent:
 
@@ -29,7 +31,8 @@ Two rules are worth stating, because breaking either is silent:
     falls back to the plain widget only on a keyboard-only build
     (`filemanagermenu.lua:1043`) — so a row that must work on both carries its
     state in `text`/`text_func` rather than in either field. `separator = true`
-    carries the same constraint and is used by the reader's auto-open row.
+    carries the same constraint, and now marks one seam only: the last behaviour
+    row inside `Settings`, above the destination rows.
 --]]
 
 local Notification = require("ui/widget/notification")
@@ -53,14 +56,34 @@ local Menu = {}
 
 -- Where the row goes -----------------------------------------------------------
 
+--- Put `meguru` into one surface's `tools` order list, directly below
+--- `profiles` — or at the very top on a build with no `profiles` id to sit
+--- under, which is where the row used to be.
+---
+--- By neighbour rather than by index: everything above this row is whatever the
+--- user has enabled, so the list grows and shrinks between installations and an
+--- index would land somewhere different from one device to the next. A name
+--- does not move. An id with no matching item is skipped by the sorter anyway,
+--- so a missing `profiles` costs the position and nothing else.
+local function insertMeguruAfter(order, neighbour)
+    local pos = 1
+    for i, id in ipairs(order) do
+        if id == neighbour then
+            pos = i + 1
+            break
+        end
+    end
+    table.insert(order, pos, "meguru")
+end
+
 --- Where the plugin's row goes, and what it takes to get it there.
 ---
 --- A hint alone is not enough. `menusorter` appends a hinted item to the *end*
 --- of the named page's row list, which for `tools` means below `more_tools` —
 --- i.e. below Developer options. Naming the id in that page's own order list is
---- what puts it at the top, and it is the mechanism core ships for this purpose
---- (`ui/plugin/insert_menu.lua`), though that one targets `more_tools`, the
---- position we are trying to avoid.
+--- what decides the position, and it is the mechanism core ships for this
+--- purpose (`ui/plugin/insert_menu.lua`), though that one targets `more_tools`,
+--- the position being avoided here.
 ---
 --- Both order tables are named because they are two different files, and they
 --- are the objects the menu builders `require`, so one mutation is seen by every
@@ -81,8 +104,8 @@ local function showUnderTools()
         logger.warn("Meguru: no Tools menu in this build; the Meguru row is unsorted")
         return nil
     end
-    table.insert(fm_order.tools, 1, "meguru")
-    table.insert(rd_order.tools, 1, "meguru")
+    insertMeguruAfter(fm_order.tools, "profiles")
+    insertMeguruAfter(rd_order.tools, "profiles")
     return "tools"
 end
 
@@ -134,6 +157,23 @@ local function destinationRows()
     }
 end
 
+--- The `Settings` row both surfaces hang their preferences on.
+---
+--- One level of nesting, and only one. The rows it holds used to sit in the same
+--- flat list as everything else, with `separator` lines claiming that some of
+--- them belonged together; a line can show that a group exists but not what it
+--- is, and `Settings` says it.
+---
+--- Both surfaces get it, including the FileManager where it holds only two rows.
+--- That is a deliberate cost — a level of nesting for two taps — bought so the
+--- two menus read the same: the reader who learned one has learned the other.
+local function settingsRow(rows)
+    return {
+        text = _("Settings"),
+        sub_item_table = rows,
+    }
+end
+
 -- FileManager ------------------------------------------------------------------
 
 --- The FileManager's `Meguru` submenu.
@@ -149,15 +189,15 @@ end
 --- a document. Reusing the name is better than inventing a second one: a saved
 --- menu order in `settings/` then means the same thing on both surfaces.
 function Menu.addFileManagerItems(plugin, menu_items)
-    local rows = {}
+    local settings = {}
     for _, row in ipairs(destinationRows()) do
-        rows[#rows + 1] = row
+        settings[#settings + 1] = row
     end
 
     menu_items.meguru = {
         text = _("Meguru"),
         sorting_hint = TOOLS_HINT,
-        sub_item_table = rows,
+        sub_item_table = { settingsRow(settings) },
     }
 end
 
@@ -199,10 +239,11 @@ end
 --- when nothing has been walked yet. Nil — a flat book, or a v1 marker written
 --- before the series fields existed — means no feed to walk at all, and no row.
 ---
---- `separator` is a parameter rather than something the caller sets on
---- `rows[#rows]` afterwards: this function adds nothing when `context` is nil,
---- so the caller would have to repeat that test to know which row it just added.
-local function addNeighborRow(plugin, rows, context, which, separator)
+--- No `separator` here any more, and none is needed: with `Settings` a submenu
+--- these two rows and it are the whole of the parent list, so the pair *is* the
+--- navigation group. The split line moved inside `Settings`, where there are
+--- still two kinds of preference to keep apart.
+local function addNeighborRow(plugin, rows, context, which)
     if not context then
         return
     end
@@ -210,9 +251,6 @@ local function addNeighborRow(plugin, rows, context, which, separator)
         text = which == "next"
             and _("Open next in series")
             or _("Open previous in series"),
-        -- Draws the split line under this row, ending the series navigation
-        -- group. Only the "previous" row is asked for it.
-        separator = separator,
         callback = function()
             -- Deferred: the walk opens the chapter itself, possibly replacing
             -- this document, and this handler belongs to it.
@@ -234,18 +272,24 @@ function Menu.addReaderItems(plugin, menu_items)
     -- auto-open toggle has anything to govern.
     local context = seriesOf(ui)
 
-    -- Three groups, split by `separator` lines: where to navigate, how reading
-    -- behaves, and where a new book lands.
+    -- Where to move around the series, and then everything that is a preference.
+    -- These were one flat list split by `separator` lines until `Settings` became
+    -- a submenu; the lines could show that a group existed, but not name it.
     local rows = {}
     addNeighborRow(plugin, rows, context, "next")
-    addNeighborRow(plugin, rows, context, "previous", true)
+    addNeighborRow(plugin, rows, context, "previous")
+
+    -- The preferences, grouped exactly as the lines used to group them: how
+    -- reading behaves, then where a new book lands. The `separator` on the last
+    -- behaviour row is what still marks the seam.
+    local settings = {}
 
     -- Only meaningful when there is somewhere to go. A series the marker cannot
     -- name has no feed to walk, so the toggle would govern a behaviour that can
     -- never trigger — but a known series always *has* a possible next, it is
     -- simply one walk away, so the gate is the context and not a neighbour.
     if context then
-        rows[#rows + 1] = {
+        settings[#settings + 1] = {
             text = _("Auto-open next in series"),
             help_text = _("Automatically opens the next volume or chapter when you finish this one."),
             keep_menu_open = true,
@@ -262,7 +306,7 @@ function Menu.addReaderItems(plugin, menu_items)
         }
     end
 
-    rows[#rows + 1] = {
+    settings[#settings + 1] = {
         text = _("Hide status bar"),
         keep_menu_open = true,
         -- Ends the behaviour group: what the reader looks like while reading,
@@ -281,8 +325,10 @@ function Menu.addReaderItems(plugin, menu_items)
     -- reason they are there: they decide where the *next* book lands, and a
     -- reader who wants to change that should not have to close the book first.
     for _, row in ipairs(destinationRows()) do
-        rows[#rows + 1] = row
+        settings[#settings + 1] = row
     end
+
+    rows[#rows + 1] = settingsRow(settings)
 
     menu_items.meguru = {
         text = _("Meguru"),
