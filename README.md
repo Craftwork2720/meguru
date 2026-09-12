@@ -198,11 +198,13 @@ main.lua           provider registration and menu dispatch
 meguru/
   marker.lua       the marker file: read, write, naming, series identity
   feed.lua         reading a series feed: pagination, reading order, neighbours
+  panel.lua        the panels on a page, and the order they are read in
   pse.lua          OPDS-PSE: finding the stream link, building a page URL
   net.lua          HTTP and feed parsing
   credential.lua   what a credential looks like in a URL: redact / restore
   sources.lua      read-only view of KOReader's OPDS settings
   settings.lua     plugin-wide preferences
+  association.lua  Meguru's claim on .cbz: the file-type reader association
   paths.lua        every path Meguru uses
   fs.lua           filesystem predicates and directory creation
   naming.lua       titles, series names, folder-safe names, stable keys
