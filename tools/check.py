@@ -32,6 +32,12 @@ bitten this codebase, and that a reader cannot reliably catch by eye:
      `Marker.new` does not copy is nil on the device -- and nil is a legitimate
      answer for several of them, so it surfaces as a feature that quietly does
      nothing rather than as an error.
+  8. the same contract for what a marker says about its *series*. This is pass 7
+     in a second place, and it shipped twice before the pass existed: `dirFor`
+     read `series.name` while every caller passed a context with `series_name`,
+     so no series folder was ever created, and `freshResumeTarget` filtered on
+     `series.remote_id`, so it never matched and the server-position button
+     silently never appeared.
 
 The item-upsert check is gone with the catalog it belonged to: it compared
 `UPSERT_ITEM` against the `items` DDL, and neither exists.
@@ -690,6 +696,60 @@ def check_marker_fields(fields):
     return errors
 
 
+# --------------------------------------------------------------------------
+# Check 8: the same contract for what a marker says about its *series*.
+#
+# This is pass 7's failure in a second place, and it shipped twice before this
+# pass existed. A field read off a shape that does not have it is nil on the
+# device rather than an error, so the symptom is a feature that quietly does
+# nothing:
+#
+#   * `Marker.dirFor` read `series.name` while every caller passed a context
+#     with `series_name`, so **no series folder was ever created** -- every new
+#     marker landed beside its series rather than inside it.
+#   * `freshResumeTarget` filtered on `series.remote_id`, which the context does
+#     not have either, so nothing matched and it always returned nil: the `▶`
+#     server-position button never appeared, and "the server has no opinion" is
+#     a legitimate state, so nothing reported it.
+#
+# The shape has exactly one definition -- `Marker.seriesContext` -- so this is
+# the same name-based rule pass 7 uses, with the same caveat: it assumes
+# `series` and `context` mean one thing here. They do, and the parameter that
+# did not (`dirFor`'s `series`) was precisely the bug.
+# --------------------------------------------------------------------------
+
+SERIES_CONTEXT_BODY = re.compile(
+    r"function Marker\.seriesContext\(desc\)(.*?)\n    \}", re.S)
+CONTEXT_READ = re.compile(r"\b(?:series|context)\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def series_context_fields():
+    """The fields `Marker.seriesContext` returns, or None if unreadable."""
+    src = strip((SRC / "marker.lua").read_text(encoding="utf-8"))
+    m = SERIES_CONTEXT_BODY.search(src)
+    if not m:
+        return None
+    return set(TABLE_KEY.findall(m.group(1)))
+
+
+def check_series_context(fields):
+    """Report a context field read that `Marker.seriesContext` does not return."""
+    if fields is None:
+        return ["tools/check.py: could not read Marker.seriesContext -- "
+                "this check has gone stale"]
+    errors = []
+    files = sorted(SRC.rglob("*.lua")) + [ROOT / "main.lua"]
+    for lua in files:
+        rel = lua.relative_to(ROOT)
+        src = strip(lua.read_text(encoding="utf-8"))
+        for name in sorted(set(CONTEXT_READ.findall(src))):
+            if name not in fields:
+                errors.append(
+                    f"{rel}: `series.{name}` or `context.{name}` is read, but "
+                    f"Marker.seriesContext does not return that field")
+    return errors
+
+
 def main():
     members, by_stem, stems = module_members()
     all_errors = []
@@ -706,6 +766,7 @@ def main():
         all_errors += check_receiver_uses(rel, text)
 
     all_errors += check_marker_fields(marker_fields())
+    all_errors += check_series_context(series_context_fields())
 
     if all_errors:
         for e in all_errors:

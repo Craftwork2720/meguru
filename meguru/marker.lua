@@ -356,7 +356,19 @@ end
 --- defaults to `Marker.baseDir()`, which does create it, because "is this folder
 --- usable" is the question it exists to answer and a path on unplugged media has
 --- to be rejected before anything is planned around it.
-function Marker.dirFor(desc, series, opts)
+--- **One shape in, and it is the marker's own.** This took a descriptor *and* a
+--- series row, and read the series' name from the row — `series.name` — while
+--- every caller had already moved to passing what a marker says about its series
+--- (`series_name`). So the condition below was silently false for every book, and
+--- `dirFor` returned the base folder with no series component: **every new marker
+--- landed beside its series rather than inside it**, and nothing failed, because a
+--- table without a field is nil rather than an error.
+---
+--- The descriptor carries all three fields it reads, so there is one parameter
+--- and no way to pass the wrong half of a pair. `Marker.seriesContext` produces
+--- the same three names from the same fields, which is why a context works here
+--- too and a caller never has to know which it holds.
+function Marker.dirFor(desc, opts)
     opts = opts or {}
     local dir = opts.base_dir or Marker.baseDir()
 
@@ -367,12 +379,15 @@ function Marker.dirFor(desc, series, opts)
         end
     end
 
-    if type(series) == "table" and type(series.name) == "string" and series.name ~= "" then
-        local component = Naming.sanitizeComponent(series.name)
+    if type(desc.series_name) == "string" and desc.series_name ~= "" then
+        local component = Naming.sanitizeComponent(desc.series_name)
         if component ~= "stream" then
-            if opts.series_folder_claimed and series.remote_id then
-                component = Naming.disambiguated(component, series.remote_id)
-            end
+            -- No suffix for a claimed folder any more. It asked whether another
+            -- series already had this folder name and disambiguated if so, and
+            -- its only caller was the catalog lookup that went with the catalog.
+            -- Two series sharing a folder is now accepted; `pathFor` still
+            -- disambiguates the *file*, so nothing is overwritten, and the
+            -- reader keeps the sidecars beside the markers they belong to.
             dir = dir .. "/" .. component
         end
     end

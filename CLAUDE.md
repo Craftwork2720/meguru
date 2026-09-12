@@ -43,7 +43,7 @@ These are fixed and shape most of the design:
   the only place this code runs.
 - **No test framework and no linter.** Verification is manual, in a running
   KOReader. `tools/check.py` (see Development) is the automated guard, covering
-  seven failure modes.
+  eight failure modes.
 - **Reuse KOReader's own machinery** rather than rebuilding it: `LuaSettings`,
   `DocSettings`, `DocumentRegistry`, and the built-in `plugins/opds.koplugin` for
   Atom parsing and the browser UI. That plugin is **read only** — wrapped at
@@ -1221,7 +1221,7 @@ folding (`x and f or nil`), `nil` in a table constructor ending the array part,
 `#` on a table with holes, and integer division or bitwise operators under 5.1.
 
 There is no Lua interpreter on the development machine, so `check.py` stands in
-for one. It runs seven passes:
+for one. It runs eight passes:
 
 1. **Block balance** — `function`/`if`/`for`/`while`/`do` against `end`/`until`,
    over comment- and string-stripped source.
@@ -1261,6 +1261,16 @@ And one pass that is not about names:
    surfaces as a feature that quietly does nothing rather than as an error. That
    is what happens the first time a field is added to a reader and not to the
    writer, which has now happened once.
+8. **The same contract for a book's series**, against the one definition of that
+   shape (`Marker.seriesContext`). Pass 7's failure, in a second place, and it
+   shipped twice before the pass existed: `Marker.dirFor` read `series.name`
+   while every caller passed a context with `series_name`, so **no series folder
+   was ever created** and every marker landed beside its series rather than
+   inside it; and `freshResumeTarget` filtered on `series.remote_id`, so nothing
+   matched and the `▶` server-position button silently never appeared — and
+   "the server has no opinion" is a legitimate state, so nothing reported it
+   either. Both are the same shape of mistake, and both are invisible on the
+   device.
 
 None of these is a parser. They are the failure modes that have actually bitten
 this codebase, and that a reader cannot reliably catch by eye: a name or member

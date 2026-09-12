@@ -382,18 +382,18 @@ local firstIn = Feed.firstIn
 --- Returns a catalog row, because the caller opens it as one. The target is
 --- upserted on the way, which is the same write `registerBook` makes for the
 --- book actually being opened, from the same feed, for the same series.
-local function freshResumeTarget(driver, feed, feed_url, ctx, series, select)
+local function freshResumeTarget(driver, feed, feed_url, ctx, context, select)
     select = select or firstUnfinishedOrLast
     local mine = {}
     for _, entry in ipairs(feed and feed.entry or {}) do
         local found = driver.discover(entry, nil, ctx)
-        if found and found.series_remote_id == series.remote_id then
+        if found and found.series_remote_id == context.series_remote_id then
             mine[#mine + 1] = entry
         end
     end
     if #mine == 0 then
         logger.info("Meguru: no entry in this feed belongs to series",
-            series.remote_id, "- resume point falls back to the catalog")
+            context.series_remote_id, "- the dialog offers no server position")
         return nil
     end
 
@@ -407,15 +407,15 @@ local function freshResumeTarget(driver, feed, feed_url, ctx, series, select)
         -- carried entries the driver could not build an item out of (a Kavita
         -- special with no stream link). Both mean the same thing here — this
         -- feed has no answer — and the caller decides what that is worth:
-        -- `currentResumeTarget` asks the canonical feed next, rather than
-        -- falling back to the catalogue's snapshot.
-        logger.info("Meguru: no entry of series", series.remote_id,
+        -- `currentResumeTarget` asks the canonical feed next, and if that has
+        -- nothing to say either, the dialog simply offers no server position.
+        logger.info("Meguru: no entry of series", context.series_remote_id,
             "in this feed - no resume point from it")
         return nil
     end
 
     logger.info("Meguru: the feed says", best.display_title or best.title,
-        "is the resume point in series", series.remote_id)
+        "is the resume point in series", context.series_remote_id)
 
     -- `readingOrder` above is what decides *which* entry this is, and it stays:
     -- the browser's page is newest-first, so picking the resume point by feed
@@ -778,7 +778,7 @@ local function markerPathFor(context, item)
     if not (context and context.server_name and item and item.item_key) then
         return nil
     end
-    local dir = Marker.dirFor(context, context, {
+    local dir = Marker.dirFor(context, {
         base_dir      = Marker.baseDir(),
         server_folder = Settings.get("marker_server_dir") and true or false,
     })
@@ -798,11 +798,12 @@ end
 --- That coupling is the thing to keep in step: if the silent seed ever changes,
 --- this test has to change with it, or the button starts lying.
 local function jumpPage(target, series)
-    -- Recomputed rather than read off a row: a marker's path is a pure function
-    -- of its identity and its series, which is the same two functions that
-    -- decided where it was written. See `markerPathFor`.
+    -- Recomputed, and there is no second source: it used to fall back to
+    -- `target.marker_path`, a column the catalog kept and nothing writes now. A
+    -- marker's path is a pure function of its identity and its series — the same
+    -- two functions that decided where it was written — so either this answers
+    -- or there is no marker to have been opened. See `markerPathFor`.
     local marker = series and markerPathFor(series, target) or nil
-    marker = marker or target.marker_path
     if type(marker) == "string" and marker ~= "" and FS.exists(marker)
         and not neverOpened(marker) then
         return nil
@@ -1467,10 +1468,16 @@ local function planMarker(context, item)
     local identity = {
         server_name      = context.server_name,
         series_remote_id = context.series_remote_id,
+        -- Carried for `dirFor`, which names the series folder from it. Every
+        -- field here is one `dirFor` or `pathFor` reads, and no other: this
+        -- table is the identity, not the descriptor, and adding to it is how a
+        -- caller would accidentally make a *different* path from the one the
+        -- write takes.
+        series_name      = context.series_name,
         item_key         = item.item_key,
         title            = item.title,
     }
-    local dir = Marker.dirFor(identity, context, {
+    local dir = Marker.dirFor(identity, {
         base_dir      = Marker.baseDir(),
         server_folder = Settings.get("marker_server_dir") and true or false,
     })
@@ -2017,13 +2024,11 @@ function Open.openAsBook(browser, item, stream)
         logger.info("Meguru: book has no catalog identity; marker stays flat")
     end
 
-    local series = registered and registered.context or nil
-    local dir = Marker.dirFor(desc, series, {
+    local dir = Marker.dirFor(desc, {
         -- No `base_dir`: the default is `Marker.baseDir()`, i.e. the stored
-        -- preference, which is what `planMarker` uses too. No
-        -- `series_folder_claimed` either: it asked the catalog whether another
-        -- series had taken this folder name, and two series sharing a folder is
-        -- now accepted — `Marker.pathFor` still disambiguates the *file*.
+        -- preference, which is what `planMarker` uses too. The descriptor has
+        -- the server name and the series name, which is the whole of what
+        -- `dirFor` reads — that is why it takes one argument now.
         server_folder = Settings.get("marker_server_dir") and true or false,
     })
     -- Planned here, written on the answer — see `planMarker`. The marker is what
