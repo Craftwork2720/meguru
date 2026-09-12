@@ -2806,7 +2806,7 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
         paint_ms = nowMs() - t0
     end
 
-    -- One line per rendered tile, at info because it is the only place this
+    -- One line per rendered tile, at dbg because it is the only place this
     -- choice is visible on a device — and the choice is not cosmetic: `direct`
     -- renders the region from the page's own bytes once, `scale` slices the
     -- retained decode and resamples it. A tile-cache hit returns further up, so

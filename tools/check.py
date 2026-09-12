@@ -23,8 +23,8 @@ bitten this codebase, and that a reader cannot reliably catch by eye:
      of the use, so a name handed over as an argument or an operand slips past
      both and reads as a global nil.
   6. a lowercase name reached through a `.` or a `:` -- `data:byte(off + 1)`
-     with no `local data` anywhere. Checks 2 keys on a capitalized module table,
-     3 on a call and 5 on a value, so this last shape of the same failure had no
+     with no `local data` anywhere. Check 3 keys on a capitalized module table,
+     4 on a call and 5 on a value, so this last shape of the same failure had no
      pass at all: a refactor deleted a buffer local and left four `data:byte`
      call sites behind it, and nothing said a word.
   7. the marker's field list, which is a contract between the code that writes a
@@ -435,7 +435,7 @@ def check_lowercase_calls(path, text):
 
 
 # --------------------------------------------------------------------------
-# Check 6: a name used as a VALUE that is bound nowhere in the file.
+# Check 5: a name used as a VALUE that is bound nowhere in the file.
 # --------------------------------------------------------------------------
 
 # Checks 3 and 4 both key on the shape of the *use*: 3 wants `Name.member` or
@@ -552,7 +552,7 @@ def check_value_uses(path, text):
 # --------------------------------------------------------------------------
 
 # Check 3 covers `Geom:new{...}` — a capitalized module table used without being
-# bound. Check 4 covers `handToReader(x)` — a call. Check 6 covers a name read as
+# bound. Check 4 covers `handToReader(x)` — a call. Check 5 covers a name read as
 # a value. Between them, one shape is left: a LOWERCASE name reached through a
 # `.` or a `:`.
 #

@@ -22,10 +22,11 @@ Two things complicate the cut, and both are ported:
 * **Panels are not always square.** A gutter tilted by two degrees leaves no
   column empty from top to bottom, which stops the straight cut dead. When no
   straight gutter exists and something already looks part-empty, a ladder of
-  slopes from 2 to 8 degrees either way is tried instead (`SHEAR_SLOPES`), and
-  the projection is taken along the slanted line. Both children are then given
-  the whole projected band, so each panel keeps all of its own artwork and gains
-  a thin wedge of its neighbour rather than losing a corner.
+  slopes from 2 to 8 degrees either way is tried instead
+  (`PANEL_SHEAR_SLOPES`), and the projection is taken along the slanted line.
+  Both children are then given the whole projected band, so each panel keeps all
+  of its own artwork and gains a thin wedge of its neighbour rather than losing a
+  corner.
 * **A page furniture strip is not a panel.** A scanlation credit line clears both
   size floors comfortably and would be shown to the reader as a panel holding no
   artwork. `emitLeaf` rejects it on the *conjunction* of elongated and nearly
@@ -34,32 +35,19 @@ Two things complicate the cut, and both are ported:
 
 ## Why the thresholds matter more than the algorithm
 
-This module has now been wrong twice on a device, and both times the cause was a
-**default**, not the code. `panels_plus` ships this same cut, and its later
-version quietly loosened two of the numbers and switched the live detector to a
-connected-component one. Porting the later version's cut with the later version's
-defaults produced: a panel cut in half on a white band inside its own drawing
-(`segment_gutter_ink_ratio` 0.05 — ten times looser, so anything faintly bright
-counted as empty), and no cut at all on a skewed page (`segment_shear` false).
+The numbers below are **1.3's**, and they are not to be "tidied" towards the
+reference's later ones: porting that version's cut *with that version's defaults*
+is what produced two of this detector's device failures. The thresholds, the
+failures and the reasoning live in **CLAUDE.md, "Panel zoom, and the panel
+sequence"** — one copy, deliberately, because a second copy of a threshold is a
+second answer waiting to happen.
 
-So the numbers here are **1.3's**, which is the version that was actually read
-from for a long time without either problem, and they are not to be "tidied"
-towards the newer ones:
-
-| | 1.3 — used here | later version |
-|---|---|---|
-| gutter ink ratio | **0.005** | 0.05 |
-| shear | **on** | off |
-| min panel area | **0.005** | 0.01 |
-| live detector | this cut | connected components |
-
-The connected-component detector is the one thing here that is deliberately
-**not** ported, and the reason is the third device failure: it keeps a component
-and the panel it sits inside as two separate boxes, because it merges only boxes
-that entirely contain one another. Its own comment says so — "It does not merge
-partial overlaps" — and the symptom a reader sees is the same panel appearing
-twice with slightly different crops. The cut cannot produce that: its leaves are
-disjoint by construction, each one a region no gutter divides.
+The connected-component detector that later version switched to is deliberately
+**not** ported. It keeps a component and the panel it sits inside as two separate
+boxes, because it merges only boxes that entirely contain one another, and the
+symptom a reader sees is the same panel appearing twice with slightly different
+crops. The cut cannot produce that: its leaves are disjoint by construction, each
+one a region no gutter divides.
 
 ## What is not ported
 
@@ -88,11 +76,11 @@ floats; see the comment there.
 
 The ink map and the two projection accumulators — one per axis, reused by every
 node of the recursion — are all `ffi.new` arrays, and this is the only place in
-the plugin that reaches for one.
-That is deliberate — a map is dense (every cell is read, many times), it must be
-**0-based** to keep the reference's index arithmetic faithful, and a 480x720 scan
-as a Lua table would be megabytes of heap on a device that already holds three
-decoded pages. Two consequences to keep in mind when editing:
+the plugin that reaches for one. That is deliberate: a map is dense (every cell
+is read, many times), it must be **0-based** to keep the reference's index
+arithmetic faithful, and a 480x720 scan as a Lua table would be megabytes of heap
+on a device that already holds three decoded pages. Two consequences to keep in
+mind when editing:
 
 * **`#map.data` is not a length.** The length operator does not work on cdata
   arrays; `map.w` and `map.h` are the only sizes there are.

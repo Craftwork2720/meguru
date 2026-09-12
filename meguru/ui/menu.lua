@@ -193,9 +193,10 @@ end
 --- them belonged together; a line can show that a group exists but not what it
 --- is, and `Settings` says it.
 ---
---- Both surfaces get it, including the FileManager where it holds only two rows.
---- That is a deliberate cost — a level of nesting for two taps — bought so the
---- two menus read the same: the reader who learned one has learned the other.
+--- Both surfaces get it, including the FileManager where it holds only three
+--- rows. That is a deliberate cost — a level of nesting for three taps — bought
+--- so the two menus read the same: the reader who learned one has learned the
+--- other.
 local function settingsRow(rows)
     return {
         text = _("Settings"),
