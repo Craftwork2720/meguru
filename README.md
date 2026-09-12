@@ -171,24 +171,6 @@ server.
 - **A book cannot be exported or moved like a CBZ.** It is a marker; the pages
   live on the server.
 
-## Upgrading from an older version
-
-Versions before this one kept a local catalog in
-`koreader/settings/meguru.sqlite3`, and even older ones kept page and cover
-caches under `koreader/cache/meguru/`. Nothing reads either any more, and nothing
-sweeps them:
-
-```
-koreader/settings/meguru.sqlite3     # delete by hand
-koreader/cache/meguru/pages/         # delete by hand
-koreader/cache/meguru/covers/        # delete by hand
-```
-
-Markers written by an older version still open and read. They carry less than new
-ones do — an old marker does not record which server software it came from, so
-Meguru has to work that out from the page URL before it can find the next
-chapter.
-
 ## What is in the folder
 
 ```
@@ -218,10 +200,3 @@ meguru/
 wraps a few methods of the built-in OPDS plugin in memory — restarting KOReader
 removes the wraps — and writes two things: marker files, and the same per-book
 settings file KOReader keeps beside every document it opens.
-
-## Credits
-
-Meguru is the successor to `meguru.koplugin`, which is in turn the successor to
-`opdsbook.koplugin`. The old plugins are kept for reference; this one shares no
-files or formats with them, so books saved by an older plugin are simply
-different books.
