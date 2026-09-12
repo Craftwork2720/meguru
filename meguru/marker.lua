@@ -52,35 +52,89 @@ local Marker = {}
 --- opened from History never turns into a bogus stream.
 Marker.SETTINGS_KEY = Paths.MARKER_EXT
 
-Marker.VERSION = 1
+--- 2: the marker carries the series identity a feed needs (`series_name`,
+--- `server_kind`, `lang`) and the book's own artwork, so an open needs nothing
+--- but the file. Nothing reads this field — it is a note for whoever finds an
+--- old file, not a gate: a v1 marker is still valid and still reads.
+Marker.VERSION = 2
 
 --- Build a descriptor, keeping the shape in one place.
 ---
----   server_name       catalog title from KOReader's OPDS settings — the key
----                     credentials are looked up by, never a secret itself
----   series_remote_id  the series' id at the provider, for catalog lookup
----   item_key          authoritative identity of this item within its series
----   item_id           catalog rowid — a *hint only*, validated before use
----   title             as shown to the reader
----   template, count   enough to open and read with no database
----   last_read         server-reported, cosmetic
+---   server_name        catalog title from KOReader's OPDS settings — the key
+---                      credentials are looked up by, never a secret itself
+---   series_remote_id   the series' id at the provider
+---   series_name        the series as it is named to the reader: the History
+---                      title, the dialog title, and the folder component
+---   server_kind        which driver reads this server's feeds. Without it a
+---                      book opened from History has no feed URL to build, so
+---                      it has no next chapter — ever, not just until a sync
+---   item_key           authoritative identity of this item within its series
+---   title              as shown to the reader
+---   template, count    enough to open and read with no database
+---   last_read          server-reported, cosmetic
+---   lang               the translation Suwayomi serves (`?lang=`); nil means
+---                      its default, exactly as a nil `ctx.lang` does today
+---   cover_url          this book's own artwork, where its feed published one
+---   series_cover_url   the series' artwork, the step before page 1
 ---
---- **`template` here is the live URL, secret and all** — this builds the
---- in-memory descriptor, not the file. `saveAt` redacts it on the way out and
---- `load` restores it on the way in, so a caller that builds a descriptor, saves
---- it and reads the file back gets the same string it started with, and a caller
---- that inspects `desc.template` after a save still has the real one.
+--- **The URLs here are the live ones, secrets and all** — this builds the
+--- in-memory descriptor, not the file. `saveAt` redacts them on the way out and
+--- `load` restores them on the way in, so a caller that builds a descriptor,
+--- saves it and reads the file back gets the same strings it started with, and
+--- a caller that inspects `desc.template` after a save still has the real one.
+---
+--- `item_id` is gone: it was the catalog's rowid, carried so an open could
+--- notice the database had been rebuilt underneath the marker. There is no
+--- database to be rebuilt, so there is nothing for it to guard. A v1 file keeps
+--- carrying the number; nothing reads it.
 function Marker.new(fields)
     return {
         version          = Marker.VERSION,
         server_name      = fields.server_name,
         series_remote_id = fields.series_remote_id,
+        series_name      = fields.series_name,
+        server_kind      = fields.server_kind,
         item_key         = fields.item_key,
-        item_id          = fields.item_id,
         title            = fields.title,
         template         = fields.template,
         count            = fields.count,
         last_read        = fields.last_read,
+        lang             = fields.lang,
+        cover_url        = fields.cover_url,
+        series_cover_url = fields.series_cover_url,
+    }
+end
+
+--- The fields above that hold a URL a credential can sit inside.
+---
+--- One list, read by both halves of the redaction pair below. A field added to
+--- `Marker.new` and not added here is written to disk **with the API key in
+--- it** — which is what CLAUDE.md's security note exists to prevent, and what
+--- the marker's whole redaction apparatus was built for. `Kavita` puts its key
+--- in a path segment of every URL it emits, covers included.
+local CREDENTIAL_FIELDS = { "template", "cover_url", "series_cover_url" }
+
+--- What this marker knows about its series, for callers that need the context
+--- rather than the book.
+---
+--- The v1 fallbacks live here and only here, so no caller has to know which
+--- fields an older file might be missing: a marker written before `series_name`
+--- existed answers with nil and every reader of it already falls back (History
+--- shows the book's own title, the dialog falls back to the book label). The
+--- one field with no fallback is `server_kind`, and that is honest — without a
+--- driver there is no feed URL, so there are no neighbours.
+function Marker.seriesContext(desc)
+    if type(desc) ~= "table" then
+        return nil
+    end
+    return {
+        server_name      = desc.server_name,
+        server_kind      = desc.server_kind,
+        series_remote_id = desc.series_remote_id,
+        series_name      = desc.series_name,
+        lang             = desc.lang,
+        cover_url        = desc.cover_url,
+        series_cover_url = desc.series_cover_url,
     }
 end
 
@@ -127,35 +181,60 @@ end
 --- that misdescribes its own file. What it cannot do is fetch: the placeholder
 --- stays, the URL 404s, and the log says why. See `MeguruDocument:init`.
 local function restoreCredential(desc)
-    if type(desc.template) ~= "string"
-        or not desc.template:find(Credential.PLACEHOLDER, 1, true) then
-        -- Nothing to do, and this is the common path — every Suwayomi marker,
-        -- and every Kavita one written before this existed. Silent on purpose:
-        -- a line here would be a line per book opened.
+    -- Is there anything to do at all? Answered first and once: the common path
+    -- is a marker with no placeholder anywhere (every Suwayomi one, and every
+    -- Kavita one written before this existed), and a line per book opened
+    -- because of it would be noise.
+    local pending = false
+    for _, field in ipairs(CREDENTIAL_FIELDS) do
+        local value = desc[field]
+        if type(value) == "string" and value:find(Credential.PLACEHOLDER, 1, true) then
+            pending = true
+            break
+        end
+    end
+    if not pending then
         return desc
     end
+
     local conn = Sources.connection(desc.server_name)
-    local restored, count = Credential.restoreTemplate(desc.template, conn and conn.url)
-    if count == 0 then
-        -- The placeholder survived: no catalog of that title, or one whose root
-        -- no longer matches this template's prefix (a renamed entry, a second
-        -- server sharing the title, a server that moved host). Both are worth
-        -- saying out loud — this is the line the reader pastes into a report,
-        -- and without it the diagnosis needs them to know that a `<redacted>`
-        -- in a URL is not what the server sent.
-        logger.warn("Meguru: the marker for", desc.title or "?", "has a redacted"
-            .. " stream URL and no usable catalog named",
-            tostring(desc.server_name), "- it will open but cannot fetch pages")
-        return desc
+    -- Named, and warned once for the whole marker rather than once per field: a
+    -- Kavita marker whose catalog is missing has three placeholders in it, and
+    -- three identical warnings would read as three separate faults.
+    local stuck = {}
+    local restored_count = 0
+    for _, field in ipairs(CREDENTIAL_FIELDS) do
+        local value = desc[field]
+        if type(value) == "string" and value:find(Credential.PLACEHOLDER, 1, true) then
+            local restored, count = Credential.restoreTemplate(value, conn and conn.url)
+            if count == 0 then
+                stuck[#stuck + 1] = field
+            else
+                desc[field] = restored
+                restored_count = restored_count + count
+            end
+        end
     end
-    if count > 1 then
+    if #stuck > 0 then
+        -- The placeholder survived: no catalog of that title, or one whose root
+        -- no longer matches this URL's prefix (a renamed entry, a second server
+        -- sharing the title, a server that moved host). Both are worth saying
+        -- out loud — this is the line the reader pastes into a report, and
+        -- without it the diagnosis needs them to know that a `<redacted>` in a
+        -- URL is not what the server sent. The field names matter: a stuck
+        -- `cover_url` costs a cover, a stuck `template` costs the book.
+        logger.warn("Meguru: the marker for", desc.title or "?", "still has"
+            .. " redacted URLs in", table.concat(stuck, ", "), "and no usable"
+            .. " catalog named", tostring(desc.server_name),
+            "- it opens, but those fetches cannot")
+    end
+    if restored_count > 1 then
         -- The credential sat in more than one path position, and both were
         -- filled with the same value. Right for every shape the supported
         -- servers emit, unverified for one nobody has seen.
-        logger.dbg("Meguru: restored", count, "credentials in the marker for",
-            desc.title or "?")
+        logger.dbg("Meguru: restored", restored_count, "credentials in the"
+            .. " marker for", desc.title or "?")
     end
-    desc.template = restored
     return desc
 end
 
@@ -389,7 +468,16 @@ function Marker.saveAt(path, desc)
     for key, value in pairs(desc) do
         stored[key] = value
     end
-    stored.template = Credential.redactTemplate(desc.template)
+    -- Every URL, not just the stream template: Kavita puts the same key in the
+    -- path of the artwork it publishes, so a cover left unredacted is the same
+    -- secret in the same file. The list is one place, so a URL field added to
+    -- `Marker.new` cannot be redacted on the way out and forgotten on the way
+    -- in — see `CREDENTIAL_FIELDS`.
+    for _, field in ipairs(CREDENTIAL_FIELDS) do
+        if type(stored[field]) == "string" then
+            stored[field] = Credential.redactTemplate(stored[field])
+        end
+    end
     local ls = LuaSettings:open(path)
     ls:saveSetting(Marker.SETTINGS_KEY, stored)
     ls:flush()

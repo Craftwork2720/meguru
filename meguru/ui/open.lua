@@ -40,6 +40,7 @@ local T = require("ffi/util").template
 
 local Base = require("meguru/driver/base")
 local Catalog = require("meguru/catalog")
+local Feed = require("meguru/feed")
 local FS = require("meguru/fs")
 local Marker = require("meguru/marker")
 local Naming = require("meguru/naming")
@@ -322,150 +323,16 @@ local function why(reason, detail)
     return nil
 end
 
---- A parsed page put into reading order, plus how much of it that order covers.
----
---- **Order from the server's own list position, which is in the path.** A
---- Suwayomi entry links to `/series/{id}/chapter/{n}/metadata`, and `{n}` is the
---- position on the server's list — that is, its reading order. The title is a
---- fallback only, and a poor one: `Prologue 1` carries no chapter token at all,
---- so numbering by title parked it *after* every numbered chapter, when a
---- prologue belongs before them. Kavita has no path to use (its entries link to
---- no metadata feed), and its canonical feed is already in reading order, so
---- there the feed order is the right answer and is what is left.
----
---- Returns the sequence and `positioned`, the length of its ordered prefix.
---- Everything after index `positioned` had no position anywhere and is in feed
---- order. Callers that need "earlier"/"later" must not read past `positioned`
---- without meaning to: feed order is *not* reading order in general, and for
---- Suwayomi it is its exact reverse.
----
---- Extracted from `firstUnread` rather than copied, because the consumer that
---- was missing it is the bug this exists for. `freshResumeTarget` picked the
---- furthest-read chapter by *feed* order, which is right on the canonical feed
---- and backwards on the page the browser holds — the same series, the same
---- question, two opposite answers depending on which screen asked. Sharing the
---- ordering is what keeps them from disagreeing again.
-local function readingOrder(parsed)
-    local ordered, fallback_position = {}, {}
-    for index, item in ipairs(parsed or {}) do
-        local path_position = type(item.detail_url) == "string"
-            and tonumber(item.detail_url:match("/chapter/(%d+)/")) or nil
-        local _, _, title_number = Naming.deriveSeries(item.title or "")
-        local position = path_position or title_number
-        if position then
-            ordered[#ordered + 1] = { item = item, position = position }
-        else
-            fallback_position[#fallback_position + 1] = { item = item, index = index }
-        end
-    end
-    table.sort(ordered, function(a, b) return a.position < b.position end)
+-- The ordering rules moved to `meguru/feed.lua`, where the feed's own order and
+-- the list's order cannot drift apart. Aliased rather than renamed at each call
+-- site so this file reads as it did; the bodies and their reasoning are in
+-- `Feed.ordered` and the selectors below it.
+local readingOrder = Feed.ordered
+local firstUnfinished = Feed.firstUnfinished
+local lastIn = Feed.lastIn
+local firstUnfinishedOrLast = Feed.firstUnfinishedOrLast
+local firstIn = Feed.firstIn
 
-    local sequence = {}
-    for _, entry in ipairs(ordered) do
-        sequence[#sequence + 1] = entry.item
-    end
-    local positioned = #sequence
-    -- No position anywhere: the feed's own order, which is reading order for the
-    -- server whose feeds are built that way.
-    table.sort(fallback_position, function(a, b) return a.index < b.index end)
-    for _, entry in ipairs(fallback_position) do
-        sequence[#sequence + 1] = entry.item
-    end
-
-    return sequence, positioned
-end
-
---- Has this chapter been read to its own last page?
----
---- The page counter is the only evidence a Kavita-style feed carries, so
---- "finished" can only mean `last_read >= page_count` here.
----
---- **A chapter with no count is unfinished, not finished.** Offering a chapter
---- again is a smaller mistake than skipping past one, and a Suwayomi catalogue
---- row has no count at all until its stream is resolved — so the alternative
---- would silently treat every unopened Suwayomi chapter as done.
-local function isFinished(item)
-    local total = tonumber(item.page_count) or tonumber(item.progress_total)
-    local read = tonumber(item.last_read)
-    return (total and read and read >= total) and true or false
-end
-
---- The first entry in reading order the server has not finished, or nil.
----
---- Takes no account of `positioned`, like `firstIn`: this reads *forward*, and
---- the unpositioned tail sits at the *end* of the sequence, so it cannot win
---- from this direction — there is nothing to guard against.
----
---- Returns nil when every entry is finished, and the two callers want opposite
---- things from that: `firstUnread` (the row above a series feed) says so and
---- stops, while `firstUnfinishedOrLast` below treats it as "this reader is at
---- the end" and names the last chapter instead.
-local function firstUnfinished(sequence, _positioned)
-    for _, item in ipairs(sequence) do
-        if not isFinished(item) then
-            return item
-        end
-    end
-    return nil
-end
-
---- The last entry in reading order.
----
---- Two passes, and the order of the passes is the point: the ordered prefix is
---- reading order, so its last entry is the furthest along; the unpositioned tail
---- is *feed* order, and is only consulted when nothing was positioned at all.
---- For Suwayomi that tail is empty — every chapter entry is positioned, by its
---- `rel=subsection` link or by its stream — so the second pass is dead code
---- there, and it exists for Kavita, whose feed order is reading order and where a
---- chapter whose title carries no number is perfectly ordinary.
-local function lastIn(sequence, positioned)
-    for pass = 1, 2 do
-        local first, last
-        if pass == 1 then
-            first, last = 1, positioned
-        else
-            first, last = positioned + 1, #sequence
-        end
-        if last >= first then
-            return sequence[last]
-        end
-    end
-    return nil
-end
-
---- Where the reader carries on: the first chapter not finished, or the last one.
----
---- **The second half is not decoration.** A series read to the end has nothing
---- unfinished, and "nowhere to continue" is not the answer this button is for —
---- the reader who finished chapter 177 and taps again is at chapter 177, and a
---- button that vanished would be telling them the series is empty. It replaced a
---- fall back to the catalogue, which is the snapshot from the last sync and
---- answered with whatever the catalogue happened to know (chapter 78, the last
---- row it had) rather than with where the reader is.
----
---- This is the default for `freshResumeTarget`, so it is what Kavita gets on its
---- own feed and what a Suwayomi series gets on the canonical feed when the
---- server reports nothing unread.
-local function firstUnfinishedOrLast(sequence, positioned)
-    return firstUnfinished(sequence) or lastIn(sequence, positioned)
-end
-
---- The earliest entry of a feed that already contains only what we want.
----
---- **The same question as `firstUnfinished` above, answered by the server
---- instead of inferred.** This one is handed a feed the server already filtered
---- to the chapters it flags *unread* (`Suwayomi.unreadFilter`), where every entry
---- qualifies by construction and the answer is simply the earliest one.
----
---- Why not just ask `firstUnfinished` there too: on a filtered feed the two
---- usually agree, and where they disagree the *server* is right. A chapter the
---- server flags unread whose page counter happens to read full — the two axes
---- genuinely do disagree, which is the whole reason `unreadFilter` exists — would
---- be skipped by the page-count predicate and offered by this one. The flag is
---- what the reader sees in the server's own UI, so the flag wins.
-local function firstIn(sequence, _positioned)
-    return sequence[1]
-end
 
 --- The chapter the server's own position points at, read from the feed the
 --- browser just fetched.
@@ -741,7 +608,7 @@ end
 --- So the walk happens *after* the handoff, in the background, and neither the
 --- tap nor the book pays for it.
 ---
---- **Gated by `Sync.plan`, and never with `force`.** The gate is what stops a
+--- **Gated by `Sync.due`, and never with `force`.** The gate is what stops a
 --- reader adding three volumes of one series from paying for three walks —
 --- and it costs nothing on the first, because a series with no `synced_at` is
 --- never "fresh". `force` would skip the *backoff* half too, and that half is
@@ -767,9 +634,9 @@ local function startBackgroundSync(registered)
             "in the background")
         return
     end
-    -- The TTL comes from the caller rather than from inside `Sync.plan`, whose
+    -- The TTL comes from the caller rather than from inside `Sync.due`, whose
     -- whole claim is that it reads the series row it is given and nothing else.
-    local due, reason = Sync.plan(series, { ttl = Settings.get("sync_ttl_seconds") })
+    local due, reason = Sync.due(series, { ttl = Settings.get("sync_ttl_seconds") })
     if not due then
         logger.info("Meguru: background sync of", series.name, "not due (", reason, ")")
         return
@@ -1215,7 +1082,7 @@ local function seriesItems(info, conn)
 
     local function walk(which, walk_ctx)
         local url = driver.catalogURL(conn.url, remote_id, walk_ctx, which)
-        local pages, complete, reason = Sync.walk(url, {
+        local pages, complete, reason = Feed.walk(url, {
             username  = conn.username,
             password  = conn.password,
             timeout   = "resume",
@@ -1687,7 +1554,7 @@ end
 local function planMarker(server, series, item)
     if type(item.marker_path) == "string" and item.marker_path ~= ""
         and FS.exists(item.marker_path) then
-        -- `count` is read back rather than resolved: `Sync.resolveStream` costs a
+        -- `count` is read back rather than resolved: `Feed.resolveStream` costs a
         -- request for a Suwayomi chapter, and the marker already knows. It used
         -- to be dropped here entirely, which is why the server's page button
         -- appeared for a freshly made marker and vanished on the second open of
@@ -1704,7 +1571,7 @@ local function planMarker(server, series, item)
         }
     end
 
-    local template, count = Sync.resolveStream(item, server)
+    local template, count = Feed.resolveStream(item, server)
     if type(template) ~= "string" or template == "" then
         logger.warn("Meguru: no page stream for", item.title)
         UIManager:show(InfoMessage:new{
@@ -1714,15 +1581,23 @@ local function planMarker(server, series, item)
         return nil
     end
 
+    -- Everything the marker needs to answer "what series is this, and what
+    -- feed describes it" without a catalog. Written here, at the one place a
+    -- marker is built, from rows that are already in hand — `server` and
+    -- `series` are arguments, so none of this costs a query.
     local desc = Marker.new{
         server_name      = server.name,
         series_remote_id = series.remote_id,
+        series_name      = series.name,
+        server_kind      = server.kind,
         item_key         = item.item_key,
-        item_id          = item.id,
         title            = item.title,
         template         = template,
         count            = count,
         last_read        = item.last_read,
+        lang             = Catalog.serverLang(server.name),
+        cover_url        = item.cover_url,
+        series_cover_url = series.cover_url,
     }
     local dir = Marker.dirFor(desc, series, {
         base_dir              = Marker.baseDir(),
@@ -2159,12 +2034,18 @@ function Open.openAsBook(browser, item, stream)
     local desc = Marker.new{
         server_name      = server_name,
         series_remote_id = registered and registered.series.remote_id or nil,
+        series_name      = registered and registered.series.name or nil,
+        -- `kind` is this open's own sniff when it has one, and `registerBook`
+        -- has already stored that on the server row by now, so the two agree.
+        server_kind      = registered and registered.server.kind or kind,
         item_key         = registered and registered.item.item_key or nil,
-        item_id          = registered and registered.item.id or nil,
         title            = Naming.stripAliasPrefix(item.title or item.text),
         template         = stream.href,
         count            = tonumber(stream.count) or 0,
         last_read        = tonumber(stream.last_read) or nil,
+        lang             = lang,
+        cover_url        = registered and registered.item.cover_url or nil,
+        series_cover_url = registered and registered.series.cover_url or nil,
     }
 
     -- A marker that names no item is still a valid book; it just cannot be

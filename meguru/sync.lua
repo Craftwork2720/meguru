@@ -1,54 +1,25 @@
 --[[--
-Syncing a series: walking its canonical feed and writing the result.
+The half of the old sync that writes: turning a completed walk into catalog
+rows, and deciding whether a series is due for one.
 
-The split that matters here is between **walking** and **applying**. A walk is
-pure network and touches no database; an apply is one transaction and touches no
-network. A Kindle walk takes tens of seconds, and WAL serializes writers anyway,
-so holding the write lock across it would block every other plugin instance for
-no benefit.
+**The walking half moved to `meguru/feed.lua`**, which writes nothing and knows
+nothing about a catalog. What is left here is the part that cannot exist without
+a database — one transaction per series, the generation sweep, the failure
+counters — and it is on its way out with the catalog itself. Anything that only
+needs to *read* a feed should reach for `Feed`, not for this.
 
-Three rules make a partial walk harmless, and all three have to hold together:
-
-  * `complete` is conservative — false for a non-200, an unparseable body, the
-    page cap, or a `next` pointing back at a page already visited. A walk that
-    is not complete writes nothing at all.
-  * The removal sweep compares against the pass's own generation stamp, never
-    against "absent from the result". A truncated walk never advances the stamp,
-    so it can never tombstone anything.
-  * `item_count` is recomputed from the distinct items written, so the
-    implausible-shrink gate compares like with like.
-
-This module is deliberately free of UI and of `UIManager`. It reports progress
-and takes a cancellation check through `opts`, so the same code drives both a
-blocking call from a console session and a repainting widget scheduled one page
-per `nextTick`.
+Kept as a separate module meanwhile so the transition is one deletion at a time:
+the walk, the ordering and the neighbour selection are already database-free, so
+when the catalog goes, `Sync` goes whole and `Feed` stays.
 --]]
 
 local logger = require("logger")
 
-local Base = require("meguru/driver/base")
 local Catalog = require("meguru/catalog")
-local Net = require("meguru/net")
-local Sources = require("meguru/sources")
+local Feed = require("meguru/feed")
 local Store = require("meguru/store")
 
-Base.loadDrivers()
-
 local Sync = {}
-
---- Page cap for one walk. Well past any real series (the reference Kavita
---- instance paginates 20 series per page across 2776 series, so ~139 pages for
---- a whole library) while still bounding a `next` chain that never terminates.
-Sync.MAX_PAGES = 25
-
---- How long a synced series is considered fresh.
----
---- The consumer is `ui/open.lua`'s `startBackgroundSync` — the walk that fills
---- in a series an OPDS add has just created with one book in it — and it is what
---- stops a reader adding three volumes of one series from paying for three
---- walks. A series that has never been synced is never fresh, so the first add
---- always walks; see `Sync.plan`.
-Sync.DEFAULT_TTL = 6 * 3600
 
 --- A sync that finds less than this fraction of the last known item count is
 --- treated as a truncated response rather than as mass deletion. A real
@@ -59,141 +30,8 @@ Sync.MIN_SHRINK = 0.5
 --- Cap on the retry backoff after repeated failures.
 Sync.MAX_BACKOFF = 24 * 3600
 
--- Walking ---------------------------------------------------------------------
-
-local function nextLink(feed, page_url)
-    local url = require("socket.url")
-    for _, link in ipairs(type(feed.link) == "table" and feed.link or {}) do
-        if type(link) == "table" and link.rel == "next"
-            and type(link.href) == "string" and link.href ~= "" then
-            return url.absolute(page_url, link.href)
-        end
-    end
-    return nil
-end
-
---- A resumable `rel=next` walk, one page per `step()`.
----
---- Pagination is followed by link and never by constructing `?page=N`: Kavita's
---- next href is a bare query string and Suwayomi's carries `lang`, so a rebuilt
---- URL would quietly walk a different feed than the one being paged.
----
---- The engine's HTTP is synchronous and there is no thread to walk on, so the
---- walk has to be able to stop between pages and hand control back to the event
---- loop — half a minute of frozen e-ink is what a blocking walk of a 25-page
---- series costs. `Sync.walk` is this stepper run to completion, and that is the
---- right call from a console session; the UI drives the stepper directly.
----
---- `complete` is only ever true when the walk reached the end of the chain.
---- Everything else — a non-200, an unparseable body, the page cap, a `next`
---- pointing back at a page already visited, a cancellation — leaves it false,
---- and `reason` says which.
-local Walker = {}
-Walker.__index = Walker
-
-function Sync.walker(url, opts)
-    return setmetatable({
-        url      = url,
-        opts     = opts or {},
-        visited  = {},
-        pages    = {},
-        count    = 0,
-        -- The URL of the next page to fetch, or nil at the end of the chain.
-        current  = url,
-    }, Walker)
-end
-
---- Fetch one page. Returns true while there is more work.
-function Walker:step()
-    if self.finished then
-        return false
-    end
-    local opts = self.opts
-
-    local function stop(complete, reason)
-        self.finished, self.complete, self.reason = true, complete, reason
-        return false
-    end
-
-    if not self.current then
-        return stop(true, nil)
-    end
-    if self.visited[self.current] then
-        -- A `next` chain that loops would otherwise page forever between two
-        -- feeds.
-        return stop(false, "next-loop")
-    end
-    if self.count >= (opts.max_pages or Sync.MAX_PAGES) then
-        return stop(false, "page-cap")
-    end
-    if opts.is_cancelled and opts.is_cancelled() then
-        return stop(false, "cancelled")
-    end
-    self.visited[self.current] = true
-
-    local page_url = self.current
-    local feed, reason = Net.fetchFeed(page_url, {
-        username = opts.username,
-        password = opts.password,
-        -- Forwarded so a caller walking on the *reader's* behalf rather than on
-        -- the sync's can ask for the short preset. A sync is a background job
-        -- and may spend the long one; the row at the top of a series feed is a
-        -- tap, and `Net.RESUME_*` (4s/8s) instead of `Net.FEED_*` (10s/30s) is
-        -- what keeps a slow server from holding the screen. Default unchanged:
-        -- nil here is still `"feed"` inside `Net.fetchFeed`.
-        timeout = opts.timeout,
-    })
-    self.count = self.count + 1
-    if not feed then
-        return stop(false, reason or "network")
-    end
-
-    -- The URL is kept alongside the feed because entry hrefs resolve against
-    -- *their own* page: a later page need not share the first one's path.
-    self.pages[#self.pages + 1] = { feed = feed, url = page_url }
-    if opts.on_page then
-        opts.on_page(self.count, page_url)
-    end
-
-    self.current = nextLink(feed, page_url)
-    if not self.current then
-        return stop(true, nil)
-    end
-    return true
-end
-
---- Walk `url` to the end in one call. Returns `pages, complete, reason, count`.
-function Sync.walk(url, opts)
-    local walker = Sync.walker(url, opts)
-    while walker:step() do end
-    return walker.pages, walker.complete, walker.reason, walker.count
-end
-
--- Applying --------------------------------------------------------------------
-
---- Collapse repeated item keys, keeping the first occurrence and numbering the
---- survivors from 1.
----
---- Kavita emits some chapters twice, byte for byte, and the uniqueness
---- constraint would collapse them at insert anyway — but `feed_index` is
---- assigned here, and duplicating a position would leave gaps in the reading
---- order. Doing it explicitly also means the item count and the shrink gate see
---- the same number the database will end up holding.
-local function dedupe(items)
-    local seen, unique, duplicates = {}, {}, 0
-    for _, item in ipairs(items) do
-        if item.item_key and not seen[item.item_key] then
-            seen[item.item_key] = true
-            unique[#unique + 1] = item
-        else
-            duplicates = duplicates + 1
-        end
-    end
-    -- Numbered after deduping, never before: a duplicated position would leave
-    -- a gap in the reading order.
-    Catalog.numberPositions(unique)
-    return unique, duplicates
-end
+--- How long a synced series is considered fresh.
+Sync.DEFAULT_TTL = 6 * 3600
 
 --- Write a completed walk for one series, in a single transaction.
 ---
@@ -210,8 +48,6 @@ function Sync.apply(series, items, generation)
     end)
 end
 
--- Planning --------------------------------------------------------------------
-
 --- Exponential backoff, capped. A server that is down stays down for a while,
 --- and retrying it on every library browse helps nobody.
 function Sync.backoffSeconds(fail_count)
@@ -227,6 +63,10 @@ end
 --- would plan the same row differently in two runs, and a gate that cannot be
 --- reasoned about from its arguments is not a gate.
 ---
+--- Named `due` rather than `plan` because `Feed.plan` builds a *walk*, and the
+--- two would otherwise be read as the same thing. This one only says whether
+--- the walk is worth starting.
+---
 --- Callers are responsible for the two conditions that are not about the series:
 --- that it is worth asking for, and that the network is up. On the background
 --- path that second one is load-bearing rather than decorative — a walk that
@@ -235,10 +75,8 @@ end
 ---
 --- `opts.force` skips the backoff as well as the TTL, so it is not for a caller
 --- who merely wants the walk to happen: it is for a caller who has decided the
---- backoff does not apply. The background walk uses the plain gate, because a
---- server whose walk just failed must not be re-walked on the next book added
---- from it.
-function Sync.plan(series, opts)
+--- backoff does not apply.
+function Sync.due(series, opts)
     opts = opts or {}
     if opts.force then
         return true
@@ -260,103 +98,32 @@ function Sync.plan(series, opts)
     return true
 end
 
--- Running ---------------------------------------------------------------------
-
---- The catalog root to build fetch URLs from: the URL the user configured minus
---- any trailing slash, so joining a path never doubles it.
-local function baseURL(configured_url)
-    if type(configured_url) ~= "string" or configured_url == "" then
-        return nil
-    end
-    return (configured_url:gsub("/+$", ""))
-end
-
---- A `fetch(url) -> feed` closure bound to one server's credentials, for
---- drivers whose streams need an extra request. This is the only I/O a driver
---- ever causes, and it happens through here so credentials, timeouts and log
---- redaction stay in the engine.
-local function makeFetch(conn)
-    return function(url_str)
-        if type(url_str) ~= "string" or url_str == "" then
-            return nil
-        end
-        local feed = Net.fetchFeed(url_str, {
-            username = conn.username,
-            password = conn.password,
-        })
-        return feed
-    end
-end
-
---- Everything a sync needs before it can start walking: which driver, whose
---- credentials, the canonical feed URL, and the driver's context.
+--- `Feed.plan`, with this series' failures recorded on its row.
 ---
---- Split out from `Sync.run` because a synced walk has three separable parts —
---- decide, walk, apply — and only the middle one is long. The UI drives the
---- walk itself, one page per tick, and calls `Sync.finish` at the end; `run` is
---- the three of them back to back for callers that can afford to block.
+--- Split out from `Feed.plan` because the recording is the one thing the engine
+--- cannot do without a catalog: every reason to refuse (an unknown kind, a
+--- server that is not configured) is a condition only a re-attempt or a fix can
+--- clear, and the backoff should start counting now.
 ---
---- Records the failure on the series row before returning nil: every reason to
---- refuse here (an unknown kind, a server that is not configured) is a
---- condition only a re-attempt or a fix can clear, and the backoff should start
---- counting now.
----
---- Returns `plan, nil` or `nil, reason, summary`.
+--- Returns `plan, nil` or `nil, reason`.
 function Sync.prepare(server, series, opts)
     opts = opts or {}
-    local summary = { pages = 0, items = 0, duplicates = 0 }
-
-    local driver = Base.forKind(server.kind)
-    if not driver then
-        Catalog.recordSyncFailure(series.id, "unknown server kind")
-        return nil, "unknown server kind", summary
-    end
-
-    local conn = Sources.connection(server.name)
-    local base = conn and baseURL(conn.url)
-    if not base then
-        Catalog.recordSyncFailure(series.id, "server not configured")
-        return nil, "server not configured", summary
-    end
-
-    -- The driver's context. `lang` is remembered per server by ui/open.lua,
-    -- which is the only place that sees the user browsing and can therefore
-    -- learn it: a background walk has no browsing context, and a driver's own
-    -- default would catalogue the wrong translation of a Suwayomi manga while
-    -- still keying it to the right series.
-    local ctx = {
-        lang = opts.lang or Catalog.serverLang(server.name),
-    }
-    local url = driver.catalogURL(base, series.remote_id, ctx)
-    if type(url) ~= "string" or url == "" then
-        Catalog.recordSyncFailure(series.id, "no catalog feed for this series")
-        return nil, "no catalog feed for this series", summary
-    end
-
-    return {
-        driver = driver,
-        ctx    = ctx,
-        url    = url,
-        -- Ready for `Sync.walker`, so neither caller rebuilds the credentials
-        -- (and cannot pass the wrong server's).
-        walker_opts = {
-            username     = conn.username,
-            password     = conn.password,
-            max_pages    = opts.max_pages,
-            on_page      = opts.on_page,
-            is_cancelled = opts.is_cancelled,
-            -- Forwarded because a caller can walk on an errand the reader did
-            -- not ask for and cannot stop, and `"resume"` is how it bounds the
-            -- worst case. `Walker:step` already passes it to the fetch; this
-            -- line is the only thing that was missing.
-            timeout      = opts.timeout,
-        },
-    }, nil, summary
+    return Feed.plan(server, {
+        remote_id    = series.remote_id,
+        lang         = opts.lang,
+        max_pages    = opts.max_pages,
+        on_page      = opts.on_page,
+        is_cancelled = opts.is_cancelled,
+        timeout      = opts.timeout,
+        on_failure   = function(reason)
+            Catalog.recordSyncFailure(series.id, reason)
+        end,
+    })
 end
 
 --- Turn a completed walk into catalog writes.
 ---
---- `walker` is a finished `Sync.walker` and `plan` the table `Sync.prepare`
+--- `walker` is a finished `Feed.walker` and `plan` the table `Sync.prepare`
 --- returned. Nothing is written unless the walk was complete: a walk cut short
 --- says nothing about what the series contains, and writing it would tombstone
 --- everything it never reached.
@@ -374,23 +141,14 @@ function Sync.finish(series, walker, plan)
         -- Said out loud, and not only written into `sync_error`. A walk started
         -- in the background has no popup to report through, so without this line
         -- a failure would leave no trace anywhere the reader or a log reader
-        -- could find it. The sibling branch below already warns; this one was
-        -- the gap.
+        -- could find it.
         logger.warn("Meguru: sync of", series.name, "did not complete -",
             tostring(reason))
         Catalog.recordSyncFailure(series.id, "incomplete walk: " .. tostring(reason))
         return nil, reason, summary
     end
 
-    local collected = {}
-    for _, page in ipairs(walker.pages) do
-        for _, item in ipairs(plan.driver.parseCatalogPage(
-                page.feed, page.url, plan.ctx) or {}) do
-            collected[#collected + 1] = item
-        end
-    end
-
-    local items, duplicates = dedupe(collected)
+    local items, duplicates = Feed.collect(walker, plan)
     summary.items, summary.duplicates = #items, duplicates
 
     local previous = series.item_count or 0
@@ -411,53 +169,14 @@ end
 --- Sync one series end to end, blocking.
 ---
 --- Returns `true, summary` on success or `nil, reason, summary` on failure.
---- Failure is recorded on the series row and is never fatal: a sync is a
---- background improvement to a catalog that the user can read without.
 function Sync.run(server, series, opts)
-    local plan, reason, summary = Sync.prepare(server, series, opts)
+    local plan, reason = Sync.prepare(server, series, opts)
     if not plan then
-        return nil, reason, summary
+        return nil, reason, { pages = 0, items = 0, duplicates = 0 }
     end
-    local walker = Sync.walker(plan.url, plan.walker_opts)
+    local walker = Feed.walker(plan.url, plan.walker_opts)
     while walker:step() do end
     return Sync.finish(series, walker, plan)
-end
-
---- Resolve the page stream for an item, refreshing it from the server when the
---- driver needs to.
----
---- Called on every open, not once: for Suwayomi this is a correctness
---- requirement, since the stored template carries a chapter position that can
---- change. The stored `template` remains the offline fallback, which is why the
---- engine only calls this when there is a catalog and a network to call it on.
-function Sync.resolveStream(item, server, opts)
-    opts = opts or {}
-    local driver = server and Base.forKind(server.kind)
-    if not driver then
-        -- Both of these return the stored template *before* any driver runs, and
-        -- the stored template is NULL for every lazy item — which is exactly the
-        -- items that need this function. So the failure surfaces three frames
-        -- away as "no page stream", with nothing naming the cause. Kavita items
-        -- never notice: their template is stored, so the early return is a
-        -- success by accident.
-        logger.warn("Meguru: no driver for server", tostring(server and server.name),
-            "(kind=" .. tostring(server and server.kind) .. ")",
-            "- cannot resolve the stream for", item.title)
-        return item.template, item.page_count
-    end
-    local conn = Sources.connection(server.name)
-    if not conn then
-        logger.warn("Meguru: no configured catalog named",
-            tostring(server and server.name), "in settings/opds.lua")
-        return item.template, item.page_count
-    end
-    local template, count = driver.resolveStream(item, makeFetch(conn), opts)
-    if template then
-        return template, count or item.page_count
-    end
-    -- Could not refresh: fall back to whatever the last sync stored rather than
-    -- failing to open a book that can still be read.
-    return item.template, item.page_count
 end
 
 return Sync

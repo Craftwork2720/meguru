@@ -14,7 +14,7 @@ because the alternative is a series the catalog only knows one book of. The tick
 is not what draws the dialog, so the walk still yields — see `run`.
 
 The work itself is not reimplemented: `Sync.prepare` builds the plan,
-`Sync.walker` fetches one page per `step`, `Sync.finish` writes the result. This
+`Feed.walker` fetches one page per `step`, `Sync.finish` writes the result. This
 file is entirely about the tick — and about the one guard that stops two walks
 over the same series, which is here because this is the only module every UI
 walker passes through.
@@ -38,6 +38,7 @@ local T = require("ffi/util").template
 
 local logger = require("logger")
 
+local Feed = require("meguru/feed")
 local Sync = require("meguru/sync")
 
 --- Series ids with a walk in flight, so one feed is never walked twice at once.
@@ -49,7 +50,7 @@ local Sync = require("meguru/sync")
 --- scalar guard; it was replaced by this, because two guards for one invariant
 --- is how they drift.)
 ---
---- It is not redundant with `Sync.plan`'s TTL gate: `synced_at` is written when
+--- It is not redundant with `Sync.due`'s TTL gate: `synced_at` is written when
 --- a walk *ends*, so a second request arriving while the first is still running
 --- finds the series looking exactly as stale as it did before, and would start a
 --- second walk over the same feed.
@@ -236,7 +237,7 @@ function SyncJob.run(server, series, on_done, opts)
     if dialog then
         UIManager:show(dialog)
     end
-    local walker = Sync.walker(plan.url, plan.walker_opts)
+    local walker = Feed.walker(plan.url, plan.walker_opts)
 
     local function step()
         -- Everything below runs inside a UIManager tick, which pcalls what it
