@@ -2529,6 +2529,12 @@ end
 -- same setting, because it is about the panel's *shape* against the screen's and
 -- nothing about it changed.
 --
+-- Its second return value is **stock's** answer, and stays stock's: `ReaderHighlight`
+-- reads it to build its own bare ImageViewer, so changing what it means would
+-- change stock's path for stock's reasons. The *sequence* viewer answers the same
+-- question separately, and now answers the direction too — see `PanelViewer` in
+-- `ui/panelzoom` for why the two agree on shape and differ on which way to turn.
+--
 -- The tile goes through this document's own LRU, which is what owns it: the
 -- viewer is handed `image_disposable = false` and never frees what it is given,
 -- and a BlitBuffer is malloc'd outside the Lua heap, so a buffer rendered outside

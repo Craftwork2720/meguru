@@ -450,6 +450,41 @@ function Reader.panelZoomMode(ui)
     return Settings.get("manga_order") and "manga" or "comic"
 end
 
+--- Which way this book wants wide things turned: `"left"`, `"right"`, or nil.
+---
+--- The panel viewer turns a panel that is wider than the screen, and it must turn
+--- it the same way the *page* is turned — otherwise a manga the reader has told
+--- to go left goes left, and its panels go right. So this reads the very setting
+--- that turns the page, `Rotate wide pages`, and hands the word to the viewer:
+--- one direction for both, which is the whole point.
+---
+--- **It reads `configurable`, never `Settings.get("rotate_wide")`.** That
+--- preference is only the floor: `Defaults.seedGeometry` writes it into the book's
+--- field and its sidecar at open time, so every book already opened has an answer
+--- of its own and re-reading the preference here would answer for a book that
+--- disagrees with it. (`Reader.panelZoomMode` above reads its cascade for the same
+--- reason.)
+---
+--- nil means the row is off, and then the viewer makes every rotation decision the
+--- way it did before this existed.
+function Reader.panelZoomDirection(ui)
+    local configurable = ui and ui.document and ui.document.configurable
+    if not (configurable and configurable.rotate_wide_pages ~= nil) then
+        return nil
+    end
+    -- The row's domain is 0 = off, 1 = right, 2 = left, but a stored value can be
+    -- the string form, which is why `wideRotateIsLeft` is reused rather than the
+    -- comparison being written out again here.
+    local value = configurable.rotate_wide_pages
+    if wideRotateIsLeft(value) then
+        return "left"
+    end
+    if value == ROTATE_RIGHT or value == tostring(ROTATE_RIGHT) then
+        return "right"
+    end
+    return nil
+end
+
 --- Leave KOReader's own cascade alone, and put Meguru's preference underneath it.
 ---
 --- The switch is the stock "⋮ → Panel zoom (manga/comic) → Allow panel zoom", and
@@ -633,6 +668,9 @@ local function installPanelZoom(ui)
         end
 
         local mode = Reader.panelZoomMode(ui)
+        -- Resolved per press, like `mode`: the row can be changed with the viewer
+        -- closed and the next open follows it.
+        local direction = Reader.panelZoomDirection(ui)
         local t_start = nowMs()
         -- Four values: `getPanelsFromPage` returns panels, accepted and reason,
         -- and `pcall` adds its own. A missing slot here does not fail — it
@@ -663,7 +701,8 @@ local function installPanelZoom(ui)
             mode, nowMs() - t_start))
 
         local start = Panel.indexAt(panels, pos.x, pos.y) or 1
-        local ok_show, shown = pcall(PanelZoom.open, ui, pos.page, panels, start, mode)
+        local ok_show, shown = pcall(PanelZoom.open, ui, pos.page, panels, start,
+            mode, direction)
         if not ok_show or not shown then
             logger.warn("Meguru: panel zoom viewer failed:",
                 ok_show and "not shown" or tostring(shown))

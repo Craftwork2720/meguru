@@ -115,11 +115,49 @@ local function panelRotations(panels)
     return rotates
 end
 
+-- The angle a turned panel gets, or nil when turning is stock's business.
+--
+-- **This is the whole of "a panel turns the book's way".** ImageWidget measures
+-- its angle as 270 clockwise and 90 anti-clockwise — stock's own
+-- `rotate_clockwise and 270 or 90` — so the book's two words map onto it as a
+-- pair of quarters.
+--
+-- **The pair is crossed, and that is the part to get right.** `Rotate wide pages:
+-- left 90°` names a turn of the *device*: the screen is rotated and the reader
+-- turns along with it, so the setting's word describes what happens to the hand,
+-- not to the glass. A panel has no device to turn — it is rotated *inside* the
+-- screen the reader is already holding — so the same reading position is reached
+-- by the opposite quarter. Left in the row is a counter-clockwise device, which
+-- is a clockwise panel.
+--
+-- That crossing was derived once, wrong, from stock's comment, and then observed
+-- on a device turning panels the wrong way; the two constants are the whole fix,
+-- which is why they are the one thing here worth touching without a plan.
+--
+-- `turned` is stock's `self.rotated` — *whether* a panel should be turned, which
+-- stock decides from the panel's shape against the screen's. This answers only
+-- *which way*. Keeping those two questions apart is what lets the Rotate button
+-- stay stock's: its callback flips the boolean, and the boolean's meaning here
+-- changes with it, with nothing in between to keep in step.
+local function panelRotationAngle(turned, rotate)
+    if not (turned and rotate) then
+        return nil
+    end
+    return rotate == "left" and 270 or 90
+end
+
 local PanelViewer = ImageViewer:extend{
     ui = nil,             -- the ReaderUI; UIManager:show does not set it
     page = nil,           -- the book page these panels were cut from
     panels = nil,         -- the ordered rects, kept: the handoff needs them
     mode = nil,           -- "manga" | "comic"
+    -- "left" | "right" | nil — the book's `Rotate wide pages`, resolved by
+    -- `ui/reader.lua` and handed in like `mode`. Not to be confused with the two
+    -- rotation fields beside it: `rotated` (stock) is *whether*, and
+    -- `meguru_rotates` is *whether*, per panel. This is the only one that knows
+    -- a direction, and nil means the reader never asked for one — every
+    -- rotation is then stock's, exactly as before this existed.
+    rotate = nil,
     meguru_rotates = nil, -- per panel, from panelRotations above
     _meguru_warm = nil,   -- the pending pre-warm action, for unscheduling
     _meguru_handoff_pending = nil,
@@ -214,6 +252,11 @@ end
 
 -- Move to another panel: display it, hand the one left behind back, and re-arm
 -- the warm for whatever is next to *it*.
+--
+-- Reassigning `self.rotated` here is also the whole of "a tapped rotation lasts
+-- one panel": it overwrites the reader's press with the automatic decision on
+-- **every** change, so the next panel — and coming back to this one later —
+-- starts from the automatic answer without anything having to remember the press.
 function PanelViewer:switchToImageNum(image_num)
     local previous = self._images_list_cur
     self.rotated = self.meguru_rotates[image_num] or false
@@ -222,6 +265,44 @@ function PanelViewer:switchToImageNum(image_num)
         self:meguruRelease(previous)
     end
     self:meguruArmWarm()
+end
+
+-- Logged once per process: the window below closing is an upstream change, not a
+-- per-zoom-step event, and a line per rebuild would bury everything else.
+local panel_rotate_warned = false
+
+-- Stock builds the ImageWidget with its own idea of the angle; this replaces the
+-- angle, and only the angle, when the book has said which way to turn.
+--
+-- **Why this is a correction after the fact rather than an argument.** Stock has
+-- no caller-facing direction input — `self.rotated` is a boolean and the 90-vs-270
+-- choice is a local inside `ImageViewer:_new_image_wg`, computed from screen
+-- parity and two KOReader globals. Passing a direction would mean copying that
+-- body. It does not have to be copied, because `ImageWidget` defines no `init`
+-- (`Widget:new` calls one only when it exists) and `_render` — the only reader of
+-- `rotation_angle` — is entered from `getSize`/`paintTo` and returns at once when
+-- `_bb` is already set, which nothing does before the first layout. So between
+-- the widget's construction and `ImageViewer:update`'s first `resetLayout` the
+-- angle is still unwritten, and setting it here is equivalent to having passed it.
+--
+-- The guard is that assumption made checkable. If upstream ever renders at
+-- construction, the angle is missed, the panel turns stock's way, and the warning
+-- says so once; the repair is a forked `_new_image_wg`, which is what this avoids.
+function PanelViewer:_new_image_wg()
+    ImageViewer._new_image_wg(self)
+    local angle = panelRotationAngle(self.rotated, self.rotate)
+    if not angle then
+        return -- no direction from the book, or nothing to turn: stock's angle stands
+    end
+    if self._image_wg and not self._image_wg._bb then
+        self._image_wg.rotation_angle = angle
+        return
+    end
+    if not panel_rotate_warned then
+        panel_rotate_warned = true
+        logger.warn("Meguru: panel rotation angle could not be applied; "
+            .. "ImageWidget rendered before _new_image_wg returned")
+    end
 end
 
 function PanelViewer:onShowNextImage()
@@ -334,6 +415,12 @@ function PanelViewer:meguruHandoff(direction)
 
     local this = self
     local mode = self.mode
+    -- Read here, beside `mode` and outside the tick, for the same reason: the
+    -- viewer this is handed off from may be gone by the time the tick runs. The
+    -- next viewer would otherwise be built with no direction and silently turn
+    -- stock's way — and only at a page boundary, which is the one place nobody
+    -- looks.
+    local rotate = self.rotate
     UIManager:tickAfterNext(function()
         local ok, err = pcall(function()
             if not UIManager:isWidgetShown(this) then
@@ -361,7 +448,7 @@ function PanelViewer:meguruHandoff(direction)
             ui:handleEvent(Event:new("GotoPage", page))
             if panels then
                 local index = (direction == "next") and 1 or #panels
-                PanelZoom.open(ui, page, panels, index, mode)
+                PanelZoom.open(ui, page, panels, index, mode, rotate)
             else
                 -- Only reachable when the page would not decode: a page the
                 -- detector refused comes back as the whole page, so the
@@ -390,9 +477,17 @@ end
 
 -- Show the panels of one page, starting at `index`.
 --
+-- `mode` and `rotate` are two adjacent strings of the same shape — the reading
+-- direction, and `"left"`/`"right"`/nil from the book's `Rotate wide pages` —
+-- so the order is worth naming: **mode, then rotate**. Swapping them is silent,
+-- and shows as panels in mirrored order or turned the wrong way.
+--
+-- A nil `rotate` means this viewer is exactly the one that existed before
+-- directions did: every rotation decision is stock's.
+--
 -- Returns false when there is nothing to show, which is what lets the caller
 -- fall back to the single-region viewer rather than opening an empty one.
-function PanelZoom.open(ui, page, panels, index, mode)
+function PanelZoom.open(ui, page, panels, index, mode, rotate)
     local doc = ui and ui.document
     if not (doc and panels and #panels > 0) then
         return false
@@ -413,6 +508,7 @@ function PanelZoom.open(ui, page, panels, index, mode)
         page = page,
         panels = panels,
         mode = mode,
+        rotate = rotate,
         meguru_rotates = rotates,
         image = images,
         images_list_nb = #panels,
@@ -433,8 +529,12 @@ function PanelZoom.open(ui, page, panels, index, mode)
     if index and index > 1 and index <= #panels then
         viewer:switchToImageNum(index)
     end
+    -- The direction is named because this is the only place the resolved answer
+    -- appears, and a panel turned the wrong way is otherwise indistinguishable
+    -- in a log from a panel that was never meant to turn.
     logger.dbg("Meguru: panel zoom opened on page", page, "panel", index or 1,
-        "of", #panels, "(" .. tostring(mode) .. ")")
+        "of", #panels, "(" .. tostring(mode) .. ")",
+        rotate and ("turned " .. rotate) or "no turn direction")
     return true
 end
 

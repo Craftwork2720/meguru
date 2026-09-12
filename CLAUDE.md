@@ -134,7 +134,9 @@ circular. (`ui/network/manager` is reached the same lazy way by `doc/document`
 and `seriescover`, but it is KOReader's module, not ours — it is not an edge in
 this graph, and it is deferred because it is a *device* state that need not exist
 where these modules are loaded.) `ui/panelzoom` requires no `meguru/` module at all — it is handed panels
-as arguments. The edges that do exist between the panel modules are `ui/reader` ->
+as arguments, and with them the reading direction and the rotation direction, both
+as plain strings: the *domain* of those settings stays in `ui/reader` and the viewer
+is told the word. The edges that do exist between the panel modules are `ui/reader` ->
 `ui/panelzoom`, `doc/document` -> `panel`, and `panel` -> `doc/image`.
 
 ## Series state, and where it lives
@@ -1145,6 +1147,71 @@ bottom-left screenshot corner, which are deliberate gestures this must not quiet
 take over. The hardware keys come free: `ImageViewer:init` binds `PgFwd`/`PgBack` to
 next/previous image and `Back` to close whenever `image` is a list.
 
+**A panel is turned the book's way.** With `Rotate wide pages: left` the *page* goes
+left, and a panel wider than the screen used to be able to go right: the page is
+turned by `Screen:setRotationMode` in the setting's direction, while a panel is turned
+through stock's `rotated` — a **boolean**, whose 90-vs-270 direction stock computes
+*inside* `ImageViewer:_new_image_wg` from screen parity and two KOReader globals, with
+no caller-facing input. So the direction has to come from somewhere, and it comes from
+the same row.
+
+**The two words map onto opposite quarters, and that is the part to get right.**
+`Rotate wide pages: left 90°` names a turn of the **device** — the screen is rotated and
+the reader turns along with it, so the row's word describes what happens to the hand,
+not to the glass. A panel has no device to turn: it is rotated *inside* the screen the
+reader is already holding, so the same reading position is reached by the opposite
+quarter. Left in the row is a counter-clockwise device, so a **clockwise** panel.
+
+That crossing was first derived the *other* way, from stock's own comment
+(`rotate_clockwise and 270 or 90`, "unintuitive, but this does it"), and the device then
+turned panels the wrong way — which is the cheapest possible lesson in why a mapping
+read off upstream's prose is not an observation. The fix was the two constants in
+`panelRotationAngle` and nothing else, which is the shape this was designed to fail in.
+
+The two rotation questions are **split, and that split is the design**:
+
+| question | answered by | source |
+|---|---|---|
+| *whether* this panel is turned | `panelRotations` + stock's `rotated` | the panel's shape against the screen's |
+| *which way* | `panelRotationAngle(self.rotated, self.rotate)` | the book's `Rotate wide pages` |
+
+`rotate` is `"left"`/`"right"`/nil, resolved once per press by `Reader.panelZoomDirection(ui)`
+in `ui/reader.lua` — reading `configurable.rotate_wide_pages`, **never**
+`Settings.get("rotate_wide")`, because that preference is only the floor and every book
+already opened has written its own answer into its sidecar — and handed to `PanelZoom.open`
+beside `mode`, including through the handoff, which is the half that is easy to forget and
+fails only at a page boundary. nil is the row off, and then every rotation decision is
+stock's, byte for byte.
+
+**The Rotate button needed no change at all, and that is the proof the split is right.**
+Stock's callback flips `self.rotated`; the resolver reads it. *Whether* belongs to stock,
+*which way* to us, so the button keeps working, its `Rotate` / `No rotation` label stays
+true, and nothing has to be kept in step. The same property gives "a tapped rotation lasts
+one panel" for free: `switchToImageNum` already reassigns `rotated` from the automatic
+decision on every change, so the press is scoped to the visit with no state to carry.
+
+**Where the direction is applied is a correction after the fact, and it is worth knowing
+why that is safe.** Passing an angle would mean copying `_new_image_wg`. It does not have
+to be copied: `ImageWidget` defines no `init` (`Widget:new` calls one only when it exists),
+and `_render` — the only reader of `rotation_angle` — is entered from `getSize`/`paintTo`
+and returns at once when `_bb` is already set, which nothing does before the first layout.
+So `PanelViewer:_new_image_wg` calls stock and then writes the angle, and between the
+widget's construction and `update`'s first `resetLayout` that is equivalent to having
+passed it. A guard plus a once-per-process `logger.warn` makes the assumption checkable;
+if it ever fires, the repair is the forked override, and the device check that shows it is
+item 21.6.
+
+Rejected, each for a reason worth keeping: **pre-rotating the tile** (`BlitBuffer:rotatedCopy`)
+— a buffer outside the document's tile LRU that the viewer would have to own and free,
+and it would leave the automatic path on the boolean while the manual path used the tile,
+two mechanisms for one outcome; **forking `_new_image_wg`** — ~30 lines of upstream that
+then silently diverge as upstream gains parameters; **turning the screen**
+(`Screen:setRotationMode`) — a rotation `rotate wide pages` already owns for pages, with
+`session_wide_rotate` to keep in step, and it turns the whole UI rather than the panel;
+and **writing `imageviewer_rotation_portrait_invert` / `..._landscape_invert`** around the
+parent call so stock computes our direction — it mutates a reader's global settings, and
+any save in that window persists it.
+
 **Pre-warming is two machines, and neither is new.** The *panel* half reuses the tile
 LRU: `drawPagePart` already stores what it renders under `page|panel|region`, so
 rendering the next panel a moment after showing this one makes the swipe a cache hit.
@@ -1639,6 +1706,41 @@ Each step must pass before the next:
     page that cannot be decoded (wifi off, bytes aged out) shows the page and **no
     viewer**, logging `no page (…)`.
 
+21. **A turned panel turns the book's way.** One book with a wide spread *and* a page
+    carrying a panel wider than the screen. The check is a **comparison**, so it cannot
+    be fooled by how anyone reads the row's arrows:
+
+    | setting | wide page | wide panel on a portrait screen | expected |
+    |---|---|---|---|
+    | `left 90°` | turned one way | **the same screen edge gets the top of the artwork** | they agree |
+    | `right 90°` | the other way | the top on the other edge | they agree |
+    | `off` | not turned | **exactly as before this existed** — the portrait default, and `Invert default rotation in portrait mode` still flips it | nothing moved |
+
+    Then, in order:
+
+    1. **`off` first.** It is the only row that can prove nothing else moved: the
+       automatic turn, the button's toggle and its `Rotate` / `No rotation` label must be
+       indistinguishable from the previous build.
+    2. **The button with the setting on.** Middle-third tap to reveal the buttons; Rotate
+       turns (and unturns) the panel in the setting's direction, and the label flips
+       truthfully.
+    3. **The press lasts one panel.** After it, move to the next panel — the automatic
+       decision must be back. Then return to the one you pressed on: it re-decides, which
+       is this design's reading of "one panel" (the press is scoped to the visit). If it
+       should instead remember the choice while the viewer lives, that is three lines in
+       `switchToImageNum`.
+    4. **The handoff.** From the *last* panel, swipe forward: the viewer closes, the page
+       turns, a new viewer opens on the next page's first panel, turned the book's way.
+       This is the half that is easy to miss, and it fails **only** at a page boundary.
+    5. **The turned screen.** On the wide page itself — screen already rotated by the
+       setting — long-press a panel that needs turning, under both `left` and `right`. No
+       panel angle can be simultaneously readable and device-space-consistent on a turned
+       screen; judge whether it reads naturally.
+    6. **The button, regression.** Pinch in, press Rotate, toggle *Scale*, press Rotate
+       again: every `update()` rebuilds the `ImageWidget`, so the angle must survive all
+       of them — and `-d` must show **no** `panel rotation angle could not be applied`
+       warning.
+
 ## Known open items
 
 - **A page is decoded at its file's stated density, not at its pixels.**
@@ -1653,6 +1755,21 @@ Each step must pass before the next:
   wants its own pass on a device: the fix is either teaching the decode the density (PNG
   `pHYs`, JPEG JFIF) or moving the plugin's whole coordinate space to pixels, and every
   geometry path shares that space.
+- **The panel rotation direction is applied *after* `ImageWidget:new`, not passed to
+  it.** `PanelViewer:_new_image_wg` relies on `ImageWidget` not having rendered yet —
+  it defines no `init`, and `_render` is entered only from `getSize`/`paintTo`. That is
+  how the direction is applied without forking ~30 lines of `_new_image_wg`, and it is
+  a dependency on an upstream shape rather than on an upstream promise. The guard and
+  its once-per-process `warn` are what make it checkable: if `panel rotation angle
+  could not be applied` ever appears in a log, the panel fell back to stock's direction
+  and the repair is the forked override — the failure is otherwise silent, which is
+  checklist item 21.6.
+- **The 90-vs-270 mapping was derived from stock's comment and was wrong.** It came from
+  `imageviewer.lua:429`'s `rotate_clockwise and 270 or 90` with "unintuitive, but this
+  does it" beside it, and it made panels turn *with* the device where the row names the
+  device and the panel turns against it. Found on a device, fixed by crossing the two
+  constants in `panelRotationAngle`. Now observed rather than derived, so treat it as
+  settled — and note that the row's word is the one thing that never was.
 - **Kavita granularity** is resolved in PROTOCOL.md (entry ↔ stream is 1:1).
   `driver/generic.lua` is not written yet; see Layout.
 - **Komga's `pse:lastRead` has never been seen carrying a value.** Every capture was
