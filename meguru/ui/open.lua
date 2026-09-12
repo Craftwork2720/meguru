@@ -393,6 +393,13 @@ local firstIn = Feed.firstIn
 --- book actually being opened, from the same feed, for the same series.
 local function freshResumeTarget(driver, feed, feed_url, ctx, context, select)
     select = select or firstUnfinishedOrLast
+    -- The feed being walked is the one `discover` has to be told about in order
+    -- to identify the series at all on Komga, and `feed_url` is already this
+    -- function's parameter — so it is filled in here as well as at the call
+    -- sites. That is deliberate redundancy: a caller that forgot would not fail
+    -- loudly, it would simply stop offering the server's position, and the
+    -- "nothing to offer" answer is a legitimate state that reports nothing.
+    ctx = { lang = ctx and ctx.lang, url = ctx and ctx.url or feed_url }
     local mine = {}
     for _, entry in ipairs(feed and feed.entry or {}) do
         local found = driver.discover(entry, nil, ctx)
@@ -470,14 +477,25 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
         return why("no driver for this server's kind", "kind=" .. tostring(kind))
     end
 
+    -- Read before the discovery call rather than after it, because `feed_url` is
+    -- part of the context `discover` is handed. A fresh table is built rather
+    -- than the field being set on the caller's, so no other reader of that
+    -- context sees something its own caller did not put there.
+    --
+    -- **`url` is what identifies a series on Komga.** A Komga book entry names
+    -- no series anywhere — not in its id, not in any of its four links — so the
+    -- URL of the feed the entry was parsed out of is the only place its series
+    -- id exists. Drivers that need it read it; the rest ignore it.
+    local record = last_feed[server_name]
+    local feed, feed_url = record and record.feed, record and record.url
+    ctx = { lang = ctx and ctx.lang, url = feed_url }
+
     local found = driver.discover(raw_entry, stream.href, ctx)
     if not found or not found.series_remote_id then
         return why("driver could not identify the series",
             tostring(raw_entry and raw_entry.title))
     end
 
-    local record = last_feed[server_name]
-    local feed, feed_url = record and record.feed, record and record.url
     if type(feed) ~= "table" then
         return why("no feed retained for this catalog",
             "nothing was parsed since the hook was installed")
@@ -865,7 +883,12 @@ local function feedSeries(browser)
         return nil
     end
 
-    local ctx = { lang = langFromBrowser(browser) }
+    -- `url` is the browsed feed, and it is carried for the same reason
+    -- `registerBook` carries it: a driver that cannot name the series from the
+    -- entry alone reads it here. The loop below *is* the test that this feed
+    -- lists one series and nothing else, so a driver that cannot answer makes
+    -- the row unavailable — which is the right outcome, not a gap.
+    local ctx = { lang = langFromBrowser(browser), url = record and record.url }
     local remote_id
     for _, entry in ipairs(feed.entry) do
         local found = driver.discover(entry, nil, ctx)
@@ -1694,6 +1717,14 @@ local function currentResumeTarget(context)
         -- "which chapters are done" without inference.
         local filter = driver.unreadFilter
 
+        -- The feed a driver may need in order to identify the series at all.
+        -- This path has no browsed feed to read it from — it is a book opened
+        -- from History, where the marker remembers a series id but no URL — so
+        -- the canonical one is built, which is the feed the walk below uses
+        -- anyway. Nil when the driver cannot build one, and a driver that reads
+        -- it then answers nothing rather than guessing.
+        ctx.url = driver.catalogURL(conn.url, context.series_remote_id, ctx, filter)
+
         local function fetch(which)
             local url = driver.catalogURL(conn.url, context.series_remote_id, ctx, which)
             local ok, feed = pcall(Net.fetchFeed, url, {
@@ -1962,7 +1993,15 @@ function Open.openAsBook(browser, item, stream)
     -- server made a library browsed in two languages report whichever was seen
     -- last.
     local lang = langFromBrowser(browser)
-    local ctx = { lang = lang }
+    -- The feed the reader is browsing, carried into the context for both calls
+    -- below that take one. `registerBook` re-derives it from the same table, so
+    -- this is not the only copy — but the inference below runs *before* that,
+    -- and it is the call that matters most for a server whose series identity
+    -- exists only in a feed URL: without it, a Komga reachable through a proxy
+    -- that rewrote the feed's `<author>` would be unattributable, and every book
+    -- off it would be uncatalogueable with nothing in the log to say why.
+    local browsed = last_feed[server_name]
+    local ctx = { lang = lang, url = browsed and browsed.url }
 
     local raw_entry = rawEntryFor(browser, stream)
     if raw_entry and not kind then

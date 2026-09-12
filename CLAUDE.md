@@ -70,6 +70,7 @@ meguru/
     base.lua              driver registry + pure shared helpers
     suwayomi.lua
     kavita.lua
+    komga.lua
 
   doc/
     document.lua          Document subclass: the reading engine
@@ -85,8 +86,7 @@ meguru/
 
 `tools/check.py` is a development aid, not part of the plugin.
 
-Not yet written: `driver/komga.lua` (the driver contract accommodates it, but it
-is out of v1 scope) and `driver/generic.lua` — the `kind = NULL` driver that can
+Not yet written: `driver/generic.lua` — the `kind = NULL` driver that can
 only discover a series by title heuristic and cannot build a canonical
 `catalogURL`, so there is no feed to walk for a neighbour. Until `generic.lua`
 exists, an unrecognised server is handled by the absence of a driver rather than
@@ -138,6 +138,7 @@ a URL would mean a key rotation renamed every book.
 |---|---|
 | Kavita | the `chapterId` query parameter of the stream URL |
 | Suwayomi | the chapter's `<id>` URN (`urn:suwayomi:chapter:16851`) |
+| Komga | the `bookId` path segment of the stream URL (`…/books/{bookId}/pages/{pageNumber}`) |
 
 Suwayomi's chapter *number* is not an identity: the same chapter shows three
 different numbers across title, path and feed, because the path segment is a list
@@ -593,6 +594,17 @@ Recently Added feeds are truncated and must never be the source of a sync. Kavit
 stream URL carries its own `seriesId` beside `chapterId`, which is where
 `Kavita.discover` recovers it.
 
+**Komga is the one server that puts the series id nowhere on the entry**, and the
+consequence is the one thing `ctx` carries besides the language: `ctx.url`, the feed
+the entry was read out of. `Komga.discover` peels `/series/{id}` off it, which is why
+every site that calls `discover` — `registerBook`, `feedSeries`, `currentResumeTarget`
+— has to put a feed URL in the context it hands over. It is not a convenience: without
+it a Komga entry is unidentifiable, and refusing is the right answer, because guessing
+a series from a title syncs a library against a feed that describes something else.
+That refusal is also why **an aggregate is not openable on Komga** — `books/latest`,
+`ondeck` and `keep-reading` list books across every series and carry no series id at
+all — while browsing `/series` → volume works in full.
+
 `discovered_from` distinguishes a series feed from an aggregate one. An entry
 reached from an aggregate may not carry a recoverable series id, and an aggregate is
 not a series. **Never silently sync the wrong series.**
@@ -866,11 +878,14 @@ therefore has to leave a sidecar behind, including the choice *not* to resume: "
 from the beginning" writes page 1, or the silent seed would quietly undo it a moment
 later.
 
-The two servers differ in where that progress comes from, and it is a wire format,
+The three servers differ in where that progress comes from, and it is a wire format,
 not a design choice: Kavita states `p5:lastRead` on every series-feed entry, so it
-syncs for free; Suwayomi's chapter entries carry no PSE attributes at all, so it is
-scraped out of the `<summary>` prose — see PROTOCOL.md. Both end up in the same
-column, and a series whose server says nothing simply offers no page.
+syncs for free; Komga states `pse:lastRead` the same way, but only once the book has
+progress at all — an unread library publishes the attribute nowhere, which is what
+makes a fresh Komga look like a server that tracks nothing; Suwayomi's chapter
+entries carry no PSE attributes at all, so it is scraped out of the `<summary>`
+prose — see PROTOCOL.md. All three end up in the same column, and a series whose
+server says nothing simply offers no page.
 
 **A marker opens and reads with no network and no configuration.** That is the
 property everything else is built around: `template` and `count` are in the file, and
@@ -1584,7 +1599,13 @@ Each step must pass before the next:
   `pHYs`, JPEG JFIF) or moving the plugin's whole coordinate space to pixels, and every
   geometry path shares that space.
 - **Kavita granularity** is resolved in PROTOCOL.md (entry ↔ stream is 1:1).
-  `driver/komga.lua` and `driver/generic.lua` are not written yet; see Layout.
+  `driver/generic.lua` is not written yet; see Layout.
+- **Komga's `pse:lastRead` has never been seen carrying a value.** Every capture was
+  of a library nobody had read, so `readProgress?.page` was absent on every entry and
+  the feed looked like a server that tracks nothing — it does. PROTOCOL.md has the
+  source line; what is unverified is only whether that page is one-based, as Komga's
+  own numbering is. Wants a device check against a book with progress: a zero-based
+  value would offer a page one early, and `PSE.samePlace`'s tolerance would hide it.
 
 Settled and worth not re-litigating: `Settings.DEFAULTS.rotate_wide = 1` is correct. The
 old plugin's fallback *row* carries `default_value = 0`, which looks like a conflict, but
@@ -1601,6 +1622,15 @@ plugin seeds 1, which matches what a fresh book actually got.
   `settings/opds.lua`. One member of the pair on each side, and one list
   (`CREDENTIAL_FIELDS`) naming the fields both halves walk, so a URL field added to
   `Marker.new` cannot be redacted out and forgotten back.
+- **On Komga the same machinery redacts an API version, and that is not a bug to
+  fix.** Komga authenticates with HTTP Basic, so there is no secret in any of its
+  URLs — but its paths read `…/opds/v1.2/books/…`, and `Credential.redactTemplate`
+  replaces whatever sits after `/opds/`, because on Kavita that is the key. So a
+  Komga marker stores `…/opds/<redacted>/books/…` and `Marker.load` puts `v1.2`
+  back. It round-trips, for the reason that module gives: the positional rule
+  replaces only what it can name and names it back the same way, and the prefix
+  guard refuses when the catalogue root has moved. Teaching it to skip a segment
+  that *looks* like a version would be the guess `credential.lua` argues against.
 - **A marker written before that pair existed still carries the key, forever.** Markers
   are not scrubbed in place: rewriting a book file the reader did not ask to have
   rewritten is worse than a stale copy in a folder they control. So "markers hold no

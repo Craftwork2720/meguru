@@ -27,6 +27,7 @@ local registry = {}
 --- here with the registry it fills; adding a server is a new file plus a line.
 local DRIVER_MODULES = {
     "meguru/driver/kavita",
+    "meguru/driver/komga",
     "meguru/driver/suwayomi",
 }
 
@@ -333,5 +334,11 @@ end
 --   catalogURL(base_url, remote_id, ctx)  -> string
 --   parseCatalogPage(feed, base_url, ctx) -> { item, ... }
 --   seriesName(feed, entry, ctx)          -> string
+--
+-- `ctx` carries `lang` — the translation the reader was browsing in, which only
+-- Suwayomi selects on — and `url`, the URL of the feed the entry was read out
+-- of. The URL is there for Komga and is not a convenience: Komga publishes no
+-- series handle on a book entry, so a feed's own URL is the only place a
+-- browsed entry's series id exists. A driver that does not need it ignores it.
 
 return Base

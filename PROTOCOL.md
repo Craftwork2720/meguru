@@ -1,12 +1,15 @@
 # What the servers actually emit
 
-Observed wire format of the two v1 servers, captured against live instances
-(2026-09-10) by walking the real feeds: **2776 Kavita series / 21217 feed
-entries** and the full Suwayomi library. This is the evidence the drivers are
-written against — where it disagrees with an assumption, the observation wins.
+Observed wire format of the three v1 servers, captured against live instances by
+walking the real feeds: **2776 Kavita series / 21217 feed entries** and the full
+Suwayomi library (2026-09-10), and Komga (2026-09-12, cross-checked against its
+source). This is the evidence the drivers are written against — where it
+disagrees with an assumption, the observation wins.
 
 Credentials are never written here. Kavita's API key is shown as `<KEY>`; it is
 a path segment (`/api/opds/<KEY>/...`) and appears inside every stream URL.
+**Komga has no such segment** — it authenticates with HTTP Basic — so its URLs
+here are exactly what is on the wire.
 
 `meguru` therefore stores a stream template with that segment replaced by
 `<redacted>`, and restores it at load from the catalog root in
@@ -259,7 +262,120 @@ title is the fallback. Its format varies by source and cannot be assumed:
 `VOLUME_TOKENS` already carries both `Chapter` and `Ch`, and tolerates the
 decimal.
 
-## Reading-progress glyphs (both servers)
+## Komga
+
+Observed 2026-09-12 against a live instance, and cross-checked against the
+source (`gotson/komga`, `interfaces/api/opds/v1/`) — line numbers below are that
+file's, and they are cited because two of these findings look like bugs in the
+*reading* code and are not.
+
+Authentication is **HTTP Basic**, not a key in the URL. There is therefore no
+secret anywhere in a Komga URL, and nothing for `meguru/credential` to strip —
+see the note on `<redacted>` in a Komga marker below.
+
+Navigation: `root → /series → /series/{seriesId}`.
+
+| Feed | Paginates | Notes |
+|---|---|---|
+| `/catalog` | no | sections: `keep-reading`, `ondeck`, `series`, `series/latest`, `books/latest`, `libraries`, `collections`, `readlists`, `publishers` |
+| `/series` | **yes**, 20/page, `rel=next` = `?page=1` (0-based) | the canonical series list |
+| `/series/{id}` | **yes**, 20/page | that series' books; feed `<title>` = the series title |
+| `/books/latest`, `/ondeck`, `/keep-reading` | yes | **books across every series** — see "No series id" below |
+
+### The page number is zero based
+
+`/opds/v1.2/books/{bookId}/pages/{pageNumber}`, and the first page is
+`{pageNumber}=0`. Verified directly: `pages/0` returns the scan named `…-1.png`,
+`pages/197` on a book with `pse:count="197"` returns
+`400 Page number does not exist`.
+
+The source states it outright — the endpoint converts before delegating:
+
+```kotlin
+// OpdsController.kt:727
+commonBookController.getBookPageInternal(bookId, pageNumber + 1, convertTo, …)
+```
+
+**This needs no correction in `meguru`.** `PSE.pageURL` is handed a zero-based
+index (`doc/document.lua` calls it as `pageURL(template, pageno - 1, …)`), so a
+Komga template goes into a marker verbatim. A driver that "fixed" the off-by-one
+would skip page 1 and 400 on the last page.
+
+### Progress is published — but only once there is some
+
+```kotlin
+// OpdsController.kt:756
+OpdsLinkPageStreaming(mediaTypes.first(), uriBuilder("books/$id/pages/")…,
+                      media.pageCount, readProgress?.page, readProgress?.readDate)
+```
+
+So a book entry's stream link carries `pse:lastRead` (`readProgress.page`) and
+`pse:lastReadDate` alongside `pse:count`. A library nobody has read looks like a
+server that tracks nothing at all, because the attribute is simply absent —
+which is why the first capture of this feed had no progress in it anywhere.
+
+The page is `readProgress.page`, i.e. in Komga's own one-based numbering, which
+is the same numbering `pse:lastRead` uses on Kavita. **This has not been
+re-verified against a book that has progress** — `/keep-reading` and `/ondeck`
+were both empty on the instance captured. The check is step 5 of the device
+list; a zero-based value would show up as an offer one page early, and
+`PSE.samePlace`'s tolerance would hide it.
+
+### No series id on a book entry
+
+`BookDto.toOpdsEntry` (`OpdsController.kt:760`) builds exactly four links and
+none of them names a series:
+
+```
+books/{bookId}/thumbnail/small   rel=http://opds-spec.org/image/thumbnail
+books/{bookId}/thumbnail         rel=http://opds-spec.org/image
+books/{bookId}/file/{name}.cbz   rel=http://opds-spec.org/acquisition
+books/{bookId}/pages/{pageNumber}  rel=http://vaemendis.net/opds-pse/stream
+```
+
+`<id>` is the **book** id. This is the opposite of Kavita, where `seriesId` rides
+along in the stream URL's query — so `Komga.discover` reads the series id out of
+the **feed's own URL** instead (`/series/([^/?]+)`), which the engine passes as
+`ctx.url`.
+
+The consequence is that an aggregate cannot be opened from. `books/latest`,
+`ondeck` and `keep-reading` list books from every series and carry no series id
+in any entry, so there is nothing to identify the series by and `discover`
+refuses rather than guessing — the same refusal that keeps a browse of
+`recently-added` from syncing the wrong series on Kavita. Browsing `/series` and
+opening a volume works in full.
+
+### Series name
+
+The series feed's `<title>` is the series title and nothing else — no
+`" - Storyline"` suffix and no `" Chapters"` suffix, unlike the other two. On an
+aggregate the same element holds `"Latest books"`, so the driver only trusts it
+when the feed URL is a series URL; otherwise it falls back to `deriveSeries` on
+the entry title, which Komga writes as:
+
+```
+'Tis Time for 'Torture,' Princess v01 (Digital-Compilation) (Antrill-Oak)
+→ series "'Tis Time for 'Torture,' Princess", label "v01", index 1
+```
+
+`stripTrailingReleaseGroups` and the `"v"` token in `VOLUME_TOKENS` already
+exist for this shape.
+
+### A Komga marker has no `<redacted>` in it
+
+`Credential.redactTemplate` replaces the segment after `/opds/`, because that is
+where Kavita's key sits. In `…/opds/v1.2/books/…` that segment is `v1.2` — so
+Komga's URLs are redacted to `…/opds/<redacted>/books/…` on the way to disk, and
+`restoreTemplate` puts `v1.2` back from the same catalogue root on the way in.
+
+It round-trips, and it is safe for the reason `meguru/credential` gives: the
+positional rule replaces only what it can name and names it back the same way,
+and the prefix guard refuses when the root's host has moved. But it is worth
+knowing that on Komga the "credential" being redacted is an API version, and
+that the mechanism is doing nothing protective there — Basic auth means there is
+no secret in the URL to protect.
+
+## Reading-progress glyphs (Kavita and Suwayomi)
 
 The leading glyph is server bookkeeping marking reading state, and it is
 attached to the real entry — there is no separate alias entry to peel. The full
