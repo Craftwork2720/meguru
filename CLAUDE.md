@@ -1240,8 +1240,15 @@ Two invariants when touching these rows:
   rows carry their state in the text rather than in a `mandatory` value slot.
   (Meguru used to have three plain-`Menu` surfaces of its own — library, series,
   servers — and with them went the reason `separator` was ever unsafe here.)
+- **The reader's submenu is three groups split by two `separator` lines** — where
+  to navigate, how reading behaves, where a new book lands. The lines are the
+  only grouping: there are no caption rows, and a `separator` sits *under* the
+  row that carries it (`touchmenu.lua:714`), which is why the "previous chapter"
+  row and the `Hide status bar` row wear one and the others do not. It is
+  dropped when its row is the last on a page (`touchmenu.lua:713`), so a
+  separator is a hint about the list rather than a guarantee about the screen.
 - **The FileManager has one `Meguru` submenu, not flat rows**, and it carries
-  nothing but the two destination rows (save folder, per-catalog subfolder) —
+  nothing but the two destination rows (save folder, per-server subfolder) —
   the same two the reader's carries. Both surfaces use the key `meguru`, which is
   safe because the two `menu_items` tables are per-surface and never shared, and
   `Meguru:addToMainMenu` dispatches on whether a document is open — so only one is
@@ -1495,7 +1502,7 @@ Each step must pass before the next:
 1. **The plugin with no network and no store.** Open the FileManager's
    `Tools → Meguru` submenu — no crash, and it holds the two destination rows and
    nothing else. Then open a marker from History with the wifi off: it reads, and
-   "Find the next chapter" says the series has no next chapter rather than
+   "Open next in series" says the series has no next chapter rather than
    opening the wrong book or hanging.
 
 2. **A marker opens with nothing configured.** Open a book, then rename
@@ -1508,9 +1515,8 @@ Each step must pass before the next:
    marker to another item's key — the open must land on whatever that key names,
    because the key is the whole of a book's identity and nothing else is
    consulted. Then hand-edit `server_kind` to a wrong value: the book still opens
-   and reads (the kind is only what builds a feed URL), and "Find the next
-   chapter" reports that it cannot look rather than answering with a wrong
-   chapter.
+   and reads (the kind is only what builds a feed URL), and "Open next in series"
+   reports that it cannot look rather than answering with a wrong chapter.
 
 4. **Page fetching.** One log line per page with a rising `pageNumber` plus
    prefetch, and **no** fetch of a whole archive. `cache/meguru/` does not grow
@@ -1570,17 +1576,22 @@ Each step must pass before the next:
     the label is the page it lands on. Tap a jump onto a volume already read here:
     the label names no page, and the book resumes where KOReader left it.
 
-11. **The silent opens stay silent.** ⋮ → Meguru → "Find the next chapter" on an
+11. **The silent opens stay silent.** ⋮ → Meguru → "Open next in series" on an
     unsynced series: the walk runs, the chapter opens, no dialog. Finish a volume
-    with `auto-next at the end` on: the next volume opens with no dialog.
+    with `Auto-open next in series` on: the next volume opens with no dialog.
 
 12. **The menu lands where it should.** FileManager → Tools → `Meguru` at the top
-    of the page, holding `Save books in: …` and the subfolder toggle and nothing
-    else; the reader's ⋮ → Tools → `Meguru` likewise, plus its navigation rows.
+    of the page, holding `Main folder for .meguru streams: …` and the subfolder
+    toggle and nothing else, with no separator lines between them; the reader's
+    ⋮ → Tools → `Meguru` likewise — `Open next in series`, `Open previous in
+    series`, a line, `Auto-open next in series`, `Hide status bar`, a line,
+    `Main folder for .meguru streams: …`, `Subfolder per server`.
     Nothing anywhere offers a cover, a cache to clear, a library or a server list.
     The folder row opens the picker and shows the new path afterwards; the
     toggle's checkbox survives a restart; a new book lands in
-    `<base>/<catalog>/<series>` when it is on. With a PDF open there is no Meguru
+    `<base>/<server>/<series>` when it is on. Holding `Auto-open next in series`
+    or `Subfolder per server` shows its `help_text` — the other rows have none,
+    and the two lines are the only grouping. With a PDF open there is no Meguru
     row and nothing logs `menu id not found`.
 
 13. **No destination dialog anywhere.** `▶ Meguru this series` with the wifi off

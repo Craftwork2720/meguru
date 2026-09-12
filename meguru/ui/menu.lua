@@ -106,7 +106,7 @@ local function destinationRows()
             text_func = function()
                 -- `Marker.baseDir()` is where a new marker actually lands, so the
                 -- row cannot disagree with what the open does.
-                return T(_("Save books in: %1"), Marker.baseDir())
+                return T(_("Main folder for .meguru streams: %1"), Marker.baseDir())
             end,
             -- A choice, not a way out of the menu: the row stays and is rebuilt,
             -- so the reader sees the folder they just picked.
@@ -121,8 +121,8 @@ local function destinationRows()
             end,
         },
         {
-            text = _("Subfolder per catalog"),
-            help_text = _("New books go in a folder named after their catalog, then their series. Books already saved are not moved."),
+            text = _("Subfolder per server"),
+            help_text = _("New streams go in a folder named after the OPDS server (e.g. \"kavita\"), then their series. Streams already saved are not moved."),
             keep_menu_open = true,
             checked_func = function()
                 return Settings.get("marker_server_dir")
@@ -188,24 +188,31 @@ end
 
 --- One "open the next/previous item in this series" row.
 ---
---- With no neighbour to name the row still belongs here, as a search rather than
---- an open. Opening a book from the OPDS browser records that book alone, so the
---- series starts with one item and no neighbours — but that is now a **passing**
---- state rather than the resting one: `ui/open.lua`'s `startBackgroundSync`
---- walks the series right after the handoff, and the row becomes
---- "Open next in series: <title>" once it lands. So this row is what a reader
---- sees while that walk is running, after it failed or was refused, on a series
---- catalogued any other way (the row at the top of a feed), and on a server with
---- no driver to walk with. `Reader.openNeighbor` answers it by
---- syncing the series first.
-local function addNeighborRow(plugin, rows, context, which)
+--- The row names no book, and that is the honest shape: a neighbour is fetched
+--- when the reader asks for one, so a label carrying a title would be a promise
+--- made before the walk that would have to keep it. `Reader.openNeighbor`
+--- answers the row by walking the series, and the walk is what opens the
+--- chapter — so there is nothing here a name could have been read from.
+---
+--- `context` is the *series* the menu knows about, not a neighbour: a known
+--- series always has a possible next, one walk away, so this row is drawn even
+--- when nothing has been walked yet. Nil — a flat book, or a v1 marker written
+--- before the series fields existed — means no feed to walk at all, and no row.
+---
+--- `separator` is a parameter rather than something the caller sets on
+--- `rows[#rows]` afterwards: this function adds nothing when `context` is nil,
+--- so the caller would have to repeat that test to know which row it just added.
+local function addNeighborRow(plugin, rows, context, which, separator)
     if not context then
         return
     end
     rows[#rows + 1] = {
         text = which == "next"
-            and _("Find the next chapter")
-            or _("Find the previous chapter"),
+            and _("Open next in series")
+            or _("Open previous in series"),
+        -- Draws the split line under this row, ending the series navigation
+        -- group. Only the "previous" row is asked for it.
+        separator = separator,
         callback = function()
             -- Deferred: the walk opens the chapter itself, possibly replacing
             -- this document, and this handler belongs to it.
@@ -227,14 +234,11 @@ function Menu.addReaderItems(plugin, menu_items)
     -- auto-open toggle has anything to govern.
     local context = seriesOf(ui)
 
+    -- Three groups, split by `separator` lines: where to navigate, how reading
+    -- behaves, and where a new book lands.
     local rows = {}
-    -- The rows name no book, and that is the honest shape now: a neighbour is
-    -- fetched when the reader asks for one, so naming one here would be a
-    -- promise made before the walk that would have to keep it. The label that
-    -- used to be here was `bookLabel`'s short form — the volume token, because
-    -- the full entry title overflows the row.
     addNeighborRow(plugin, rows, context, "next")
-    addNeighborRow(plugin, rows, context, "previous")
+    addNeighborRow(plugin, rows, context, "previous", true)
 
     -- Only meaningful when there is somewhere to go. A series the marker cannot
     -- name has no feed to walk, so the toggle would govern a behaviour that can
@@ -242,11 +246,9 @@ function Menu.addReaderItems(plugin, menu_items)
     -- simply one walk away, so the gate is the context and not a neighbour.
     if context then
         rows[#rows + 1] = {
-            text = _("Auto-open next at the end"),
+            text = _("Auto-open next in series"),
+            help_text = _("Automatically opens the next volume or chapter when you finish this one."),
             keep_menu_open = true,
-            -- Draws the split line under this row, separating the series
-            -- navigation group from the maintenance group below.
-            separator = true,
             checked_func = function()
                 return Settings.get("auto_next_item")
             end,
@@ -263,6 +265,9 @@ function Menu.addReaderItems(plugin, menu_items)
     rows[#rows + 1] = {
         text = _("Hide status bar"),
         keep_menu_open = true,
+        -- Ends the behaviour group: what the reader looks like while reading,
+        -- above; where new books land, below.
+        separator = true,
         checked_func = function()
             return Settings.get("hide_status_bar")
         end,

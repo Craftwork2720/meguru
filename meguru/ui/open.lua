@@ -542,9 +542,9 @@ end
 --- the world when the reader first opened ⋮. That is fine for a setting that
 --- does not change under it, and wrong for the neighbour rows: they are built
 --- from `Catalog.neighbors`, and the walk below is *about to change exactly
---- that*. Without this the reader is offered "Find the next chapter" for a
+--- that*. Without this the reader is offered "Open next in series" for a
 --- series whose next chapter is already in the catalog, and never sees the
---- "auto-open next at the end" row — which exists only when there is somewhere
+--- "Auto-open next in series" row — which exists only when there is somewhere
 --- to go, and so was decided once, when there was not.
 ---
 --- Reached through `ReaderUI.instance` rather than through `meguru/ui/reader`:

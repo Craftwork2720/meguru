@@ -53,9 +53,9 @@ where you left off.
 Meguru never asks for a folder while you are trying to read. Set it once, and
 every new book goes there:
 
-- **File browser** → *Tools* → **Meguru** → *Save books in: …*
-- turn on *Subfolder per catalog* to also nest books under their catalog's name:
-  `<folder>/<catalog>/<series>/`
+- **File browser** → *Tools* → **Meguru** → *Main folder for .meguru streams: …*
+- turn on *Subfolder per server* to also nest books under their server's name:
+  `<folder>/<server>/<series>/`
 
 Changing the folder does not move books you have already saved.
 
@@ -81,11 +81,13 @@ Changing the folder does not move books you have already saved.
 for every Meguru book. Flip it once and it stays flipped, exactly as it does for
 a `.cbz`. It starts on.
 
-The reader's **⋮ → Tools → Meguru** menu holds the rest:
+The reader's **⋮ → Tools → Meguru** menu holds the rest, split by lines into
+three groups — where to navigate, how reading behaves, and where a new book
+lands:
 
-- *Find the next / previous chapter* — when the book has no neighbour yet, this
+- *Open next / previous in series* — when the book has no neighbour yet, this
   fetches the series' chapter list and opens it;
-- *Auto-open next at the end* — opens the next chapter by itself when you finish
+- *Auto-open next in series* — opens the next chapter by itself when you finish
   one;
 - *Hide status bar*, and the same two folder settings as the file browser.
 
