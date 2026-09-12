@@ -53,7 +53,7 @@ main.lua                  plugin class: provider registration, menu dispatch, re
 
 meguru/
   paths.lua               every path: markers, and the last-resort folder
-  fs.lua                  filesystem predicates and directory creation
+  fs.lua                  filesystem predicates, directory creation, one raw write
   settings.lua            plugin-wide preferences in G_reader_settings
   association.lua         Meguru's claim on .cbz: the file-type reader association
   sources.lua             read-only view on settings/opds.lua (catalogs + credentials)
@@ -61,6 +61,7 @@ meguru/
   naming.lua              sanitizeComponent / deriveSeries / alias / glyph / identity digest
   marker.lua              marker read/write, naming, collision resolution, series context
   credential.lua          what a credential looks like in a URL: redact / restore
+  seriescover.lua         the series' artwork, written once into its folder
   pse.lua                 OPDS-PSE: link extraction, template -> URL, page fetch
   feed.lua                reading a series feed: the rel=next walk, order, neighbour
   panel.lua               the panels on a page, and the order they are read in
@@ -92,11 +93,20 @@ only discover a series by title heuristic and cannot build a canonical
 exists, an unrecognised server is handled by the absence of a driver rather than
 by a driver that returns nothing useful.
 
-**Nothing is written to disk but markers**, plus the sidecar file KOReader keeps
-beside every document it opens. There is no page cache, no cover cache and no
-database: pages live in a small RAM LRU, a cover is refetched on every call, and
-the panel lists a long-press produces live in a four-entry RAM LRU on the
-document itself, so they are dropped with the book.
+**Nothing is written to disk but markers** — and one exception, named here
+because the sentence above it is the kind that gets quoted: `meguru/seriescover`
+leaves a `.cover.jpg` in a Suwayomi series folder, for whatever *outside*
+KOReader reads that folder. It is not a cache and nothing reads it back; KOReader
+will not display it either (`coverbrowser` draws a directory as a name and a
+count, and never looks for a file beside a document), and the plugin never
+removes it. **Suwayomi only**, and that is an exception rather than a rule —
+Kavita and Komga publish real JPEGs and the same call would cover them, but a
+rule that quietly grew would be one nobody chose.
+
+Leaving that aside: there is no page cache, no cover cache and no database.
+Pages live in a small RAM LRU, a cover is refetched on every call, and the panel
+lists a long-press produces live in a four-entry RAM LRU on the document itself,
+so they are dropped with the book.
 
 `meguru.sqlite3` may still be sitting in `settings/` from a version that had one,
 and `cache/meguru/pages` and `.../covers` from a version that wrote them. Nothing
@@ -107,7 +117,10 @@ is unusable (`Marker.homeDir`).
 The dependency graph is a DAG with no cycles and **exactly one lazy edge**:
 `feed.lua` requires `meguru/naming` inside `Feed.ordered`, because the ordering is
 the one thing both entry points share and an edge at load time would have made it
-circular. `ui/panelzoom` requires no `meguru/` module at all — it is handed panels
+circular. (`ui/network/manager` is reached the same lazy way by `doc/document`
+and `seriescover`, but it is KOReader's module, not ours — it is not an edge in
+this graph, and it is deferred because it is a *device* state that need not exist
+where these modules are loaded.) `ui/panelzoom` requires no `meguru/` module at all — it is handed panels
 as arguments. The edges that do exist between the panel modules are `ui/reader` ->
 `ui/panelzoom`, `doc/document` -> `panel`, and `panel` -> `doc/image`.
 

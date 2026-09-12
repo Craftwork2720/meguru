@@ -43,6 +43,7 @@ local Marker = require("meguru/marker")
 local Naming = require("meguru/naming")
 local Net = require("meguru/net")
 local PSE = require("meguru/pse")
+local SeriesCover = require("meguru/seriescover")
 local Settings = require("meguru/settings")
 local Sources = require("meguru/sources")
 
@@ -1609,6 +1610,13 @@ function commitMarker(plan)
     if conn then
         Sources.remember(file, conn.username, conn.password)
     end
+
+    -- The series' artwork, left beside the markers for whatever outside KOReader
+    -- reads this folder. Here rather than in `Marker.saveAt`, because that is
+    -- called inside an open and must not wait on a socket — and the result is
+    -- dropped for the same reason: a cover that could not be fetched is not a
+    -- reason to fail the book. See `meguru/seriescover`.
+    SeriesCover.save(file, plan.desc)
     return file
 end
 
@@ -2144,6 +2152,13 @@ function Open.openAsBook(browser, item, stream)
                 end
                 Sources.remember(file,
                     browser.root_catalog_username, browser.root_catalog_password)
+
+                -- Same call as `commitMarker`'s, and it has to be repeated here
+                -- rather than shared: this path deliberately does not go through
+                -- `commitMarker` (it remembers the credentials the reader just
+                -- typed into the OPDS form), so a cover hung off that function
+                -- alone would appear for every open *except* this one.
+                SeriesCover.save(file, desc)
 
                 -- Prefer the built-in plugin's own open path: it closes the
                 -- browser cleanly and hands the marker to ReaderUI.
