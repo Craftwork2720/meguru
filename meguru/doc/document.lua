@@ -184,7 +184,16 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
             local b = data:byte(off + 2)
             lum = a < b and a or b
         else
-            lum = (data:byte(off + 1) + data:byte(off + 2) + data:byte(off + 3)) * (1/3)
+            -- Rec.601 luminance, not the mean of the three channels — see the
+            -- long note in `Image.rasterFor`, which is where this formula now
+            -- lives for the panel detector. The mean and the luminance disagree
+            -- by up to 65 on light tinted colours, which is more than this
+            -- scan's own `AUTOCROP_LUMA_DELTA`, so using the wrong one moves a
+            -- crop edge on exactly the pages a crop is for.
+            local r = data:byte(off + 1)
+            local g = data:byte(off + 2)
+            local b = data:byte(off + 3)
+            lum = math.floor((4898 * r + 9618 * g + 1869 * b) / 16384)
         end
         if inverse then
             lum = 255 - lum
@@ -238,7 +247,11 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
                 local b = data:byte(off + 2)
                 lum = a < b and a or b
             else
-                lum = (data:byte(off + 1) + data:byte(off + 2) + data:byte(off + 3)) * (1/3)
+                -- Rec.601 luminance; see `lumaAt` above for why not the mean.
+                local r = data:byte(off + 1)
+                local g = data:byte(off + 2)
+                local b = data:byte(off + 3)
+                lum = math.floor((4898 * r + 9618 * g + 1869 * b) / 16384)
             end
             if inverse then
                 lum = 255 - lum

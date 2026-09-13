@@ -525,7 +525,10 @@ end
 -- are reduced to one number here rather than by each caller: BB8 is already the
 -- value; BB8A takes the *darker* of its two channels (the alpha channel of a
 -- PNG is not a brightness, and taking the minimum keeps a translucent white
--- from reading as content); RGB takes the mean of the three. `getInverse()` is
+-- from reading as content); RGB takes the **Rec.601 luminance**, which is the
+-- conversion KOReader itself runs into a BB8 target — see the note at that
+-- branch, because the obvious alternative is a different function by up to 65.
+-- `getInverse()` is
 -- honoured, so an inverted buffer reads as what the reader sees rather than as
 -- what the file stores — that is what makes an inverted (white-on-black) page
 -- scan the same way as a normal one, and it is why the panel detector no longer
@@ -569,7 +572,32 @@ local function rasterFor(bb)
             local b = data:byte(off + 2)
             lum = a < b and a or b
         else
-            lum = (data:byte(off + 1) + data:byte(off + 2) + data:byte(off + 3)) * (1/3)
+            -- **Rec.601 luminance, and not the mean of the three channels.**
+            -- This is the conversion KOReader runs whenever an RGB source lands
+            -- in a BB8 target — `RGB_To_A`, `base/blitbuffer.c` — which is what
+            -- a colour page became here for as long as this document decoded
+            -- greyscale, and what `toGreyscale` still does in the reference
+            -- panel detector's ink map.
+            --
+            -- The mean is a *different function*, and the two disagree by up to
+            -- 65 — more than the 40 the panel detector calls ink. The family
+            -- they disagree on is light-and-slightly-tinted (lavender, cream,
+            -- pale yellow): `(255,150,255)` is 193 here and 220 there, ink by
+            -- one measure and background by the other. That matters because
+            -- "background" is what a gutter is made of, so the mean silently
+            -- invents gutters across a pale band between two darker panels.
+            --
+            -- Everything that reads this raster — the panel detector's ink map,
+            -- the auto-crop, the page-number strip, the blank-page test — was
+            -- calibrated against the luminance, because before this document
+            -- could decode in colour there was no other answer to give.
+            --
+            -- A double holds `255 * 16385` exactly, so no intermediate here
+            -- loses precision under Lua 5.1.
+            local r = data:byte(off + 1)
+            local g = data:byte(off + 2)
+            local b = data:byte(off + 3)
+            lum = math.floor((4898 * r + 9618 * g + 1869 * b) / 16384)
         end
         if inv then
             lum = 255 - lum

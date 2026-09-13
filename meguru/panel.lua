@@ -194,6 +194,25 @@ local PANEL_SHEAR_TRIGGER = 0.35
 -- lines that were skipped read as empty and become phantom gutters.
 local PANEL_SHEAR_STEP = 2
 
+-- **How empty a sheared line has to be, and it has to be empty.** The straight
+-- cut allows a line `PANEL_GUTTER_INK_RATIO` of its span, which on a 480-wide
+-- scan is 2.4 cells — slack for the hair of JPEG noise a printed gutter carries.
+-- The sheared projection must not be given the same slack, and the reason is
+-- arithmetic rather than taste: it samples every `PANEL_SHEAR_STEP`-th column, so
+-- a line's count is drawn from half as many cells and its variance is that much
+-- wider, while `span` here is `width / step` — so the same ratio buys the same
+-- 1.2 cells of allowance on a projection with twice the noise. A near-empty line
+-- *through white artwork* then reads as a gutter, the shear splits a panel down
+-- the middle of its own drawing, and the piece it cuts off is a strip of that
+-- drawing with a wedge of its neighbour — a third panel that is really the gap.
+--
+-- Zero is not a tuned-down number: it is the same standard the straight cut is
+-- named for ("a complete white gutter"), and it is the one thing the sheared
+-- projection can honestly claim, because a real separator on a skewed page is
+-- empty there by construction. Measured on a twelve-page sample it changes
+-- nothing except the page it fixes.
+local PANEL_SHEAR_INK_RATIO = 0
+
 -- ---------------------------------------------------------------------------
 -- The ink map
 -- ---------------------------------------------------------------------------
@@ -533,7 +552,7 @@ local function trySlope(map, left, top, right, bottom, ctx, slope)
     projectColumnsSheared(map, left, top, right, bottom, slope, ctx.cols, step)
     local drift = math.floor(math.abs(slope) * height / 2) + 1
     for _, gutter in ipairs(collectGutters(ctx.cols, left, right, height / step,
-            ctx.ink_ratio, ctx.min_gutter)) do
+            PANEL_SHEAR_INK_RATIO, ctx.min_gutter)) do
         local lo, hi = gutter.from - drift, gutter.to + drift
         if lo > left and hi < right then
             return "cols", lo, hi
@@ -543,7 +562,7 @@ local function trySlope(map, left, top, right, bottom, ctx, slope)
     projectRowsSheared(map, left, top, right, bottom, slope, ctx.rows, step)
     drift = math.floor(math.abs(slope) * width / 2) + 1
     for _, gutter in ipairs(collectGutters(ctx.rows, top, bottom, width / step,
-            ctx.ink_ratio, ctx.min_gutter)) do
+            PANEL_SHEAR_INK_RATIO, ctx.min_gutter)) do
         local lo, hi = gutter.from - drift, gutter.to + drift
         if lo > top and hi < bottom then
             return "rows", lo, hi

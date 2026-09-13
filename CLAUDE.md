@@ -365,8 +365,31 @@ and with `max_cached_native` at three that is ~36 MB rather than ~12. Kept
 pixel-based deliberately, so sharpness is unchanged and the price is paid only
 where colour exists. Everything else on the render path was already
 format-tolerant and needed no change: `bbBytesPerPixel` knows all four types,
-`rasterFor` collapses RGB to the mean of three channels (so the panel detector,
-the auto-crop and the blank check read the same luminance they always did),
+**`rasterFor` collapses RGB to its Rec.601 luminance** — and the first version of
+this paragraph said it collapsed it to *the mean of three channels*, claiming the
+panel detector, the auto-crop and the blank check would then "read the same
+luminance they always did". **They would not, and that sentence is what let the
+bug through.** The mean is a different function from the luminance, and the two
+disagree by up to **65** — more than the 40 the panel detector calls ink. The
+family they disagree on is precisely *light and slightly tinted*: lavender
+`(255,150,255)` is 193 by luminance and 220 by mean, i.e. ink by one measure and
+background by the other, and "background" is what a gutter is made of. So on a
+colour screen the mean silently invented a gutter across a pale band between two
+darker panels, and the panel sequence gained a panel that was really the gap. It
+was found on a page of exactly that shape, and by comparison against the
+reference plugin, whose ink map is grayscale-only and so always read a luminance.
+
+The luminance is the right answer for four independent reasons, which is why it
+is not a preference: it is the conversion KOReader itself runs when an RGB source
+lands in a BB8 target (`RGB_To_A`, `base/blitbuffer.c`); it is what this document
+produced for as long as it decoded grayscale, so every reader of the raster —
+the panel detector, the auto-crop, the page-number strip, the blank test — was
+calibrated against it; it is what the reference panel detector's
+`toGreyscale` produces; and it is what the newer reference calls `luminance`
+explicitly. The formula appears in three places (`Image.rasterFor` and twice in
+`doc/document.lua`'s crop scan) and they must move together — a fourth copy that
+kept the mean would reintroduce exactly this, one consumer at a time.
+
 `decodeRegion` builds its tiles in the source's own type, and
 `decodeNativeRenderImage` was already colour — which is how a fallback and a
 primary could disagree about colour before this.
@@ -1134,13 +1157,43 @@ one piece of the reference's background estimate that is not redundant is carrie
 over: a mid-grey median is overridden to white when some row or column of the page is
 genuinely near-white, which recovers a paper colour dimmed by a scan.
 
+**The map is 1.3's with that one exception, and "a faithful port of 1.3" was true of
+the cut and not of the input to it.** The override comes from the *newer* reference,
+which has a colour-aware map; 1.3's `_pagebitmap.lua` is 327 lines over a single
+grayscale scalar with no colour path at all. The override is kept — it is earned on
+dimmed scans — but it is named here so it is not mistaken for part of the port, and
+it cannot have caused the pale-band failure above: its condition needs the ring
+median in `[32, 224)`, and a page with a white band has a white border.
+
+The one input that *was* wrong is the luminance, shared with the crop scan; see the
+colour section for what the mean did to a tinted page and why the fix is a formula
+rather than a threshold. **Anything that reads this map reads a luminance, and every
+new reader of it must too** — a consumer that computes its own brightness is how the
+divergence that produced a spurious panel got in.
+
 Two things complicate the cut, and both are ported. Panels are rarely drawn square,
 and a gutter tilted by two degrees leaves no column empty from top to bottom — enough
 to stop the straight cut dead. When no straight gutter exists and an axis already has
 a near-empty line, a ladder of slopes from 2 to 8 degrees either way is tried instead
 and the projection is taken along the slanted line; both children then get the whole
 projected band, so each panel keeps its own artwork and gains a thin wedge of its
-neighbour rather than losing a corner. The other is page furniture: a scanlation
+neighbour rather than losing a corner. **That overlap is deliberate — and the sheared
+projection gets a strictly emptier gutter than the straight one does, which is what
+keeps the overlap from minting a panel.** The two ratios are separate constants
+(`PANEL_GUTTER_INK_RATIO` and `PANEL_SHEAR_INK_RATIO`) and the reason is arithmetic
+rather than taste: the sheared projection samples every `PANEL_SHEAR_STEP`-th column,
+so a line's count comes from half as many cells and carries twice the variance, while
+its `span` is `width / step` — so the same ratio buys the same cells of allowance on a
+noisier projection. Give it the straight cut's ratio and a near-empty line *through
+white artwork* reads as a gutter; the shear then splits a panel down the middle of its
+own drawing, both children keep that band, each re-finds it a little higher up (the
+found extent moves as the region shrinks), and the strip it peels off at the end is
+emitted as a third panel that is really the gap. That is exactly what a page of two
+panels divided by a skewed white band did: `2 panels` became `3`, the middle one
+carrying the bottom of the upper panel and a strip of the lower. Requiring the sheared
+line to be **empty** — the same standard the straight cut is named for — gives two
+panels, symmetric overlap and all, and on a twelve-page sample it changes nothing
+else. The other is page furniture: a scanlation
 credit line clears both size floors comfortably, so `emitLeaf` rejects it on the
 *conjunction* of elongated and nearly inkless. Neither test works alone, and that
 function's comment carries the measurement that says so.
@@ -1996,6 +2049,45 @@ Each step must pass before the next:
   device and the panel turns against it. Found on a device, fixed by crossing the two
   constants in `panelRotationAngle`. Now observed rather than derived, so treat it as
   settled — and note that the row's word is the one thing that never was.
+- **The panel detector has a measurement harness, and it is the only way this thing
+  has ever been decided rather than argued.** `tools/panelprobe.py` is a faithful port
+  of `meguru/panel.lua` - the ink predicate, both projections, the recursive cut, the
+  sheared search, `emitLeaf` - that runs on a page image with no Lua interpreter. It
+  takes a mode argument to compare variants (its `loose` restores the sheared
+  projection's ratio to the straight cut's, i.e. the behaviour before
+  `PANEL_SHEAR_INK_RATIO`, and that comparison is what found the third panel). Feed it
+  a page from a real server and it prints every leaf's cells, ink density and position
+  as a percentage of the page. **What it does not model**: Lua's evaluation rules (so
+  it can settle arithmetic and never semantics), MuPDF's render, and the
+  decode-then-resample two-step. A divergence it cannot see is a divergence it cannot
+  rule out.
+- **The skewed-page fix was verified on one page, and the sample is what says it is
+  safe.** Twelve pages of one chapter: `PANEL_SHEAR_INK_RATIO` changes the leaf count
+  on exactly the page that was broken (3 to 2) and on none of the other eleven, where
+  the shear never fires at all (`shear 0/3` - the straight cut handles them). That is a
+  *sample*, not a proof: a page whose separator is a real gutter with JPEG noise in it
+  is the case this could regress, because the sheared projection now requires the line
+  to be genuinely empty. If a skewed page ever comes back as one panel instead of
+  several, that constant is the first thing to look at.
+- **The panel scan is not the reference's scan, and three measured differences are
+  live.** They are named as *measured* rather than suspected, so nobody re-derives
+  them, and none of them is known to matter on a normal page:
+  - **Geometry rounds differently.** The reference renders at `480/native.w` and takes
+    `ceil(x - 0.001)`; this plugin computes `floor(x + 0.5)` from the already-decoded
+    buffer. The two are **one row apart whenever the fractional part is under 0.5** —
+    about half of all pages — and agree exactly on the 1600x2400 that everything here
+    was measured on.
+  - **`PANEL_SCAN_MAX_CELLS` coarsens strips.** It first bites past 5.2:1, where this
+    plugin's cells become 2.2x the reference's — an 800x20000 page maps at 219x5474
+    against the reference's 480x12000. A gutter under ~5 page pixels is then below
+    `min_gutter` here and not there. Deliberate (the 35 MB the uncapped scan costs),
+    and a strip's answer is "one panel, the whole page" regardless.
+  - **The resample happens twice here and once there.** The reference renders small
+    through MuPDF, straight from the source; this plugin decodes at the capped native
+    size and *then* scales. On a page over the 4 Mpx budget that is two lossy steps
+    against one, in the direction of losing thin light features — which is the
+    direction that invents gutters, and `legacy_image_scaling` (a KOReader setting,
+    off by default) turns the second step into nearest-neighbour and makes it worse.
 - **Kavita granularity** is resolved in PROTOCOL.md (entry ↔ stream is 1:1).
   `driver/generic.lua` is not written yet; see Layout.
 - **Komga's `pse:lastRead` has never been seen carrying a value.** Every capture was
