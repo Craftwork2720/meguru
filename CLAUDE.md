@@ -286,33 +286,68 @@ Three consequences that are easy to trip over:
 
 ## The render path
 
-**A decoded page is 8bpp grayscale, and the dither is forced on anyway.** Both
-halves are one story, and the second half is a decision with a cost — recorded here
-so it is not "corrected" a third time without knowing what it is.
-`Mupdf.openDocumentFromText` never sets `doc.color`, and `decodeNativeMupdf` calls
-`setColorRendering(false)` besides, so the cached tiles are BB8 — not the RGB24 an
-earlier comment here and in `meguru/doc/image` claimed. That mattered because the
-false premise was the whole justification for forcing `sw_dithering = true` and
-calling `ditherblitFrom` with no branch: a *converting* blit is what dithering is
-for, and ours is a same-format copy. On a BB8 destination `ditherblitFrom` runs
-`dither_o8x8` (blitbuffer.c), which quantises a full 8-bit page to **16 levels on a
-fixed 8x8 pattern** — a burnt-in dot grid and four bits of tone gone, on every
-pixel of every page.
+**A page is grayscale on a grayscale screen and colour on a colour one, and the
+answer is the reader's own setting.** `Image.colorEnabled()` asks
+`device.screen:isColorEnabled()` — stock KOReader's own answer, the same source
+`CanvasContext` reads to set `is_color_rendering_enabled`
+(`canvascontext.lua:53`) — and the three places that decode a page through MuPDF
+set `doc.color` from it rather than forcing `false`. **It is asked at decode time
+and never cached**, because that function is live: it reads
+`G_reader_settings.color_rendering` (the reader's stock colour toggle) and falls
+back to what the screen can do (`device.lua:264-270`). A cached answer would make
+that toggle inert until a restart.
+
+The distinction is not cosmetic and it is not new behaviour on e-ink: on a Kindle
+`color_rendering` is unset and the screen reports no colour, so the predicate is
+`false` and the grayscale path is **exactly what it always was**. What the change
+fixes is a colour framebuffer, where the plugin used to decode colour away and a
+reader had no way to tell why.
+
+**On the grayscale branch a decoded page is 8bpp and the dither is still forced
+on.** Both halves are one story, and the second half is a decision with a cost —
+recorded here so it is not "corrected" a third time without knowing what it is.
+`Mupdf.openDocumentFromText` never sets `doc.color` and `draw_new` allocates BB8
+whenever the field is falsy, so a page that *is* decoded grayscale ends up BB8 —
+not the RGB24 an earlier comment here and in `meguru/doc/image` claimed. That
+mattered because the false premise was the whole justification for forcing
+`sw_dithering = true` and calling `ditherblitFrom` with no branch: a *converting*
+blit is what dithering is for, and ours is a same-format copy. On a BB8
+destination `ditherblitFrom` runs `dither_o8x8` (blitbuffer.c), which quantises a
+full 8-bit page to **16 levels on a fixed 8x8 pattern** — a burnt-in dot grid and
+four bits of tone gone, on every pixel of every page.
 
 Reading the flag from `Screen.sw_dithering` — `framebuffer.lua`'s `setupDithering`
-answer — would be the more defensible arrangement, and it is **not** what this
-does: `init` sets `self.sw_dithering = true`, unconditionally, by decision. The
+answer — would be the more defensible arrangement *there*, and it is **not** what
+this does: `init` sets `self.sw_dithering = true` on that branch by decision. The
 dithered look is what these pages have always had here. On a device whose
 controller dithers properly, this re-quantises a page the hardware was about to
-dither correctly. One line in `init` is the whole switch, and `Screen.sw_dithering`
-is the answer it would take back. The `if self.sw_dithering` branch in
-`drawPage`/`drawPageInverted` must stay: a tile that is ever colour again reaches a
-grayscale screen through a real conversion, and there the dither earns its keep.
+dither correctly. `Screen.sw_dithering` is the answer it would take back. The
+`if self.sw_dithering` branch in `drawPage`/`drawPageInverted` must stay: it is the
+whole switch, and the colour branch reaches it as `false`.
+
+**On the colour branch the flag is `Screen.sw_dithering`, and the argument above
+does not apply** — it is about a same-format grayscale copy, and there the tiles
+are RGB and the destination is RGB. `init` logs which branch it took, once, and
+that line is the only place a log says whether colour is on.
+
+**What colour costs is memory, and it is the one number this change does not
+touch.** `max_native_pixels` counts **pixels, not bytes** — `cappedDim` has no
+bytes-per-pixel factor — so 4 Mpx is ~4 MB retained as BB8 and ~12 MB as RGB24,
+and with `max_cached_native` at three that is ~36 MB rather than ~12. Kept
+pixel-based deliberately, so sharpness is unchanged and the price is paid only
+where colour exists. Everything else on the render path was already
+format-tolerant and needed no change: `bbBytesPerPixel` knows all four types,
+`rasterFor` collapses RGB to the mean of three channels (so the panel detector,
+the auto-crop and the blank check read the same luminance they always did),
+`decodeRegion` builds its tiles in the source's own type, and
+`decodeNativeRenderImage` was already colour — which is how a fallback and a
+primary could disagree about colour before this.
 
 The night-mode invert stays on the *destination* (`target:invertRect`) rather than
-`invertblitFrom` on the tile. With BB8 tiles the latter would now be legal, but the
-destination route cannot be affected by the tile's format at all — an "incompatible
-bb" throw out of blitbuffer.c lands mid-paint.
+`invertblitFrom` on the tile. With grayscale tiles the latter would be legal and
+with colour tiles it would throw, which is exactly why this shape was chosen: the
+destination route cannot be affected by the tile's format at all, and an
+"incompatible bb" throw out of blitbuffer.c lands mid-paint.
 
 **A painted tile is rendered from the page's own bytes whenever it would otherwise
 be magnified — one render, at the size the screen asked for.** `renderPage` chooses

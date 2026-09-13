@@ -733,11 +733,11 @@ function MeguruDocument:_openLocalArchive()
         logger.warn("Meguru: MuPDF cannot open", self.file, ":", tostring(doc))
         return nil
     end
-    -- Ask MuPDF for a grayscale pixmap, exactly like the streamed decode
-    -- (decodeNativeMupdf sets the same flag per page), so a local cbz looks
-    -- bit-for-bit like a .meguru book on every screen.
+    -- The same answer the streamed decode asks for (decodeNativeMupdf sets the
+    -- flag per page), so a local cbz and a .meguru book of the same pages come
+    -- out identical on whatever screen is in front of them.
     if doc.setColorRendering then
-        doc:setColorRendering(false)
+        doc:setColorRendering(Image.colorEnabled())
     end
     return doc
 end
@@ -859,38 +859,51 @@ function MeguruDocument:init()
     -- We cannot know beforehand how big pages are, so we scale decoded
     -- BlitBuffers to the requested size.
     self:updateColorRendering()
-    -- Dither every tile->screen blit, unconditionally — deliberately, and back
-    -- to what this document did before `d40e52e` re-pointed the flag at
-    -- `Screen.sw_dithering`.
+    -- Dither every tile->screen blit on a grayscale screen, where the tiles are
+    -- grayscale too — deliberately, and back to what this document did before
+    -- `d40e52e` re-pointed the flag at `Screen.sw_dithering`.
     --
     -- What that commit established still holds and is worth keeping in view
-    -- rather than deleting: the cached tiles are 8bpp grayscale, not colour
-    -- (`doc.color` is falsy, so MuPDF's `draw_new` allocates BB8), so blitting
-    -- them to a BB8 screen is a same-format copy, and `ditherblitFrom` over it
-    -- is not a conversion — it is `dither_o8x8` (blitbuffer.c) re-quantising a
-    -- full 8-bit source down to 16 levels on a fixed 8x8 pattern. On a device
-    -- whose controller dithers an 8-bit framebuffer itself, that pass burns in
-    -- a dot grid and drops four bits of tone for nothing. The claim that made
-    -- this look like a no-op conversion ("our tiles are RGB24") was simply
-    -- false, and `d40e52e` was right about that.
+    -- rather than deleting: there the cached tiles are 8bpp grayscale, not
+    -- colour (`doc.color` is falsy, so MuPDF's `draw_new` allocates BB8), so
+    -- blitting them to a BB8 screen is a same-format copy, and `ditherblitFrom`
+    -- over it is not a conversion — it is `dither_o8x8` (blitbuffer.c)
+    -- re-quantising a full 8-bit source down to 16 levels on a fixed 8x8
+    -- pattern. On a device whose controller dithers an 8-bit framebuffer
+    -- itself, that pass burns in a dot grid and drops four bits of tone for
+    -- nothing. The claim that made this look like a no-op conversion ("our
+    -- tiles are RGB24") was simply false, and `d40e52e` was right about that.
     --
-    -- It is forced on anyway, on the reader's decision, and the reason is the
-    -- one thing the correction does not touch: the dithered look is what the
-    -- pages have always had here, and it is the shape the rest of this file is
-    -- tuned around (a tile that is ever colour again still reaches a grayscale
-    -- screen through a real conversion, where the dither earns its keep). On
-    -- the reporting device `hw_dither` is false, so `Screen.sw_dithering` was
-    -- already true and this changes nothing; on a device whose controller
-    -- dithers an 8-bit framebuffer itself, the page is now quantised to 16
-    -- levels *before* that controller gets it, and the four bits it would have
-    -- dithered are already gone. That is recorded rather than argued: if it
-    -- ever hurts on some screen, this flag is the whole switch, and
-    -- `Screen.sw_dithering` is the answer it would take back.
-    self.sw_dithering = true
-    logger.info(string.format(
-        "Meguru: tile->screen dithering forced ON (sw_dithering; eink=%s, fb_bpp=%s, hw_dither=%s)",
-        tostring(Device:hasEinkScreen()), tostring(Screen.fb_bpp),
-        tostring(Device:canHWDither())))
+    -- It is forced on anyway on that screen, on the reader's decision, and the
+    -- reason is the one thing the correction does not touch: the dithered look
+    -- is what the pages have always had here, and it is the shape the rest of
+    -- this file is tuned around. On the reporting device `hw_dither` is false,
+    -- so `Screen.sw_dithering` was already true and this changes nothing; on a
+    -- device whose controller dithers an 8-bit framebuffer itself, the page is
+    -- now quantised to 16 levels *before* that controller gets it, and the four
+    -- bits it would have dithered are already gone. That is recorded rather
+    -- than argued: if it ever hurts on some screen, this flag is the whole
+    -- switch, and `Screen.sw_dithering` is the answer it would take back.
+    --
+    -- **A colour screen is the other branch, and it is not a preference.**
+    -- There the tiles are RGB (the decode asks for colour) and the destination
+    -- is RGB, so there is no conversion for a dither to earn anything on — the
+    -- whole argument above is about a same-format grayscale copy, which is not
+    -- what happens. The screen's own answer is the one that applies, and on a
+    -- colour screen `Screen.sw_dithering` is false.
+    if Image.colorEnabled() then
+        self.sw_dithering = Screen.sw_dithering and true or false
+        logger.info(string.format(
+            "Meguru: colour page rendering (sw_dithering=%s; eink=%s, fb_bpp=%s, hw_dither=%s)",
+            tostring(self.sw_dithering), tostring(Device:hasEinkScreen()),
+            tostring(Screen.fb_bpp), tostring(Device:canHWDither())))
+    else
+        self.sw_dithering = true
+        logger.info(string.format(
+            "Meguru: tile->screen dithering forced ON (sw_dithering; eink=%s, fb_bpp=%s, hw_dither=%s)",
+            tostring(Device:hasEinkScreen()), tostring(Screen.fb_bpp),
+            tostring(Device:canHWDither())))
+    end
 
     if self.local_cbz then
         logger.info(string.format(
@@ -2450,10 +2463,10 @@ function MeguruDocument:_regionSource(pageno)
     if not ok or not doc then
         return nil, nil, nil, "MuPDF cannot open the bytes"
     end
-    -- Same grayscale request the decode makes, so a region render and a saved
-    -- decode of the same page are the same picture (see `meguru/doc/image`).
+    -- The same answer the decode makes, so a region render and a saved decode
+    -- of the same page are the same picture (see `meguru/doc/image`).
     if doc.setColorRendering then
-        doc:setColorRendering(false)
+        doc:setColorRendering(Image.colorEnabled())
     end
     -- **Page 1, always — not `pageno`.** A streamed page's document is opened
     -- from that one page's bytes, so it holds exactly one page and MuPDF numbers
@@ -2938,13 +2951,14 @@ end
 -- way (blit, then target:invertRect).
 --
 -- The reason it was originally written this way was narrower and is worth keeping
--- straight, because the premise has since been corrected twice: our tiles are
--- 8bpp grayscale (see init and `meguru/doc/image`), so `invertblitFrom` on them
--- would in fact be a legal same-format call today. The arrangement is kept
--- because it is the safer of the two — a tile that is ever decoded in colour
--- again would make invertblitFrom an "incompatible bb" throw out of blitbuffer.c,
--- which is a frozen renderer mid-paint, whereas this shape cannot be affected by
--- the tile's format at all.
+-- straight, because the premise has been corrected twice and is now conditional:
+-- on a grayscale screen the tiles are 8bpp grayscale (see init and
+-- `meguru/doc/image`), so `invertblitFrom` on them would in fact be a legal
+-- same-format call — and on a colour screen they are RGB. The arrangement is kept
+-- because it covers both without asking which: `invertblitFrom` would be an
+-- "incompatible bb" throw out of blitbuffer.c for a tile format that did not
+-- match, which is a frozen renderer mid-paint, whereas this shape cannot be
+-- affected by the tile's format at all.
 function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
     local tile = self:renderPage(pageno, rect, zoom, rotation, gamma, saturation)
     if not tile then
@@ -2955,13 +2969,14 @@ function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gam
     local dy = rect.y - tile.excerpt.y
     local configurable = self.configurable
     local invert = configurable and configurable.nightmode_document == 1 and Screen.night_mode
-    -- Dither-and-blit, unconditionally — the flag init sets is `true` and is the
-    -- whole switch, so this branch is the same call it has always been. What it
-    -- costs is on init: over a same-format (BB8->BB8) copy `ditherblitFrom` runs
-    -- `dither_o8x8` (blitbuffer.c) and re-quantises an already-8-bit page to 16
-    -- levels on a fixed 8x8 pattern, which is a loss with nothing on the other
-    -- side of it. It is done anyway, by decision — see init for why, and for
-    -- what the alternative (`Screen.sw_dithering`) was.
+    -- Dither-and-blit where init asked for it, plain blit where it did not — and
+    -- the flag, not this line, is the whole switch. On a grayscale screen it is
+    -- set `true` by decision: over a same-format (BB8->BB8) copy `ditherblitFrom`
+    -- runs `dither_o8x8` (blitbuffer.c) and re-quantises an already-8-bit page to
+    -- 16 levels on a fixed 8x8 pattern, which is a loss with nothing on the
+    -- other side of it. On a colour screen the flag follows `Screen.sw_dithering`
+    -- and is false, because there the copy is RGB->RGB and the dither would be
+    -- a conversion of a page that has nothing to convert. See init for both.
     if self.sw_dithering then
         target:ditherblitFrom(tile.bb, x, y, dx, dy, rect.w, rect.h)
     else

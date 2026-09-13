@@ -49,6 +49,37 @@ local function bbBytesPerPixel(bb_type)
     return nil
 end
 
+--- Whether this screen should get colour renders.
+---
+--- **`device.screen:isColorEnabled()` is KOReader's own answer, and following it
+--- is the whole point.** It is the same source stock's `CanvasContext` reads to
+--- set `is_color_rendering_enabled` (`canvascontext.lua:53`), so asking it here
+--- means following the reader's existing colour setting rather than inventing a
+--- second one. It is also **live**: it reads `G_reader_settings.color_rendering`
+--- and falls back to what the screen can actually do (`device.lua:264-270`), so
+--- a reader who turns colour off gets grayscale on the next decode with no
+--- restart.
+---
+--- Asked at decode time and never cached — a value captured once would make that
+--- toggle inert until the plugin reloaded.
+---
+--- False wherever the question cannot be answered: an absent device table, a
+--- build whose screen has no such method, or a call that throws. False is both
+--- the old hard-coded behaviour and the memory-cheap direction, so a surprise
+--- here costs colour and never a crash.
+function Image.colorEnabled()
+    local ok, Device = pcall(require, "device")
+    if not ok or type(Device) ~= "table" then
+        return false
+    end
+    local scr = Device.screen
+    if not (scr and type(scr.isColorEnabled) == "function") then
+        return false
+    end
+    local ok_call, enabled = pcall(scr.isColorEnabled, scr)
+    return (ok_call and enabled) and true or false
+end
+
 -- Every place this document decodes a page at its *native* resolution (to
 -- discover geometry, to keep a native decode for pan/zoom crops and for the
 -- auto content-box scan) funnels through decodeNative below.
@@ -274,15 +305,17 @@ local function decodeNativeMupdf(data)
         logger.dbg("Meguru: MuPDF cannot open page bytes:", tostring(doc))
         return nil
     end
-    -- Ask MuPDF for a grayscale pixmap where it honours the flag (a colour page
-    -- is then converted on the way in). This is what makes the returned buffer
-    -- BB8: `draw_new` allocates `BlitBuffer.TYPE_BB8` whenever `doc.color` is
-    -- falsy, and `Mupdf.openDocumentFromText` never sets the field — so the
-    -- grayscale buffer is what this call would have got anyway, and calling it
-    -- is what makes that explicit rather than incidental. A build that dropped
-    -- `setColorRendering` would still hand back BB8.
+    -- Colour where the screen can show it, grayscale where it cannot. The
+    -- answer is the reader's own colour setting, read live (see
+    -- `Image.colorEnabled`) — and on an e-ink panel it is exactly the `false`
+    -- that used to be hard-coded here, so nothing about that path moves.
+    --
+    -- The decision has to be *set*, not merely left alone: `draw_new` allocates
+    -- `BlitBuffer.TYPE_BB8` whenever `doc.color` is falsy, and
+    -- `Mupdf.openDocumentFromText` never sets the field, so doing nothing would
+    -- pin every decode to grayscale on every screen.
     if doc.setColorRendering then
-        doc:setColorRendering(false)
+        doc:setColorRendering(Image.colorEnabled())
     end
     -- Oversized-lossless refusal is decided from the raw bytes (the JPEG sniff
     -- can only run here, on the streamed source); the shared render core just
