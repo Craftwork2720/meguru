@@ -19,7 +19,16 @@ Settings.UNSET = UNSET
 
 local DEFAULTS = {
     marker_dir        = UNSET,        -- base folder for new markers; unset => home folder
-    marker_server_dir = false,        -- nest markers under a per-catalog folder
+
+    -- Nest new markers under a folder named after the catalog they came from
+    -- (`<base>/<server>/<series>`).
+    --
+    -- On by default: a library built from more than one server otherwise gets two
+    -- `Kavita` folders and two `Suwayomi` ones in the same series name, and the
+    -- collision is only visible once both are on disk. It is a rule for where a
+    -- marker is *written* and nothing else — a folder already holding markers is
+    -- never moved by it, and turning it off does not move one back.
+    marker_server_dir = true,
 
     -- Whether a series folder gets a `.cover.jpg` beside its markers, per server.
     --
