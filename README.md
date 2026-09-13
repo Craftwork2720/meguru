@@ -1,5 +1,7 @@
 <p align="center"> <picture> <img src="docs/meguru-logo.png" alt="Meguru" width="320"> </picture> </p> <br>
 
+<br>
+
 **Meguru is a manga reader for KOReader that also streams manga directly from your server (Kavita, Suwayomi, Komga) — no downloading required.**
 
 It works two ways:
