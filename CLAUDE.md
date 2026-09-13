@@ -1571,42 +1571,6 @@ cover.
 The repair a reader has if any of this ever breaks again is the same one a mis-sniffed
 kind has: nothing in the UI reaches it, so it is fixed in `hook.lua` or not at all.
 
-### The same plugin takes the bottom menu, and that one cannot be left alone
-
-zen-os's **page browser** replaces `ReaderConfig.onSwipeShowConfigMenu` and
-`onTapShowConfigMenu` so the bottom gesture opens its widget, and for a
-south-to-north swipe **it does not call what it replaced** —
-`page_browser.lua:2910`, with the original kept in its own closure. So a Meguru
-book loses its bottom menu entirely, and with it every curated row: `ui/menu.lua`
-says those rows *"deliberately live in the bottom ConfigDialog"*.
-
-`Reader.installConfigMenuHook` (`ui/reader.lua`) is the repair, and the way it is
-written is the whole point: **it does not try to unwrap zen-os.** It does what
-*stock* does for a book of ours — `self:onShowConfigMenu()` — and hands every
-other book to whatever the method already was. Stock is trivial
-(`readerconfig.lua:148-160`), which is what makes that possible:
-
-| method | stock opens the menu when |
-|---|---|
-| `onSwipeShowConfigMenu(ges)` | `activation_menu ~= "tap"` and `ges.direction == "north"` |
-| `onTapShowConfigMenu()` | `activation_menu ~= "swipe"` |
-
-Both gates are **reproduced, not simplified** — a reader who put their menu on a
-tap keeps it there. And because the answer depends only on
-`self.ui.document.provider`, this works with zen-os absent, present, or switched
-off, and reads **no field of another plugin**. That is what separates it from the
-`hook.lua` repair above, which unavoidably knows zen-os by name.
-
-**It is installed per document and idempotent per method, and both halves are
-load-bearing.** It runs from `Reader.install`, which is after `ZenUI:init` in the
-same process — that is the first moment we are above zen-os, since `pluginloader`
-sorts by path and `meguru.koplugin` loads first. But it runs on *every* open,
-against two class-level methods, so a second pass that re-wrapped blindly would
-nest our wrapper inside itself and open the menu **twice**. The sentinel is the
-same `stillOurs` idea as `hook.lua`'s, and `tools/check.py` cannot see any of it:
-the whole thing lives in methods reached through `self`, which is the one shape
-the checker does not follow. The gesture is the test.
-
 ## Development
 
 ```
@@ -1940,16 +1904,6 @@ Each step must pass before the next:
     History — the `ReaderUI:showReader` wrap is on another class and must be unaffected,
     asking once and opening.
 
-    Then the **bottom menu**, which the same plugin's page browser takes away — and
-    which fails silently, because a gesture that opens the wrong thing looks like a
-    gesture that was never bound. In a Meguru book, the bottom swipe must open the
-    **ConfigDialog** with its curated rows; the bottom **tap** must too, since
-    zen-os swallows both by separate patches. Then the half that catches an
-    over-eager repair: a **PDF or .epub** in the same session must still open the
-    **page browser**. Open one Meguru book twice, and then Meguru → PDF → Meguru:
-    the menu must open **once** each time, because a wrapper installed per document
-    against a class-level method nests into itself and opens it twice.
-
 ## Known open items
 
 - **A page is decoded at its file's stated density, not at its pixels.**
@@ -1987,6 +1941,23 @@ Each step must pass before the next:
   source line; what is unverified is only whether that page is one-based, as Komga's
   own numbering is. Wants a device check against a book with progress: a zero-based
   value would offer a page one early, and `PSE.samePlace`'s tolerance would hide it.
+
+- **The bottom menu in a Meguru book belongs to zen-os, and this plugin does not
+  contest it.** Taking the gesture back was tried (`4a0f395`) and deliberately reverted:
+  it is a fight for a gesture with another plugin, and code that can break someone
+  else's books is not worth a cosmetic gain. What that attempt ran into is the reason
+  it is not merely unfinished — wrapping `ReaderConfig.onSwipeShowConfigMenu` and
+  `onTapShowConfigMenu` is not enough, because zen-os takes the bottom of the screen
+  **three** independent ways: a touch zone (`zen_page_browser_reader`,
+  `page_browser.lua:2564`) that calls its page browser without ever reaching the
+  method, re-registered on **every** document open; the two method replacements, which
+  do not chain; and `zen_mode.lua:240-248`, which swallows `onShowConfigMenu` as well,
+  so even a method that *is* reached opens nothing while `features.reader_bottom_menu`
+  is false — its default. Any future attempt has to answer all three, and the middle
+  one is what makes the failure **silent** rather than wrong: the gesture opens the
+  wrong thing, which from the reader's side is indistinguishable from one that was
+  never bound. `curateConfigMenu` still curates the rows and is untouched; with zen-os
+  installed they are reached by whatever zen-os offers in the gesture's place.
 
 Settled and worth not re-litigating: `Settings.DEFAULTS.rotate_wide = 1` is correct. The
 old plugin's fallback *row* carries `default_value = 0`, which looks like a conflict, but
