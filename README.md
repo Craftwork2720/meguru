@@ -148,3 +148,7 @@ automatically as soon as you finish a chapter.
   entries belong to, so it won't guess and open the wrong one.
 - A stream can't be exported like a real `.cbz` — it's just a pointer to the
   pages on the server, not the pages themselves.
+
+## License
+
+Licensed under AGPL-3.0-or-later, same as KOReader. See [LICENSE](LICENSE).
