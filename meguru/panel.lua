@@ -737,6 +737,56 @@ local function segment(map)
     local cells = {}
     cut(map, 0, 0, map.w - 1, map.h - 1, 0, ctx, cells)
 
+    -- A rectangle lying entirely inside another is a *piece of it*, not a panel.
+    --
+    -- The second way this cut mints a panel that is really the gap, and it is
+    -- independent of `PANEL_SHEAR_INK_RATIO`: that constant stops the shear
+    -- splitting a panel on white *inside its own drawing*, and this stops the
+    -- recursion carving the band itself out after it has already split on it.
+    -- Both were needed, on different pages, and neither alone fixes both.
+    --
+    -- What happens here: the sheared split hands both children the whole projected
+    -- band, so a child split again on that same band leaves a strip of it behind,
+    -- and the strip's *top* reaches back over the other child's box — it is the
+    -- upper panel's bottom rows, the band, and a sliver of the lower panel. That
+    -- rectangle sits inside the upper panel's, so the reader sees the same artwork
+    -- twice and the lower panel arrives with its top cut off.
+    --
+    -- The test is on the map's cells, before the conversion to native, because in
+    -- cells the comparison is exact: the conversion expands every rectangle by a
+    -- cell on each side and works in floats, either of which could separate two
+    -- boxes that contain one another here.
+    --
+    -- **Measured, and the measurement is why this is back.** An earlier version of
+    -- this file had the rule and dropped it, on the evidence of a single page where
+    -- it removed nothing — and the honest reading of that was "it does not fix
+    -- *this* page", not "the rule does nothing". The next page found needs exactly
+    -- it. Since then it is checked against a sample rather than one page.
+    --
+    -- The one thing it costs is an inset panel — a small panel drawn inside a larger
+    -- one is a contained rectangle and would be dropped. That needs the cut to have
+    -- separated the surround from the inset, and a surround is not a rectangle, so
+    -- it is believed rare; it has not been measured on a page that has one.
+    local kept = {}
+    for i, cell in ipairs(cells) do
+        local contained = false
+        for j, other in ipairs(cells) do
+            if j ~= i
+                and other.w * other.h > cell.w * cell.h -- strict: a tie keeps both
+                and cell.x >= other.x and cell.y >= other.y
+                and cell.x + cell.w <= other.x + other.w
+                and cell.y + cell.h <= other.y + other.h
+            then
+                contained = true
+                break
+            end
+        end
+        if not contained then
+            kept[#kept + 1] = cell
+        end
+    end
+    cells = kept
+
     -- Cell -> native, growing every rectangle by one cell on each side: a cell
     -- is several page pixels, and without the expansion the quantisation would
     -- shave the outermost artwork off the crop. These are floats, and

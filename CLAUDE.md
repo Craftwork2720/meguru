@@ -1192,8 +1192,29 @@ emitted as a third panel that is really the gap. That is exactly what a page of 
 panels divided by a skewed white band did: `2 panels` became `3`, the middle one
 carrying the bottom of the upper panel and a strip of the lower. Requiring the sheared
 line to be **empty** — the same standard the straight cut is named for — gives two
-panels, symmetric overlap and all, and on a twelve-page sample it changes nothing
-else. The other is page furniture: a scanlation
+panels, symmetric overlap and all, and on a sample of two dozen pages it changes
+nothing else.
+
+**That is one of two rules, and a second page proved they are not the same rule.**
+The strict ratio stops the shear splitting a panel on white *inside its own drawing*.
+It does not stop the recursion carving the band itself out once it has already split
+on it — a child split again on the same band leaves a strip behind whose top reaches
+back over the other child's box, and that strip is a rectangle inside the upper
+panel's, so the reader sees the same artwork twice and the lower panel loses its top.
+`segment` therefore also drops **a leaf contained entirely in another leaf**, on the
+map's cells before the conversion to native, where the comparison is exact. Measured
+over two dozen pages of two chapters, that rule fires on exactly two of them — both
+times on a thin full-width strip overlapping both neighbours, both times `3` panels
+becoming `2` — and is inert on the other twenty-two, including a page of five panels
+where a small one sits beside bigger ones and is left alone.
+
+The two rules cost different things and neither is free. The strict ratio could
+regress a page whose separator is a real gutter carrying JPEG noise, since the sheared
+line must now be genuinely empty. The containment rule drops an **inset panel** — a
+small panel drawn inside a larger one — which is believed rare (the surround would
+have to be a rectangle for the cut to produce one) and has not been measured on a page
+that has one; if a small panel ever goes missing, that is the first thing to look at.
+The other is page furniture: a scanlation
 credit line clears both size floors comfortably, so `emitLeaf` rejects it on the
 *conjunction* of elongated and nearly inkless. Neither test works alone, and that
 function's comment carries the measurement that says so.
@@ -2049,26 +2070,34 @@ Each step must pass before the next:
   device and the panel turns against it. Found on a device, fixed by crossing the two
   constants in `panelRotationAngle`. Now observed rather than derived, so treat it as
   settled — and note that the row's word is the one thing that never was.
-- **The panel detector has a measurement harness, and it is the only way this thing
-  has ever been decided rather than argued.** `tools/panelprobe.py` is a faithful port
-  of `meguru/panel.lua` - the ink predicate, both projections, the recursive cut, the
-  sheared search, `emitLeaf` - that runs on a page image with no Lua interpreter. It
-  takes a mode argument to compare variants (its `loose` restores the sheared
-  projection's ratio to the straight cut's, i.e. the behaviour before
-  `PANEL_SHEAR_INK_RATIO`, and that comparison is what found the third panel). Feed it
-  a page from a real server and it prints every leaf's cells, ink density and position
-  as a percentage of the page. **What it does not model**: Lua's evaluation rules (so
+- **The panel detector has a measurement harness, and it is the only way anything in
+  it has ever been decided rather than argued.** `tools/panelprobe.py` is a faithful
+  port of `meguru/panel.lua` - the ink predicate, both projections, the recursive cut,
+  the sheared search, `emitLeaf`, the containment filter - that runs on a page image
+  with no Lua interpreter. Feed it a page from a real server and it prints every leaf's
+  cells, ink density and position as a percentage of the page, plus what the
+  containment filter drops and why; its mode arguments compare variants (base
+  behaviour, `loose` for the sheared ratio before `PANEL_SHEAR_INK_RATIO`, `root` and
+  `all` for the shear's depth). **Reach for it before touching anything here** - the
+  two bugs above were both resolved by measuring, after several rounds of reasoning
+  that were each confident and each wrong. **What it does not model**: Lua's evaluation rules (so
   it can settle arithmetic and never semantics), MuPDF's render, and the
   decode-then-resample two-step. A divergence it cannot see is a divergence it cannot
   rule out.
-- **The skewed-page fix was verified on one page, and the sample is what says it is
-  safe.** Twelve pages of one chapter: `PANEL_SHEAR_INK_RATIO` changes the leaf count
-  on exactly the page that was broken (3 to 2) and on none of the other eleven, where
-  the shear never fires at all (`shear 0/3` - the straight cut handles them). That is a
-  *sample*, not a proof: a page whose separator is a real gutter with JPEG noise in it
-  is the case this could regress, because the sheared projection now requires the line
-  to be genuinely empty. If a skewed page ever comes back as one panel instead of
-  several, that constant is the first thing to look at.
+- **A rule measured on one page is not a measured rule, and this cost a commit.** The
+  leaf-containment rule above was added, then removed on the evidence of a single page
+  where it dropped nothing, then restored when the next page found needed exactly it.
+  The honest reading of "it removes nothing here" is *it does not fix this page* — and
+  the difference between that and "it does nothing" is the whole of the mistake. The
+  sample is now two dozen pages across two chapters, and the rule fires on two of them.
+- **Both skewed-page fixes are samples, not proofs.** `PANEL_SHEAR_INK_RATIO` changes
+  the leaf count on exactly the pages that were broken and on none of the others, where
+  the shear never fires at all (`shear 0/3` - the straight cut handles them). What could
+  still regress: a page whose separator is a real gutter carrying JPEG noise, since the
+  sheared line must now be genuinely empty (that page would come back as one panel
+  rather than several); and a page with an inset panel, which the containment rule would
+  drop. Neither has been seen. Both constants are the first thing to look at if either
+  shape of page misbehaves.
 - **The panel scan is not the reference's scan, and three measured differences are
   live.** They are named as *measured* rather than suspected, so nobody re-derives
   them, and none of them is known to matter on a normal page:
