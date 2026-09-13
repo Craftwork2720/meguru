@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/meguru-logo.png" alt="Meguru" width="320">
+</p>
+
 # Meguru
 
 Meguru is a manga reader for KOReader, built as two things at once.
