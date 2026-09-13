@@ -1958,6 +1958,12 @@ Each step must pass before the next:
   wrong thing, which from the reader's side is indistinguishable from one that was
   never bound. `curateConfigMenu` still curates the rows and is untouched; with zen-os
   installed they are reached by whatever zen-os offers in the gesture's place.
+  **It was also verified on a surface that could not show the failure**, and that pair
+  of results is the evidence: the repair passed in a development KOReader under WSL and
+  failed on the Kindle. Every one of the three mechanisms above needs zen-os present, so
+  a session without it exercises only the stock path — where the repair does exactly what
+  it says. A repair aimed at a foreign plugin has to be verified where that plugin is
+  installed, and this is what it costs when it is not.
 
 Settled and worth not re-litigating: `Settings.DEFAULTS.rotate_wide = 1` is correct. The
 old plugin's fallback *row* carries `default_value = 0`, which looks like a conflict, but
