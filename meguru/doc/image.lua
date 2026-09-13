@@ -60,6 +60,11 @@ end
 --- a reader who turns colour off gets grayscale on the next decode with no
 --- restart.
 ---
+--- **Two conditions, not one.** Wanted colour is not the same as reachable
+--- colour: the second half of this function refuses a framebuffer that would
+--- flatten the result at blit time. See the note at the end for what it does and
+--- does not close.
+---
 --- Asked at decode time and never cached — a value captured once would make that
 --- toggle inert until the plugin reloaded.
 ---
@@ -77,7 +82,32 @@ function Image.colorEnabled()
         return false
     end
     local ok_call, enabled = pcall(scr.isColorEnabled, scr)
-    return (ok_call and enabled) and true or false
+    if not (ok_call and enabled) then
+        return false
+    end
+
+    -- **And the destination has to be able to hold it.** `screen:isColorEnabled()`
+    -- answers what the *reader* asked for; it says nothing about whether the
+    -- bytes survive the blit. `BB_blit_to` dispatches on the target's type
+    -- (`base/blitbuffer.c`), and an RGB source landing in an 8bpp target runs
+    -- `RGB_To_A` — luminosity, colour discarded, irreversibly. On such a screen
+    -- a colour decode costs three times the memory and ends as the grayscale it
+    -- would have been anyway.
+    --
+    -- `fb_bpp` is the depth KOReader read from the kernel
+    -- (`framebuffer_linux.lua`), so `8` is exactly the grayscale framebuffer.
+    -- **nil is not 8**: a desktop/SDL build never sets the field, and a desktop
+    -- is the one place colour is most obviously wanted and most obviously works.
+    --
+    -- This closes the case that is certain, and is honest about the one that is
+    -- not: a device that reports colour, has a wide framebuffer, and still cannot
+    -- show it — a Kindle Colorsoft, whose colour panel KOReader has no CFA
+    -- handling for — passes this test and pays the memory. There is no clean
+    -- signal for that in Lua: `hasKaleidoWfm`, the flag KOReader's own colour-UI
+    -- gate uses, is false there *and* on a desktop, so it cannot tell them apart.
+    -- The cost in that case is bounded by what stock already pays on the same
+    -- device, since `is_color_capable` gives stock's own tiles RGB32 there too.
+    return scr.fb_bpp ~= 8
 end
 
 -- Every place this document decodes a page at its *native* resolution (to

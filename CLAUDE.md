@@ -303,6 +303,34 @@ The distinction is not cosmetic and it is not new behaviour on e-ink: on a Kindl
 fixes is a colour framebuffer, where the plugin used to decode colour away and a
 reader had no way to tell why.
 
+**The predicate has a second condition, and it is not about what the reader
+asked for but about what survives the blit.** `screen:isColorEnabled()` alone
+says only that colour is *wanted*; `BB_blit_to` dispatches on the **target's**
+type (`base/blitbuffer.c`), and an RGB source landing in an 8bpp target runs
+`RGB_To_A` — luminosity, colour discarded, irreversibly. So
+`Image.colorEnabled()` also requires `screen.fb_bpp ~= 8`, which is the depth
+KOReader read from the kernel. `nil` is not 8: a desktop build never sets the
+field, and a desktop is where colour most obviously works.
+
+**Colour here is only ever as good as KOReader's road to the panel, and that road
+is Kobo-only — which is why a Kindle Colorsoft will stay grayscale.** The
+Colorsoft is recognised and sets `hasColorScreen = yes` (`kindle/device.lua`),
+and that is *all* it sets: no `hasKaleidoWfm` (assigned only in
+`kobo/device.lua`), no colour waveform modes and no CFA flag (both Kobo-only
+branches of `framebuffer_mxcfb.lua`, and `ffi/mxcfb_kindle_h.lua` has no CFA
+constants at all), and no equivalent of the Kobo launcher's `fbdepth` call that
+forces a 32-bpp framebuffer. `mtk-kobo.h` states the consequence plainly: without
+CFA processing the controller renders the panel black and white. **There is no
+clean test for that case in Lua** — `hasKaleidoWfm`, the flag KOReader's own
+colour-UI gate uses, is false on a Colorsoft *and* on a desktop, so it cannot
+tell them apart — so this refuses only what it can prove and leaves the rest
+alone, where the cost is bounded by what stock already pays: `is_color_capable`
+gives stock's own tiles RGB32 on the same device.
+
+**Where to check which branch a device took: the `init` log line**, which prints
+`fb_bpp` beside the branch it chose. "Is there colour here" is a question for the
+log, not for the code.
+
 **On the grayscale branch a decoded page is 8bpp and the dither is still forced
 on.** Both halves are one story, and the second half is a decision with a cost —
 recorded here so it is not "corrected" a third time without knowing what it is.
