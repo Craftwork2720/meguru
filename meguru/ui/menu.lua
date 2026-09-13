@@ -61,20 +61,21 @@ local Menu = {}
 
 -- Where the row goes -----------------------------------------------------------
 
---- Put `meguru` into one surface's `tools` order list, directly below
---- `profiles` — or at the very top on a build with no `profiles` id to sit
---- under, which is where the row used to be.
+--- Put `meguru` into one surface's `tools` order list, directly above
+--- `read_timer` — the first entry of the stock list on both surfaces, so "above
+--- it" is the head of the page. A build with no `read_timer` costs the position
+--- and nothing else: the row then goes to index 1, which is where `read_timer`
+--- would have been.
 ---
---- By neighbour rather than by index: everything above this row is whatever the
---- user has enabled, so the list grows and shrinks between installations and an
---- index would land somewhere different from one device to the next. A name
---- does not move. An id with no matching item is skipped by the sorter anyway,
---- so a missing `profiles` costs the position and nothing else.
-local function insertMeguruAfter(order, neighbour)
+--- By neighbour rather than by index on purpose: everything above this row is
+--- whatever the user has enabled, so the list grows and shrinks between
+--- installations and an index would land somewhere different on the next device.
+--- A name does not move.
+local function insertMeguruBefore(order, neighbour)
     local pos = 1
     for i, id in ipairs(order) do
         if id == neighbour then
-            pos = i + 1
+            pos = i
             break
         end
     end
@@ -109,8 +110,8 @@ local function showUnderTools()
         logger.warn("Meguru: no Tools menu in this build; the Meguru row is unsorted")
         return nil
     end
-    insertMeguruAfter(fm_order.tools, "profiles")
-    insertMeguruAfter(rd_order.tools, "profiles")
+    insertMeguruBefore(fm_order.tools, "read_timer")
+    insertMeguruBefore(rd_order.tools, "read_timer")
     return "tools"
 end
 

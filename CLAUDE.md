@@ -1349,10 +1349,13 @@ Invariants when touching these rows:
   `"tools"`, which resolves unconditionally in both order tables.
 - **A hint alone does not place a row at all.** It is appended to the end of that
   page's row list. Naming the id in that page's order list is what decides otherwise,
-  and `showUnderTools` does it for both surfaces, putting `meguru` **directly below
-  `profiles`** (or at the top where a build has no such id). Position is named by
-  neighbour rather than by index on purpose — everything above this row is whatever
-  the user has enabled, so an index would land somewhere different on the next device.
+  and `showUnderTools` does it for both surfaces, putting `meguru` **directly above
+  `read_timer`** — entry 1 of the stock list on both surfaces, so that is the head of
+  the page (and index 1, where `read_timer` would have been, on a build without it).
+  Position is named by neighbour rather than by index on purpose — everything above
+  this row is whatever the user has enabled, so an index would land somewhere different
+  on the next device. `profiles` was the neighbour before and sits far enough down the
+  list to have stopped being a useful landmark.
 - **`separator` and `checked_func` are `TouchMenu`-only; `mandatory` is
   plain-`Menu`-only.** Both menus Meguru registers are `TouchMenu`s on a touch device,
   so both fields are usable in these rows. `text_func` renders on either, which is why
@@ -1758,11 +1761,14 @@ Each step must pass before the next:
 11. **The silent opens stay silent.** ⋮ → Meguru → "Open next in series" on an unsynced
     series: the walk runs, the chapter opens, no dialog. Finish a volume with `Auto-open
     next in series` on: the next volume opens with no dialog.
-12. **The menu lands where it should.** FileManager → Tools → `Meguru` directly below
-    `Profiles`, holding a single `Settings` row and nothing else; the reader's ⋮ → Tools
+12. **The menu lands where it should.** FileManager → Tools → `Meguru` directly above
+    `Read timer`, holding a single `Settings` row and nothing else; the reader's ⋮ → Tools
     → `Meguru` holds `Open next in series`, `Open previous in series` and the same
-    `Settings` row. Nothing anywhere offers a cover, a cache to clear, a library or a
-    server list. Inside `Settings`, on both surfaces: `Auto-open next in series` (reader
+    `Settings` row. Above `Read timer` in both cases: with the AI Assistant plugin
+    enabled that means the second row down, under `AI Assistant` and above `Read timer`;
+    with it disabled the row is the first thing on the page. Turning the AI plugin on
+    must move the row under it rather than leaving a second copy behind. Nothing
+    anywhere offers a cover, a cache to clear, a library or a server list. Inside `Settings`, on both surfaces: `Auto-open next in series` (reader
     only), `Panel zoom in Meguru books` (reader only), `Hide status bar` + a line, `Main
     folder for .meguru streams: …`, `Subfolder per server` + a line, `Set Meguru as
     default reader for .cbz`. The folder row opens the picker and shows the new path
