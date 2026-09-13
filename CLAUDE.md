@@ -1137,6 +1137,20 @@ belong to the document's tile LRU, and `cacheTile` is what frees them.
 `images_keep_pan_and_zoom = false` is what makes the navigation *classic*: a panel
 opens at best fit instead of inheriting the previous panel's pinch.
 
+**The viewer draws no chrome, and the last piece to go was stock's progress bar.** It
+is turned off with `images_list_nb = 1` in `PanelZoom.open`, which is *not* a count:
+stock builds, draws and frees the bar behind one `_images_list_nb > 1` test, so the
+field is the switch and nothing else. That the reader shows no bar either is the reason
+it went — Meguru hides the footer, and the progress bar lives in the footer.
+
+**`images_list_nb` must not be read back as the panel count, and this is the edit that
+would break panel navigation silently.** `onShowNextImage`, `onShowPrevImage` and
+`meguruWarm` all bound themselves by `#self.panels`, which is the truth; with the field
+at 1, a bound taken from it makes every forward gesture fall through to the page
+boundary, so the second panel becomes unreachable and the symptom looks like broken
+navigation rather than a hidden bar. **`tools/check.py` cannot see this**: it keys on
+names, and a field reached through `self` is not one. The gesture is the test.
+
 The four overrides are `switchToImageNum` (recompute `rotated` per panel, then release
 the one left behind, then re-arm the warm), `onShowNextImage` / `onShowPrevImage`
 (boundary past either end), and `onTap` / `onSwipe`. **Those last two exist for one
@@ -1695,7 +1709,12 @@ Each step must pass before the next:
     must name one of the four tests — `no panels`, `single partial panel`, `panels cover
     too little of the page`, `only N% of the covered area kept`. Compare the milliseconds
     against the `page N prepared in X ms` line on the same page: the scan sits on top of
-    that decode and should be a fraction of it. Then **toggle Manga mode with a page open
+    that decode and should be a fraction of it. Then the two chrome checks: **no progress
+    bar**, and the panel centred in the full height rather than above a strip of nothing;
+    and **a forward gesture from a middle panel stays on the page** and shows the next
+    panel — if it turns the page instead, the navigation bound was taken from
+    `_images_list_nb`, which is now the bar's switch and not a count, and nothing
+    automated can catch that. Then **toggle Manga mode with a page open
     and long-press it twice** — the second press must give the mirrored order, which is
     the whole job of the cache key; and **long-press, close, long-press the same page** —
     the second must be instant and log the same count (the LRU hit), with nothing new on

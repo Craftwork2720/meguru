@@ -305,8 +305,12 @@ function PanelViewer:_new_image_wg()
     end
 end
 
+-- The bound is `#self.panels`, **not** `self._images_list_nb` — see the note on
+-- `images_list_nb = 1` in `PanelZoom.open`. Stock's field is the chrome switch and
+-- no longer counts anything, so bounding navigation by it would send every
+-- forward gesture to the page boundary.
 function PanelViewer:onShowNextImage()
-    if self._images_list_cur < self._images_list_nb then
+    if self._images_list_cur < #self.panels then
         self:switchToImageNum(self._images_list_cur + 1)
         return true
     end
@@ -511,7 +515,20 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate)
         rotate = rotate,
         meguru_rotates = rotates,
         image = images,
-        images_list_nb = #panels,
+        -- **One, and deliberately not the panel count.** Stock builds, draws and
+        -- frees its progress bar behind a single `_images_list_nb > 1` test, so
+        -- this is the switch that turns the bar off — the last piece of chrome
+        -- this window still drew, after the title bar and the button row. The
+        -- reader shows no bar either: Meguru hides the footer, and the bar lives
+        -- in it.
+        --
+        -- It is not a count any more, and nothing here treats it as one —
+        -- `onShowNextImage`, `onShowPrevImage` and `meguruWarm` all bound
+        -- themselves by `#self.panels`, which is the truth. Reading the count
+        -- back off this field is the one edit that would silently break panel
+        -- navigation: with it at 1, every forward gesture would fall through to
+        -- the page boundary and the second panel would be unreachable.
+        images_list_nb = 1,
         image_disposable = false,
         images_keep_pan_and_zoom = false,
         with_title_bar = false,
