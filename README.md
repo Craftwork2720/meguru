@@ -1,64 +1,33 @@
 # Meguru
 
-A KOReader plugin that turns manga streamed from an OPDS server into ordinary
-KOReader **books**. No archive is ever downloaded: each page is fetched over HTTP
-only when you are about to read it, and the book behaves like any other book on
-your device.
+Meguru is a manga reader for KOReader, built as two things at once.
 
-> [!NOTE]
-> Meguru needs a server that supports **OPDS page streaming** (OPDS-PSE).
-> Kavita, Suwayomi and Komga are supported today.
+**A manga reader.** Faster than the stock mupdf reader, especially on large
+files, and built specifically for manga instead of general documents. It
+opens `.cbz` files you already have on your device, with auto-crop, manga
+mode, night mode and panel zoom.
 
-## Why use it
+**An OPDS streaming client.** It can also stream manga straight from your
+server — Kavita, Suwayomi and Komga are supported. Nothing is downloaded up
+front: pages load one at a time as you read, but each volume or chapter still
+sits in your library and behaves like an ordinary book.
 
-KOReader already ships a page-stream viewer, but it is a *quick look*: close it
-and your place is gone, and it never appears in your library. Meguru saves the
-stream as a real book instead:
-
-- it appears in **History** and on the home screen, like any other book;
-- KOReader keeps its normal **reading progress** — close it, reopen it, carry on;
-- if the server already knows where you stopped — on another device, or in the
-  server's own web reader — a book you have never opened here starts there;
-- finishing a volume can open the next one by itself;
-- every page is still requested one at a time, as you read.
+Use it as just a fast `.cbz` reader, no server required — or hook it up to
+your OPDS library and read your way through a whole series without ever
+leaving the reader.
 
 ## Installation
 
 1. Copy the `meguru.koplugin` folder into your `koreader/plugins/` directory.
 2. Restart KOReader.
-3. Make sure the built-in OPDS plugin is enabled — it is by default.
-
-Meguru does **not** replace the built-in OPDS browser. It adds one row to the
-dialog that browser already shows; the browser itself is never modified.
 
 To uninstall, delete the `meguru.koplugin` folder.
 
-## Usage
+---
 
-1. Open the **OPDS catalog** in KOReader's file browser, as usual.
-2. Browse to a manga or chapter and tap the entry.
-3. In the dialog that appears, tap **▶ Meguru this series**.
-4. Meguru asks where to start, saves the book, and opens it.
+# The reader
 
-From then on it is an ordinary book: reopen it from **History** and you continue
-where you left off.
-
-> [!TIP]
-> The same **▶ Meguru this series** row is also offered at the top of a series
-> listing. There it opens the **first chapter you have not read**, which is the
-> quickest way back into a long series.
-
-### Where books are saved
-
-Meguru never asks for a folder while you are trying to read. Set it once, and
-every new book goes there:
-
-- **File browser** → *Tools* → **Meguru** → ***Settings*** →
-  *Main folder for .meguru streams: …*
-- turn on *Subfolder per server* to also nest books under their server's name:
-  `<folder>/<server>/<series>/`
-
-Changing the folder does not move books you have already saved.
+Applies whether the book came from your device or from a stream.
 
 ## While reading
 
@@ -74,29 +43,80 @@ Changing the folder does not move books you have already saved.
 | Panel zoom | Long-press a panel to zoom into it (on by default) |
 
 > [!TIP]
-> Tap a setting to apply it to the book you are reading. Long-press it to make it
-> the default for every new book Meguru opens.
+> Tap a setting to apply it to the book you're reading. Long-press it to make
+> it the default for every new book Meguru opens.
 
-**Panel zoom** is the exception: it belongs to KOReader —
-**⋮ → Panel zoom (manga/comic) → *Allow panel zoom*** — and Meguru sets only its
-default. A book you switch there keeps its own answer; every other book Meguru
-opens — streams and `.cbz` alike — follows *Settings* → *Panel zoom in Meguru
-books*, which starts on.
+**Panel zoom** lets you long-press a panel to zoom into it, then move to the
+next panel with a tap — read panel-by-panel instead of the whole page at
+once. It's a KOReader feature; Meguru just sets it on by default for the
+books it opens (*Settings* → *Panel zoom in Meguru books*).
 
-The reader's **⋮ → Tools → Meguru** menu holds the rest:
+## Opening `.cbz` files
 
-- *Open next / previous in series* — when the book has no neighbour yet, this
-  fetches the series' chapter list and opens it;
-- ***Settings*** — the same submenu the file browser shows, and the only place
-  any of these live: *Auto-open next in series* (opens the next chapter by itself
-  when you finish one), *Panel zoom in Meguru books*, *Hide status bar*, the two
-  folder rows, and *Set Meguru as default reader for .cbz* (below).
+Use **Open with… → Meguru** from the file browser.
 
-## Where to start reading
+> [!IMPORTANT]
+> **Meguru makes itself the reader for every `.cbz` on first run.** That's a
+> one-time thing: it happens when the plugin is installed, leaves alone any
+> reader you'd already chosen, and never happens again on its own.
+>
+> To undo it — or turn it back on — go to **⋮ → Tools → Meguru → Settings** →
+> *Set Meguru as default reader for .cbz*. You can also set this from the
+> "Open with…" dialog by ticking *Always use this engine for file type*;
+> either way, that choice wins over the automatic claim.
 
-When the server knows a position that differs from yours, Meguru asks instead of
-guessing. The title names the **series**, because the question is where in the
-series to carry on, and every button names its own book:
+---
+
+# OPDS streaming
+
+Requires the built-in OPDS plugin, enabled by default, pointed at a Kavita,
+Suwayomi or Komga server.
+
+## Why use Meguru for this
+
+KOReader's built-in page-stream viewer is a *quick look*: close it and your
+place is gone, and it never shows up in your library. Meguru turns a stream
+into a real book instead — it appears in **History**, keeps your reading
+progress, and can pick up where you left off on another device or in the
+server's own web reader.
+
+A `.meguru` file itself stores none of the manga — no pages, no archive —
+so it takes up next to no space on your device; the pages only ever live on
+the server.
+
+## Usage
+
+1. Open the **OPDS catalog** in KOReader's file browser, as usual.
+2. Browse to a manga or chapter and tap the entry.
+3. In the dialog that appears, tap **▶ Meguru this series**.
+4. Meguru asks where to start, saves the stream, and opens it.
+
+From then on it's an ordinary book: reopen it from **History** and you
+continue where you left off.
+
+> [!TIP]
+> The same **▶ Meguru this series** row also appears at the top of a series
+> listing. There it opens the **first chapter you haven't read** — the
+> quickest way back into a long series.
+
+### Where streams are saved
+
+Meguru never asks for a folder while you're trying to read. Set it once, and
+every new stream goes there:
+
+- **File browser** → *Tools* → **Meguru** → ***Settings*** →
+  *Main folder for .meguru streams: …*
+- turn on *Subfolder per server* to also nest streams under their server's name:
+  `<folder>/<server>/<series>/`
+
+Changing the folder later doesn't move streams you've already saved.
+
+### Where to start reading
+
+When you open a `.meguru` stream and the server is further ahead than what's
+saved locally, Meguru asks whether to continue where the file left off or
+where the server says you got to instead of guessing. The title names the
+**series**, and every button names its own stream:
 
 ```
 Meguru: Now That We Draw
@@ -105,114 +125,31 @@ Meguru: Now That We Draw
   ▶ Continue — Volume 2, page 2 (Server)
 ```
 
-The **▶** marks the server's answer — the chapter it has not seen you finish. It
-is one button with two readings: if that position is inside the book you are
-opening, the button names a page; if it is in a later volume, it names a book.
+The **▶** marks the server's answer — the point it hasn't seen you finish. If
+that position is inside the stream you're opening, the button names a page;
+if it's in a later volume, it names that stream instead.
 
-The first button is always there, and always opens the book you tapped. Tapping
-past the dialog cancels: nothing is opened, and nothing is saved.
+The first button is always there and always opens the stream you tapped.
+Tapping outside the dialog cancels — nothing opens, nothing is saved.
 
-## Reading local files
+### Moving through a series
 
-Meguru can also open `.cbz` files already on your device, with the same cropping,
-night mode and page-turning behaviour as a streamed book. Use **Open with… →
-Meguru** from the file browser.
+The reader's **⋮ → Tools → Meguru** menu can open the next or previous
+chapter, fetching it from the server if it isn't already saved. Turn on
+*Auto-open next in series* (same Settings submenu) to have it happen by
+itself as soon as you finish a chapter.
 
-> [!IMPORTANT]
-> **Meguru makes itself the reader for every `.cbz` on first run.** That is a
-> one-time claim: it happens when the plugin is installed, leaves a reader you
-> had already chosen alone, and never happens again.
->
-> To undo it — or to turn it back on — use ***Settings*** → *Set Meguru as
-> default reader for .cbz*. The same thing can be set from the "Open with…"
-> dialog by ticking *Always use this engine for file type*, and either way that
-> setting wins over the claim.
->
-> A `.cbz` you set individually — *Always use this engine for this file* — keeps
-> its own choice regardless.
+### Good to know
 
-## What is actually on your disk
-
-Each saved book is a small **marker file** with the `.meguru` extension. It is not
-an archive and holds no pages — just enough to find the stream again: the server
-it came from, which chapter it is, the page URL template and the page count.
-
-**Almost nothing else is written.** Pages are kept in memory as you read and are
-gone when you close the book; there is no page cache and no cover cache on disk,
-and no database.
-
-The one other file is a **`.cover.jpg`** left in a series folder, so that
-something *other* than KOReader — a file browser, a backup, a different reader —
-has a picture for the series. It is written once, when the first of its volumes
-is saved, and never updated or removed. KOReader itself does not draw folder
-covers, so it will not show it to you. You can turn it off per server under
-*Settings* → *Covers for folders*; turning a server off stops new files and
-leaves the ones already written.
-
-> [!WARNING]
-> Because a book is a marker and not an archive, it needs the server to be
-> reachable to display pages. And because the markers are read by this plugin,
-> uninstalling Meguru leaves books that no longer open — delete the `.meguru`
-> files if you remove the plugin.
-
-**Opening a book needs no network and no configuration** — everything required to
-open the marker is inside the file, and Meguru has no database and no cache to be
-missing. Reading is a different matter: the pages come from the server, so a page
-that has not already been fetched cannot be shown. When one is missing, **the
-reason is written where the page would be** instead of a blank page — no
-connection, a server that is not answering, an error the server returned — and
-the log says the same. Turning the page tries again, and so does reconnecting:
-the page you are looking at fills in by itself once the Wi-Fi is back. Looking for the next chapter also
-needs the network, because it means reading the series' chapter list from the
-server.
-
-## Limitations
-
-- **OPDS 1.x catalogs with page streaming.** Entries that only offer a file
-  download keep their normal download buttons, untouched.
-- **On Komga, browse to a series to open a book — not to "Latest books", "On
-  Deck" or "Keep Reading".** Kavita publishes a series id on every chapter, so a
-  book opened from one of its aggregate lists still knows what it belongs to;
-  Komga publishes none anywhere, so those lists cannot say which series a book is
-  from. Rather than guess, Meguru opens nothing and says so. Everything reached
-  through *All series* works normally.
-- **The next chapter is fetched when you ask for it.** There is no background
-  crawling of your libraries, so a series you have just added knows only the
-  chapter you opened until you ask for a neighbour.
-- **Reading progress is not written back to the server by Meguru.** It reads the
-  position the server reports; where the server tracks progress from page
-  fetches, that happens on the server's side.
-- **A book cannot be exported or moved like a CBZ.** It is a marker; the pages
-  live on the server.
-
-## What is in the folder
-
-```
-_meta.lua          plugin manifest
-main.lua           provider registration and menu dispatch
-
-meguru/
-  marker.lua       the marker file: read, write, naming, series identity
-  feed.lua         reading a series feed: pagination, reading order, neighbours
-  panel.lua        the panels on a page, and the order they are read in
-  pse.lua          OPDS-PSE: finding the stream link, building a page URL
-  net.lua          HTTP and feed parsing
-  credential.lua   what a credential looks like in a URL: redact / restore
-  seriescover.lua  the series cover kept in the series folder
-  sources.lua      read-only view of KOReader's OPDS settings
-  settings.lua     plugin-wide preferences
-  association.lua  Meguru's claim on .cbz: the file-type reader association
-  paths.lua        every path Meguru uses
-  fs.lua           filesystem predicates and directory creation
-  naming.lua       titles, series names, folder-safe names, stable keys
-  hook.lua         runtime wraps on the built-in OPDS browser
-  driver/          per-server knowledge (Kavita, Suwayomi, Komga)
-  doc/             the document itself: rendering, decoding, per-book defaults
-  ui/              the open flow, the reader integration, the two menus
-```
-
-**No file belonging to KOReader or to another plugin is ever modified.** Meguru
-wraps a few methods of the built-in OPDS plugin in memory — restarting KOReader
-removes the wraps — and writes three things: marker files, the `.cover.jpg` a
-series folder may get, and the same per-book settings file KOReader keeps beside
-every document it opens.
+- Creating a series stream also drops a `.cover.jpg` in its folder — turn
+  that off in *Settings* if you don't want it.
+- A stream needs the server to be reachable to show its pages — if a page
+  can't load, Meguru tells you why right on the page (no connection, server
+  error, etc.) and fills it in once you're back online.
+- Uninstalling the plugin leaves streams that no longer open — delete the
+  `.meguru` files if you remove it.
+- On Komga, open books from inside a series, not from "Latest books", "On
+  Deck" or "Keep Reading" — Komga doesn't tell Meguru which series those
+  entries belong to, so it won't guess and open the wrong one.
+- A stream can't be exported like a real `.cbz` — it's just a pointer to the
+  pages on the server, not the pages themselves.
