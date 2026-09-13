@@ -181,6 +181,81 @@ function Reader.installStatusBarHook()
     end
 end
 
+-- The bottom menu, which another plugin takes away -----------------------------
+
+--- Our wrapper for each of the two handlers, or nil before one is installed.
+local m_swipe_show_config
+local m_tap_show_config
+
+local function stillOurs(current, ours)
+    return ours ~= nil and current == ours
+end
+
+--- Is this `ReaderConfig` driving a book of ours?
+local function meguruDocument(reader_config)
+    local ui = reader_config and reader_config.ui
+    local doc = ui and ui.document
+    return (doc and doc.provider == "meguru") and true or false
+end
+
+--- Give Meguru books their bottom menu back.
+---
+--- `zenos.koplugin`'s **page browser** takes the bottom gesture: it replaces
+--- `ReaderConfig.onSwipeShowConfigMenu` and `onTapShowConfigMenu` so the gesture
+--- opens its page browser, and for a south-to-north swipe it **does not call
+--- what it replaced** — that function is kept in its own closure, where nothing
+--- can reach it. For a book of ours that is not a cosmetic loss: the curated
+--- `ConfigDialog` is where this plugin's own rows live (`ui/menu.lua`).
+---
+--- **So this does not try to unwrap zen-os, and does not need to.** It does what
+--- *stock* does for a book of ours — `self:onShowConfigMenu()` — and hands every
+--- other book to whatever the method already was. That is why it works with
+--- zen-os absent, present, or switched off, and why it reads no field of
+--- another plugin: `ReaderConfig`'s own `activation_menu` gate is the only
+--- thing it consults, and it reproduces that gate rather than simplifying it,
+--- because a reader who put their menu on a tap should keep it there.
+---
+--- **Installed per document, idempotent per method.** It runs from
+--- `Reader.install`, which is after `ZenUI:init` in the same process and is
+--- therefore the first moment we are above zen-os — but it runs on *every*
+--- open, against two class-level methods, so a second pass that re-wrapped
+--- blindly would nest our wrapper inside itself and open the menu twice.
+function Reader.installConfigMenuHook()
+    local ok, ReaderConfig = pcall(require, "apps/reader/modules/readerconfig")
+    if not ok or type(ReaderConfig) ~= "table" then
+        return
+    end
+
+    if not stillOurs(ReaderConfig.onSwipeShowConfigMenu, m_swipe_show_config) then
+        local orig = ReaderConfig.onSwipeShowConfigMenu
+        if type(orig) == "function" then
+            m_swipe_show_config = function(self, ges)
+                if meguruDocument(self) and self.activation_menu ~= "tap"
+                    and type(ges) == "table" and ges.direction == "north" then
+                    self:onShowConfigMenu()
+                    return true
+                end
+                return orig(self, ges)
+            end
+            ReaderConfig.onSwipeShowConfigMenu = m_swipe_show_config
+        end
+    end
+
+    if not stillOurs(ReaderConfig.onTapShowConfigMenu, m_tap_show_config) then
+        local orig = ReaderConfig.onTapShowConfigMenu
+        if type(orig) == "function" then
+            m_tap_show_config = function(self)
+                if meguruDocument(self) and self.activation_menu ~= "swipe" then
+                    self:onShowConfigMenu()
+                    return true
+                end
+                return orig(self)
+            end
+            ReaderConfig.onTapShowConfigMenu = m_tap_show_config
+        end
+    end
+end
+
 -- Wide pages -------------------------------------------------------------------
 
 local function wideRotateIsLeft(value)
@@ -1360,6 +1435,11 @@ function Reader.install(plugin)
 
     curateConfigMenu(plugin)
     installEndOfBookHook(plugin)
+
+    -- After `curateConfigMenu`, because it is the menu this gives access to:
+    -- another plugin can take the bottom gesture away, and then none of those
+    -- rows can be reached. See `Reader.installConfigMenuHook`.
+    pcall(Reader.installConfigMenuHook)
 
     plugin.onMeguruRotateWideUpdate = function(self, value)
         if type(value) ~= "number" then

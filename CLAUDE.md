@@ -1568,6 +1568,42 @@ cover.
 The repair a reader has if any of this ever breaks again is the same one a mis-sniffed
 kind has: nothing in the UI reaches it, so it is fixed in `hook.lua` or not at all.
 
+### The same plugin takes the bottom menu, and that one cannot be left alone
+
+zen-os's **page browser** replaces `ReaderConfig.onSwipeShowConfigMenu` and
+`onTapShowConfigMenu` so the bottom gesture opens its widget, and for a
+south-to-north swipe **it does not call what it replaced** —
+`page_browser.lua:2910`, with the original kept in its own closure. So a Meguru
+book loses its bottom menu entirely, and with it every curated row: `ui/menu.lua`
+says those rows *"deliberately live in the bottom ConfigDialog"*.
+
+`Reader.installConfigMenuHook` (`ui/reader.lua`) is the repair, and the way it is
+written is the whole point: **it does not try to unwrap zen-os.** It does what
+*stock* does for a book of ours — `self:onShowConfigMenu()` — and hands every
+other book to whatever the method already was. Stock is trivial
+(`readerconfig.lua:148-160`), which is what makes that possible:
+
+| method | stock opens the menu when |
+|---|---|
+| `onSwipeShowConfigMenu(ges)` | `activation_menu ~= "tap"` and `ges.direction == "north"` |
+| `onTapShowConfigMenu()` | `activation_menu ~= "swipe"` |
+
+Both gates are **reproduced, not simplified** — a reader who put their menu on a
+tap keeps it there. And because the answer depends only on
+`self.ui.document.provider`, this works with zen-os absent, present, or switched
+off, and reads **no field of another plugin**. That is what separates it from the
+`hook.lua` repair above, which unavoidably knows zen-os by name.
+
+**It is installed per document and idempotent per method, and both halves are
+load-bearing.** It runs from `Reader.install`, which is after `ZenUI:init` in the
+same process — that is the first moment we are above zen-os, since `pluginloader`
+sorts by path and `meguru.koplugin` loads first. But it runs on *every* open,
+against two class-level methods, so a second pass that re-wrapped blindly would
+nest our wrapper inside itself and open the menu **twice**. The sentinel is the
+same `stillOurs` idea as `hook.lua`'s, and `tools/check.py` cannot see any of it:
+the whole thing lives in methods reached through `self`, which is the one shape
+the checker does not follow. The gesture is the test.
+
 ## Development
 
 ```
@@ -1897,6 +1933,16 @@ Each step must pass before the next:
     appear (item 14 still holds). Finally, with the network off, open a marker from
     History — the `ReaderUI:showReader` wrap is on another class and must be unaffected,
     asking once and opening.
+
+    Then the **bottom menu**, which the same plugin's page browser takes away — and
+    which fails silently, because a gesture that opens the wrong thing looks like a
+    gesture that was never bound. In a Meguru book, the bottom swipe must open the
+    **ConfigDialog** with its curated rows; the bottom **tap** must too, since
+    zen-os swallows both by separate patches. Then the half that catches an
+    over-eager repair: a **PDF or .epub** in the same session must still open the
+    **page browser**. Open one Meguru book twice, and then Meguru → PDF → Meguru:
+    the menu must open **once** each time, because a wrapper installed per document
+    against a class-level method nests into itself and opens it twice.
 
 ## Known open items
 
