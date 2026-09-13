@@ -2,23 +2,18 @@
   <img src="docs/meguru-logo.png" alt="Meguru" width="320">
 </p>
 
-# Meguru
+<br>
 
-Meguru is a manga reader for KOReader, built as two things at once.
+**Meguru is a manga reader for KOReader that also streams manga directly from your server (Kavita, Suwayomi, Komga) — no downloading required.**
 
-**A manga reader.** Faster than the stock mupdf reader, especially on large
-files, and built specifically for manga instead of general documents. It
-opens `.cbz` files you already have on your device, with auto-crop, manga
-mode, night mode and panel zoom.
+It works two ways:
 
-**An OPDS streaming client.** It can also stream manga straight from your
-server — Kavita, Suwayomi and Komga are supported. Nothing is downloaded up
-front: pages load one at a time as you read, but each volume or chapter still
-sits in your library and behaves like an ordinary book.
+- **As a local reader** — faster than the stock mupdf reader, especially on large files, and built specifically for manga instead of general documents. Opens `.cbz` files already on your device, with auto-crop, manga mode, night mode and panel zoom.
+- **As an OPDS streaming client** — point it at your server and pages load one at a time as you read, nothing downloaded up front, but each volume or chapter still sits in your library and behaves like an ordinary book.
 
-Use it as just a fast `.cbz` reader, no server required — or hook it up to
-your OPDS library and read your way through a whole series without ever
-leaving the reader.
+Use it as just a fast `.cbz` reader, no server required — or hook it up to your OPDS library and read your way through a whole series without ever leaving the reader.
+
+**Contents:** [Installation](#installation) · [The reader](#the-reader) · [OPDS streaming](#opds-streaming)
 
 ## Installation
 
@@ -31,7 +26,7 @@ To uninstall, delete the `meguru.koplugin` folder.
 
 # The reader
 
-Applies whether the book came from your device or from a stream.
+Everything below applies whether the book came from your device or from a stream.
 
 ## While reading
 
@@ -44,15 +39,13 @@ Applies whether the book came from your device or from a stream.
 | Auto-rotate | Wide double-page spreads rotate the screen to fit |
 | Night mode | Keeps colours natural instead of a harsh negative |
 | Hidden status bar | Removes clutter while you read |
-| Panel zoom | Long-press a panel to zoom into it (on by default) |
+| Panel zoom | Long-press a panel to zoom in, tap to move to the next one — read panel-by-panel |
 
 > [!TIP]
 > Tap a setting to apply it to the book you're reading. Long-press it to make
 > it the default for every new book Meguru opens.
 
-**Panel zoom** lets you long-press a panel to zoom into it, then move to the
-next panel with a tap — read panel-by-panel instead of the whole page at
-once. It's a KOReader feature; Meguru just sets it on by default for the
+Panel zoom is a KOReader feature; Meguru just turns it on by default for the
 books it opens (*Settings* → *Panel zoom in Meguru books*).
 
 ## Opening `.cbz` files
@@ -110,7 +103,7 @@ every new stream goes there:
 
 - **File browser** → *Tools* → **Meguru** → ***Settings*** →
   *Main folder for .meguru streams: …*
-- turn on *Subfolder per server* to also nest streams under their server's name:
+- Turn on *Subfolder per server* to also nest streams under their server's name:
   `<folder>/<server>/<series>/`
 
 Changing the folder later doesn't move streams you've already saved.
@@ -119,7 +112,7 @@ Changing the folder later doesn't move streams you've already saved.
 
 When you open a `.meguru` stream and the server is further ahead than what's
 saved locally, Meguru asks whether to continue where the file left off or
-where the server says you got to instead of guessing. The title names the
+where the server says you got to — instead of guessing. The title names the
 **series**, and every button names its own stream:
 
 ```
@@ -140,8 +133,8 @@ Tapping outside the dialog cancels — nothing opens, nothing is saved.
 
 The reader's **⋮ → Tools → Meguru** menu can open the next or previous
 chapter, fetching it from the server if it isn't already saved. Turn on
-*Auto-open next in series* (same Settings submenu) to have it happen by
-itself as soon as you finish a chapter.
+*Auto-open next in series* (same Settings submenu) to have it happen
+automatically as soon as you finish a chapter.
 
 ### Good to know
 
