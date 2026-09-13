@@ -31,6 +31,12 @@ function Meguru:init()
         self.ui.menu:registerToMainMenu(self)
     end
 
+    -- Where the plugin is installed, handed over before anything can want a file
+    -- inside it. `pluginloader` assigns `path` from the directory it found us in
+    -- (`pluginloader.lua:248`), and it is the only reliable source: the plugin
+    -- may sit on removable media under any name ending in `.koplugin`.
+    Paths.setPluginDir(self.path)
+
     -- Wrap the built-in OPDS browser so a browsed stream can be opened as a
     -- book. Its own work is a hint for that flow only, so a failure here
     -- disables the button rather than the plugin.

@@ -62,6 +62,7 @@ meguru/
   marker.lua              marker read/write, naming, collision resolution, series context
   credential.lua          what a credential looks like in a URL: redact / restore
   seriescover.lua         the series' artwork, written once into its folder
+  rowcover.lua            the "Meguru this series" row's own artwork, decoded once
   pse.lua                 OPDS-PSE: link extraction, template -> URL, page fetch
   feed.lua                reading a series feed: the rel=next walk, order, neighbour
   panel.lua               the panels on a page, and the order they are read in
@@ -83,7 +84,19 @@ meguru/
     reader.lua            everything grafted onto a running ReaderUI
     panelzoom.lua         the panel sequence viewer: nav, pre-warm, page boundary
     menu.lua              the two menu surfaces
+
+assets/
+  meguru-this-series.png  optional; the cover drawn on the series row
 ```
+
+`assets/meguru-this-series.png` is the one file the plugin ships rather than
+writes, and it is **optional** — `meguru/rowcover` answers nil without it and the
+browser draws its ordinary placeholder. It is portrait, authored at 2:3 (what
+zen-os fits a cover into by default); any size decodes, and a larger one costs
+only bytes on disk. The plugin has had artwork before and it was deleted on
+purpose — an error-page drawing whose headline named the wrong fault — so the
+distinction is worth keeping: this file is the row's *identity*, not a claim
+about something that went wrong.
 
 `tools/check.py` is a development aid, not part of the plugin.
 
@@ -131,9 +144,11 @@ The dependency graph is a DAG with no cycles and **exactly one lazy edge**:
 `feed.lua` requires `meguru/naming` inside `Feed.ordered`, because the ordering is
 the one thing both entry points share and an edge at load time would have made it
 circular. (`ui/network/manager` is reached the same lazy way by `doc/document`
-and `seriescover`, but it is KOReader's module, not ours — it is not an edge in
-this graph, and it is deferred because it is a *device* state that need not exist
-where these modules are loaded.) `ui/panelzoom` requires no `meguru/` module at all — it is handed panels
+and `seriescover`, and `ui/renderimage` by `rowcover`, but they are KOReader's
+modules, not ours — they are not edges in this graph, and each is deferred for a
+reason of its own: the network manager is a *device* state that need not exist
+where these modules are loaded, and the image backends are dead weight until a
+row's artwork has actually been found on disk.) `ui/panelzoom` requires no `meguru/` module at all — it is handed panels
 as arguments, and with them the reading direction and the rotation direction, both
 as plain strings: the *domain* of those settings stays in `ui/reader` and the viewer
 is told the word. The edges that do exist between the panel modules are `ui/reader` ->
@@ -1454,6 +1469,105 @@ stream link (a special, a cover-only row) that `discover` cannot place, so one o
 was enough to send every open back to a stale answer, producing exactly the symptom the
 fresh read exists to remove.
 
+### Another plugin may replace the wraps, so they are installed twice
+
+**The four `OPDSBrowser` wraps are installed at plugin load *and* again every time a
+browser is constructed.** The second one is the load-bearing one, and the reason is a
+plugin called `zenos.koplugin`, which ships a patch of the OPDS browser.
+
+The mechanics are about load order, and none of it is specific to zen-os.
+`pluginloader.lua:289` sorts the enabled plugins **by path** before instantiating them,
+so `meguru.koplugin` loads before `zenos.koplugin`. Meguru wraps first; zen-os then
+replaces `OPDSBrowser.showDownloads` and `OPDSBrowser.parseFeed` **wholesale, without
+calling the original** (its `opds.lua:1529` and `:1198`), once per process behind its own
+`_zen_opds_patched` flag. Methods a later plugin replaces are methods our wrap is
+silently gone from — and nothing reports it, because the browser still works.
+
+**Losing `parseFeed` costs three features, not one**, and that is the part worth reading
+before touching this. It is the only writer of `ui/open.lua`'s `last_feed`, and
+`last_feed` is what the row above a series feed is built from (`seriesRow` → `feedSeries`
+reads `last_feed[name]`) *and* what `openAsBook` reads for `ctx.url` — the feed the
+reader is browsing, which for **Komga** is the only place a series id exists at all.
+
+| what is lost | why |
+|---|---|
+| the button in the download dialog | the wrap on `showDownloads` is gone |
+| the row above a series feed | `noteFeed` never runs, so `last_feed` is empty |
+| Komga series attribution | `ctx.url` is nil, so `discover` refuses the entry |
+
+The other two wraps — `genItemTableFromURL` and `onMenuSelect` — survive, because zen-os
+does not override them; but with `last_feed` empty there is no row for them to place or
+intercept. `ReaderUI:showReader` is on a different class and no OPDS patch touches it, so
+a marker opened from the file manager or History was never affected.
+
+**`init` is the seam, and it is order-proof in both directions.** Constructing a browser
+is the last moment at which the class is settled: every plugin has loaded, every patch has
+been applied, and nothing re-patches afterwards. A class-level re-install also reaches the
+class the browser actually inherits from, where one done on the instance would not be the
+same fix at all. It chains to the original, so it survives being wrapped by someone else:
+`OPDSBrowser.init` is `Menu:init` through `__index` in stock, and a foreign patch captures
+our wrap off the class and calls it — which is exactly why ours runs at all in that case.
+An event was rejected instead of `init` because the OPDS plugin is not on the `UIManager`
+stack and so never receives a broadcast.
+
+One sentinel guards it, and **it is per method rather than for the set** — which is a
+distinction that shipped as a bug. Four module-locals hold the wrapper we installed for
+each method, and `installBrowserWraps` re-wraps only those that are no longer carrying it.
+Asked this of the whole set at once — "is *any* of ours missing" — the second pass
+re-wrapped the methods the other plugin had *never taken*, so `genItemTableFromURL`
+carried two layers of our wrapper and **the row above a series feed appeared twice**. The
+same plugin takes some methods and leaves others, so the question has to be asked per
+method. That also makes a repeat a no-op (without it the second pass would call `noteFeed`
+twice) and makes the whole thing **self-healing**, since any later replacement is repaired
+at the next construction. The first repair logs once, at `info`:
+`OPDSBrowser re-patched since load; OPDS hooks re-installed`. It deliberately **does not
+name the plugin that did it**: detecting one by its private fields would tie this repair
+to a foreign implementation we do not control, and the useful fact is that our hooks were
+replaced, not by whom.
+
+**Nothing else had to change, and that is the check that this is the right seam.**
+`Open.injectBookRow` works against zen-os's dialog unchanged — it sets
+`self.download_dialog` (`opds.lua:1738`) with a `.buttons` array and has
+`ButtonDialog:reinit()`. **The row goes in at index 1**, above everything the
+dialog offers, with a separator under it.
+
+That position is the point, not a preference: the row used to be inserted just
+above the dialog's *last* row, which on a build that leads with a download button
+and a description made the action this plugin exists for the last thing a reader
+reached — it read as an afterthought to the download rather than the reason the
+dialog is open. It is also the position that costs nothing to hold: reaching it
+by moving the last row meant the row's place depended on the dialog ending with
+the row the code expected, and nothing about the rows already present is assumed
+any more. The row above a feed renders too, because
+zen-os's item widgets read `entry.title or entry.text` (`opds.lua:456`) and our row
+carries `text`. Its own "Page stream" buttons, which stream PSE into KOReader's *native*
+reader through `opdspse`, are a different feature and are left alone.
+
+**One thing the row does have to carry, and it took a device to find.** A browser that
+draws covers keys on `entry.cover_url` alone (`opds.lua:848`, `:916`) — and fills that
+field itself in `genItemTableFromCatalog` (`opds.lua:1204`), which runs *inside* the call
+the row is appended after. A row added there is one that pass has already gone by, so it
+is the only row in a list of covers with none. `Open.seriesRow` therefore sets
+`cover_bb` — a bitmap of the plugin's **own** mark, from `meguru/rowcover`, and
+deliberately **not** the series' artwork and **not** `cover_url`:
+
+- **Not the series' artwork**, because this row is not a book. Artwork published for the
+  series, drawn beside a column of real volumes, reads as one more volume rather than as
+  the thing that opens the series.
+- **Not `cover_url`**, which is the field a browser *fetches*: that would put an HTTP
+  request on this row, on a page already making one request per book for its cover. A
+  `cover_bb` is already decoded, so the row costs the network nothing.
+
+Neither `thumbnail` nor `image` would do either: those are what zen-os *converts* into
+`cover_url` in that same pass, so setting them is asking a pass that has already run to
+run again. And the insertion point must not be moved earlier to reach it — `genItemTableFromURL`
+is the seam `switchItemTable` was replaced by precisely because the URL tells a series feed
+apart from a search result and a pagination append, and moving it back re-opens that, for a
+cover.
+
+The repair a reader has if any of this ever breaks again is the same one a mis-sniffed
+kind has: nothing in the UI reaches it, so it is fixed in `hook.lua` or not at all.
+
 ## Development
 
 ```
@@ -1759,6 +1873,30 @@ Each step must pass before the next:
        again: every `update()` rebuilds the `ImageWidget`, so the angle must survive all
        of them — and `-d` must show **no** `panel rotation angle could not be applied`
        warning.
+
+22. **Another plugin that patches the OPDS browser.** `zenos.koplugin` is the one known
+    to replace `showDownloads` and `parseFeed` wholesale; it is not in this repository,
+    so this is a device check. First the half that proves nothing moved: **without it**,
+    everything below behaves as before and `-d` shows **no** `OPDSBrowser re-patched`
+    line. Then with it enabled and a restart:
+
+    - a series feed carries **exactly one** **“▶ Meguru this series”** row at the top —
+      two is the per-method guard having failed, and it will not announce itself any
+      other way;
+    - tapping a volume opens *its* dialog with our row above the last one, and its own
+      “Page stream” / “Stream from page” buttons **still there**;
+    - our row opens the resume dialog and the book;
+    - `-d` shows `OPDSBrowser re-patched since load; OPDS hooks re-installed`
+      **exactly once per process** — not once per browser, and not at all on a second
+      open — and one `added "Meguru this series" button for …` per dialog.
+
+    Then the two that a missing `parseFeed` breaks and that no picture of the dialog
+    would show: open a book from a **Komga** series feed and confirm `-d` does **not**
+    report `not catalogued: no retained entry matches this stream`; and cancel the
+    resume dialog after tapping our row, confirming no `.meguru` and **no series folder**
+    appear (item 14 still holds). Finally, with the network off, open a marker from
+    History — the `ReaderUI:showReader` wrap is on another class and must be unaffected,
+    asking once and opening.
 
 ## Known open items
 

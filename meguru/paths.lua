@@ -27,4 +27,30 @@ end
 --- extension would make which-provider-wins depend on install order.
 Paths.MARKER_EXT = "meguru"
 
+--- The directory the plugin itself is installed in, as pluginloader assigned it
+--- (`pluginloader.lua:248`). Nothing here can derive it — the plugin may live on
+--- removable media, under any name ending in `.koplugin` — so it is handed over
+--- once, from `main.lua`, before anything can ask for a file inside it.
+local plugin_dir
+
+--- Remember where the plugin lives. Called from `Meguru:init`, which runs when
+--- the plugin starts and therefore before any browse can want an asset.
+function Paths.setPluginDir(dir)
+    plugin_dir = type(dir) == "string" and dir or nil
+end
+
+--- Where a file shipped inside the plugin lives, or nil when that directory is
+--- not known.
+---
+--- **Whether the file is actually there is the caller's question**, not this
+--- one: this module is pure derivation and touches no filesystem (`meguru/fs`
+--- does that). A build that ships no `assets/` is not a broken build, so the
+--- caller must treat "no file" as an ordinary answer rather than a failure.
+function Paths.asset(name)
+    if type(plugin_dir) ~= "string" or plugin_dir == "" then
+        return nil
+    end
+    return plugin_dir .. "/assets/" .. name
+end
+
 return Paths

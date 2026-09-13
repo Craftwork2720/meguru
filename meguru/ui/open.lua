@@ -43,6 +43,7 @@ local Marker = require("meguru/marker")
 local Naming = require("meguru/naming")
 local Net = require("meguru/net")
 local PSE = require("meguru/pse")
+local RowCover = require("meguru/rowcover")
 local SeriesCover = require("meguru/seriescover")
 local Settings = require("meguru/settings")
 local Sources = require("meguru/sources")
@@ -939,6 +940,14 @@ function Open.seriesRow(browser, item_url)
     return {
         text      = "\u{25B6} " .. _("Meguru this series"),
         mandatory = tostring(#info.feed.entry),
+        -- **The row's own artwork, and never the series'.** This row is not a
+        -- book, so the artwork a feed publishes for this series is the wrong
+        -- thing to draw on it: beside a column of real covers it would read as
+        -- one more volume rather than as the thing that opens the series. What
+        -- goes here is the plugin's own mark, so the row is recognisable as
+        -- itself — see `meguru/rowcover`. Nil when no file is shipped, which is
+        -- an ordinary answer and leaves the browser drawing its placeholder.
+        cover_bb  = RowCover.bitmap(),
         -- What the `onMenuSelect` wrap keys on. Without a marker of our own the
         -- row would be read as a catalog link — `onMenuSelect` treats every row
         -- with no acquisitions that way — and tapping it would try to navigate
@@ -2200,11 +2209,20 @@ function Open.injectBookRow(browser, item)
     end
 
     local buttons = dialog.buttons
-    -- The official dialog's last row is always "Book cover | Book information";
-    -- move it down so our row reads as an action block above it.
-    local last_row = table.remove(buttons)
-    table.insert(buttons, {}) -- separator
-    table.insert(buttons, {
+    -- **First, above everything the dialog offers.** It used to be inserted just
+    -- above the last row ("Book cover | Book information"), which put it below a
+    -- download button, a description, and whatever else a build chooses to offer
+    -- — so the action this plugin exists for was the last thing a reader reached
+    -- and read as an afterthought to the download. It is the opposite: this row
+    -- is why the dialog was opened.
+    --
+    -- Rebuilt from the front rather than by moving the last row, which is what
+    -- the earlier version did and what made the position depend on the dialog
+    -- ending with the row it expected. Nothing here assumes anything about the
+    -- rows already present, so a build that grows or reorders its own buttons
+    -- moves ours not at all.
+    table.insert(buttons, 1, {}) -- separator, under our row
+    table.insert(buttons, 1, {
         {
             text = "\u{25B6} " .. _("Meguru this series"),
             font_bold = true,
@@ -2221,9 +2239,6 @@ function Open.injectBookRow(browser, item)
             end,
         },
     })
-    if last_row then
-        table.insert(buttons, last_row)
-    end
     dialog:reinit()
     UIManager:setDirty("all", "ui")
     logger.dbg("Meguru: added \"Meguru this series\" button for", item.text)
