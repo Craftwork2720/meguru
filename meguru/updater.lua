@@ -398,6 +398,15 @@ end
 
 --- Unpack `archive` into `staging`, leaving `staging/<ARCHIVE_ROOT>/`.
 ---
+--- **The `<ARCHIVE_ROOT>` folder comes from the archive, not from this
+--- function.** Every entry's own path already begins with it — the release
+--- workflow stages the tree under that name precisely so the archive can be
+--- dropped into the plugins directory as it stands — so joining it on here as
+--- well unpacks everything one level too deep, into
+--- `staging/<ARCHIVE_ROOT>/<ARCHIVE_ROOT>/`, and the verification that follows
+--- then reports an archive that is perfectly good as "not a Meguru release".
+--- That is what a device did, and it is the reason this paragraph exists.
+---
 --- `ffi/archiver` is required here rather than at the top of the file on
 --- purpose. Its module body loads libarchive, and a build without it would
 --- otherwise take down the whole plugin at load — every menu row, every open —
@@ -412,7 +421,6 @@ local function extractInto(archive, staging)
     if not reader:open(archive) then
         return nil, tostring(reader.err or "could not open the archive")
     end
-    local root = staging .. "/" .. ARCHIVE_ROOT
     for entry in reader:iterate() do
         -- Regular files only, which is what `archiveviewer.koplugin` extracts
         -- and for the same reason: a zip's directory entries are implied by the
@@ -421,7 +429,7 @@ local function extractInto(archive, staging)
         -- absolute path, and SECURE_SYMLINKS is not set either, so a path that
         -- starts at the root would be honoured.
         if entry.mode == "file" and entry.path:sub(1, 1) ~= "/" then
-            local dest = root .. "/" .. entry.path
+            local dest = staging .. "/" .. entry.path
             -- Created rather than assumed. `archive_write_disk` does create
             -- missing parents, but that is a property of libarchive version and
             -- of its options rather than of anything promised here, and being
