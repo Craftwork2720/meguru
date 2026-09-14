@@ -38,6 +38,11 @@ bitten this codebase, and that a reader cannot reliably catch by eye:
      so no series folder was ever created, and `freshResumeTarget` filtered on
      `series.remote_id`, so it never matched and the server-position button
      silently never appeared.
+  9. a `for _` loop whose body calls the gettext `_()`. The loop variable
+     shadows the function for the length of the body, so the call is an attempt
+     to call the loop counter. Every part of it is individually correct and it
+     reads perfectly, which is why it survived into a released build and was
+     found by a device instead.
 
 The item-upsert check is gone with the catalog it belonged to: it compared
 `UPSERT_ITEM` against the `items` DDL, and neither exists.
@@ -641,6 +646,8 @@ def check_receiver_uses(path, text):
     return errors
 
 
+
+
 # --------------------------------------------------------------------------
 # Check 7: the marker's field list is a contract between the code that writes a
 # marker and the code that reads one, and Lua checks neither end. A field read
@@ -756,6 +763,77 @@ def check_series_context(fields):
     return errors
 
 
+# --------------------------------------------------------------------------
+# Check 9: a `for _` loop whose body calls the gettext `_()`.
+#
+# Every Lua file here opens with `local _ = require("gettext")`, and every
+# discarded loop index is written `_` -- those two conventions collide the moment
+# a message is needed *inside* the loop, and the call becomes an attempt to call
+# the index:
+#
+#     for _, relative in ipairs(FILES) do
+#         return nil, _("not a Meguru release")   -- calls the counter
+#     end
+#
+# This one reached a device, inside the updater's verification step, and the
+# crash it produced is the reason it is a check rather than a note. What makes
+# it survivable by reading is that nothing is individually wrong: the loop is
+# idiomatic, the message is a message, and the shadowing is invisible unless you
+# hold both in mind at once. Passes 5 and 6 both skip `_` by name -- correctly,
+# since it is a global they must not report -- so nothing covered it.
+#
+# The extent of a loop is found by matching blocks, not by indentation or by
+# scanning for the next `end`: a loop body is full of nested `function`s and
+# tables, and the first `end` after the header almost never closes the loop. The
+# keyword stack below is the whole of Lua's nesting rule for this purpose --
+# `do` opens a block except when it terminates a `for`/`while` header, which
+# consumed it already.
+# --------------------------------------------------------------------------
+
+LUA_KEYWORD = re.compile(r"\b(function|if|for|while|do|end|until|repeat)\b")
+FOR_HEADER = re.compile(r"\bfor\s+([^)]*?)\s+(?:in|=)")
+GETTEXT_CALL = re.compile(r"(?<![\w.])_\s*\(")
+
+
+def check_gettext_shadow(path, text):
+    """Report a `_()` call inside a loop that binds `_` as its variable."""
+    spans = []          # (start_keyword_offset, end_offset) of every block
+    stack = []
+    pending_do = 0
+    for m in LUA_KEYWORD.finditer(text):
+        word = m.group(1)
+        if word in ("function", "if", "repeat"):
+            stack.append(m.start())
+        elif word in ("for", "while"):
+            stack.append(m.start())
+            pending_do += 1
+        elif word == "do":
+            if pending_do:
+                pending_do -= 1
+            else:
+                stack.append(m.start())
+        elif word in ("end", "until"):
+            if stack:
+                spans.append((stack.pop(), m.end()))
+
+    errors = []
+    for start, end in spans:
+        header = FOR_HEADER.match(text, start)
+        if not header:
+            continue
+        names = [n.strip() for n in header.group(1).split(",")]
+        if "_" not in names:
+            continue
+        body = text[header.end():end]
+        call = GETTEXT_CALL.search(body)
+        if call:
+            lineno = text.count("\n", 0, header.end() + call.start()) + 1
+            errors.append(
+                f"{path}:{lineno}: `_()` here is inside a `for _` loop -- `_` is "
+                f"the loop counter, not gettext, so this calls a number"
+            )
+    return errors
+
 def main():
     members, by_stem, stems = module_members()
     all_errors = []
@@ -770,6 +848,7 @@ def main():
         all_errors += check_lowercase_calls(rel, text)
         all_errors += check_value_uses(rel, text)
         all_errors += check_receiver_uses(rel, text)
+        all_errors += check_gettext_shadow(rel, text)
 
     all_errors += check_marker_fields(marker_fields())
     all_errors += check_series_context(series_context_fields())

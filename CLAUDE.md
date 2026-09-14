@@ -1949,7 +1949,7 @@ python tools/check.py       # structure of the Lua
 ```
 
 There is no Lua interpreter on the development machine, so `check.py` stands in for
-one. It runs eight passes:
+one. It runs nine passes:
 
 1. **Block balance** — `function`/`if`/`for`/`while`/`do` against `end`/`until`, over
    comment- and string-stripped source.
@@ -1989,6 +1989,19 @@ one. It runs eight passes:
    `freshResumeTarget` filtered on `series.remote_id`, so the `▶` server-position button
    silently never appeared — and "the server has no opinion" is a legitimate state, so
    nothing reported it either.
+9. **A `_()` call inside a `for _` loop.** Every file here opens with
+   `local _ = require("gettext")` and every discarded loop index is written `_`, and
+   those two conventions collide the moment a message is needed inside the loop: `_`
+   is the *counter* for the length of the body, so the call is an attempt to call a
+   number. **This one shipped**, in `meguru/updater`'s verification step, and was found
+   by a device. Passes 5 and 6 both skip `_` by name — correctly, it is a global they
+   must not report — so nothing covered the shape, and nothing could: the loop is
+   idiomatic, the message is a message, and neither is wrong on its own.
+   The loop's extent has to be found by **matching blocks**. A first attempt scanned
+   forward for the next `end`, flagged two `for _` loops in `meguru/ui/menu` whose
+   `_()` is *after* the loop, and was believed for a minute — which is the ordinary
+   fate of this kind of check, and why it is worth saying that a body full of nested
+   `function ... end` is the case that tells a real matcher from a rough one.
 
 None of these is a parser. They are the failure modes that have actually bitten this
 codebase, and that a reader cannot reliably catch by eye: a name or member that is fine

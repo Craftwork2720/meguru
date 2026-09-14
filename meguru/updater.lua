@@ -450,7 +450,12 @@ end
 --- that the asset served under `ASSET_NAME` is the one this release built.
 local function stagedLooksRight(staging, expected_version)
     local root = staging .. "/" .. ARCHIVE_ROOT
-    for _, relative in ipairs(REQUIRED_FILES) do
+    -- `index` and not the usual throwaway `_`: this file's `_` is the gettext
+    -- function, and a loop variable of that name shadows it *inside the body*,
+    -- so the `_("…")` below would be an attempt to call the loop counter. It is
+    -- the one shape of this bug that survives every reading, because both the
+    -- shadowing and the call are individually correct.
+    for index, relative in ipairs(REQUIRED_FILES) do
         if not FS.exists(root .. "/" .. relative) then
             return nil, _("The downloaded file is not a Meguru release.")
         end
