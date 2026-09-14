@@ -32,5 +32,5 @@ time over HTTP — no CBZ/ZIP is ever downloaded.
 The marker carries the identity of the book and of its series, and nothing else
 is stored: no database, no page cache. What comes next in a series is read from
 the server's own chapter list when you ask for it.]]),
-    version = "0.9.0",
+    version = "0.9.1",
 }
