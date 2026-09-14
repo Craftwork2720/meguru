@@ -11,6 +11,12 @@ It works two ways:
 
 Use it as just a fast `.cbz` reader, no server required — or hook it up to your OPDS library and read your way through a whole series without ever leaving the reader.
 
+<br>
+
+<p align="center"> <img src="docs/meguru.gif" alt="Meguru reading a manga volume, zooming into a panel and turning the page" width="330"> </p>
+
+<br>
+
 **Contents:** [Installation](#installation) · [The reader](#the-reader) · [OPDS streaming](#opds-streaming)
 
 ## Installation
