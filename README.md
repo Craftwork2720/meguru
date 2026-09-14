@@ -145,6 +145,9 @@ after. The rows only appear when the folder has another book to move to.
 - A stream needs the server to be reachable to show its pages — if a page
   can't load, Meguru tells you why right on the page (no connection, server
   error, etc.) and fills it in once you're back online.
+- Meguru can update itself: **⋮ → Tools → Meguru → Settings** →
+  *Check for updates*. It tells you either way, and it never installs anything
+  without asking.
 - Uninstalling the plugin leaves streams that no longer open — delete the
   `.meguru` files if you remove it.
 - On Komga, open books from inside a series, not from "Latest books", "On

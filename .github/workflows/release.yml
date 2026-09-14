@@ -1,0 +1,76 @@
+name: Release
+
+# Push a tag like "v0.2.0" to build meguru.koplugin.zip and attach it to a
+# GitHub Release. `meguru/updater.lua` looks for an asset named exactly
+# "meguru.koplugin.zip" on the *latest* release.
+#
+# The built asset is the one the updater downloads. There is no second,
+# separately generated artifact anywhere in this flow -- an updater that fetches
+# GitHub's own source archive by tag is a different file from the one CI built,
+# and nothing reports it when the two disagree.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # A release whose _meta.lua disagrees with its tag is worse than no
+      # release: the updater compares the tag against the *installed*
+      # _meta.lua, so a stale version there makes every check report the new
+      # release as "up to date" -- for good, and silently. This fails the whole
+      # run rather than warning.
+      - name: Check that _meta.lua version matches the tag
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          meta_version=$(grep -oP 'version\s*=\s*"\K[^"]+' _meta.lua)
+          echo "Tag version:       $tag_version"
+          echo "_meta.lua version: $meta_version"
+          if [ -z "$meta_version" ]; then
+            echo "::error::_meta.lua has no version field. The updater reads it as the installed version and cannot compare without it."
+            exit 1
+          fi
+          if [ "$tag_version" != "$meta_version" ]; then
+            echo "::error::Tag ($tag_version) does not match _meta.lua version ($meta_version). Bump _meta.lua's version field before tagging, or the updater will keep reporting this release as 'up to date' forever."
+            exit 1
+          fi
+
+      # The repository root *is* the plugin, so the archive has to be staged to
+      # get a top-level `meguru.koplugin/` -- the updater extracts into the
+      # plugins directory and expects to find the folder inside. Staging is
+      # also what keeps the developer material out: zipping the root would ship
+      # CLAUDE.md (160 KB), PROTOCOL.md, tools/ and docs/ to every device.
+      #
+      # `assets/` must be in here -- meguru/rowcover reads the series-row
+      # artwork through Paths.asset. LICENSE is in here because the zip is a
+      # distribution of AGPL-licensed code.
+      - name: Build plugin zip
+        run: |
+          stage="$RUNNER_TEMP/stage"
+          mkdir -p "$stage/meguru.koplugin"
+          cp -r _meta.lua main.lua LICENSE assets meguru "$stage/meguru.koplugin/"
+          cd "$stage"
+          zip -r "$GITHUB_WORKSPACE/meguru.koplugin.zip" meguru.koplugin \
+            -x "*.git*" -x "*/.DS_Store"
+          unzip -l "$GITHUB_WORKSPACE/meguru.koplugin.zip"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          # The asset name must stay exactly this: it is hardcoded as
+          # ASSET_NAME in meguru/updater.lua, and the updater finds the release
+          # asset by name rather than by position.
+          #
+          # Deliberately not a prerelease -- /releases/latest returns the newest
+          # non-prerelease release, so marking one would silently make the
+          # updater see the previous release instead.
+          files: meguru.koplugin.zip
+          generate_release_notes: true

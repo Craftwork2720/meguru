@@ -6,10 +6,13 @@ where a *new* book is written (the folder, and whether a per-server subfolder is
 added), whether Meguru is the reader for `.cbz`, and — on the reader only —
 three reading-behaviour switches. They are preferences, and they used to be a
 dialog asked at every single open; a value that changes once does not belong in
-the path of a tap.
+the path of a tap. The one row that is not a preference is the last one, *Check
+for updates*: it stores nothing and answers with a question, and it is here
+rather than at the top of the submenu because it is a thing you do once rather
+than a thing you reach for while reading.
 
 The **reader** gets a ⋮ "Meguru" submenu, and only while a Meguru book is open.
-It holds the series-navigation rows and a `Settings` submenu holding all six
+It holds the series-navigation rows and a `Settings` submenu holding all seven
 rows. The per-book *rendering* choices — crop, fit, reading direction —
 deliberately live in the bottom ConfigDialog instead, where every other stock
 per-book option lives; see `ui/reader.lua`.
@@ -18,7 +21,7 @@ it is what a Meguru-opened file follows when it has no answer of its own, and
 KOReader's own ⋮ row still answers for one book at a time.
 
 The **FileManager** gets the same `Settings` submenu and nothing else, which for
-it is the three rows that are not about reading a book that is already open. It
+it is the four rows that are not about reading a book that is already open. It
 used to hold a library view and a server-administration screen; both are gone,
 along with the manual server-kind override the latter existed for.
 
@@ -34,8 +37,9 @@ Two rules are worth stating, because breaking either is silent:
     falls back to the plain widget only on a keyboard-only build
     (`filemanagermenu.lua:1043`) — so a row that must work on both carries its
     state in `text`/`text_func` rather than in either field. `separator = true`
-    carries the same constraint, and now marks one seam only: the last behaviour
-    row inside `Settings`, above the destination rows.
+    carries the same constraint, and marks two seams inside `Settings`: the last
+    behaviour row, above the destination rows, and the last *preference*, above
+    the one row that is an action.
 --]]
 
 local Notification = require("ui/widget/notification")
@@ -51,6 +55,7 @@ local Marker = require("meguru/marker")
 local Open = require("meguru/ui/open")
 local Reader = require("meguru/ui/reader")
 local Settings = require("meguru/settings")
+local Updater = require("meguru/updater")
 
 -- Registering the drivers is what makes `Base.kinds()` able to answer; it is
 -- idempotent (`require` caches), and `ui/open.lua` does the same at its own
@@ -177,6 +182,10 @@ local function defaultReaderRow()
         text = _("Set Meguru as default reader for .cbz"),
         help_text = _("Every .cbz on this device opens in Meguru instead of KOReader's own reader, until you turn this off. A file you set individually with “Open with…” keeps its own choice."),
         keep_menu_open = true,
+        -- Ends the preference group. What is below is not a preference at all
+        -- but an action, and it is the only row here that can be *done* rather
+        -- than set.
+        separator = true,
         checked_func = Association.holds,
         callback = function()
             if Association.holds() then
@@ -184,6 +193,28 @@ local function defaultReaderRow()
             else
                 Association.claim()
             end
+        end,
+    }
+end
+
+--- One row: ask GitHub whether there is a newer Meguru, and offer to install it.
+---
+--- The only row under `Settings` that is not a preference — nothing is stored,
+--- and tapping it twice in a row answers from the same cache rather than asking
+--- GitHub again. It is here rather than at the top of the `Meguru` submenu
+--- because it is a thing you do once, not a thing you do while reading.
+---
+--- Deferred through `nextTick` and wrapped in `pcall`, like the neighbour rows
+--- below: the check reaches into the filesystem and the network, and a thrown
+--- one must cost the reader a dialog rather than the whole menu.
+local function updateRow()
+    return {
+        text = _("Check for updates"),
+        keep_menu_open = true,
+        callback = function()
+            UIManager:nextTick(function()
+                pcall(Updater.checkForUpdates)
+            end)
         end,
     }
 end
@@ -261,6 +292,7 @@ function Menu.addFileManagerItems(plugin, menu_items)
     local settings = destinationRows()
     settings[#settings + 1] = coverRow()
     settings[#settings + 1] = defaultReaderRow()
+    settings[#settings + 1] = updateRow()
 
     menu_items.meguru = {
         text = _("Meguru"),
@@ -437,6 +469,7 @@ function Menu.addReaderItems(plugin, menu_items)
     end
     settings[#settings + 1] = coverRow()
     settings[#settings + 1] = defaultReaderRow()
+    settings[#settings + 1] = updateRow()
 
     rows[#rows + 1] = settingsRow(settings)
 

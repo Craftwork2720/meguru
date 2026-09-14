@@ -11,6 +11,7 @@ local Menu = require("meguru/ui/menu")
 local Open = require("meguru/ui/open")
 local Paths = require("meguru/paths")
 local Reader = require("meguru/ui/reader")
+local Updater = require("meguru/updater")
 
 -- DocumentRegistry:addProvider only ever appends, so a second call would leave
 -- two providers for the same extension and a "Open with…" list with the entry
@@ -38,6 +39,15 @@ function Meguru:init()
     -- (`pluginloader.lua:248`), and it is the only reliable source: the plugin
     -- may sit on removable media under any name ending in `.koplugin`.
     Paths.setPluginDir(self.path)
+
+    -- The installed version, handed over the same way and for the same reason:
+    -- pluginloader copied it off `_meta.lua` onto this instance and it cannot be
+    -- derived from inside the updater. Both of these are idempotent, because
+    -- this method runs once for the FileManager at startup *and* again for every
+    -- book opened — `setInstalledVersion` overwrites one string, and
+    -- `checkAtStartup` arms at most one background check per process.
+    Updater.setInstalledVersion(self.version)
+    Updater.checkAtStartup()
 
     -- Wrap the built-in OPDS browser so a browsed stream can be opened as a
     -- book. Its own work is a hint for that flow only, so a failure here

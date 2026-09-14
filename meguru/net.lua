@@ -1,10 +1,16 @@
 --[[--
-HTTP: one synchronous GET, and getting a parsed OPDS feed out of it.
+HTTP: two synchronous GETs, and getting a parsed OPDS feed out of one of them.
+
+`get` returns the body as a string and `getToFile` writes it to a path. The
+second is not a convenience: it is the only one of the two that can be bounded
+in wall-clock, because `socketutil` enforces its total timeout through its own
+sinks and `get` uses a plain `ltn12.sink.table`. See `Net.getToFile`.
 
 LuaSocket is synchronous and KOReader has no threads, so every call here blocks
 until it returns. Nothing in this module may be reached from a paint path, and
 callers that fetch in a loop owe the user a bound on how long it can take —
-`Feed` caps a walk by pages and by `Net` timeout for exactly that reason.
+`Feed` caps a walk by pages and by `Net` timeout for exactly that reason, and
+the update download has its own tier for the same one.
 --]]
 
 local http = require("socket.http")
@@ -81,6 +87,10 @@ local TIMEOUTS = {
     page = { socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT },
     large = { socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT },
     resume = { Net.RESUME_BLOCK_TIMEOUT, Net.RESUME_TOTAL_TIMEOUT },
+    -- Sized for one archive rather than one page, and the only tier whose total
+    -- is enforced -- see `Net.getToFile` for why that is not a property of the
+    -- numbers but of the sink.
+    download = { socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT },
 }
 
 --- Synchronous GET. Returns `code, headers, body`.
@@ -146,6 +156,71 @@ function Net.get(url_str, opts)
         return code, headers, nil
     end
     return 200, headers, table.concat(sink)
+end
+
+--- Synchronous GET written straight to `path`. Returns `true`, or `nil, reason`
+--- where reason is `"network"`, `"http"` or `"write"`.
+---
+--- **This exists beside `get` rather than inside it, and the reason is that
+--- `get` cannot be bounded.** `get` collects its body with `ltn12.sink.table`,
+--- and `socketutil`'s total timeout is honoured *only* by its own sinks — the
+--- socket-level total is reset on every poll, which `socketutil.lua:38-42` says
+--- outright. So everything fetched through `get` is bounded per read and not in
+--- wall-clock at all. That is survivable for a feed page and not for an update
+--- archive: the reader's device would sit with a frozen UI, no upper bound on
+--- how long, and the whole file on the Lua heap. `socketutil.file_sink` is what
+--- makes the `total` number mean anything here, and the file is the other half.
+---
+--- A partial file is removed on every failure path, so a truncated download
+--- cannot be mistaken for a complete one by whatever reads that path next.
+---
+--- `opts`: { accept, timeout = "download"|"feed"|"page"|"large"|"resume" }.
+function Net.getToFile(url_str, path, opts)
+    opts = opts or {}
+    local parsed = url.parse(url_str)
+    if not parsed or (parsed.scheme ~= "http" and parsed.scheme ~= "https") then
+        logger.warn("Meguru: unsupported protocol for", Net.redactUrl(url_str))
+        return nil, "network"
+    end
+    local handle, open_err = io.open(path, "wb")
+    if not handle then
+        -- "wb" for the reason `FS.writeFile` gives: "w" would translate line
+        -- endings, and an archive is the one file where a few hundred extra
+        -- bytes still leave a header that looks right.
+        logger.warn("Meguru: cannot write to", path, ":", tostring(open_err))
+        return nil, "write"
+    end
+
+    local timeout = TIMEOUTS[opts.timeout or "download"] or TIMEOUTS.download
+    socketutil:set_timeout(timeout[1], timeout[2])
+    local ok, code = pcall(function()
+        return socket.skip(1, http.request{
+            url = url_str,
+            headers = {
+                ["Accept"] = opts.accept or "*/*",
+                ["Accept-Encoding"] = "identity",
+            },
+            sink = socketutil.file_sink(handle),
+        })
+    end)
+    socketutil:reset_timeout()
+
+    -- `socketutil.file_sink` closes the handle on *every* terminating call, the
+    -- error path included, so this is normally a no-op. It is here for the one
+    -- case the sink never runs at all -- a request that dies before the first
+    -- byte, where `http.request` returns without touching the sink and the
+    -- handle would otherwise leak. `pcall`, because closing an already-closed
+    -- handle raises in Lua 5.1 and that would turn a failed download into a
+    -- thrown one.
+    pcall(handle.close, handle)
+
+    if not ok or type(code) ~= "number" or code ~= 200 then
+        logger.warn("Meguru: could not download", Net.redactUrl(url_str),
+            "(", tostring(code), ")")
+        pcall(os.remove, path)
+        return nil, (type(code) == "number") and "http" or "network"
+    end
+    return true
 end
 
 --- The document inside a raw `opdsparser` result.

@@ -5,3 +5,8 @@ __pycache__/
 
 # Node
 node_modules/
+
+# The release workflow's staging directory and the archive it builds, for a
+# dry run of those steps done in the repository rather than in $RUNNER_TEMP.
+meguru.koplugin/
+*.zip

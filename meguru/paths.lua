@@ -39,6 +39,20 @@ function Paths.setPluginDir(dir)
     plugin_dir = type(dir) == "string" and dir or nil
 end
 
+--- The directory the plugin is installed in, or nil when it is not known yet.
+---
+--- `Paths.asset` derives from the same local, and that is the whole reason this
+--- getter exists: the updater has to move, replace and read from that directory
+--- itself, and reaching into `plugin.path` from another module would be a second
+--- owner of the same fact. Nil is an ordinary answer — the plugin can be
+--- required before `Meguru:init` has run — so every caller checks.
+function Paths.pluginDir()
+    if type(plugin_dir) ~= "string" or plugin_dir == "" then
+        return nil
+    end
+    return plugin_dir
+end
+
 --- Where a file shipped inside the plugin lives, or nil when that directory is
 --- not known.
 ---
