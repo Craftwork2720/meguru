@@ -135,8 +135,8 @@ chapter, fetching it from the server if it isn't already saved. Turn on
 automatically as soon as you finish a chapter.
 
 The same two rows work for **local `.cbz` files**, where the folder is the series
-and its books are read in name order — `2.cbz` before `10.cbz`, not after. The
-rows appear only when the folder holds a second book to move to.
+and its books are sorted in natural order — `2.cbz` comes before `10.cbz`, not
+after. The rows only appear when the folder has another book to move to.
 
 ### Good to know
 
