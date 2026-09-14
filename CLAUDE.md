@@ -1826,6 +1826,24 @@ is refused rather than defaulted** — pagenumbercrop's fallback of `"0.0.0"` is
 below every release ever published, so it turns each check into "a new version
 is available" forever.
 
+It earned itself on `v0.9.2`, which was tagged one commit before the version
+bump landed: the run failed at that step, skipped the build and created no
+release. The recovery is to move the tag — `git push --delete origin v0.9.2`,
+re-tag the right commit, push — because **a tag that already exists does not
+re-run its workflow**. Re-pushing the same ref is not a push as far as Actions
+is concerned, so a failed release whose cause you have just fixed stays failed
+until the tag itself moves.
+
+**`v0.9.1` is a build whose updater cannot install anything**, and that is worth
+knowing as a fact about this feature rather than about that release: the crash
+was in the updater's own verification step, and a device running it will fail
+the same way at every later version, because the code that runs the install is
+the code already on the device. The reader keeps working — the failure is before
+anything moves — but OTA is dead on that copy until a new one is put there by
+hand. **The updater is the one component an update cannot fix**, which is the
+whole argument for testing this path on a device before tagging rather than
+after.
+
 **The archive is staged to get its `meguru.koplugin/` prefix, and staging is
 also what keeps the developer material out.** The repository root *is* the
 plugin — `main.lua`, `_meta.lua`, `meguru/` and `assets/` are at the top level,
