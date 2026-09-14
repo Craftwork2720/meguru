@@ -20,8 +20,14 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      # Both actions are on the majors that moved their runtime to Node 24.
+      # Node 20 was deprecated on GitHub's runners in September 2025, and a step
+      # left on it is forced onto 24 anyway — which is why the older majors keep
+      # working and only warn, and why this is easy to leave alone until the day
+      # it stops working. This checkout needs nothing from v5/v6/v7 beyond the
+      # runtime move: no inputs, a tag, one commit.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # A release whose _meta.lua disagrees with its tag is worse than no
       # release: the updater compares the tag against the *installed*
@@ -63,7 +69,9 @@ jobs:
           unzip -l "$GITHUB_WORKSPACE/meguru.koplugin.zip"
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        # v3 is only the Node 24 runtime move; `files` and
+        # `generate_release_notes` mean the same thing they did on v2.
+        uses: softprops/action-gh-release@v3
         with:
           # The asset name must stay exactly this: it is hardcoded as
           # ASSET_NAME in meguru/updater.lua, and the updater finds the release
