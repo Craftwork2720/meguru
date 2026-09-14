@@ -151,6 +151,68 @@ describe one book. `Naming.stripAliasPrefix` drops the prefix for naming and
 series derivation so both map to one marker; the stream is what makes them the
 same file, not the title.
 
+**It is the first entry of the feed, it is behind a setting, and it carries no
+progress.** Captured 2026-09-14 from `/api/opds/<KEY>/series/14849` with *Include
+Continue From Entry* on (Kavita **User Settings → OPDS**; the tooltip reads
+"Insert a *Continue From X* entry in OPDS fields to avoid finding your last
+reading point"). Two adjacent entries, cut to the attributes that matter:
+
+```
+entry 1  <title>Continue Reading from: ◕ Asobi Asobase - Volume 6</title>
+         rel=stream href=…/image?libraryId=39&seriesId=14849&volumeId=102272
+                                 &chapterId=161389&pageNumber={pageNumber}
+                       p5:count="156"        <- and no p5:lastRead at all
+
+entry 2  <title>⬤ Asobi Asobase - Volume 1</title>
+         rel=stream href=…&volumeId=102267&chapterId=161384&pageNumber={pageNumber}
+                       p5:count="162" p5:lastRead="162"
+                       p5:lastReadDate="2026-09-14T05:49:44"
+```
+
+**That capture is one reader's configuration, and these switches are per user.**
+All three sit together in User Settings → OPDS, each is set independently, and each
+changes the shape of the *same* series feed as that reader receives it:
+
+| switch | what it changes on the wire |
+|---|---|
+| `Embed Progress Indicator` | the status glyph at the head of `<title>` (`⬤` `◕` `◑` …) |
+| `Embed Progress Indicator in Title` | the same glyph, in its other variant |
+| `Include Continue From Entry` | whether the entry above exists at all |
+
+So a **feed describes the reader's settings, not the server** — one series answers
+differently for two accounts on the same instance, and a reader who turns the glyph
+off gets the entries above with no `◕` in them at all. Nothing in Meguru may rest
+on a glyph being there or on the alias being present; the identifier and the page
+are the two facts every one of those shapes states.
+
+Three things follow, and the third is the one that bit:
+
+- **It duplicates the entry it points at.** Kavita builds it with
+  `CreateChapterFeedEntry(series, continueVolume, continueChapter, …)` — see
+  `Kavita.Services/OpdsService.cs`, `GetSeriesDetail` → `CreateContinueReadingEntryAsync`,
+  which overwrites **only `Title`**. So `chapterId`, stream href and `p5:count` are
+  that chapter's own, and the reader finds the same book twice under one key.
+- **It sits at the top.** `GetSeriesDetail` inserts it before the loop that
+  appends the chapters, so it precedes every real entry rather than sitting beside
+  the one it duplicates.
+- **It carries no `p5:lastRead`**, while the entry it duplicates carries the
+  reader's page. The `◕` in its title is Kavita's own glyph for *partially read*
+  and is inherited from the real entry's title, so the two describe the same
+  progress and only one of them states it. `CreateChapterFeedEntry` sets
+  `link.LastRead = chapter.PagesRead` conditionally, and the chapter the continue
+  point resolves to does not carry it.
+
+So an entry with the alias prefix is **not a book**: it is the same book, without
+the position, in front of the copy that has it. Anything that collapses a feed by
+`item_key` must therefore not simply keep the first — see `Feed.dedupe`, and the
+`dropped duplicate feed entry` line it feeds.
+
+The prefix is the *translated* string (`localizationService.TranslateAsync`, key
+`opds-continue-reading-title`), so `Naming.ALIAS_PREFIX`'s English spelling
+matches an English Kavita UI and nothing else. This is why the collapse above
+rests on the shared `item_key` and on `last_read`, and **not** on the title: the
+title is a convenience for display, and the identity is on the wire.
+
 Note what this is *not*: the duplicated entries above are a different thing, and
 carry no prefix at all.
 

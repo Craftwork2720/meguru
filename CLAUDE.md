@@ -65,7 +65,8 @@ meguru/
   seriescover.lua         the series' artwork, written once into its folder
   rowcover.lua            the "Meguru this series" row's own artwork, decoded once
   pse.lua                 OPDS-PSE: link extraction, template -> URL, page fetch
-  feed.lua                reading a series feed: the rel=next walk, order, neighbour
+  feed.lua                reading a series feed: the rel=next walk, identity, order,
+                          neighbour
   panel.lua               the panels on a page, and the order they are read in
   hook.lua                runtime wraps on OPDSBrowser (sniff, "Meguru this series")
   updater.lua             GitHub releases: check for one, download it, install it
@@ -690,6 +691,50 @@ The rules that make a walk safe, each of which has a reason:
 generation sweep, no shrink gate, no TTL, no backoff, no resumable stepper driven
 from a UI tick. All of that existed to maintain a materialised view of feeds, and
 the view is what was removed.
+
+**A repeated `item_key` is one book, and the copy that carries the server's page
+is the one that describes it.** `Feed.dedupe` is the whole of that rule, and it
+has exactly two callers: `Feed.collect`, which walks a chain, and `itemsFrom` in
+`ui/open.lua`, which is the one place in that file where feed entries become
+items — the three list-parsing sites (`freshResumeTarget`, and `seriesItems`
+twice) go through it rather than through the driver, so the identity rule cannot
+drift between them again.
+
+*Why first-wins was wrong, which is what this replaced:* **Kavita's "Continue
+From" entry** — behind *Include Continue From Entry*, in User Settings → OPDS — is
+`CreateChapterFeedEntry` of the chapter the reader is on, with only its `Title`
+replaced, and `GetSeriesDetail` puts it at the **top** of the series feed. So it
+carries that chapter's own `chapterId`, stream and `p5:count`, and **no
+`p5:lastRead`**, in front of the entry that carries the reader's page. Keeping the
+first kept the copy that describes the book least, and the loss is not cosmetic:
+`Feed.isFinished` is false without a `last_read`, so `firstUnfinished` read the
+alias as *unfinished* and offered it, and `usablePage(nil)` had no page to put on
+the button — a volume with no page, and the server's position never reaching the
+dialog at all. PROTOCOL.md carries the capture.
+
+**The survivor keeps its own place in the feed, and for Kavita that is the
+neighbour relation.** `Feed.neighbor` walks the sequence by index, and Kavita's
+feed order *is* its reading order — `Feed.ordered` has no path or title position
+to sort on there (`positioned` is 0) — so an entry's index is its chapter's place
+in the series. A survivor that inherited the slot of the copy it displaced would
+put the chapter the reader is *in* at the head of the series, because that copy is
+the feed's first entry: "next chapter" would answer the first volume, and
+"previous" would say there is none. `Feed.dedupe` therefore sorts its survivors by
+the index each was found at. It is the same defect as the lost page and it comes
+from the same entry — the alias claiming a position that belongs to a book.
+
+**And it reads no title, which is a requirement rather than a preference: these
+OPDS switches are per user.** `Include Continue From Entry` decides whether the
+alias exists at all, and `Embed Progress Indicator` / `... in Title` decide whether
+titles carry a status glyph — set independently, in User Settings → OPDS, so the
+same series feed has a different shape for each reader of it. The identifier and
+the page are on the wire under every one of those shapes; the title is not, and
+the alias prefix is further *translated* (`opds-continue-reading-title`), so
+`Naming.ALIAS_PREFIX` matches an English Kavita UI and nothing else.
+
+**`driverItemFor` is deliberately outside it** — that path matches one *stream* the
+reader has already tapped, and it must answer with that entry even when the entry
+is one of these copies. See "Known open items" for what that leaves open.
 
 `Feed.ordered` is worth reading before touching anything that picks a chapter. It
 orders by the server's own **list position** — the `{n}` in Suwayomi's
@@ -2354,6 +2399,43 @@ Each step must pass before the next:
         its feed for both rows, and killing the Wi-Fi there still prompts as it always
         did.
 
+24. **Kavita with *Include Continue From Entry* on.** The setting is per user, in
+    User Settings → OPDS, and it puts a page-less copy of the chapter being read at
+    the top of the series feed — see `Feed.dedupe` and PROTOCOL.md. Wipe the series'
+    markers first: one written before this parse fix carries the alias's title and
+    no `last_read`, so it is not a valid test surface.
+
+    **Off first**, because it is the only row that can prove nothing else moved: ▶
+    names the chapter with its page, next/previous are unchanged, and `-d` shows
+    **no** `dropped duplicate feed entry` line. Then **on**, on a series read into
+    the middle of a volume:
+
+    | where | expected |
+    |---|---|
+    | `▶ Meguru this series` over the series feed | the chapter being read **and its page** |
+    | the same book's marker, opened from History | the same chapter and the same page |
+    | the marker on disk | `last_read` is the server's page, `series_name` is the series |
+    | ⋮ → Meguru → **Open next in series**, on that chapter | **the next volume** — not the first one | 
+    | ⋮ → Meguru → **Open previous in series**, on it | the previous volume — not "no previous" |
+
+    The two neighbour rows are the half a lost `last_read` does not show, and they
+    are the reason the survivor keeps its own index rather than the one it
+    displaced: the alias sits at the head of the feed, so a survivor holding that
+    slot puts the chapter being read *first in the series*, and next/previous then
+    answer from there. Reading one page and turning one page are not enough to see
+    it — **walk a neighbour in each direction.**
+
+    Then the switches, which are per user and must change nothing. Turn
+    `Embed Progress Indicator` and `... in Title` off (titles lose their glyph),
+    then repeat the table: ▶, both neighbours and the row above the series list must
+    answer exactly the same. That is the test that nothing rests on a title.
+
+    Then the two halves that are about *frequency* and *scope*: the `-d` line appears
+    **once per feed**, naming the alias title, and never once per page or per
+    repaint; and the browser's own list **still shows the "Continue Reading from:"**
+    row, which is Kavita's entry drawn by KOReader's OPDS plugin and not ours to
+    remove — what changed is only which of the two Meguru treats as the book.
+
 ## Known open items
 
 - **A page is decoded at its file's stated density, not at its pixels.**
@@ -2461,6 +2543,19 @@ Each step must pass before the next:
   a session without it exercises only the stock path — where the repair does exactly what
   it says. A repair aimed at a foreign plugin has to be verified where that plugin is
   installed, and this is what it costs when it is not.
+
+- **A marker written from a tapped "Continue From" row carries no `last_read`.**
+  `driverItemFor` matches one stream and answers with the entry the reader tapped,
+  which for Kavita's alias is the copy without the page — so the marker is written
+  with `last_read = nil` and `MeguruDocument:init`'s silent seed opens it at page 1
+  on a later open from History. What is *not* broken is the dialog on that first
+  open: it is asked about the book, and the server's page comes through
+  `freshResumeTarget`, which does collapse the duplicate. The repair, if it is
+  wanted, is to let `driverItemFor` take the survivor of a collapse whose
+  `item_key` matches the stream — the two copies share a template, so the match
+  survives the replacement — and it was left out of the change that introduced
+  `Feed.dedupe` by decision rather than by oversight. Not measured on a device: no
+  marker has been written from an alias row and then reopened from History.
 
 Settled and worth not re-litigating: `Settings.DEFAULTS.rotate_wide = 1` is correct. The
 old plugin's fallback *row* carries `default_value = 0`, which looks like a conflict, but

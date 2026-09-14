@@ -334,6 +334,37 @@ local lastIn = Feed.lastIn
 local firstUnfinishedOrLast = Feed.firstUnfinishedOrLast
 local firstIn = Feed.firstIn
 
+--- The items a feed page describes, one per book, with a repeated `item_key`
+--- collapsed onto the copy that carries the server's own page.
+---
+--- **The one place in this file where feed entries become items.** It was three
+--- separate `driver.parseCatalogPage` calls and one `Feed.collect`, and only
+--- `Feed.collect` collapsed a repeated key — so the same feed answered with two
+--- entries on one book here and one entry there, and which of the two survived
+--- was decided by position rather than by which one described the book. That is
+--- how Kavita's "Continue From" entry, which sits at the top of a feed and
+--- carries no page, came to shadow the chapter it duplicates. See `Feed.dedupe`.
+---
+--- A replacement is worth a line, because it is the reason an entry the reader
+--- can see in the browser's own list is not on offer here: the browser draws the
+--- feed's entries, and this is the one decision that drops one of them. It is a
+--- *decision*, so it is `info` — and it fires once per feed at most, never once
+--- per page, so the frequency rule leaves it where a `crash.log` can find it.
+---
+--- `driverItemFor` below deliberately does **not** come through here: it is asked
+--- for the item of one *stream* the reader has already tapped, and it must answer
+--- with that entry even when the entry is one of these copies.
+local function itemsFrom(driver, feed, feed_url, ctx)
+    local items, _, replaced = Feed.dedupe(
+        driver.parseCatalogPage(feed, feed_url, ctx))
+    for _, lost in ipairs(replaced) do
+        logger.info("Meguru: dropped duplicate feed entry",
+            lost.display_title or lost.title,
+            "- it describes a book whose other entry carries the server's page")
+    end
+    return items
+end
+
 
 --- The chapter the server's own position points at, read from the feed the
 --- browser just fetched.
@@ -415,8 +446,13 @@ local function freshResumeTarget(driver, feed, feed_url, ctx, context, select)
     end
 
     -- Handed on as a feed in its own right: `parseCatalogPage` reads
-    -- `feed.entry` and nothing else, so a one-field table is all it needs.
-    local parsed = driver.parseCatalogPage({ entry = mine }, feed_url, ctx)
+    -- `feed.entry` and nothing else, so a one-field table is all it needs — and
+    -- it goes through `itemsFrom` rather than the driver, because a feed can
+    -- carry one book twice and this function picks *one* entry out of the
+    -- sequence. Without the collapse the copy at the top of the feed won, and
+    -- where that copy was Kavita's page-less "Continue From" entry the dialog
+    -- had no page to offer at all.
+    local parsed = itemsFrom(driver, { entry = mine }, feed_url, ctx)
     -- Handed the driver so `Feed.ordered` can ask whether this server's titles
     -- carry a usable position at all — see `Feed.ordered`, and
     -- `Suwayomi.orderFromTitles` for the one that says yes.
@@ -1111,7 +1147,7 @@ local function seriesItems(info, conn)
     local function fallback(reason)
         logger.info("Meguru: series walk unusable (", reason,
             ") - the row falls back to the page on screen")
-        return driver.parseCatalogPage(feed, feed_url, ctx), "counters"
+        return itemsFrom(driver, feed, feed_url, ctx), "counters"
     end
 
     if not conn then
@@ -1190,7 +1226,7 @@ local function seriesItems(info, conn)
     for _, page in ipairs(pages) do
         -- Each page against *its own* URL: entry hrefs are relative, and a page
         -- need not share the path of the one before it.
-        for _, item in ipairs(driver.parseCatalogPage(page.feed, page.url, ctx) or {}) do
+        for _, item in ipairs(itemsFrom(driver, page.feed, page.url, ctx)) do
             items[#items + 1] = item
         end
     end

@@ -157,6 +157,80 @@ function Feed.walk(url, opts)
     return walker.pages, walker.complete, walker.reason, walker.count
 end
 
+--- One item per book, and the copy that carries the server's own page wins.
+---
+--- **A repeated `item_key` is one book, and the entry that describes it is the
+--- one carrying the position.** `last_read` is the whole of that: it is what says
+--- where the reader stopped. A duplicate without it is a *shortcut to* the book
+--- rather than the book, so first-wins — which is what this replaced — answered
+--- with the copy that describes the book least.
+---
+--- **Kavita's "Continue From" entry is the case this exists for.** With *Include
+--- Continue From Entry* on (User Settings → OPDS), `GetSeriesDetail` adds an entry
+--- at the **top** of a series feed: it is `CreateChapterFeedEntry` of the chapter
+--- the reader is on, so it carries the same `chapterId`, the same stream and the
+--- same `p5:count` as that chapter's own entry, and only its title is replaced.
+--- It carries **no `p5:lastRead`** — PROTOCOL.md has the capture — while the entry
+--- it duplicates carries the reader's page. Under first-wins the alias survived
+--- and the book lost its progress, which is not a cosmetic loss: `isFinished` is
+--- false without a `last_read`, so `firstUnfinished` then read the alias as
+--- *unfinished* and offered a chapter with no page to open it at.
+---
+--- **The survivor keeps its *own* place in the feed, not the place of the copy it
+--- displaced.** That is not tidiness: for a server whose feed order *is* reading
+--- order — Kavita, whose `Feed.ordered` therefore has no position to sort on —
+--- position is the neighbour relation, because `Feed.neighbor` walks the sequence
+--- by index. Kavita's entry sits at the **top** of the feed, so a survivor that
+--- inherited its slot would put the chapter the reader is *in* at the head of the
+--- series: "next chapter" would answer the first volume, and "previous" would say
+--- there is none. Keeping the winner's own index puts it back among its
+--- neighbours, where the server put it.
+---
+--- Returns `unique`, how many were `dropped`, and the entries `replaced` — the
+--- copies given up in favour of one that carried a page. The last is what lets a
+--- caller say *why* a row it was looking at is not on offer, and it is empty for
+--- the duplicates that differ in nothing, which is the ordinary case.
+---
+--- An item with no `item_key` identifies no book and is dropped as one of the
+--- `dropped`, exactly as it was before this was extracted.
+---
+--- **Nothing here reads a title, and that is a requirement rather than a
+--- preference.** Kavita's OPDS settings are *per user* — `Include Continue From
+--- Entry` decides whether the entry above exists at all, and `Embed Progress
+--- Indicator` / `... in Title` decide whether the title carries a status glyph —
+--- so the same series feed has a different shape for each reader of it. The
+--- identifier and the page are on the wire in every one of those shapes; the title
+--- is not.
+function Feed.dedupe(items)
+    local at, kept, dropped, replaced = {}, {}, 0, {}
+    for index, item in ipairs(items or {}) do
+        local key = item.item_key
+        if not key then
+            dropped = dropped + 1
+        else
+            local slot = at[key]
+            if not slot then
+                at[key] = #kept + 1
+                kept[#kept + 1] = { item = item, index = index }
+            else
+                dropped = dropped + 1
+                if kept[slot].item.last_read == nil and item.last_read ~= nil then
+                    replaced[#replaced + 1] = kept[slot].item
+                    kept[slot] = { item = item, index = index }
+                end
+            end
+        end
+    end
+    -- By the index each survivor was *found at*, so the list is the feed's own
+    -- order with the duplicates taken out of it.
+    table.sort(kept, function(a, b) return a.index < b.index end)
+    local unique = {}
+    for i, entry in ipairs(kept) do
+        unique[i] = entry.item
+    end
+    return unique, dropped, replaced
+end
+
 --- Every item the walk's pages describe, in feed order, deduped.
 ---
 --- Kavita emits some chapters twice, byte for byte. Collapsing them here keeps
@@ -167,19 +241,19 @@ end
 --- the catalog stored one; nothing stores one now, and the order a caller needs
 --- is `Feed.ordered`'s, which reads the server's own list position rather than
 --- the arrival order of a page that may be descending.
+---
+--- **One walk is many pages**, so the collapse has to happen across the whole of
+--- it rather than per page — which is why it is `Feed.dedupe` over the joined
+--- list and not something the loop below could do as it went.
 function Feed.collect(walker, plan)
-    local seen, unique, duplicates = {}, {}, 0
+    local all = {}
     for _, page in ipairs(walker.pages or {}) do
         for _, item in ipairs(plan.driver.parseCatalogPage(
                 page.feed, page.url, plan.ctx) or {}) do
-            if item.item_key and not seen[item.item_key] then
-                seen[item.item_key] = true
-                unique[#unique + 1] = item
-            else
-                duplicates = duplicates + 1
-            end
+            all[#all + 1] = item
         end
     end
+    local unique, duplicates = Feed.dedupe(all)
     return unique, duplicates
 end
 
