@@ -36,6 +36,7 @@ local logger = require("logger")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
+local Association = require("meguru/association")
 local Base = require("meguru/driver/base")
 local Feed = require("meguru/feed")
 local FS = require("meguru/fs")
@@ -601,8 +602,18 @@ end
 --- that cannot open anything — can leave the record behind; and disarmed on a
 --- throw, so an open that *failed* cannot suppress the dialog for the next open
 --- of the same file, which is someone retrying the book that just failed.
-local function handOff(file, opener)
-    Open.noteHandoff(file)
+---
+--- `arm` is false for exactly one caller, `openLocalFile` below. The one-shot
+--- exists to stop the `showReader` wrap asking the resume question twice, and
+--- that wrap falls straight through for a file that is not a marker
+--- (`hook.lua:326`) — so a sibling `.cbz` can never reach the offer, and arming
+--- for it would be arming for an open that provably cannot consult the record.
+--- Kept as a parameter rather than as a second copy of this function, because
+--- the `pcall` and the failure text are the half that must stay shared.
+local function handOff(file, opener, arm)
+    if arm ~= false then
+        Open.noteHandoff(file)
+    end
     local ok, err = pcall(opener)
     if not ok then
         Open.takeHandoff()
@@ -649,6 +660,56 @@ local function openPrepared(host, file)
         text = T(_("could not open the book.\nMarker written to:\n%1"), file),
     })
     return nil
+end
+
+--- Open a local archive that is already on disk, as one of *our* books.
+---
+--- The other half of "open next in series", for a `.cbz` with no server behind
+--- it: `meguru/local` has found the file beside the one being read, and this
+--- hands it over. Nothing is written — there is no marker to plan, no stream to
+--- resolve and no feed to ask.
+---
+--- **The provider is forced, and that is the whole of the difference from
+--- `handToReader`.** The row this answers belongs to a Meguru book and promises
+--- the next volume *here*; letting the registry decide would open the sibling in
+--- whatever the reader associated with `.cbz`, which is KOReader's own reader
+--- the moment they have given the association back — a reader tapping "next"
+--- would land in a different engine mid-series. Passing a provider to
+--- `showReader` bypasses `DocumentRegistry:getProvider` for that one open and
+--- writes nothing: the per-file `provider` key in a sidecar is only ever
+--- written by the "Open with…" dialog, so the association is left exactly as the
+--- reader set it.
+---
+--- `FS.exists` first, and not as a formality: `switchDocument` closes the reader
+--- *before* it tries to open anything, so a file that has been deleted or
+--- unmounted between the folder listing and the tap would leave the reader torn
+--- down and nothing in its place.
+function Open.openLocalFile(host, path)
+    if type(path) ~= "string" or not FS.exists(path) then
+        logger.warn("Meguru: the local book is gone", tostring(path))
+        return nil
+    end
+    if not (host and host.ui) then
+        logger.err("Meguru: no opener available for", path)
+        return nil
+    end
+    if not host.ui.document then
+        -- A file-manager host, which takes no provider. Unreachable from the
+        -- two callers — both are reader-side — and answered plainly rather
+        -- than by a bridge to nothing.
+        return handOff(path, function() host.ui:openFile(path) end, false)
+            and path or nil
+    end
+    local provider = Association.provider()
+    if not provider then
+        logger.warn("Meguru: the provider is not registered, so", path,
+            "cannot be opened as a Meguru book")
+        return nil
+    end
+    local ok = handOff(path, function()
+        host.ui:switchDocument(path, nil, nil, provider, true)
+    end, false)
+    return ok and path or nil
 end
 
 --- True when this book has never been opened on this device.

@@ -76,12 +76,26 @@ function Association.taken()
     return DocumentRegistry:getAssociatedProviderKey(NAME, true) ~= nil
 end
 
+--- The registered provider behind the key, or nil if there is none.
+---
+--- Exported so that `"meguru"` as a *provider key* stays spelled in exactly one
+--- file. `ui/open.lua` needs the provider itself rather than the key, to hand it
+--- to `ReaderUI:showReader` and open a sibling `.cbz` in this engine whatever the
+--- file-type association says — but the string it is looked up by is the same
+--- string this module claims with, and two spellings of it is two places for a
+--- rename to go half-done.
+function Association.provider()
+    if type(DocumentRegistry.getProviderFromKey) ~= "function" then
+        return nil
+    end
+    return DocumentRegistry:getProviderFromKey(PROVIDER)
+end
+
 --- Take the extension for Meguru, or hand it back.
 function Association.claim()
     -- `setProvider(file, nil, true)` means *reset*, so a provider the registry
     -- has never heard of would silently do the opposite of what was asked.
-    local provider = type(DocumentRegistry.getProviderFromKey) == "function"
-        and DocumentRegistry:getProviderFromKey(PROVIDER) or nil
+    local provider = Association.provider()
     if not provider then
         logger.warn("Meguru: the provider is not registered, so ." .. EXTENSION
             .. " cannot be claimed")

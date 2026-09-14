@@ -476,11 +476,17 @@ VALUE_USE = re.compile(r"(?<![\w.:])([A-Za-z_][A-Za-z0-9_]*)(?![\w])")
 STRIPPED_STRING = "STR"
 
 # Words that may legally sit immediately before a value-use without being one:
-# the statement forms that bind rather than read, plus `return`/`and`/`or`,
-# where the following token is still checked on its own account.
-VALUE_PREFIX_SKIP = {"local", "function", "for", "in", "return", "not", "and",
-                     "or", "if", "while", "until", "then", "else", "elseif",
-                     "repeat", "do"}
+# only the statement forms whose *next* token is a binding or a keyword rather
+# than a read -- `local x`, `for k, v in`, and the clause openers.
+#
+# `return`, `not`, `and` and `or` were in this set and are not: what follows each
+# of them is read, not bound, so listing them here silently exempted the token
+# from the pass. `if not lead_index then` with the name misspelled was exactly
+# that -- a name read as a value, bound nowhere, and reported by nothing. Found
+# by injecting the typo while self-testing a new module; with them removed the
+# pass finds it and the rest of the tree is unchanged (no false positives).
+VALUE_PREFIX_SKIP = {"local", "function", "for", "in", "if", "while",
+                     "until", "then", "else", "elseif", "repeat", "do"}
 
 # For-loop variables, which are bound by the loop header rather than by a
 # `local`: `for key, item in self.cache:pairs()`. Without this every loop in

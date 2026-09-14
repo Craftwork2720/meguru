@@ -58,7 +58,8 @@ meguru/
   association.lua         Meguru's claim on .cbz: the file-type reader association
   sources.lua             read-only view on settings/opds.lua (catalogs + credentials)
   net.lua                 HTTP GET, feed fetch + parse
-  naming.lua              sanitizeComponent / deriveSeries / alias / glyph / identity digest
+  naming.lua              sanitizeComponent / deriveSeries / glyph / identity digest
+  local.lua               the series a .cbz's folder and file name imply
   marker.lua              marker read/write, naming, collision resolution, series context
   credential.lua          what a credential looks like in a URL: redact / restore
   seriescover.lua         the series' artwork, written once into its folder
@@ -152,7 +153,13 @@ row's artwork has actually been found on disk.) `ui/panelzoom` requires no `megu
 as arguments, and with them the reading direction and the rotation direction, both
 as plain strings: the *domain* of those settings stays in `ui/reader` and the viewer
 is told the word. The edges that do exist between the panel modules are `ui/reader` ->
-`ui/panelzoom`, `doc/document` -> `panel`, and `panel` -> `doc/image`.
+`ui/panelzoom`, `doc/document` -> `panel`, and `panel` -> `doc/image`. `doc/document`
+and `ui/reader` both require `meguru/local` eagerly — it is a module of ours, it
+loads nothing expensive, and `ui/menu` reaches it through `ui/reader` rather than
+directly so the guard that answers "is this book a local one" exists once. The one
+directory listing in the plugin lives there, and it is `util.findFiles`, KOReader's
+own — not an edge in this graph, for the reason the network manager is not one
+either.
 
 ## Series state, and where it lives
 
@@ -1051,6 +1058,91 @@ catalogue deleted, and cannot fetch its pages without it. The failure is loud an
 self-describing: a 404 whose path says `<redacted>`, plus a warning naming the
 missing catalog and the fields that stayed stuck.
 
+## Next and previous in a folder of `.cbz`
+
+**A local `.cbz` has the same two rows a marker has, and its series is the folder
+it is in.** `meguru/local.lua` is the whole of it: it lists the file's own folder,
+orders the books by a **natural sort of the file name** — `2.cbz` before `10.cbz` —
+and answers which file is either side. Nothing is read out of the name, nothing is
+written, nothing is remembered, and no socket is opened: this path is offline by
+construction, which is why its branch in `Reader.openNeighbor` sits **above** the
+`NetworkMgr` gate rather than below it. `MeguruDocument:localSeries` is the seam,
+deliberately a *second* method beside `seriesContext` rather than a branch inside
+it: that one projects a marker and everything downstream branches on its nil, and
+two answers that can never take each other's shape is what keeps the feed path and
+the folder path from being confused.
+
+### What this replaced, and what it cost
+
+There was a **name grammar** here, and it is worth knowing what it was, because the
+temptation to rebuild it is the obvious "improvement" to make. It read the series
+out of the file name: volume tokens, bare trailing numbers, a leading number as a
+position rather than a title, which bracketed group was a release tag and which was
+part of the title, case-folding by hand so the device's locale could not move a key.
+Every rule was defended by a real example and every rule was there to answer one
+question the folder already answers — *are these two files the same series?* — in
+order to survive a layout nobody has: one folder holding two series' books. It cost
+a grammar no reader could predict, no test could reach (`tools/check.py` cannot see
+into a name-keyed comparison), and an asymmetry that had to be explained in three
+paragraphs.
+
+**The trade is now explicit.** A folder that holds two titles will navigate from one
+into the other: `next` on the last Berserk volume opens whatever sorts after it.
+Nothing on disk tells that folder from a real series folder, so this does not
+pretend to — and that is exactly why `Local.seriesOf` answers nil unless the folder
+holds **a second book to move to**. A lone one-shot gets no navigation rows at all,
+rather than two rows that could only say there is no next. A folder is still refused
+outright when it cannot be listed, or when a listing loses the very file being read.
+
+There is **no cap** on the folder. A long webtoon run is the case this exists for,
+and any cap low enough to catch a library folder would refuse it too; the price is
+one `lfs.attributes` per entry, on a menu build and on a tap.
+
+`Naming.deriveSeries` and its helpers are **not** part of this — they are the
+server path's, where a *title* really is all there is to go on, and `Feed.ordered`
+still orders a feed by them. Nothing here calls them.
+
+### The one piece that is not obvious: the sort key
+
+`sortKey` encodes a digit run as the marker byte `\1`, its length (leading zeros
+dropped) in three digits, and the digits themselves, so that plain string
+comparison sorts naturally — `001` is less than `002` before a single digit is
+compared, which is what puts `2` before `10`.
+
+**A key rather than a comparison function, and that is not a style choice.** Walking
+two names at once is how a natural sort is usually written and how `table.sort`
+comes to throw `invalid order function for sorting` — from inside a tap, when the
+walk turns out not to be a consistent order. A key is a function of *one* name, so
+the comparison is `<` between two strings and cannot be inconsistent; the encoding
+is also injective, so two different names never share a key. The mirror written to
+check it found the one real bug here before a device could: the padding that keeps
+`2`, `02` and `002` distinct sits **before** the rest of the name, so a `\0` pad
+sorting "naturally" would actually sort `02` *before* `2` — the pad is `\255`,
+above every byte a UTF-8 name holds, and fewer leading zeros sorts first.
+
+### Log lines
+
+Three, and the level each is at is the frequency rule: `dbg` for
+`Meguru: local folder <dir> — <N> book(s), this one at <pos>`, which fires on every
+menu build and every tap because it marks the *normal* path; `warn` for
+`Meguru: cannot list the folder of <file> (…)`, which marks the failure; and
+`info` for the tap that found nothing — `Meguru: no local neighbour of <name>
+towards <which>` — worded to mirror the feed's `no neighbour of … towards …`,
+because it is the same refusal on the other path.
+
+**There is deliberately no line for the forced provider.** The open that worked
+already prints the document's own `Meguru: local CBZ ready — …`, and that line is
+*absent* when the provider was not Meguru — which makes it the test rather than the
+thing needing a second line beside it. `Open.openLocalFile` forces it —
+`switchDocument(path, nil, nil, provider, true)` — because the row belongs to a
+Meguru book and promises the next volume *here*; a reader who has given `.cbz` back
+to KOReader would otherwise be moved out of this engine mid-series. Forcing is
+per-open and writes nothing: the per-file `provider` key in a sidecar is only ever
+written by the "Open with…" dialog. `FS.exists` comes first, because
+`switchDocument` closes the reader *before* it tries to open anything — a sibling
+deleted between the listing and the tap would otherwise leave the reader torn down
+with nothing in its place.
+
 ## Panel zoom, and the panel sequence
 
 ### The preference, and the stock cascade
@@ -1734,7 +1826,13 @@ one. It runs eight passes:
    position-blind check to find.
 5. **A name read as a *value* that is bound nowhere** — `pcall(renderMuPDFPage, ...)`.
    Passes 3 and 4 both key on the shape of the *use*, so a name handed over as an
-   argument or an operand slips past both.
+   argument or an operand slips past both. Its own trap is the **list of words it
+   lets precede a value-use**: only forms whose next token is a binding or a
+   keyword belong there. `return`, `not`, `and` and `or` were in that list and are
+   not — what follows each is read — so `if not lead_index then` with the name
+   misspelled was a name read as a value, bound nowhere and reported by nothing.
+   The typo was injected while self-testing `meguru/local` and it came back clean,
+   which is how the hole was found.
 6. **A lowercase name reached through a `.` or a `:`** — `data:byte(off + 1)` with no
    `local data` anywhere.
 7. **The marker's field list.** `Marker.new` is the contract between the code that
@@ -1865,7 +1963,9 @@ Each step must pass before the next:
 12. **The menu lands where it should.** FileManager → Tools → `Meguru` directly above
     `Read timer`, holding a single `Settings` row and nothing else; the reader's ⋮ → Tools
     → `Meguru` holds `Open next in series`, `Open previous in series` and the same
-    `Settings` row. Above `Read timer` in both cases: with the AI Assistant plugin
+    `Settings` row — the two rows on a marker whose series the feed can be walked, on a
+    local `.cbz` whose name carries a series and a number, and on neither otherwise (item
+    23). Above `Read timer` in both cases: with the AI Assistant plugin
     enabled that means the second row down, under `AI Assistant` and above `Read timer`;
     with it disabled the row is the first thing on the page. Turning the AI plugin on
     must move the row under it rather than leaving a second copy behind. Nothing
@@ -2040,6 +2140,46 @@ Each step must pass before the next:
     appear (item 14 still holds). Finally, with the network off, open a marker from
     History — the `ReaderUI:showReader` wrap is on another class and must be unaffected,
     asking once and opening.
+
+23. **A folder of `.cbz` is a series, and the folder is the only rule.** Nothing in
+    this one can be checked off the device: the ordering is a byte sort over real
+    file names, and the sort key's encoding has never run anywhere but a device.
+
+    1. **The rows appear only when there is somewhere to go.** A folder holding one
+       `.cbz` — a one-shot, or an unnumbered book like `Berserk.cbz` — gets **no**
+       Meguru navigation rows at all. Add a second `.cbz` of any name and both rows
+       appear on both books.
+    2. **The order is natural.** `1.cbz`, `2.cbz`, `10.cbz`, `20.cbz`: next walks
+       them in that order and previous reverses it, with the message naming the
+       folder at either end. The same for `Berserk v2.cbz` beside `Berserk v10.cbz`,
+       and for `02.cbz` beside `2.cbz` (adjacent, either order — the leading-zero
+       case is a tie-break, not a rule).
+    3. **Offline.** Wi-Fi **off**: next and previous walk the run both ways and stop
+       at the ends with the message. No Wi-Fi prompt anywhere on this path — if one
+       appears, the local branch has slipped below the `NetworkMgr` gate.
+    4. **The reader stays Meguru.** Give `.cbz` back to KOReader (*Set Meguru as
+       default reader for .cbz* off, restart), open one volume through *Open with… →
+       Meguru*, then take "next": `-d` must show `Meguru: local CBZ ready` for the
+       **new** path. Then, on disk: the association is still off, the sibling's
+       sidecar gained **no** `provider` key, and the folder gained no file.
+    5. **Auto-open.** With the toggle on, finishing a local volume opens the next with
+       no dialog; at the end of the run, stock's dialog. With it off, stock's
+       throughout.
+    6. **What is not a book.** One folder holding two `.cbz` plus a `.cbr`, a `.meguru`
+       marker, a `.jpg` and an AppleDouble `._one.cbz`: only the two `.cbz` are ever
+       opened, and the dotfile is never offered.
+    7. **Two titles in one folder navigate into each other, and that is the accepted
+       cost.** In a folder called `Comics`, put two different series' books: `next` on
+       the last of one opens the first of the other. Confirm it reads as the price of
+       the model and decide whether it is tolerable on a real card — that judgement is
+       the one thing here a device can settle and this document cannot.
+    8. **A folder that cannot be listed.** Unreadable media, or a folder deleted from
+       under an open book: one `warn` naming the file, and no rows.
+    9. **Non-ASCII.** `Zaginiony rozdział 01.cbz`/`02.cbz` and a CJK run both order and
+       navigate. This is the only real test of the byte-exact sort.
+    10. **The feed path is untouched.** In the same session, a marker book still walks
+        its feed for both rows, and killing the Wi-Fi there still prompts as it always
+        did.
 
 ## Known open items
 

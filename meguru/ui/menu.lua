@@ -300,21 +300,29 @@ end
 --- when the reader asks for one, so a label carrying a title would be a promise
 --- made before the walk that would have to keep it. `Reader.openNeighbor`
 --- answers the row by walking the series, and the walk is what opens the
---- chapter — so there is nothing here a name could have been read from.
+--- chapter — so there is nothing here a name could have been read from. That
+--- holds for a local `.cbz` too, even though its neighbour is a folder listing
+--- away: one row that reads the same on both is worth more than a label the
+--- other path cannot have.
 ---
---- `context` is the *series* the menu knows about, not a neighbour: a known
---- series always has a possible next, one walk away, so this row is drawn even
---- when nothing has been walked yet. Nil — a flat book, or a v1 marker written
---- before the series fields existed — means no feed to walk at all, and no row.
+--- The row is drawn from the *series* the menu knows about, not from a
+--- neighbour: a markered series always has a possible next, one walk away, so it
+--- is drawn even when nothing has been walked yet — and for a local `.cbz` the
+--- folder is listed at build time instead, which is why a lone book in a folder
+--- gets no row at all rather than two that answer "no next chapter".
+---
+--- That listing is as current as the menu, and no more: the reader's item table
+--- is built once per document and nothing rebuilds it (`open.lua:569-593` is the
+--- comment of a refresh function that no longer exists), so a second volume added
+--- to the folder while the book is open appears on the next open of the book and
+--- not before. The alternative — draw the rows always and answer at the tap —
+--- costs a row that can only ever say there is no next.
 ---
 --- No `separator` here any more, and none is needed: with `Settings` a submenu
 --- these two rows and it are the whole of the parent list, so the pair *is* the
 --- navigation group. The split line moved inside `Settings`, where there are
 --- still two kinds of preference to keep apart.
-local function addNeighborRow(plugin, rows, context, which)
-    if not context then
-        return
-    end
+local function addNeighborRow(plugin, rows, which)
     rows[#rows + 1] = {
         text = which == "next"
             and _("Open next in series")
@@ -337,15 +345,20 @@ function Menu.addReaderItems(plugin, menu_items)
     end
 
     -- One lookup for the whole submenu: the rows below, and whether the
-    -- auto-open toggle has anything to govern.
-    local context = seriesOf(ui)
+    -- auto-open toggle has anything to govern. Two sources, because a book's
+    -- series is either a feed's or a folder's and never both — `Reader`'s own
+    -- lookup answers nil for a marker and `seriesOf` for a local `.cbz` — so the
+    -- pair cannot disagree about which rows should be drawn.
+    local context = seriesOf(ui) or Reader.localSeriesOf(ui)
 
     -- Where to move around the series, and then everything that is a preference.
     -- These were one flat list split by `separator` lines until `Settings` became
     -- a submenu; the lines could show that a group existed, but not name it.
     local rows = {}
-    addNeighborRow(plugin, rows, context, "next")
-    addNeighborRow(plugin, rows, context, "previous")
+    if context then
+        addNeighborRow(plugin, rows, "next")
+        addNeighborRow(plugin, rows, "previous")
+    end
 
     -- The preferences, grouped exactly as the lines used to group them: how
     -- reading behaves, then where a new book lands. The `separator` on the last
@@ -356,6 +369,8 @@ function Menu.addReaderItems(plugin, menu_items)
     -- name has no feed to walk, so the toggle would govern a behaviour that can
     -- never trigger — but a known series always *has* a possible next, it is
     -- simply one walk away, so the gate is the context and not a neighbour.
+    -- `context` here is either kind: a local `.cbz` whose name carries a series
+    -- is one the end-of-book hook can advance, so the toggle governs it too.
     if context then
         settings[#settings + 1] = {
             text = _("Auto-open next in series"),

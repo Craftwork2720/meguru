@@ -10,7 +10,8 @@ one document and leaving them pristine for every other:
   * the status bar is hidden on open if the reader asked for that;
   * a page wider than it is tall turns the screen 90° (the standalone version of
     what `pagenumbercrop.koplugin` does, used when that plugin is absent);
-  * reaching the end of a book opens the next one in the series;
+  * reaching the end of a book opens the next one in the series — walked from
+    the server's feed for a marker, listed out of the folder for a local `.cbz`;
   * long-pressing a curated row sets that book's value as the plugin-wide
     default instead of writing a global `kopt_*`.
 
@@ -48,6 +49,7 @@ local T = ffiutil.template
 
 local Feed = require("meguru/feed")
 local Defaults = require("meguru/doc/defaults")
+local Local = require("meguru/local")
 local Open = require("meguru/ui/open")
 local Panel = require("meguru/panel")
 local PanelZoom = require("meguru/ui/panelzoom")
@@ -1137,6 +1139,38 @@ local function seriesContext(ui)
     return context
 end
 
+--- The folder this book shares with its neighbours, or nil when it has none.
+---
+--- The other source of "where am I in the series", and nil for every book whose
+--- series is a feed's: only a `.cbz` opened through Meguru answers. Exported
+--- because the reader menu needs the same answer to decide whether to draw the
+--- two rows at all, and two copies of this guard is two places for the two
+--- surfaces to disagree about which books have them.
+---
+--- It lists the folder — that is the only way to know whether there is a second
+--- book to move to — so it is a question for a menu build and for a tap, never
+--- for a paint.
+function Reader.localSeriesOf(ui)
+    local doc = ui and ui.document
+    if not (doc and type(doc.localSeries) == "function") then
+        return nil
+    end
+    return doc:localSeries()
+end
+
+--- The one refusal, in the one wording, for both ways of having no neighbour.
+---
+--- Shared rather than written twice, for the reason `openPrepared` gives about
+--- its own message: the same situation reaching the reader with two different
+--- texts is how a bug in one of them becomes invisible.
+local function showNoNeighbor(which, name)
+    UIManager:show(InfoMessage:new{
+        text = which == "next"
+            and T(_("%1 has no next chapter."), tostring(name or ""))
+            or T(_("%1 has no previous chapter."), tostring(name or "")),
+    })
+end
+
 --- Ask this series' own feed for the item either side of the one being read.
 ---
 --- **The feed is the only source, and it is read on the ask.** A marker holds no
@@ -1206,6 +1240,23 @@ end
 function Reader.openNeighbor(plugin, which)
     local ui = plugin and plugin.ui
     local doc = ui and ui.document
+
+    -- A local archive first, and **before the connection test below**. Its
+    -- series is a folder listing, so this path is offline by construction:
+    -- asking for Wi-Fi here would be prompting for something it does not need,
+    -- and would then re-run the whole thing through the manager for nothing.
+    local spot = Reader.localSeriesOf(ui)
+    if spot then
+        local path, why = Local.neighbor(doc.file, which)
+        if not path then
+            logger.info("Meguru: no local neighbour of", spot.name, "towards",
+                which, "-", tostring(why))
+            showNoNeighbor(which, spot.name)
+            return false
+        end
+        return Open.openLocalFile(plugin, path) ~= nil
+    end
+
     local context = seriesContext(ui)
     -- No context: the marker carries no series identity. There is nothing to
     -- walk — no server, no series id, so no feed URL can be built for it. This
@@ -1227,11 +1278,7 @@ function Reader.openNeighbor(plugin, which)
     if not item then
         logger.info("Meguru: no neighbour of", tostring(context.series_name),
             "towards", which, "-", tostring(reason))
-        UIManager:show(InfoMessage:new{
-            text = which == "next"
-                and T(_("%1 has no next chapter."), tostring(context.series_name or ""))
-                or T(_("%1 has no previous chapter."), tostring(context.series_name or "")),
-        })
+        showNoNeighbor(which, context.series_name)
         return false
     end
     -- openItemSilently reports its own failures, in more detail than a caller
@@ -1239,6 +1286,44 @@ function Reader.openNeighbor(plugin, which)
     return Open.openItemSilently(plugin, context, item) ~= nil
 end
 
+
+--- Mark a finished book complete, the way the stock handler we are standing in
+--- for would have.
+---
+--- Shared by both branches below rather than written into each: it is the half
+--- of "auto-open the next one" that has nothing to do with *finding* the next
+--- one, and two copies of it would be two chances to drop it on one path only —
+--- silently, and only for the reader who has `end_document_auto_mark` on.
+local function autoMarkFinished(ui, status)
+    local g = rawget(_G, "G_reader_settings")
+    if not (g and type(g.isTrue) == "function"
+        and g:isTrue("end_document_auto_mark")) then
+        return
+    end
+    pcall(function()
+        if ui.doc_settings and ui.doc_settings:readSetting("summary")
+            and type(status.markBook) == "function" then
+            status:markBook(true)
+        end
+    end)
+end
+
+--- Run `open` on the next UI tick, at most once per end-of-book.
+---
+--- This handler runs in the middle of a page-turn gesture, and switching
+--- documents there would tear the reader down underneath that gesture. Hence the
+--- defer; hence also the guard, so a second EndOfBook arriving before the tick
+--- cannot switch twice.
+local function deferOpen(status, open)
+    if status._meguru_auto_pending then
+        return
+    end
+    status._meguru_auto_pending = true
+    UIManager:nextTick(function()
+        status._meguru_auto_pending = false
+        open()
+    end)
+end
 
 --- When a book reaches its end, open the next one instead of showing KOReader's
 --- stock end-of-book dialog.
@@ -1277,6 +1362,24 @@ local function installEndOfBookHook(plugin)
         -- Anything short of "there is a next chapter" falls through to
         -- KOReader's own dialog rather than reporting: an end-of-book is not the
         -- moment for a popup saying the series has no more.
+        --
+        -- A local `.cbz` is asked first and asked *differently*: its next volume
+        -- is a file beside it, so there is no feed to walk and no connection to
+        -- need. The listing is one `lfs.dir`, and a folder that offers nothing
+        -- is the same "short of a next chapter" as an exhausted feed.
+        local spot = Reader.localSeriesOf(ui)
+        if spot then
+            local path = Local.neighbor(ui.document.file, "next")
+            if not path then
+                return orig(status_self, ev)
+            end
+            autoMarkFinished(ui, status_self)
+            deferOpen(status_self, function()
+                pcall(Open.openLocalFile, plugin, path)
+            end)
+            return true
+        end
+
         local context = seriesContext(ui)
         if not (context and NetworkMgr:isConnected()) then
             return orig(status_self, ev)
@@ -1285,33 +1388,15 @@ local function installEndOfBookHook(plugin)
         if not (ok_walk and next_item) then
             return orig(status_self, ev)
         end
-        -- Replicate the auto-marking the stock handler would have done, so the
-        -- finished book is still recorded as complete.
-        local g = rawget(_G, "G_reader_settings")
-        if g and type(g.isTrue) == "function"
-            and g:isTrue("end_document_auto_mark") then
-            pcall(function()
-                if ui.doc_settings and ui.doc_settings:readSetting("summary")
-                    and type(status_self.markBook) == "function" then
-                    status_self:markBook(true)
-                end
-            end)
-        end
-        -- This runs in the middle of a page-turn gesture; switching documents
-        -- here would tear the reader down underneath that handler. Defer, and
-        -- guard so a second EndOfBook before the tick cannot switch twice.
-        if not status_self._meguru_auto_pending then
-            status_self._meguru_auto_pending = true
-            UIManager:nextTick(function()
-                status_self._meguru_auto_pending = false
-                -- Opened from the item the walk already returned, not through
-                -- `Reader.openNeighbor`: that would walk the same feed a second
-                -- time and, finding nothing, put a popup over a reader who has
-                -- just finished a book. Opens the item itself; do not switch
-                -- again here.
-                pcall(Open.openItemSilently, plugin, context, next_item)
-            end)
-        end
+        autoMarkFinished(ui, status_self)
+        deferOpen(status_self, function()
+            -- Opened from the item the walk already returned, not through
+            -- `Reader.openNeighbor`: that would walk the same feed a second
+            -- time and, finding nothing, put a popup over a reader who has
+            -- just finished a book. Opens the item itself; do not switch
+            -- again here.
+            pcall(Open.openItemSilently, plugin, context, next_item)
+        end)
         return true
     end
 end

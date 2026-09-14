@@ -7,6 +7,12 @@ written through here anyway (they go through `LuaSettings`, which owns its own
 I/O). What is left is the question every path decision asks — does this exist,
 is it a directory, can I make it — plus the one attribute the document wants.
 
+**The one listing in the plugin is not here**, and adding a second one is not a
+gap to fill: `meguru/local` lists a `.cbz`'s own folder, through KOReader's own
+`util.findFiles`, because what it wants is not "the files in a directory" but
+"the other books in this series" — a question about names, which belongs with
+the module that reads them.
+
 `writeFile` comes back for one caller and one kind of file: a series' artwork,
 saved beside its markers so that something outside KOReader can find it. It
 writes bytes verbatim and knows nothing about what they mean — see

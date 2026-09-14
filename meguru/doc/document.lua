@@ -41,6 +41,7 @@ end
 local logger = require("logger")
 local FS = require("meguru/fs")
 local Image = require("meguru/doc/image")
+local Local = require("meguru/local")
 local Marker = require("meguru/marker")
 local Panel = require("meguru/panel")
 local Naming = require("meguru/naming")
@@ -1315,6 +1316,25 @@ function MeguruDocument:seriesContext()
         return nil
     end
     return Marker.seriesContext(self.desc)
+end
+
+--- The folder this book shares with its neighbours, or nil when it has none.
+---
+--- The other half of the same question, and deliberately a second method rather
+--- than a branch inside `seriesContext`: that one projects a marker's
+--- descriptor, everything downstream branches on its nil, and a local cbz has
+--- no descriptor at all. Two sources of "which series is this" that can never
+--- answer with each other's shape is what keeps the marker path and the local
+--- path from being confused for one another.
+---
+--- This one *does* read the folder — it is the only way to know whether there is
+--- anything to navigate to — so it is asked when a menu is built and when a
+--- neighbour is opened, and never on the render path.
+function MeguruDocument:localSeries()
+    if not self.local_cbz then
+        return nil
+    end
+    return Local.seriesOf(self.file)
 end
 
 function MeguruDocument:getDocumentProps()

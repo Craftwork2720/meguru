@@ -134,6 +134,10 @@ chapter, fetching it from the server if it isn't already saved. Turn on
 *Auto-open next in series* (same Settings submenu) to have it happen
 automatically as soon as you finish a chapter.
 
+The same two rows work for **local `.cbz` files**, where the folder is the series
+and its books are read in name order — `2.cbz` before `10.cbz`, not after. The
+rows appear only when the folder holds a second book to move to.
+
 ### Good to know
 
 - Creating a series stream also drops a `.cover.jpg` in its folder — turn
