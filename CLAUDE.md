@@ -1915,6 +1915,37 @@ cover.
 The repair a reader has if any of this ever breaks again is the same one a mis-sniffed
 kind has: nothing in the UI reaches it, so it is fixed in `hook.lua` or not at all.
 
+**The reader's bottom menu is the same story in a second place, and it is
+`rakuyomi.koplugin` that tells it.** Its `MangaReader:addRakuOptionsToReader`
+ends by assigning `ui.config.onShowConfigMenu` on the **instance**, wholesale and
+without calling the original — its own comment reads `--patch
+frontend/apps/reader/modules/readerconfig.lua` — and it does it from a
+`registerPostInitCallback`, i.e. after every plugin has loaded. Plugins load by
+sorted path, so `meguru.koplugin` is always *before* `rakuyomi.koplugin`: the wrap
+`curateConfigMenu` installs at our init is gone before the reader is up, the menu
+shows every stock row Meguru was supposed to drop, and nothing reports it.
+
+Three things make the repair what it is, and each differs from the OPDSBrowser one:
+
+- **The guard is the wrapper, not a flag.** `config._meguru_curated` held `true`,
+  which stays true after a foreign assignment — so it could not tell "still ours"
+  from "replaced". It holds the function we installed now, and a replacement is
+  simply a different value in that field.
+- **Per instance, never per class.** The replacement is an instance field, which
+  shadows the class, so a class-level wrap would be invisible.
+- **The seam is `registerPostReaderReadyCallback`.** `ReaderUI:init` fires
+  `ReaderReady` and only *then* runs that list (`readerui.lua:517-522`), while a
+  post-init callback has already run by the time init returns — so this is later
+  than the thing it repairs, provably rather than by appearance. This is the
+  `genItemTableFromURL`-not-`switchItemTable` lesson again: the decision is made
+  where the evidence is.
+
+Chaining is the other half, and it is why this is not a fight: `orig` is whatever
+is in the field *now*, so Rakuyomi's own chapter bar among its buttons survives
+ours. The first repair logs once per process —
+`the config menu was replaced since load; curation re-installed` — and, as with
+the OPDS repair, it deliberately does not name the plugin that did it.
+
 ## Updating
 
 **One artifact, and both ends name it.** `.github/workflows/release.yml` builds

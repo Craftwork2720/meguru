@@ -1084,23 +1084,43 @@ local function redirectDefaults(config)
     end
 end
 
+--- Reported once per process, not once per repair: the second installation is a
+--- decision a reader might ask about ("why does this menu look different"), and
+--- the answer is worth one line rather than one per book.
+local config_menu_repair_logged = false
+
 --- Swap the stock bottom-menu handler for one that opens a curated dialog.
 ---
 --- Modules init before plugins and this wrap is installed at plugin init, so
 --- every later open of the bottom menu goes through it. The original handler is
 --- called unchanged, so persistence, the remembered panel index and everything
 --- else about the flow is untouched.
+---
+--- **The guard is the wrapper itself rather than a flag, and that is the whole
+--- of what makes a second installation possible.** `rakuyomi.koplugin` assigns
+--- `ui.config.onShowConfigMenu` on the *instance*, wholesale and without calling
+--- the original — its own comment reads `--patch
+--- frontend/apps/reader/modules/readerconfig.lua` — and it does it from a
+--- `registerPostInitCallback`, which is later than every plugin's init. Plugins
+--- load by sorted path, so `meguru.koplugin` always comes *before* it and
+--- whatever this installs at our init is gone before the reader is up. A flag
+--- saying "we installed once" cannot see that, because it stays true; holding
+--- the function we installed can, because a foreign assignment is then simply a
+--- different value in the field.
+---
+--- Chaining is the other half: `orig` is whatever is in the field *now*, so a
+--- replacement's own work — Rakuyomi's chapter bar among its buttons — survives
+--- ours. Returns whether it installed, which is what the caller logs on.
 local function curateConfigMenu(plugin)
     local config = plugin.ui and plugin.ui.config
     if not (config and type(config.onShowConfigMenu) == "function") then
-        return
+        return false
     end
-    if config._meguru_curated then
-        return
+    if config._meguru_curated == config.onShowConfigMenu then
+        return false
     end
-    config._meguru_curated = true
     local orig = config.onShowConfigMenu
-    config.onShowConfigMenu = function(cfg, ...)
+    local wrapper = function(cfg, ...)
         local stock_options = cfg.options
         -- `cfg.ui` is this ReaderUI; the dialog is built from this table inside
         -- `orig`, so the Fit row's live highlight gets it through the closure.
@@ -1120,6 +1140,9 @@ local function curateConfigMenu(plugin)
         cfg.options = stock_options
         return ret
     end
+    config._meguru_curated = wrapper
+    config.onShowConfigMenu = wrapper
+    return true
 end
 
 -- Next and previous in the series ----------------------------------------------
@@ -1444,6 +1467,25 @@ function Reader.install(plugin)
     installPageErrorPage(plugin)
 
     curateConfigMenu(plugin)
+
+    -- And again once the reader is up, because a plugin can replace the method
+    -- *after* ours is in place — see `curateConfigMenu`. `ReaderReady` is the
+    -- seam that is provably later than that: `ReaderUI:init` fires the event and
+    -- only *then* runs its `postReaderReadyCallback` list
+    -- (`readerui.lua:517-522`), while a replacement installed from a post-init
+    -- callback has already happened by the time init returns. Without this the
+    -- reader sees the stock, uncrated dialog — and nothing reports it, because
+    -- the menu still works.
+    if type(ui.registerPostReaderReadyCallback) == "function" then
+        ui:registerPostReaderReadyCallback(function()
+            if curateConfigMenu(plugin) and not config_menu_repair_logged then
+                config_menu_repair_logged = true
+                logger.info("Meguru: the config menu was replaced since load;"
+                    .. " curation re-installed")
+            end
+        end)
+    end
+
     installEndOfBookHook(plugin)
 
     plugin.onMeguruRotateWideUpdate = function(self, value)
