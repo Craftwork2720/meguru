@@ -60,6 +60,7 @@ meguru/
   net.lua                 HTTP GET, feed fetch + parse
   naming.lua              sanitizeComponent / deriveSeries / glyph / identity digest
   local.lua               the series a .cbz's folder and file name imply
+  comicinfo.lua           the metadata a .cbz carries about itself
   marker.lua              marker read/write, naming, collision resolution, series context
   credential.lua          what a credential looks like in a URL: redact / restore
   seriescover.lua         the series' artwork, written once into its folder
@@ -1107,6 +1108,72 @@ self-describing: a 404 whose path says `<redacted>`, plus a warning naming the
 missing catalog and the fields that stayed stuck.
 
 ## Next and previous in a folder of `.cbz`
+
+**A local `.cbz` is known by the metadata it carries, not by its file name.**
+`MeguruDocument:_localComicProps` reads the archive's own `ComicInfo.xml` —
+ComicRack's schema, which comic libraries write and serve and which Rakuyomi
+writes into every chapter it downloads — and falls back to the file's name only
+when there is no such entry, or it will not parse. `meguru/comicinfo` is the
+whole of that read, and it reads **into memory** (`Archiver.Reader:extractToMemory`)
+rather than through `extractToPath`, because the disk-writing route would have
+made merely opening a comic leave a file behind. This replaced a `{ title =
+self:_localTitle() }` that returned the name unconditionally, and the reason is
+worth keeping straight: **Rakuyomi was not broken, it stopped being called.** Its
+own `CbzDocument:getDocumentProps` reads the same entry and merges it, so a file
+it opened was titled properly — but the moment Meguru claims `.cbz` the document
+is ours, that method never runs, and the file falls back to its name. Reading the
+entry here is what makes the metadata survive whoever owns the extension, and it
+needs Rakuyomi only to have written the file, never to be present at read time.
+
+Two properties of it are load-bearing. **`title` is the file's own `Title` and
+the series is a field beside it** — not folded, unlike the streamed path, because
+`BookInfo.extendProps` puts `title` straight into `display_title` while `series`
+is drawn on a line of its own, so folding would print the series twice; a marker
+folds only because the descriptor it projects has no series *field* for the title
+to sit beside. And **the entry is read once per document** (`self._comic_info`,
+with `false` for "read, none there"), because it opens the archive.
+
+**The whole schema is read and seven fields are used, because `doc_props` has
+seven slots.** `ComicInfo` v2.1 declares about forty elements and `BookInfo`
+draws exactly `title`, `authors`, `series`, `series_index`, `language`,
+`keywords`, `description` — so "use the whole schema" cannot mean putting it into
+`doc_props`. What it does mean is what `meguru/comicinfo` does: one pass collects
+every non-empty element the entry has, and a `MAP` table decides which one
+answers which key, so a field a newer writer adds is read without a change and
+the mapping is one table to read rather than a `match` per property. Two entries
+in that table are judgement calls and are named as such there: `keywords` takes
+`Tags` then `Genre`, and `authors` takes `Writer`.
+
+**Element names are matched case-insensitively, and that is a requirement.**
+`ComicInfo.xsd` declares the language element as `LanguageISO` and declares no
+second spelling — but the files in hand write `<LanguageIso/>`, lowercased, which
+is ComicRack's spelling, so the divergence is the **writer's** rather than a
+version of the schema. (An earlier draft of this paragraph said the schema had
+renamed it between versions. It had not been checked; the XSD was, and it says
+otherwise.) An exact match would have missed it on the very files this was
+written for, and missed it silently. Measured against two synthetic archives, one
+per spelling.
+
+**The XSD carries no documentation at all** — no `xs:annotation`, so nothing
+settles what `Genre` means against `Tags`, or whether `Writer` is the author.
+That is why the two judgement calls in `MAP` are named as judgement calls rather
+than defended: the schema is silent, so they are a reading, and they are one line
+to change when a file turns up that fills both.
+
+**`entry.size` from the archiver is a cdata `int64_t`, not a Lua number.** A
+guard written as `type(entry.size) == "number"` is false for `754LL`, so it
+refuses the entry and looks exactly like an archive that has none — which is what
+the first version of this module did, and why a book opened through Rakuyomi kept
+its hashed name while every part of the read was in fact working. Compare it to a
+number directly; that is what LuaJIT's FFI does natively and `tonumber` does not.
+
+**A book already opened keeps its old title on the FileManager's list until the
+cache is refreshed.** The sidecar's `doc_props` is recomputed on every open and
+is right immediately, but the list itself is drawn from `BookInfoManager`'s own
+cache, which nothing in this plugin writes or invalidates — so
+*Refresh cached book information* is what puts the new title on screen. An
+earlier version of this paragraph claimed "nothing has to be migrated", which was
+true of the sidecar and false of the thing the reader is actually looking at.
 
 **A local `.cbz` has the same two rows a marker has, and its series is the folder
 it is in.** `meguru/local.lua` is the whole of it: it lists the file's own folder,

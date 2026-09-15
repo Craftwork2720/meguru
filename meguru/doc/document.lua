@@ -39,6 +39,7 @@ do
     end
 end
 local logger = require("logger")
+local ComicInfo = require("meguru/comicinfo")
 local FS = require("meguru/fs")
 local Image = require("meguru/doc/image")
 local Local = require("meguru/local")
@@ -1337,9 +1338,55 @@ function MeguruDocument:localSeries()
     return Local.seriesOf(self.file)
 end
 
+--- What a local `.cbz` is known by: its own metadata, else its file name.
+---
+--- **The archive's `ComicInfo.xml` is the answer, and the file name is only the
+--- fallback.** This returned `{ title = _localTitle() }` unconditionally, which
+--- is what made a book opened through Rakuyomi lose the metadata Rakuyomi had
+--- written into the file and show a hashed file name in History — while the very
+--- same file, opened by Rakuyomi's own document class, was titled properly.
+--- Rakuyomi was not broken; it was simply no longer the class doing the opening,
+--- so its `getDocumentProps` never ran. Reading the entry here is what makes the
+--- metadata survive whoever claims `.cbz`, and it needs Rakuyomi installed only
+--- to have written the file, never to be present at read time.
+---
+--- **`title` is the file's own `Title` and the series is a field beside it.**
+--- They are not folded together, and that is deliberate: ComicRack's schema
+--- separates them, `doc_props` carries both, and KOReader's
+--- `BookInfo.extendProps` puts `title` straight into `display_title` — so a
+--- title that repeated the series would show it twice, and Book info would list
+--- the series on a line of its own underneath. The streamed path does fold, and
+--- the difference is not an inconsistency to tidy: a marker projects a
+--- descriptor that has no series *field*, so folding is the only way its title
+--- can say what it belongs to, where here the field exists.
+---
+--- **What the archive says arrives whole**, in `doc_props` terms, from
+--- `meguru/comicinfo` — `series_index`, `language`, `authors`, `keywords` and
+--- `description` among them. What is left here is the one thing that module
+--- cannot know: the file's name, which is what `title` falls back to when the
+--- entry is missing, unreadable, or has no `Title` of its own.
+---
+--- The entry is read once and memoised on the document — it opens the archive,
+--- and one document is one book, so this cannot go stale the way a shared cache
+--- could. The returned table is built fresh each call because `Document:getProps`
+--- hands it to `FileManagerBookInfo.extendProps`, which is free to add to it.
+function MeguruDocument:_localComicProps()
+    if self._comic_info == nil then
+        self._comic_info = ComicInfo.read(self.file) or false
+    end
+    local props = {}
+    for key, value in pairs(self._comic_info or {}) do
+        props[key] = value
+    end
+    if type(props.title) ~= "string" or props.title == "" then
+        props.title = self:_localTitle()
+    end
+    return props
+end
+
 function MeguruDocument:getDocumentProps()
     if self.local_cbz then
-        return { title = self:_localTitle() }
+        return self:_localComicProps()
     end
     local desc = self.desc or {}
     -- A server-faithful title carries bookkeeping the reader should not see in
