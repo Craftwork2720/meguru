@@ -414,6 +414,98 @@ local function decodeNative(data)
     return decodeNativeRenderImage(data)
 end
 
+-- Cut a rendered tile down to a panel's own quadrilateral.
+--
+-- The render can only produce a rectangle — `page:draw_new` is handed a pixmap
+-- box and MuPDF clips to it — but a panel's borders are not always axis-aligned,
+-- so the region asked for is the quad's *bounding* rectangle and what lies
+-- outside the quad is painted over here. **What lies outside is the panel next
+-- door along the slant**, which is the whole reason this exists: a crop that
+-- cannot follow a tilted border shows the reader a wedge of its neighbour. On a
+-- page whose panels are square the box and the panel are the same thing and
+-- nothing is painted.
+--
+-- `planes` are four half-planes in the caller's coordinate space — the space
+-- `nx, ny, nw, nh` live in — each `{ A, B, C }` meaning "inside is
+-- `A*x + B*y + C <= 0`", which is the shape `meguru/panel` builds a panel's crop
+-- from. Substituting `x = nx + tx * nw / tw` and `y = ny + ty * nh / th` turns
+-- each of them into one in `tx`/`ty`, so no per-pixel transform is needed and
+-- the tile is walked by row.
+--
+-- **Rows are painted in runs**, because a panel with straight sides has the same
+-- span on every row: the common case is two `paintRect` calls for the whole tile
+-- and only a slanted edge pays per row. A run is flushed when its span changes,
+-- and a row that is entirely inside paints nothing at all.
+--
+-- `bg` is the page's own estimated background, 0-255, and is the only honest
+-- thing to put outside the panel — it is the paper the ink predicate already
+-- decided on, and on a white-on-black page it is dark.
+local function maskToQuad(bb, planes, bg, nx, ny, nw, nh, tw, th)
+    if not (planes and #planes > 0) or tw < 1 or th < 1 then
+        return
+    end
+    local EPS = 1e-9
+    local mapped = {}
+    for i = 1, #planes do
+        local plane = planes[i]
+        mapped[i] = {
+            A = plane.A * nw / tw,
+            B = plane.B * nh / th,
+            C = plane.A * nx + plane.B * ny + plane.C,
+        }
+    end
+    local color = Blitbuffer.Color8(bg or 255)
+
+    local run_lo, run_hi, run_from
+    local function flush(upto)
+        if not run_lo or upto <= run_from then
+            return
+        end
+        local rows = upto - run_from
+        if run_hi < run_lo then
+            bb:paintRect(0, run_from, tw, rows, color)
+            return
+        end
+        if run_lo > 0 then
+            bb:paintRect(0, run_from, run_lo, rows, color)
+        end
+        if run_hi < tw - 1 then
+            bb:paintRect(run_hi + 1, run_from, tw - run_hi - 1, rows, color)
+        end
+    end
+
+    for ty = 0, th - 1 do
+        local lo, hi = 0, tw - 1
+        local yc = ty + 0.5
+        for i = 1, #mapped do
+            local plane = mapped[i]
+            local v = plane.B * yc + plane.C
+            if plane.A > EPS then
+                -- A*(tx + 0.5) + v <= 0, so the largest tx inside is this.
+                local cand = math.floor(-v / plane.A - 0.5)
+                if cand < hi then
+                    hi = cand
+                end
+            elseif plane.A < -EPS then
+                local cand = math.ceil(-v / plane.A - 0.5)
+                if cand > lo then
+                    lo = cand
+                end
+            elseif v > 0 then
+                lo, hi = tw, -1 -- the whole row is outside this half-plane
+                break
+            end
+        end
+        if lo < 0 then lo = 0 end
+        if hi > tw - 1 then hi = tw - 1 end
+        if lo ~= run_lo or hi ~= run_hi then
+            flush(ty)
+            run_lo, run_hi, run_from = lo, hi, ty
+        end
+    end
+    flush(th)
+end
+
 -- Render ONE REGION of a page into a buffer of the size the caller actually
 -- wants, in a single pass and straight from the source.
 --
@@ -528,97 +620,6 @@ function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes, bg)
     return bb
 end
 
--- Cut a rendered tile down to a panel's own quadrilateral.
---
--- The render can only produce a rectangle — `page:draw_new` is handed a pixmap
--- box and MuPDF clips to it — but a panel's borders are not always axis-aligned,
--- so the region asked for is the quad's *bounding* rectangle and what lies
--- outside the quad is painted over here. **What lies outside is the panel next
--- door along the slant**, which is the whole reason this exists: a crop that
--- cannot follow a tilted border shows the reader a wedge of its neighbour. On a
--- page whose panels are square the box and the panel are the same thing and
--- nothing is painted.
---
--- `planes` are four half-planes in the caller's coordinate space — the space
--- `nx, ny, nw, nh` live in — each `{ A, B, C }` meaning "inside is
--- `A*x + B*y + C <= 0`", which is the shape `meguru/panel` builds a panel's crop
--- from. Substituting `x = nx + tx * nw / tw` and `y = ny + ty * nh / th` turns
--- each of them into one in `tx`/`ty`, so no per-pixel transform is needed and
--- the tile is walked by row.
---
--- **Rows are painted in runs**, because a panel with straight sides has the same
--- span on every row: the common case is two `paintRect` calls for the whole tile
--- and only a slanted edge pays per row. A run is flushed when its span changes,
--- and a row that is entirely inside paints nothing at all.
---
--- `bg` is the page's own estimated background, 0-255, and is the only honest
--- thing to put outside the panel — it is the paper the ink predicate already
--- decided on, and on a white-on-black page it is dark.
-local function maskToQuad(bb, planes, bg, nx, ny, nw, nh, tw, th)
-    if not (planes and #planes > 0) or tw < 1 or th < 1 then
-        return
-    end
-    local EPS = 1e-9
-    local mapped = {}
-    for i = 1, #planes do
-        local plane = planes[i]
-        mapped[i] = {
-            A = plane.A * nw / tw,
-            B = plane.B * nh / th,
-            C = plane.A * nx + plane.B * ny + plane.C,
-        }
-    end
-    local color = Blitbuffer.Color8(bg or 255)
-
-    local run_lo, run_hi, run_from
-    local function flush(upto)
-        if not run_lo or upto <= run_from then
-            return
-        end
-        local rows = upto - run_from
-        if run_hi < run_lo then
-            bb:paintRect(0, run_from, tw, rows, color)
-            return
-        end
-        if run_lo > 0 then
-            bb:paintRect(0, run_from, run_lo, rows, color)
-        end
-        if run_hi < tw - 1 then
-            bb:paintRect(run_hi + 1, run_from, tw - run_hi - 1, rows, color)
-        end
-    end
-
-    for ty = 0, th - 1 do
-        local lo, hi = 0, tw - 1
-        local yc = ty + 0.5
-        for i = 1, #mapped do
-            local plane = mapped[i]
-            local v = plane.B * yc + plane.C
-            if plane.A > EPS then
-                -- A*(tx + 0.5) + v <= 0, so the largest tx inside is this.
-                local cand = math.floor(-v / plane.A - 0.5)
-                if cand < hi then
-                    hi = cand
-                end
-            elseif plane.A < -EPS then
-                local cand = math.ceil(-v / plane.A - 0.5)
-                if cand > lo then
-                    lo = cand
-                end
-            elseif v > 0 then
-                lo, hi = tw, -1 -- the whole row is outside this half-plane
-                break
-            end
-        end
-        if lo < 0 then lo = 0 end
-        if hi > tw - 1 then hi = tw - 1 end
-        if lo ~= run_lo or hi ~= run_hi then
-            flush(ty)
-            run_lo, run_hi, run_from = lo, hi, ty
-        end
-    end
-    flush(th)
-end
 
 -- A cheap per-pixel luminance accessor over a BlitBuffer's raw bytes.
 --

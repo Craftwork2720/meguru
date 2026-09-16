@@ -2196,15 +2196,31 @@ one. It runs nine passes:
    enters scope from its own statement onwards, so a call above it resolves the name as
    a global and finds nil, while the binding is sitting right there for any
    position-blind check to find.
-5. **A name read as a *value* that is bound nowhere** — `pcall(renderMuPDFPage, ...)`.
-   Passes 3 and 4 both key on the shape of the *use*, so a name handed over as an
-   argument or an operand slips past both. Its own trap is the **list of words it
-   lets precede a value-use**: only forms whose next token is a binding or a
-   keyword belong there. `return`, `not`, `and` and `or` were in that list and are
-   not — what follows each is read — so `if not lead_index then` with the name
-   misspelled was a name read as a value, bound nowhere and reported by nothing.
-   The typo was injected while self-testing `meguru/local` and it came back clean,
-   which is how the hole was found.
+5. **A name read as a *value* that is not bound at or above its line** —
+   `pcall(renderMuPDFPage, ...)`. Passes 3 and 4 both key on the shape of the *use*,
+   so a name handed over as an argument or an operand slips past both. Its own trap is
+   the **list of words it lets precede a value-use**: only forms whose next token is a
+   binding or a keyword belong there. `return`, `not`, `and` and `or` were in that list
+   and are not — what follows each is read — so `if not lead_index then` with the name
+   misspelled was a name read as a value, bound nowhere and reported by nothing. The
+   typo was injected while self-testing `meguru/local` and it came back clean, which is
+   how the hole was found.
+   **The pass was position-blind and that cost a shipped feature.** It asked only
+   whether a name was bound *somewhere*, on the stated grounds that claiming the
+   positional half "would report every forward reference in the codebase" — which
+   confused two things. A forward reference to a `local` is not a legitimate pattern in
+   Lua; Lua resolves a name at compile time against the locals in scope at that point
+   in the source, so a `local function` defined *below* its use is a global read, and
+   the pattern that does work — mutual recursion — declares `local b` before its first
+   use and is therefore bound above it. `maskToQuad` was added below
+   `Image.renderRegion`, which called it through `pcall(maskToQuad, ...)`; the pcall
+   handler logged `panel crop mask failed: attempt to call a nil value` and the panel
+   crop silently went unmasked on every page. It is now check 4's rule applied to
+   value-uses as well, and **adding it reports nothing anywhere in the tree** — which
+   is the measurement that settles the old objection rather than an argument about it.
+   Six shapes were injected to self-test it: the forward reference (with and without a
+   call), a forward declaration, a name bound nowhere, and the two shapes checks 4 and
+   6 own.
 6. **A lowercase name reached through a `.` or a `:`** — `data:byte(off + 1)` with no
    `local data` anywhere.
 7. **The marker's field list.** `Marker.new` is the contract between the code that

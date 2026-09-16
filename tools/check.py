@@ -458,10 +458,30 @@ def check_lowercase_calls(path, text):
 #   log line that exists to explain why a giant lossless page is skipped raised
 #   "attempt to perform arithmetic on a nil value" instead of explaining it.
 #
-# The rule is the narrowest one that catches both: the name must be bound
-# NOWHERE in the file. Check 4 keeps the positional half of the problem (a
-# binding *below* the use), and a pass that also claimed that here would report
-# every forward reference in the codebase.
+# The rule was the narrowest one that catches both: the name must be bound
+# NOWHERE in the file. Check 4 kept the positional half of the problem, on the
+# grounds that a pass claiming it here "would report every forward reference in
+# the codebase" -- and that was wrong, and it cost a bug.
+#
+#   A `local function maskToQuad` was added BELOW `Image.renderRegion`, which
+#   called it through `pcall(maskToQuad, ...)`. Lua resolves a name at COMPILE
+#   time against the locals in scope at that point in the source, so inside
+#   `renderRegion` the name was a global read: `pcall(nil, ...)` returned false,
+#   the pcall's own handler logged "panel crop mask failed", and the panel crop
+#   silently went unmasked. Every page loaded, every test passed, and the
+#   feature did nothing.
+#
+# The old reasoning confused two things. A forward reference to a `local` is
+# *not* a legitimate pattern in Lua -- it is this same bug -- and the pattern
+# that does work, mutual recursion, declares `local b` before its first use, so
+# it is bound at or above the use and passes. There were no false positives
+# waiting: adding the positional rule below reports nothing anywhere in the
+# tree, which is the measurement that settles it.
+#
+# So a use is excused by a binding at or above its line, exactly as check 4
+# excuses a call. Same approximation, same direction: a `local` in a function
+# that is not in scope at the use still counts, which can only ever miss a
+# finding and never invent one.
 #
 # Deliberately not a style police: a name that is only ever ASSIGNED is left
 # alone. `foo = 1` at file scope is a deliberate global, and so is a table key.
@@ -518,26 +538,41 @@ VALUE_GLOBAL_ALLOWLIST = {
 
 
 def check_value_uses(path, text):
-    """Report a name read as a value that is bound nowhere in the file."""
-    bound = set(IMPLICIT_BINDINGS)
+    """Report a name read as a value that is not bound at or above its line."""
+    def lineno(offset):
+        return text.count("\n", 0, offset) + 1
+
+    # Name -> the earliest line that binds it, the same shape check 4 builds.
+    bindings = {}
+
+    def bind(name, line):
+        name = name.strip()
+        if not IDENT.match(name):
+            return
+        if name not in bindings or line < bindings[name]:
+            bindings[name] = line
+
     for rx in BINDINGS + LOWER_BINDINGS:
         for m in rx.finditer(text):
             for name in m.group(1).split(","):
-                bound.add(name.strip())
+                bind(name, lineno(m.start()))
     for m in FUNC_PARAMS.finditer(text):
         for name in m.group(1).split(","):
-            bound.add(name.strip())
+            bind(name, lineno(m.start()))
     for m in FOR_BINDINGS.finditer(text):
         for name in m.group(1).split(","):
-            bound.add(name.strip())
+            bind(name, lineno(m.start()))
 
     errors = []
-    for lineno, line in enumerate(text.split("\n"), 1):
+    for lineno_, line in enumerate(text.split("\n"), 1):
         for m in VALUE_USE.finditer(line):
             name = m.group(1)
-            if name == STRIPPED_STRING or name in LUA_GLOBALS or name in bound:
+            if name == STRIPPED_STRING or name in LUA_GLOBALS:
                 continue
-            if name in VALUE_GLOBAL_ALLOWLIST:
+            if name in IMPLICIT_BINDINGS or name in VALUE_GLOBAL_ALLOWLIST:
+                continue
+            bound_here = bindings.get(name)
+            if bound_here is not None and bound_here <= lineno_:
                 continue
             rest = line[m.end():]
             if rest[:1] == "." or rest[:1] == ":":
@@ -552,8 +587,8 @@ def check_value_uses(path, text):
             if word and word.group(1) in VALUE_PREFIX_SKIP:
                 continue
             errors.append(
-                f"{path}:{lineno}: {name} is read as a value but bound nowhere "
-                f"in this file -- it resolves to a global reading nil"
+                f"{path}:{lineno_}: {name} is read as a value but not bound at "
+                f"this point -- it resolves to a global reading nil"
             )
     return errors
 
