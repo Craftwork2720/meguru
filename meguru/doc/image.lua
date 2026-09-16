@@ -437,10 +437,14 @@ end
 -- and only a slanted edge pays per row. A run is flushed when its span changes,
 -- and a row that is entirely inside paints nothing at all.
 --
--- `bg` is the page's own estimated background, 0-255, and is the only honest
--- thing to put outside the panel — it is the paper the ink predicate already
--- decided on, and on a white-on-black page it is dark.
-local function maskToQuad(bb, planes, bg, nx, ny, nw, nh, tw, th)
+-- **What goes outside is white, and deliberately not the page's own estimated
+-- background.** That estimate is `backgroundFor`'s — the median luminance of the
+-- page's outer ring — and it is measurably wrong on any page whose artwork bleeds
+-- to the edges, where the ring is black and the paper is not: on one chapter of
+-- the reported series it returns 46, 70, 137, 154 and 169 on five pages whose
+-- paper is 254. Painting it would put a block of near-black beside a white page.
+-- A crop is a panel shown on its own, and what is outside a panel is paper.
+local function maskToQuad(bb, planes, nx, ny, nw, nh, tw, th)
     if not (planes and #planes > 0) or tw < 1 or th < 1 then
         return
     end
@@ -454,7 +458,7 @@ local function maskToQuad(bb, planes, bg, nx, ny, nw, nh, tw, th)
             C = plane.A * nx + plane.B * ny + plane.C,
         }
     end
-    local color = Blitbuffer.Color8(bg or 255)
+    local color = Blitbuffer.COLOR_WHITE
 
     local run_lo, run_hi, run_from
     local function flush(upto)
@@ -546,7 +550,7 @@ end
 -- the same `f`, rather than by the caller — the one place that knows how far the
 -- caller's space is from the page's.
 --
--- **`planes`/`bg` are a panel's crop, and they are the one exception to "the
+-- **`planes` is a panel's crop, and it is the one exception to "the
 -- region is a rectangle".** Panel zoom asks for a region that is not axis-aligned
 -- — a panel's border follows the artwork's own tilt — and `nw`/`nh` here are that
 -- quadrilateral's *bounding* box, with `planes` saying where its edges run. The
@@ -558,7 +562,7 @@ end
 --
 -- Returns a BlitBuffer, or nil on any failure (the caller then falls back to the
 -- saved working-resolution decode, which is always correct, just softer).
-function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes, bg)
+function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes)
     if not Mupdf or not doc then
         return nil
     end
@@ -603,7 +607,7 @@ function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes, bg)
                         -- raises must cost the crop and not the panel, and the
                         -- unmasked tile is still the region the reader pressed.
                         local ok_mask, err = pcall(maskToQuad,
-                            bb, planes, bg, nx, ny, nw, nh, out_w, out_h)
+                            bb, planes, nx, ny, nw, nh, out_w, out_h)
                         if not ok_mask then
                             logger.warn("Meguru: panel crop mask failed:", tostring(err))
                         end

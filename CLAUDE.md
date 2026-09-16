@@ -482,16 +482,28 @@ which is why the change is invisible on them, and worth knowing before anyone
 
 **It is also the one caller whose region is not a rectangle.** A panel's borders
 are lines and are slanted wherever the artwork is, so `nw`/`nh` are the
-quadrilateral's *bounding* box and `planes`/`bg` — a panel's four edges and the
-page's estimated background — say where inside it the panel actually runs.
-`maskToQuad` paints over everything outside, which is the panel next door along
-the slant; on a page whose panels are square nothing is painted at all. It lives
-**inside `renderRegion`** rather than at the call site so that the buffer the tile
-LRU keeps is already the panel: every reader of a cached tile gets the crop, and
-none of them has to know the shape exists. It walks the tile by row and paints in
-*runs*, so a panel with straight sides costs two `paintRect` calls for the whole
-tile and only a slanted edge pays per row. Guarded like everything else on the
-path — a mask that raises costs the crop and not the panel.
+quadrilateral's *bounding* box and `planes` — a panel's four edges — says where
+inside it the panel actually runs. `maskToQuad` paints over everything outside,
+which is the panel next door along the slant; on a page whose panels are square
+nothing is painted at all. It lives **inside `renderRegion`** rather than at the
+call site so that the buffer the tile LRU keeps is already the panel: every reader
+of a cached tile gets the crop, and none of them has to know the shape exists. It
+walks the tile by row and paints in *runs*, so a panel with straight sides costs
+two `paintRect` calls for the whole tile and only a slanted edge pays per row.
+Guarded like everything else on the path — a mask that raises costs the crop and
+not the panel.
+
+**What it paints is white, and that is a decision rather than a default.** The
+obvious candidate is the page's own background, and it was the first thing tried;
+it is the median luminance of the page's **outer ring** (`backgroundFor`), and it
+is measurably wrong on exactly the pages a panel crop is for — the ones whose
+artwork bleeds to the edges, where the ring is black and the paper is not. On one
+chapter of the reported series it returns **46, 70, 137, 154 and 169 on five pages
+whose paper is 254**, so masking to it puts a block of near-black beside a white
+page. A crop is a panel shown on its own and what is outside a panel is paper, so
+the answer is the constant and the estimate is not carried at all: `panel.bg` was
+plumbed from `Panel.detect` through `drawPagePart` and `renderRegionDirect` for
+one commit and is gone.
 
 One thing it does not reach, and it is the same soft degradation as below: the
 tile is masked, the **fallback** is not. When the page's bytes have aged out of

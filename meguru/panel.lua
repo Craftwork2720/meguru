@@ -1146,11 +1146,9 @@ end
 -- the log can always say which of the two it is looking at. `nil` means one
 -- thing only — there was no page buffer to read.
 --
--- Every panel also carries the background the page was mapped against, because
--- the crop is masked to the panel's own quadrilateral and what lies outside it
--- has to be painted *something*: the page's own paper is the only honest answer,
--- and it is the one the ink predicate already decided on. On a white-on-black
--- page it is dark, which is the same relative answer `PANEL_INK_DELTA` gives.
+-- The background this page was mapped against is a local and stops here: what
+-- the crop paints outside a panel is white, and `meguru/doc/image` says why the
+-- page's own estimate is not it.
 --
 -- `native_bb` belongs to the document's native LRU and is **not** freed here.
 -- The scan copy this makes is freed on every path out.
@@ -1199,14 +1197,11 @@ function Panel.detect(native_bb, manga)
         -- A whole-page panel is a rectangle, and its mask is the page: naming the
         -- four edges explicitly rather than leaving `planes` nil keeps the one
         -- shape every consumer reads.
-        return { { x = 0, y = 0, w = native_w, h = native_h, bg = bg,
+        return { { x = 0, y = 0, w = native_w, h = native_h,
                    planes = { { A = -1, B = 0, C = 0 },
                               { A = 1, B = 0, C = -native_w },
                               { A = 0, B = -1, C = 0 },
                               { A = 0, B = 1, C = -native_h } } } }, false, reason
-    end
-    for _, panel in ipairs(panels) do
-        panel.bg = bg
     end
     return sortReadingOrder(panels, manga and true or false), true
 end

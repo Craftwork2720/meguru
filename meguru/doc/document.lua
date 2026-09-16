@@ -2593,11 +2593,10 @@ end
 -- for how the region is expressed to MuPDF and why the coordinate mapping is
 -- rederived rather than passed in — including what leaving `tw`/`th` out asks
 -- for, which is the region at its own size in the page's pixels.
--- `planes`/`bg` are a panel's quadrilateral, and reach `Image.renderRegion`
--- unchanged; every other caller leaves them out and gets the plain rectangle it
--- always did. See `maskToQuad` there for what they mean and why the crop needs
--- them.
-function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th, planes, bg)
+-- `planes` is a panel's quadrilateral, and reaches `Image.renderRegion`
+-- unchanged; every other caller leaves it out and gets the plain rectangle it
+-- always did. See `maskToQuad` there for what it means and why the crop needs it.
+function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th, planes)
     -- A dead page stays dead, and this guard is load-bearing rather than tidy:
     -- DECODE_TOO_LARGE is one of the ways a page dies, and it is set for a
     -- *lossless* page whose full-size decode would be the ~100 MB transient that
@@ -2612,7 +2611,7 @@ function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th, plane
     if not doc then
         return nil, reason
     end
-    local ok, bb = pcall(Image.renderRegion, doc, doc_pageno, cx, cy, cw, ch, tw, th, planes, bg)
+    local ok, bb = pcall(Image.renderRegion, doc, doc_pageno, cx, cy, cw, ch, tw, th, planes)
     if owned then
         pcall(doc.close, doc)
     end
@@ -2682,7 +2681,7 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation)
     self.tiles[key] = nil
 
     local bb = self:renderRegionDirect(pageno, rect.x, rect.y, rect.w, rect.h,
-        nil, nil, native_rect.planes, native_rect.bg)
+        nil, nil, native_rect.planes)
     if not bb then
         -- Nothing to render the region from — the page's bytes have aged out of
         -- the store, or MuPDF refused it. Stock's shape still has the saved
