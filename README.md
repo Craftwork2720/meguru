@@ -1,5 +1,7 @@
 <p align="center"> <picture> <img src="docs/meguru-logo.png" alt="Meguru" width="320"> </picture> </p> <br>
 
+<p align="center"> <a href="https://github.com/Craftwork2720/meguru/releases/latest/download/meguru.koplugin.zip"><img src="https://img.shields.io/badge/Download-meguru.koplugin.zip-735DA8?style=for-the-badge&logo=github&logoColor=white&labelColor=1f2328" alt="Download meguru.koplugin.zip"></a> </p>
+
 <br>
 
 **Meguru is a manga reader for KOReader that also streams manga directly from your server (Kavita, Suwayomi, Komga) — no downloading required.**
@@ -21,8 +23,11 @@ Use it as just a fast `.cbz` reader, no server required — or hook it up to you
 
 ## Installation
 
-1. Copy the `meguru.koplugin` folder into your `koreader/plugins/` directory.
-2. Restart KOReader.
+<p align="center"> <a href="https://github.com/Craftwork2720/meguru/releases/latest/download/meguru.koplugin.zip"><img src="https://img.shields.io/badge/Download-meguru.koplugin.zip-735DA8?style=for-the-badge&logo=github&logoColor=white&labelColor=1f2328" alt="Download meguru.koplugin.zip"></a> </p>
+
+1. Download the archive above and extract it.
+2. Copy the `meguru.koplugin` folder into your `koreader/plugins/` directory.
+3. Restart KOReader.
 
 To uninstall, delete the `meguru.koplugin` folder.
 
