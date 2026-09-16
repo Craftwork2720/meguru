@@ -170,3 +170,7 @@ after. The rows only appear when the folder has another book to move to.
 ## License
 
 Licensed under AGPL-3.0-or-later, same as KOReader. See [LICENSE](LICENSE).
+
+---
+
+#### My [User Patches](https://github.com/Craftwork2720/koreader-patches) for KOReader. ❤️
