@@ -253,14 +253,14 @@ def find_sheared_split(data, left, top, right, bottom, ctx):
     return None
 
 
-def emit_leaf(x0, y0, x1, y1, ink, ctx, out):
+def emit_leaf(x0, y0, x1, y1, ink, ctx, out, edges):
     w, h = x1 - x0 + 1, y1 - y0 + 1
     if w < ctx.min_side or h < ctx.min_side or w * h < ctx.min_area:
         return
     long_side, short_side = (w, h) if w >= h else (h, w)
     if long_side >= short_side * PANEL_SLIVER_ASPECT and ink < ctx.sliver_ink:
         return
-    out.append((x0, y0, w, h, ink))
+    out.append((x0, y0, w, h, ink, edges))
 
 
 TRACE = False
@@ -277,7 +277,7 @@ def _t(depth, *a):
         print("  " * depth + "| " + " ".join(str(v) for v in a))
 
 
-def cut(data, x0, y0, x1, y1, depth, ctx, out):
+def cut(data, x0, y0, x1, y1, edges, depth, ctx, out):
     if x1 < x0 or y1 < y0 or len(out) >= PANEL_MAX_PANELS:
         return
     project(data, x0, y0, x1, y1, ctx.rows, ctx.cols)
@@ -286,6 +286,10 @@ def cut(data, x0, y0, x1, y1, depth, ctx, out):
     if bottom < top or right < left:
         return
     region_ink = sum(ctx.rows[top:bottom + 1])
+    el = edges["l"] if left == x0 else (left, 0.0)
+    er = edges["r"] if right == x1 else (right, 0.0)
+    et = edges["t"] if top == y0 else (top, 0.0)
+    ebo = edges["bo"] if bottom == y1 else (bottom, 0.0)
     _t(depth, f"cut d{depth} region {x0},{y0}..{x1},{y1} trimmed {left},{top}..{right},{bottom}")
     if depth < PANEL_MAX_DEPTH:
         width, height = right - left + 1, bottom - top + 1
@@ -297,12 +301,16 @@ def cut(data, x0, y0, x1, y1, depth, ctx, out):
         _t(depth, f"  straight rows={row[0]}..{row[1]} len={row_len}"
                   f"  cols={col[0]}..{col[1]} len={col_len}")
         if row_len > 0 and row_len >= col_len:
-            cut(data, left, top, right, row[0] - 1, depth + 1, ctx, out)
-            cut(data, left, row[1] + 1, right, bottom, depth + 1, ctx, out)
+            cut(data, left, top, right, row[0] - 1,
+                {"l": el, "r": er, "t": et, "bo": (row[0] - 1, 0.0)}, depth + 1, ctx, out)
+            cut(data, left, row[1] + 1, right, bottom,
+                {"l": el, "r": er, "t": (row[1] + 1, 0.0), "bo": ebo}, depth + 1, ctx, out)
             return
         elif col_len > 0:
-            cut(data, left, top, col[0] - 1, bottom, depth + 1, ctx, out)
-            cut(data, col[1] + 1, top, right, bottom, depth + 1, ctx, out)
+            cut(data, left, top, col[0] - 1, bottom,
+                {"l": el, "r": (col[0] - 1, 0.0), "t": et, "bo": ebo}, depth + 1, ctx, out)
+            cut(data, col[1] + 1, top, right, bottom,
+                {"l": (col[1] + 1, 0.0), "r": er, "t": et, "bo": ebo}, depth + 1, ctx, out)
             return
         if (depth <= (0 if SHEAR_DEPTH == 'root' else PANEL_SHEAR_MAX_DEPTH)
                 and (min_in_range(ctx.cols, left, right) <= height * PANEL_SHEAR_TRIGGER
@@ -310,20 +318,28 @@ def cut(data, x0, y0, x1, y1, depth, ctx, out):
             ctx.shear_searches += 1
             r = find_sheared_split(data, left, top, right, bottom, ctx)
             _t(depth, f"  shear -> {r}")
-            if r and r[0] == "cols":
+            if r:
                 ctx.shear_splits += 1
-                split = r[1]
-                cut(data, left, top, split, bottom, depth + 1, ctx, out)
-                cut(data, split + 1, top, right, bottom, depth + 1, ctx, out)
-                return
-            if r and r[0] == "rows":
-                ctx.shear_splits += 1
-                split = r[1]
-                cut(data, left, top, right, split, depth + 1, ctx, out)
-                cut(data, left, split + 1, right, bottom, depth + 1, ctx, out)
+                axis, split = r
+                slope = ctx.slope_hint
+                if axis == "cols":
+                    ymid = (top + bottom) // 2
+                    line = (split - slope * ymid, slope)
+                    cut(data, left, top, split, bottom,
+                        {"l": el, "r": line, "t": et, "bo": ebo}, depth + 1, ctx, out)
+                    cut(data, split + 1, top, right, bottom,
+                        {"l": line, "r": er, "t": et, "bo": ebo}, depth + 1, ctx, out)
+                else:
+                    xmid = (left + right) // 2
+                    line = (split - slope * xmid, slope)
+                    cut(data, left, top, right, split,
+                        {"l": el, "r": er, "t": et, "bo": line}, depth + 1, ctx, out)
+                    cut(data, left, split + 1, right, bottom,
+                        {"l": el, "r": er, "t": line, "bo": ebo}, depth + 1, ctx, out)
                 return
     _t(depth, f"  EMIT {left},{top} {right-left+1}x{bottom-top+1} ink={region_ink}")
-    emit_leaf(left, top, right, bottom, region_ink, ctx, out)
+    emit_leaf(left, top, right, bottom, region_ink, ctx, out,
+              {"l": el, "r": er, "t": et, "bo": ebo})
 
 
 def detect(path):
@@ -349,16 +365,43 @@ def detect(path):
     cells = []
     global TRACE
     TRACE = True
-    cut(data, 0, 0, sw - 1, sh - 1, 0, ctx, cells)
+    cut(data, 0, 0, sw - 1, sh - 1,
+        {"l": (0.0, 0.0), "r": (float(sw - 1), 0.0),
+         "t": (0.0, 0.0), "bo": (float(sh - 1), 0.0)}, 0, ctx, cells)
     TRACE = False
     print(f"cut -> {len(cells)} leaves, shear {ctx.shear_splits}/{ctx.shear_searches}")
 
+    sx, sy = native_w / sw, native_h / sh
+
+    def planes_for(c):
+        """Cells -> the four half-planes in native page coordinates, exactly as
+        segment() builds them, one-cell expansion included."""
+        e = c[5]
+        x0n, x1n = c[0] * sx, (c[0] + c[2] - 1) * sx
+        y0n, y1n = c[1] * sy, (c[1] + c[3] - 1) * sy
+        l = (e["l"][0] * sx - sx, e["l"][1] * sx / sy)
+        r = (e["r"][0] * sx + sx, e["r"][1] * sx / sy)
+        t = (e["t"][0] * sy - sy, e["t"][1] * sy / sx)
+        bo = (e["bo"][0] * sy + sy, e["bo"][1] * sy / sx)
+        left = max(0.0, min(l[0] + l[1] * y0n, l[0] + l[1] * y1n))
+        right = min(float(native_w), max(r[0] + r[1] * y0n, r[0] + r[1] * y1n))
+        top = max(0.0, min(t[0] + t[1] * x0n, t[0] + t[1] * x1n))
+        bottom = min(float(native_h), max(bo[0] + bo[1] * x0n, bo[0] + bo[1] * x1n))
+        return [(left, top, right, bottom),
+                [(-1.0, l[1], l[0]), (1.0, -r[1], -r[0]),
+                 (t[1], -1.0, t[0]), (-bo[1], 1.0, -bo[0])]]
+
     def show(tag, lst):
         for i, c in enumerate(lst):
+            box, p = planes_for(c)
             print(f"  {tag}[{i}] cells {c[0]},{c[1]} {c[2]}x{c[3]} ink={c[4]} "
                   f"({100.0*c[4]/(c[2]*c[3]):.1f}%)  "
                   f"page x{100.0*c[0]/sw:.1f}%..{100.0*(c[0]+c[2])/sw:.1f}% "
                   f"y{100.0*c[1]/sh:.1f}%..{100.0*(c[1]+c[3])/sh:.1f}%")
+            print("        crop %.0f,%.0f %.0fx%.0f  edge slopes"
+                  "  l%+.3f r%+.3f t%+.3f b%+.3f"
+                  % (box[0], box[1], box[2] - box[0], box[3] - box[1],
+                     p[0][1], p[1][1], p[2][0], p[3][0]))
     show("raw", cells)
 
     kept = []

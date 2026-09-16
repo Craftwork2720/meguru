@@ -68,6 +68,19 @@ one a region no gutter divides.
   be built at all. Meguru's pages are always fixed-layout rasters of a known
   format, so a map that cannot be built is a page that cannot be decoded.
 
+## A panel is a quadrilateral, and its rectangle is only the box around it
+
+The cut reasons about rectangles because every projection and every gutter in it
+is axis-aligned, but the panel a reader is shown is bounded by *lines* — and a
+panel whose borders are slanted is the case this detector exists for. So a leaf
+carries both: `x, y, w, h` is the bounding rectangle, and `planes` is the four
+half-planes of the quadrilateral inside it, `A*x + B*y + C <= 0` for the inside.
+
+The two are the same rectangle on a page whose panels are square, and differ by
+a wedge wherever one is not — which is the wedge a rectangle crop cannot help
+showing, and the reason the crop follows `planes` instead. `meguru/doc/image`
+masks the rendered tile to them; `Panel.indexAt` tests a touch against them.
+
 ## The coordinate space
 
 Panels come back in the **full native page** space — the space `self.dims` lives
@@ -644,7 +657,12 @@ end
 -- The ink floor is a share of the *page's* ink rather than an absolute count, so
 -- a mostly-blank page with one small drawing still gives that drawing ~100% of
 -- the page's ink and keeps it.
-local function emitLeaf(x0, y0, x1, y1, ink, ctx, out)
+--
+-- `edges` rides along with the rectangle and is what the *crop* is built from:
+-- the box is the region the cut reasoned about, and the edges are the panel's
+-- own four borders, which are slanted wherever a sheared split found them. See
+-- the note on `cut`.
+local function emitLeaf(x0, y0, x1, y1, ink, ctx, out, edges)
     local w = x1 - x0 + 1
     local h = y1 - y0 + 1
     if w < ctx.min_side or h < ctx.min_side or w * h < ctx.min_area then
@@ -657,7 +675,7 @@ local function emitLeaf(x0, y0, x1, y1, ink, ctx, out)
     if long_side >= short_side * PANEL_SLIVER_ASPECT and ink < ctx.sliver_ink then
         return
     end
-    table.insert(out, { x = x0, y = y0, w = w, h = h })
+    table.insert(out, { x = x0, y = y0, w = w, h = h, edges = edges })
 end
 
 -- Split a region on its widest gutter, recursing until none remains.
@@ -665,7 +683,36 @@ end
 -- Inclusive bounds throughout, and the region handed on to a child is the
 -- **trimmed** one — so a page margin is excluded once, at the level that found
 -- it, rather than being carried down and re-trimmed at every step.
-local function cut(map, x0, y0, x1, y1, depth, ctx, out)
+--
+-- ## The second thing a region carries: its four edges
+--
+-- The bounds above are what the recursion reasons about, and they are axis
+-- aligned because every projection and every gutter in this file is. The panel
+-- they describe is not: a sheared split put its separator on a *line*, and that
+-- line is the panel's own border — the crop has to follow it or the reader sees
+-- a wedge of the panel next door along the slant. So `edges` carries the four
+-- borders this region has been given so far, each one a line rather than a
+-- number:
+--
+-- * `l` and `r` are vertical sides, `x = a + b*y`
+-- * `t` and `bo` are horizontal ones, `y = a + b*x`
+-- * `b = 0` is a straight edge, and is what every edge starts as
+--
+-- A split replaces the one edge it made, for both of its children — the same
+-- line for each, so the two crops meet exactly on the separator instead of
+-- overlapping by a row. The line a sheared split leaves is `split + slope *
+-- (x - xmid)`, which is the definition of the constant index that projection
+-- found: `projectRowsSheared` counts a cell at `x` under `x - shift`, and
+-- `shift` is zero at the region's own mid-line, so the run's index *is* the
+-- separator's position there.
+--
+-- The trim has the last word on a side it moved: a bound the trim pulled inward
+-- is the panel's own border, and the edge becomes that constant. A bound still
+-- sitting where the region's did was made by a split, and keeps the split's
+-- line. That is the whole of the rule, and it is what makes the crop exact in
+-- both directions at once — a panel whose border the flat cut ran past gets the
+-- rows back, and one it ran short of gives them up.
+local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
     if x1 < x0 or y1 < y0 or #out >= PANEL_MAX_PANELS then
         return
     end
@@ -676,6 +723,11 @@ local function cut(map, x0, y0, x1, y1, depth, ctx, out)
     if bottom < top or right < left then
         return -- region is entirely background
     end
+
+    local el = left == x0 and edges.l or { a = left, b = 0 }
+    local er = right == x1 and edges.r or { a = right, b = 0 }
+    local et = top == y0 and edges.t or { a = top, b = 0 }
+    local ebo = bottom == y1 and edges.bo or { a = bottom, b = 0 }
 
     -- Summed here, while the projections still describe *this* region: the
     -- sheared search below overwrites both buffers, and the recursive calls
@@ -697,12 +749,20 @@ local function cut(map, x0, y0, x1, y1, depth, ctx, out)
         -- Every value needed below is already a local, so the children are free
         -- to overwrite the shared projection buffers.
         if row_length > 0 and row_length >= col_length then
-            cut(map, left, top, right, row_start - 1, depth + 1, ctx, out)
-            cut(map, left, row_stop + 1, right, bottom, depth + 1, ctx, out)
+            cut(map, left, top, right, row_start - 1,
+                { l = el, r = er, t = et, bo = { a = row_start - 1, b = 0 } },
+                depth + 1, ctx, out)
+            cut(map, left, row_stop + 1, right, bottom,
+                { l = el, r = er, t = { a = row_stop + 1, b = 0 }, bo = ebo },
+                depth + 1, ctx, out)
             return
         elseif col_length > 0 then
-            cut(map, left, top, col_start - 1, bottom, depth + 1, ctx, out)
-            cut(map, col_stop + 1, top, right, bottom, depth + 1, ctx, out)
+            cut(map, left, top, col_start - 1, bottom,
+                { l = el, r = { a = col_start - 1, b = 0 }, t = et, bo = ebo },
+                depth + 1, ctx, out)
+            cut(map, col_stop + 1, top, right, bottom,
+                { l = { a = col_stop + 1, b = 0 }, r = er, t = et, bo = ebo },
+                depth + 1, ctx, out)
             return
         end
 
@@ -722,19 +782,34 @@ local function cut(map, x0, y0, x1, y1, depth, ctx, out)
             and (minInRange(ctx.cols, left, right) <= height * PANEL_SHEAR_TRIGGER
                 or minInRange(ctx.rows, top, bottom) <= width * PANEL_SHEAR_TRIGGER) then
             local axis, split = findShearedSplit(map, left, top, right, bottom, ctx)
-            if axis == "cols" then
-                cut(map, left, top, split, bottom, depth + 1, ctx, out)
-                cut(map, split + 1, top, right, bottom, depth + 1, ctx, out)
-                return
-            elseif axis == "rows" then
-                cut(map, left, top, right, split, depth + 1, ctx, out)
-                cut(map, left, split + 1, right, bottom, depth + 1, ctx, out)
+            if axis then
+                -- The line the separator actually lies on, and the same one for
+                -- both children: the value the projection found is that line at
+                -- the region's mid, and `xmid`/`ymid` are recomputed exactly as
+                -- `projectRowsSheared`/`projectColumnsSheared` computed them.
+                local slope = ctx.slope_hint
+                if axis == "cols" then
+                    local ymid = math.floor((top + bottom) / 2)
+                    local line = { a = split - slope * ymid, b = slope }
+                    cut(map, left, top, split, bottom,
+                        { l = el, r = line, t = et, bo = ebo }, depth + 1, ctx, out)
+                    cut(map, split + 1, top, right, bottom,
+                        { l = line, r = er, t = et, bo = ebo }, depth + 1, ctx, out)
+                else
+                    local xmid = math.floor((left + right) / 2)
+                    local line = { a = split - slope * xmid, b = slope }
+                    cut(map, left, top, right, split,
+                        { l = el, r = er, t = et, bo = line }, depth + 1, ctx, out)
+                    cut(map, left, split + 1, right, bottom,
+                        { l = el, r = er, t = line, bo = ebo }, depth + 1, ctx, out)
+                end
                 return
             end
         end
     end
 
-    emitLeaf(left, top, right, bottom, region_ink, ctx, out)
+    emitLeaf(left, top, right, bottom, region_ink, ctx, out,
+        { l = el, r = er, t = et, bo = ebo })
 end
 
 -- Segment a page ink map into panel rectangles in native page coordinates.
@@ -756,7 +831,10 @@ local function segment(map)
     }
 
     local cells = {}
-    cut(map, 0, 0, map.w - 1, map.h - 1, 0, ctx, cells)
+    cut(map, 0, 0, map.w - 1, map.h - 1,
+        { l = { a = 0, b = 0 }, r = { a = map.w - 1, b = 0 },
+          t = { a = 0, b = 0 }, bo = { a = map.h - 1, b = 0 } },
+        0, ctx, cells)
 
     -- A rectangle lying entirely inside another is a *piece of it*, not a panel.
     --
@@ -813,24 +891,62 @@ local function segment(map)
     end
     cells = kept
 
-    -- Cell -> native, growing every rectangle by one cell on each side: a cell
-    -- is several page pixels, and without the expansion the quantisation would
-    -- shave the outermost artwork off the crop. These are floats, and
-    -- deliberately not rounded — everything downstream compares or multiplies
-    -- them, and the one place a rect becomes a string (`panelTileKey`) formats
-    -- with `%d`, so two rects a fraction apart cannot mint two keys for one tile.
+    -- Cell -> native, growing every edge by one cell *outward*: a cell is several
+    -- page pixels, and without the expansion the quantisation would shave the
+    -- outermost artwork off the crop. It is applied to the edges rather than to
+    -- the box, so the box and the shape agree — a panel whose sides are all
+    -- straight comes out byte for byte the rectangle this used to return. These
+    -- are floats, and deliberately not rounded: everything downstream compares or
+    -- multiplies them, and `panelTileKey` is where they become integers.
+    --
+    -- **`planes` is what the crop is, and it replaces the rectangle as the panel's
+    -- shape.** Four half-planes, `A*x + B*y + C <= 0` for the inside, in native
+    -- page coordinates — the space `Image.renderRegion` masks in and the space
+    -- `Panel.indexAt` tests a touch against. A rectangle cannot follow a slanted
+    -- border, and a panel whose border is slanted is the whole reason this exists:
+    -- the crop has to be the quadrilateral the cut's four lines bound, or the
+    -- reader is shown a wedge of the panel next door along the slant.
+    --
+    -- The box is the *bounding* one, taken by evaluating each edge over the span
+    -- the region covers rather than by intersecting the lines with each other.
+    -- Every edge is monotonic, so its extremes are at the ends of that span, and a
+    -- parallel pair — which a page's near-vertical sides are — has no intersection
+    -- to find at all. It can only ever come out bigger than the quad, and the quad
+    -- is what the mask cuts to.
     local panels = {}
     for _, cell in ipairs(cells) do
-        local x = math.max(0, cell.x * map.scale_x - map.scale_x)
-        local y = math.max(0, cell.y * map.scale_y - map.scale_y)
-        local right = math.min(map.native_w, (cell.x + cell.w) * map.scale_x + map.scale_x)
-        local bottom = math.min(map.native_h, (cell.y + cell.h) * map.scale_y + map.scale_y)
-        table.insert(panels, {
-            x = x,
-            y = y,
-            w = math.max(1, right - x),
-            h = math.max(1, bottom - y),
-        })
+        local e = cell.edges
+        local x0n, x1n = cell.x * map.scale_x, (cell.x + cell.w - 1) * map.scale_x
+        local y0n, y1n = cell.y * map.scale_y, (cell.y + cell.h - 1) * map.scale_y
+        -- A vertical edge is x = a + b*y and a horizontal one y = a + b*x, both in
+        -- cells; converting a line is converting its coefficients, not two points.
+        local l = { a = e.l.a * map.scale_x - map.scale_x,
+                    b = e.l.b * map.scale_x / map.scale_y }
+        local r = { a = e.r.a * map.scale_x + map.scale_x,
+                    b = e.r.b * map.scale_x / map.scale_y }
+        local t = { a = e.t.a * map.scale_y - map.scale_y,
+                    b = e.t.b * map.scale_y / map.scale_x }
+        local bo = { a = e.bo.a * map.scale_y + map.scale_y,
+                     b = e.bo.b * map.scale_y / map.scale_x }
+
+        local left = math.max(0, math.min(l.a + l.b * y0n, l.a + l.b * y1n))
+        local right = math.min(map.native_w, math.max(r.a + r.b * y0n, r.a + r.b * y1n))
+        local top = math.max(0, math.min(t.a + t.b * x0n, t.a + t.b * x1n))
+        local bottom = math.min(map.native_h, math.max(bo.a + bo.b * x0n, bo.a + bo.b * x1n))
+        if right - left >= 1 and bottom - top >= 1 then
+            table.insert(panels, {
+                x = left,
+                y = top,
+                w = right - left,
+                h = bottom - top,
+                planes = {
+                    { A = -1, B = l.b, C = l.a },
+                    { A = 1, B = -r.b, C = -r.a },
+                    { A = t.b, B = -1, C = t.a },
+                    { A = -bo.b, B = 1, C = -bo.a },
+                },
+            })
+        end
     end
 
     return panels
@@ -1030,6 +1146,12 @@ end
 -- the log can always say which of the two it is looking at. `nil` means one
 -- thing only — there was no page buffer to read.
 --
+-- Every panel also carries the background the page was mapped against, because
+-- the crop is masked to the panel's own quadrilateral and what lies outside it
+-- has to be painted *something*: the page's own paper is the only honest answer,
+-- and it is the one the ink predicate already decided on. On a white-on-black
+-- page it is dark, which is the same relative answer `PANEL_INK_DELTA` gives.
+--
 -- `native_bb` belongs to the document's native LRU and is **not** freed here.
 -- The scan copy this makes is freed on every path out.
 function Panel.detect(native_bb, manga)
@@ -1069,11 +1191,22 @@ function Panel.detect(native_bb, manga)
         return nil, false, "unreadable page scan"
     end
 
-    local map = buildInkMap(scan_raster, backgroundFor(scan_raster), native_w, native_h)
+    local bg = backgroundFor(scan_raster)
+    local map = buildInkMap(scan_raster, bg, native_w, native_h)
     local panels = segment(map)
     local accepted, reason = accept(panels, map)
     if not accepted then
-        return { { x = 0, y = 0, w = native_w, h = native_h } }, false, reason
+        -- A whole-page panel is a rectangle, and its mask is the page: naming the
+        -- four edges explicitly rather than leaving `planes` nil keeps the one
+        -- shape every consumer reads.
+        return { { x = 0, y = 0, w = native_w, h = native_h, bg = bg,
+                   planes = { { A = -1, B = 0, C = 0 },
+                              { A = 1, B = 0, C = -native_w },
+                              { A = 0, B = -1, C = 0 },
+                              { A = 0, B = 1, C = -native_h } } } }, false, reason
+    end
+    for _, panel in ipairs(panels) do
+        panel.bg = bg
     end
     return sortReadingOrder(panels, manga and true or false), true
 end
@@ -1086,6 +1219,11 @@ end
 -- neighbours overlapping by a wedge, and the more specific answer to "which
 -- panel is under the finger" is then the smaller rectangle rather than the
 -- larger one that merely includes it.
+--
+-- **The test is the panel's own quadrilateral**, not its bounding box. Those
+-- differ along every slanted border, and the bounding box is the wrong answer
+-- there in the direction that matters: a press just outside a tilted panel, in
+-- the corner its box covers and the panel does not, belongs to the neighbour.
 --
 -- The nearest-by-centre fallback has to exist: a press that lands on a
 -- separator is a reader aiming at a panel, and refusing to answer would turn
@@ -1101,7 +1239,19 @@ function Panel.indexAt(panels, x, y)
     local inside, inside_area
     local nearest, nearest_d
     for i, p in ipairs(panels) do
-        if x >= p.x and x <= p.x + p.w and y >= p.y and y <= p.y + p.h then
+        local hit = false
+        if p.planes then
+            hit = true
+            for _, plane in ipairs(p.planes) do
+                if plane.A * x + plane.B * y + plane.C > 0 then
+                    hit = false
+                    break
+                end
+            end
+        else
+            hit = x >= p.x and x <= p.x + p.w and y >= p.y and y <= p.y + p.h
+        end
+        if hit then
             local area = p.w * p.h
             if not inside_area or area < inside_area then
                 inside, inside_area = i, area

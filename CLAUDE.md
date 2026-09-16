@@ -480,6 +480,27 @@ and is upscaled by the viewer instead of by MuPDF — the same pixels either way
 which is why the change is invisible on them, and worth knowing before anyone
 "fixes" the size back.
 
+**It is also the one caller whose region is not a rectangle.** A panel's borders
+are lines and are slanted wherever the artwork is, so `nw`/`nh` are the
+quadrilateral's *bounding* box and `planes`/`bg` — a panel's four edges and the
+page's estimated background — say where inside it the panel actually runs.
+`maskToQuad` paints over everything outside, which is the panel next door along
+the slant; on a page whose panels are square nothing is painted at all. It lives
+**inside `renderRegion`** rather than at the call site so that the buffer the tile
+LRU keeps is already the panel: every reader of a cached tile gets the crop, and
+none of them has to know the shape exists. It walks the tile by row and paints in
+*runs*, so a panel with straight sides costs two `paintRect` calls for the whole
+tile and only a slanted edge pays per row. Guarded like everything else on the
+path — a mask that raises costs the crop and not the panel.
+
+One thing it does not reach, and it is the same soft degradation as below: the
+tile is masked, the **fallback** is not. When the page's bytes have aged out of
+the store, `drawPagePart` hands the gesture to stock's `Document:drawPagePart`,
+which cuts the panel out of the saved working decode with a rectangle — so an
+offline long-press on a page with tilted panels shows the neighbour's wedge
+again, softer. Painting it there would mean masking stock's buffer in place,
+which is stock's document and not ours to write on.
+
 Two things about it are load-bearing and not tidiness. The tile goes through this
 document's own LRU: the viewer is handed `image_disposable = false` and never frees
 what it is given, so a buffer rendered outside `cacheTile` would be lost —
@@ -535,13 +556,16 @@ microscope and is noise afterwards, and `-d` is what brings them back:
   bit on this page at all, which is the only way to check a hand-edited
   `meguru_max_native_pixels` took effect (no menu writes it, and a stored value wins
   over the default).
-- `Meguru: panel zoom on page N, region X,Y+WxH rendered WxH` — one per long-press,
-  and the only line that says what the viewer was actually handed. The first pair is
-  the region in the space `self.dims` lives in and the second is what came back, so
-  a panel rendered *smaller* than its region is the budget having bitten and a panel
-  rendered smaller than the screen is the ordinary case, not a fault. It is the
-  fourth of these lines; a fourth `dbg` line is not a drift in the rule below,
-  because a long-press is a gesture rather than a page turn.
+- `Meguru: panel zoom on page N, region X,Y+WxH tilt T rendered WxH` — one per
+  long-press, and the only line that says what the viewer was actually handed. The
+  first pair is the region in the space `self.dims` lives in and the second is what
+  came back, so a panel rendered *smaller* than its region is the budget having
+  bitten and a panel rendered smaller than the screen is the ordinary case, not a
+  fault. **`tilt` is the steepest of the crop's four edges, and it is the one number
+  that says whether the region printed here is the panel or only its bounding
+  box** — a panel with square sides has every edge at 0 and the two are the same
+  rectangle. It is the fourth of these lines; a fourth `dbg` line is not a drift in
+  the rule below, because a long-press is a gesture rather than a page turn.
 
 The millisecond fields come from `ffi/util`'s `gettime` and not `os.clock`, which is
 CPU time and would miss the network wait — the one cost a reader cannot do anything
@@ -1347,9 +1371,34 @@ panels behave another.
 show exactly one: the region under the finger, in a bare `ImageViewer`.
 
 `meguru/panel.lua` is the detector, and it is pure: a decoded page goes in
-(`Image.rasterFor`), ordered rectangles come out in **full native** coordinates. It
+(`Image.rasterFor`), ordered panels come out in **full native** coordinates. It
 knows nothing about documents, pages or fetching — `MeguruDocument:getPanelsFromPage`
 is the seam, and it hands over one decoded buffer and takes back a list.
+
+**A panel is a quadrilateral, and its rectangle is only the box around it.** The
+cut reasons about rectangles, because every projection and every gutter in it is
+axis-aligned — but the panel a reader is shown is bounded by *lines*, and a panel
+whose borders are slanted is the case this detector exists for. So a panel carries
+both: `x, y, w, h` is the bounding rectangle, and `planes` is the four
+half-planes of the quadrilateral inside it, `A*x + B*y + C <= 0` for the inside.
+The two are the same rectangle on a page whose panels are square and differ by a
+wedge wherever one is not, and that wedge is what a rectangle crop cannot help
+showing — the strip of the panel next door that runs along the slant. `planes` is
+what the crop is cut to and what a touch is tested against; the box is what MuPDF
+is asked for, because a pixmap is a rectangle and a clip path is not available.
+
+**The cut's own lines *are* the panel's borders, which is why this costs nothing
+to know.** A sheared split puts its separator on the line of constant index in the
+sheared projection — `y = split + slope * (x - xmid)` — and `xmid` is the region's
+own mid-line, so the value the projection found *is* the separator's position
+there. Measured against the reported page's ink map, column by column, that line
+reproduces the tier separator to within half a cell, and at the region's two ends
+it lands on 285 and 247 where the panel's own border does. So the geometry was
+always there and the old code threw it away, keeping the integer `split`; `cut`
+now carries the four edges down the recursion and a leaf keeps them. A side the
+*trim* moved inward is the panel's own border and becomes that constant; a side
+still sitting where the region's was was made by a split and keeps the split's
+line.
 
 **A panel is a band of a page, and the cut finds it by slicing on the widest empty
 band.** The page is scaled to a 480-pixel *width* scan; the background is the
@@ -2393,6 +2442,7 @@ Each step must pass before the next:
     |---|---|
     | a panel carrying a full-width **white band inside its own drawing** | **ONE panel.** The band must not cut it in two |
     | a page of **tilted panels** — a skewed scan, or gutters that are not axis-aligned | **the panels, split** — `K panels` in the log with K what the eye counts. The reference page for this is Kavita `chapterId=197664`, `pageNumber=115`: `python tools/panelprobe.py <that page>` must print **6** kept leaves, and the one it gets wrong is `249,276 195x206` — two panels whose shared border is crossed by a speech bubble, which is a known limit and not a regression |
+    | the same page, **long-pressed** | every panel opens showing **only itself**. Nothing of a neighbour is visible along a slanted edge, and no part of the panel is missing at one — the crop follows the border. In `-d` the `panel zoom on page N … tilt T` line names a non-zero `T` for the five panels whose borders are tilted and `0.000` for the bottom row, whose are square |
     | a normal manga page, 4–6 panels with hairline gutters | the same sequence, in the same reading order, as before |
     | a splash page with no panels at all | the viewer opens on **the whole page** (1 of 1), no progress bar, and a swipe forward **turns the page** |
     | a page the detector refuses | **no panel appears twice**, in either direction, and the count matches the eye |
@@ -2589,8 +2639,10 @@ Each step must pass before the next:
   the sheared search, `emitLeaf`, the containment filter - that runs on a page image
   with no Lua interpreter. Feed it a page from a real server and it prints every leaf's
   cells, ink density and position as a percentage of the page, plus what the
-  containment filter drops and why; its flags compare variants (`loose` for the sheared
-  ratio before `PANEL_SHEAR_INK_RATIO`, `root` and `all` for the shear's depth,
+  containment filter drops and why, and under each leaf the **crop box and its four
+  edge slopes** - which is how a panel that is a quadrilateral gets told apart from
+  one that is a rectangle without a device; its flags compare variants (`loose` for the
+  sheared ratio before `PANEL_SHEAR_INK_RATIO`, `root` and `all` for the shear's depth,
   `noclip` for a projection that is not the plugin's). **Reach for it before touching
   anything here** - the
   two bugs above were both resolved by measuring, after several rounds of reasoning
@@ -2611,7 +2663,13 @@ Each step must pass before the next:
   measured over 23 pages — two chapters of a manga whose panels are drawn at visibly
   different angles, and eight pages of a western comic with clean rectangular ones — and
   it changes the leaf count on one page of the 23, the reported one, where it is also the
-  difference between five right panels and one. What could still regress: a page whose
+  difference between five right panels and one. **The quadrilateral crop changes no leaf
+  count at all on those 23** — it is geometry, not detection — so the same sample can say
+  only that it is inert, and what justifies it is the measurement on the reported page:
+  four of its six panels had a neighbour's content in the crop (2.6% and 1.8% of two of
+  them) or their own art cut off (7.8% of one, 19.2% of the merged pair), and after the
+  change the crops follow the borders and what remains outside them is the one-cell
+  expansion every crop has always had. What could still regress: a page whose
   separator is a real gutter carrying JPEG noise, since the sheared line must be genuinely
   empty (that page would come back as one panel rather than several); a page with an inset
   panel, which the containment rule would drop if it ever fires again; and a page whose

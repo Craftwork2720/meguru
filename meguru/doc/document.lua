@@ -470,9 +470,16 @@ end
 -- space getNativePageDimensions/getPageDims report. A margin crop only makes
 -- ReaderView zoom in; it never shifts tap coordinates (content sits at the
 -- bbox origin, already accounted for by ReaderView), so both the touch point
--- and the returned {x,y,w,h} are plain native page coordinates, and the
--- returned rect is what drawPagePart expects. There is no rotation in this
+-- and the returned panel are in plain native page coordinates, and what
+-- `drawPagePart` is handed is what it expects. There is no rotation in this
 -- plugin anymore, so no page is ever turned here.
+--
+-- **A panel is its four edges, not a rectangle.** `x, y, w, h` is the
+-- bounding box and `planes` is the quadrilateral inside it — the same four
+-- border lines the cut was built from, which are slanted wherever a panel is.
+-- The box is what the region render is asked for (MuPDF clips to a box and
+-- nothing else); the planes are what the tile is masked to, and what a touch is
+-- tested against. See `meguru/panel` for where they come from.
 
 -- The raster accessor itself lives beside the decoder: `Image.rasterFor`
 -- (`meguru/doc/image`). It moved because the panel detector in `meguru/panel.lua`
@@ -2141,9 +2148,25 @@ end
 -- which is not known until the render has run and is not what identifies the
 -- panel anyway. Rotation is deliberately absent: the same region is the same
 -- tile whichever way up it is shown.
+--
+-- **The box alone stops identifying a panel once the crop is a quadrilateral.**
+-- Two panels could share a bounding box and differ in where their edges run
+-- inside it — and the tile is masked to those edges, so the two would be
+-- different pictures. The planes' directions are what the box leaves out, and
+-- they are enough to put back: given the box and each plane's `A`/`B`, every
+-- plane's `C` is pinned by the box edge it touches. Scaled to integers, so two
+-- crops a fraction of a degree apart cannot mint two keys for one tile.
 local function panelTileKey(pageno, rect)
-    return string.format("%d|panel|%d,%d+%dx%d",
+    local key = string.format("%d|panel|%d,%d+%dx%d",
         pageno, rect.x, rect.y, rect.w, rect.h)
+    local planes = rect.planes
+    if planes then
+        for i = 1, #planes do
+            key = string.format("%s|%d,%d", key,
+                math.floor(planes[i].A * 1000), math.floor(planes[i].B * 1000))
+        end
+    end
+    return key
 end
 
 -- Get the page's decoded native buffer, fetching and decoding it if the LRUs
@@ -2312,14 +2335,14 @@ end
 -- A thin wrapper over the one detector: the panels of the page, then the one
 -- under the point. Coordinates are in *full native* page space — pos.x/pos.y
 -- come from ReaderView already in that space (a margin crop only zooms through
--- the bbox, it never shifts the tap) — and the returned {x,y,w,h} is a native
--- rect, exactly what drawPagePart expects.
+-- the bbox, it never shifts the tap) — and the returned panel is a native one,
+-- exactly what drawPagePart expects.
 --
 -- The reading direction passed here is a deliberate constant. In the detector
--- it orders the list and nothing else, and this function returns a *rectangle*,
--- not an index, so the order cannot reach the answer: the panel containing a
--- point is the panel containing it whichever way the page is read. Passing
--- `false` rather than looking a mode up is honest, not a shortcut.
+-- it orders the list and nothing else, and this function returns a *panel*, not
+-- an index, so the order cannot reach the answer: the panel containing a point
+-- is the panel containing it whichever way the page is read. Passing `false`
+-- rather than looking a mode up is honest, not a shortcut.
 function MeguruDocument:getPanelFromPage(pageno, pos)
     if not pos then
         return nil
@@ -2570,7 +2593,11 @@ end
 -- for how the region is expressed to MuPDF and why the coordinate mapping is
 -- rederived rather than passed in — including what leaving `tw`/`th` out asks
 -- for, which is the region at its own size in the page's pixels.
-function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th)
+-- `planes`/`bg` are a panel's quadrilateral, and reach `Image.renderRegion`
+-- unchanged; every other caller leaves them out and gets the plain rectangle it
+-- always did. See `maskToQuad` there for what they mean and why the crop needs
+-- them.
+function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th, planes, bg)
     -- A dead page stays dead, and this guard is load-bearing rather than tidy:
     -- DECODE_TOO_LARGE is one of the ways a page dies, and it is set for a
     -- *lossless* page whose full-size decode would be the ~100 MB transient that
@@ -2585,7 +2612,7 @@ function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th)
     if not doc then
         return nil, reason
     end
-    local ok, bb = pcall(Image.renderRegion, doc, doc_pageno, cx, cy, cw, ch, tw, th)
+    local ok, bb = pcall(Image.renderRegion, doc, doc_pageno, cx, cy, cw, ch, tw, th, planes, bg)
     if owned then
         pcall(doc.close, doc)
     end
@@ -2646,7 +2673,7 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation)
         rotate = (canvas.w > canvas.h) ~= (rect.w > rect.h)
     end
 
-    local key = panelTileKey(pageno, rect)
+    local key = panelTileKey(pageno, native_rect)
     local cached = self.tiles[key]
     if cached and cached.bb_free ~= true then
         bump(self, key)
@@ -2654,7 +2681,8 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation)
     end
     self.tiles[key] = nil
 
-    local bb = self:renderRegionDirect(pageno, rect.x, rect.y, rect.w, rect.h)
+    local bb = self:renderRegionDirect(pageno, rect.x, rect.y, rect.w, rect.h,
+        nil, nil, native_rect.planes, native_rect.bg)
     if not bb then
         -- Nothing to render the region from — the page's bytes have aged out of
         -- the store, or MuPDF refused it. Stock's shape still has the saved
@@ -2671,9 +2699,30 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation)
     end
 
     local tw, th = bb:getWidth(), bb:getHeight()
+    -- The **steepest edge** of the crop, and the one number that says whether
+    -- the region printed here is the panel or only its bounding box: a panel
+    -- with square sides has every edge at 0 and the two are the same rectangle,
+    -- and anything else is how far the crop had to lean to follow its border.
+    --
+    -- Which component carries the slope is the half-plane convention, not a
+    -- choice: a vertical side is `x = a + b*y` and became
+    -- `-x + b*y + a <= 0`, so its `b` is the plane's `B`; a horizontal side is
+    -- `y = a + b*x` and became `-y + b*x + a <= 0`, so its `b` is the plane's
+    -- `A`. Reading `A` off all four would report `1` for every panel that has a
+    -- vertical edge at all, which is every panel.
+    local tilt = 0
+    local planes = native_rect.planes
+    if planes then
+        for i = 1, #planes do
+            local a = math.abs(i <= 2 and planes[i].B or planes[i].A)
+            if a > tilt then
+                tilt = a
+            end
+        end
+    end
     logger.dbg(string.format(
-        "Meguru: panel zoom on page %d, region %d,%d+%dx%d rendered %dx%d",
-        pageno, rect.x, rect.y, rect.w, rect.h, tw, th))
+        "Meguru: panel zoom on page %d, region %d,%d+%dx%d tilt %.3f rendered %dx%d",
+        pageno, rect.x, rect.y, rect.w, rect.h, tilt, tw, th))
     self:cacheTile(key, {
         bb = bb,
         excerpt = Geom:new{ x = 0, y = 0, w = tw, h = th },
