@@ -38,7 +38,7 @@ PANEL_SEPARATOR_MIN_LUMA = 245
 PANEL_SEPARATOR_FRAC = 0.80
 PANEL_SEPARATOR_EDGE_FRAC = 0.03
 PANEL_GUTTER_INK_RATIO = 0.005
-PANEL_GUTTER_RATIO = 0.005
+PANEL_GUTTER_RATIO = 0.004
 PANEL_MIN_SIDE_FRAC = 0.03
 PANEL_MIN_AREA_FRAC = 0.005
 PANEL_SLIVER_ASPECT = 4
@@ -110,7 +110,7 @@ class Ctx:
         self.cols = [0] * w
         self.ink_ratio = PANEL_GUTTER_INK_RATIO
         min_dim = min(w, h)
-        self.min_gutter = max(2, int(min_dim * PANEL_GUTTER_RATIO))
+        self.min_gutter = max(1, int(min_dim * PANEL_GUTTER_RATIO))
         self.min_side = max(4, int(min_dim * PANEL_MIN_SIDE_FRAC))
         self.min_area = int(w * h * PANEL_MIN_AREA_FRAC)
         self.sliver_ink = 0

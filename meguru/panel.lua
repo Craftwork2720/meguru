@@ -117,8 +117,8 @@ local Panel = {}
 -- load-bearing: a 1600x2400 page maps to 480x720, one cell per 3.3 page pixels,
 -- so a 10-pixel printed gutter is 3 cells wide and survives as a detectable
 -- band. A cap on the long side would map it to 320x480 — one cell per 5 pixels,
--- the same gutter 2 cells wide, and against a `min_gutter` of 2 the cut starts
--- losing them.
+-- the same gutter 2 cells wide, and against a `min_gutter` of 1 it is one bad
+-- column away from being no gutter at all.
 local PANEL_SCAN_WIDTH = 480
 
 -- A ceiling on the scan's cell count, and the only deviation from the
@@ -158,10 +158,27 @@ local PANEL_SEPARATOR_EDGE_FRAC = 0.03
 -- splits the panel in half, and at 0.005 it has to be genuinely empty to count.
 local PANEL_GUTTER_INK_RATIO = 0.005
 -- The thinnest band worth splitting on, as a fraction of the map's shorter side,
--- floored at two cells. A fraction of the *map*, so it stays a fixed fraction of
--- the page whatever the scan resolution is — raising the resolution alone does
+-- floored at **one** cell. A fraction of the *map*, so it stays a fixed fraction
+-- of the page whatever the scan resolution is — raising the resolution alone does
 -- not make narrower gutters detectable, the ratio has to come down with it.
-local PANEL_GUTTER_RATIO = 0.005
+--
+-- **One cell rather than two, and the ratio moved with it, because a separator
+-- one line thick is still a separator.** This is the narrowest of the three
+-- ways this detector misses a panel, and the only one that turned out to be
+-- closable: measured on the second reported chapter, three of the five nodes
+-- that merge have a line *under* the ink threshold and were refused for being
+-- alone — a row with 2 ink cells out of 450 against a `PANEL_GUTTER_INK_RATIO`
+-- allowance of 2.25, a column with 2 out of 198. Across 21 pages the change
+-- moves exactly two of them (p33 2→3, p100 1→2) and leaves every other page
+-- alone, including all three full-page illustrations and every control. The
+-- other two nodes have no such line at all — 82 ink cells out of 480 — and stay
+-- merged; see CLAUDE.md for the whole measurement.
+--
+-- 0.004 rather than 0.005 for the arithmetic and not for taste: `min_gutter` is
+-- `floor(min_dimension * this)`, and 0.005 of a 480-cell map floors to 2. The
+-- floor alone cannot do it — on this scan geometry the shorter side is the width,
+-- which is 480 for every page that fills the screen.
+local PANEL_GUTTER_RATIO = 0.004
 
 -- A leaf smaller than either of these is not a panel: it is a rule, a caption
 -- tick, or scan noise.
@@ -820,7 +837,7 @@ local function segment(map)
         rows = ffi.new("int32_t[?]", map.h),
         cols = ffi.new("int32_t[?]", map.w),
         ink_ratio = PANEL_GUTTER_INK_RATIO,
-        min_gutter = math.max(2, math.floor(min_dimension * PANEL_GUTTER_RATIO)),
+        min_gutter = math.max(1, math.floor(min_dimension * PANEL_GUTTER_RATIO)),
         min_side = math.max(4, math.floor(min_dimension * PANEL_MIN_SIDE_FRAC)),
         min_area = math.floor(map.w * map.h * PANEL_MIN_AREA_FRAC),
         -- Zero when the map did not report its ink total, which disables the

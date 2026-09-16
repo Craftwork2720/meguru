@@ -1513,6 +1513,20 @@ gutter is 3 cells wide. A ceiling on the long side would give 320x480, one cell 
 pixels, and the same gutter 2 cells wide. `PANEL_SCAN_MAX_CELLS` then caps the cell
 count, and it first bites past 5.2:1 — a webtoon strip, and only a webtoon strip.
 
+**A separator one line thick is a separator, and the floor was refusing it.**
+`min_gutter` was `max(2, floor(min_dimension * PANEL_GUTTER_RATIO))`, and on this scan
+geometry the shorter side is the *width* — 480 for every page that fills the screen — so
+`floor(480 * 0.005)` is 2 and the floor never bound. The second reported chapter has
+nodes that merge with a line already *under* `PANEL_GUTTER_INK_RATIO`: a row with 2 ink
+cells out of 450 against an allowance of 2.25, a column with 2 out of 198. They were
+refused for being alone. **`PANEL_GUTTER_RATIO` is 0.004 and the floor is 1** — two
+numbers because the floor alone cannot do it: 0.005 of 480 floors to 2 whatever the
+floor says. Measured over 21 pages the change moves exactly two of them — `p33` 2→3 and
+`p100` 1→2 — and leaves every other page identical, including all three full-page
+illustrations, every dense action page, and both control sets. The other merged nodes on
+those chapters have no such line at all (82 ink cells out of 480) and stay merged; see
+Known open items for the three ways that was measured against.
+
 **The thresholds are 1.3's, and this is the part to read before "improving" anything
 here.** `panels_plus` ships this same cut; its later version loosened
 `segment_gutter_ink_ratio` from 0.005 to 0.05, doubled the minimum panel area and
@@ -2716,6 +2730,40 @@ Each step must pass before the next:
   above). What is worth knowing is that the reported page is *not* one of those — it has
   clean empty gutters and the cut finds five of its six panels — so a reader who sees
   whole-page "panels" on those pages is looking at a different problem.
+- **A *second* chapter of that series merges panels, and chasing it is worth keeping
+  whole.** Its mergers are mostly *partial* — a tier's two panels left as one — and their
+  boundaries are neither an empty gutter nor a drawn line but simply the artwork stopping.
+  Four things were measured against them, and only one paid:
+  - **The shear's trigger is not the blocker.** Instrumenting every failing node: the
+    precondition (`minInRange <= 0.35` of the span) fires at all of them. The sheared
+    search is also **strictly stricter than the straight one by construction** — a
+    straight gutter may carry `PANEL_GUTTER_INK_RATIO` of its span in ink, a slanted one
+    must be *exactly* empty — and that asymmetry is why a slanted separation is missed
+    more often than a square one. It is deliberate: the zero on the shear was bought with
+    a device bug (a panel split down the middle of its own drawing by a faintly bright
+    band), and the arithmetic argument for it is in `meguru/panel`.
+  - **Thickness was the blocker, and is fixed** — the `min_gutter` change recorded under
+    "The sequence" above. Three of the five failing nodes had a line already under the
+    ink threshold, refused for being *one* line where `min_gutter` wanted two.
+  - **The reference's own `segment_border_split`**, whose source is on this machine at
+    `/c/dev/github/panelplus`. Its plane is not the ink map: a cell is a border candidate
+    at luminance ≤ 60, and a separator is a run ≥ **97%** of such cells, thin. On the
+    reported pages the densest line reaches 98% on exactly one page, 93–96% on another and
+    27–57% on the rest, so **porting it fixes none of them**. Porting it with the ratio
+    lowered to 0.90 — which would catch the second — shreds instead: a five-panel page
+    came back as twenty-four.
+  - **Relaxing `PANEL_GUTTER_INK_RATIO` to 0.15**, shipped behind a preference and then
+    withdrawn. It fixed four pages (2→5, 5→6, 3→7, 1→7) and left every illustration alone,
+    and it built the failure the threshold is named for: dense pages split further, the
+    first chapter's own reference page **6→13** and a dense action page 1→7. **A reader
+    reported it as "it splits too much", which is the 0.05 failure one order of magnitude
+    out** — and a switch whose good and bad settings are the same pages is not a switch.
+    The work is `27a0b4b` in this history, reachable by hash.
+  
+  What is still merged after all four is genuinely merged: no threshold, plane or
+  algorithm available here separates those pages from the full-page illustrations that
+  must *not* be split — 10.4% ink and a 5-cell dark stroke against 45% and 6, on pages
+  whose right answers are opposite.
 - **The background estimate is wrong on six of those fifteen pages, and fixing it changed
   nothing.** `backgroundFor` takes the **median** of the outer 1% ring, and on a page whose
   artwork bleeds to every edge that ring is bimodal — black at the page's border, paper
