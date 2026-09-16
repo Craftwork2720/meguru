@@ -1382,38 +1382,58 @@ Two things complicate the cut, and both are ported. Panels are rarely drawn squa
 and a gutter tilted by two degrees leaves no column empty from top to bottom — enough
 to stop the straight cut dead. When no straight gutter exists and an axis already has
 a near-empty line, a ladder of slopes from 2 to 8 degrees either way is tried instead
-and the projection is taken along the slanted line; both children then get the whole
-projected band, so each panel keeps its own artwork and gains a thin wedge of its
-neighbour rather than losing a corner. **That overlap is deliberate — and the sheared
-projection gets a strictly emptier gutter than the straight one does, which is what
-keeps the overlap from minting a panel.** The two ratios are separate constants
-(`PANEL_GUTTER_INK_RATIO` and `PANEL_SHEAR_INK_RATIO`) and the reason is arithmetic
-rather than taste: the sheared projection samples every `PANEL_SHEAR_STEP`-th column,
-so a line's count comes from half as many cells and carries twice the variance, while
-its `span` is `width / step` — so the same ratio buys the same cells of allowance on a
-noisier projection. Give it the straight cut's ratio and a near-empty line *through
-white artwork* reads as a gutter; the shear then splits a panel down the middle of its
-own drawing, both children keep that band, each re-finds it a little higher up (the
-found extent moves as the region shrinks), and the strip it peels off at the end is
-emitted as a third panel that is really the gap. That is exactly what a page of two
-panels divided by a skewed white band did: `2 panels` became `3`, the middle one
-carrying the bottom of the upper panel and a strip of the lower. Requiring the sheared
-line to be **empty** — the same standard the straight cut is named for — gives two
-panels, symmetric overlap and all, and on a sample of two dozen pages it changes
-nothing else.
+and the projection is taken along the slanted line. **The split is then one line
+through the middle of the empty run that projection found** — a run of empty *lines*
+in the sheared projection is a run of empty *columns* through the region's own
+mid-height, because `shift` is measured from the region's mid-line and is zero there —
+and the two children are cut apart at it, so their crops do not overlap at all. A
+rectangle cannot follow a slanted separator, so each child keeps a wedge of its
+neighbour on one side and gives one up on the other; which way round that falls
+depends on where on the page the reader is looking, and it is the price of the crop
+being axis-aligned.
 
-**That is one of two rules, and a second page proved they are not the same rule.**
-The strict ratio stops the shear splitting a panel on white *inside its own drawing*.
-It does not stop the recursion carving the band itself out once it has already split
-on it — a child split again on the same band leaves a strip behind whose top reaches
-back over the other child's box, and that strip is a rectangle inside the upper
-panel's, so the reader sees the same artwork twice and the lower panel loses its top.
-`segment` therefore also drops **a leaf contained entirely in another leaf**, on the
-map's cells before the conversion to native, where the comparison is exact. Measured
-over two dozen pages of two chapters, that rule fires on exactly two of them — both
-times on a thin full-width strip overlapping both neighbours, both times `3` panels
-becoming `2` — and is inert on the other twenty-two, including a page of five panels
-where a small one sits beside bigger ones and is left alone.
+**Handing both children the whole projected band is what this replaced, and it is the
+worst defect this detector has had.** Widening the run by `drift` at each end gives the
+axis range the separator sweeps over the *whole* region; both children were given all of
+it, so each crop overlapped the other by twice the drift and the cut itself landed up to
+`drift` cells away from the separator. `drift` is `|slope| * extent / 2`, which on a page
+whose tiers are tilted is not a wedge but most of a panel: on the reported Kavita page —
+480-wide scan, 6.5 degrees, a 482-cell region — `drift` is 28 cells, a 5-cell run became
+a 61-cell band, and a two-panel split cut 30 cells above the boundary left one child
+holding the bottom of both tiers. That child then had the tier's black border line
+running through it, which is ink where the *next* split needs emptiness, so it never
+split again and came out as one panel where the page has two; and the child on the other
+side of the band was carved into thin full-width strips by the recursion re-finding the
+same band. The page went from `7 panels` to `6` and from one of them being right to five,
+measured with `tools/panelprobe.py`.
+
+The two ratios are separate constants (`PANEL_GUTTER_INK_RATIO` and
+`PANEL_SHEAR_INK_RATIO`) and the reason is arithmetic rather than taste: the sheared
+projection samples every `PANEL_SHEAR_STEP`-th column, so a line's count comes from half
+as many cells and carries twice the variance, while its `span` is `width / step` — so
+the same ratio buys the same cells of allowance on a noisier projection. Give it the
+straight cut's ratio and a near-empty line *through white artwork* reads as a gutter; the
+shear then splits a panel down the middle of its own drawing, each child re-finds that
+line a little higher up (the found extent moves as the region shrinks), and the strip it
+peels off at the end is emitted as a third panel that is really the gap. That is exactly
+what a page of two panels divided by a skewed white band did: `2 panels` became `3`, the
+middle one carrying the bottom of the upper panel and a strip of the lower. Requiring the
+sheared line to be **empty** — the same standard the straight cut is named for — gives
+two panels, and on a sample of two dozen pages it changes nothing else.
+
+**A second rule guarded the band's other symptom, and it is now inert.**
+`segment` drops **a leaf contained entirely in another leaf**, on the map's cells before
+the conversion to native, where the comparison is exact. It was written for what the band
+did next: a child split again on the band it had been handed left a strip behind whose
+top reached back over the other child's box, so the reader saw the same artwork twice and
+the lower panel lost its top. It was measured over two dozen pages of two chapters then,
+and fired on two of them. With the split taken as a line the children are disjoint along
+the axis they were split on and a trim only shrinks one, so no leaf can contain another —
+across the 23-page sample it now drops nothing. It stays because that is a property of the
+shape of the cut rather than of this code: it costs a few hundred integer comparisons on a
+list capped at `PANEL_MAX_PANELS`, and the change that would make it live again is a change
+to the cut. Removing it on the evidence of a sample where it does nothing is the exact
+mistake its own history records — see the comment in `segment`.
 
 The two rules cost different things and neither is free. The strict ratio could
 regress a page whose separator is a real gutter carrying JPEG noise, since the sheared
@@ -2372,7 +2392,7 @@ Each step must pass before the next:
     | page | expected |
     |---|---|
     | a panel carrying a full-width **white band inside its own drawing** | **ONE panel.** The band must not cut it in two |
-    | a page of **tilted panels** — a skewed scan, or gutters that are not axis-aligned | **the panels, split** — `K panels` in the log with K what the eye counts |
+    | a page of **tilted panels** — a skewed scan, or gutters that are not axis-aligned | **the panels, split** — `K panels` in the log with K what the eye counts. The reference page for this is Kavita `chapterId=197664`, `pageNumber=115`: `python tools/panelprobe.py <that page>` must print **6** kept leaves, and the one it gets wrong is `249,276 195x206` — two panels whose shared border is crossed by a speech bubble, which is a known limit and not a regression |
     | a normal manga page, 4–6 panels with hairline gutters | the same sequence, in the same reading order, as before |
     | a splash page with no panels at all | the viewer opens on **the whole page** (1 of 1), no progress bar, and a swipe forward **turns the page** |
     | a page the detector refuses | **no panel appears twice**, in either direction, and the count matches the eye |
@@ -2569,28 +2589,60 @@ Each step must pass before the next:
   the sheared search, `emitLeaf`, the containment filter - that runs on a page image
   with no Lua interpreter. Feed it a page from a real server and it prints every leaf's
   cells, ink density and position as a percentage of the page, plus what the
-  containment filter drops and why; its mode arguments compare variants (base
-  behaviour, `loose` for the sheared ratio before `PANEL_SHEAR_INK_RATIO`, `root` and
-  `all` for the shear's depth). **Reach for it before touching anything here** - the
+  containment filter drops and why; its flags compare variants (`loose` for the sheared
+  ratio before `PANEL_SHEAR_INK_RATIO`, `root` and `all` for the shear's depth,
+  `noclip` for a projection that is not the plugin's). **Reach for it before touching
+  anything here** - the
   two bugs above were both resolved by measuring, after several rounds of reasoning
   that were each confident and each wrong. **What it does not model**: Lua's evaluation rules (so
   it can settle arithmetic and never semantics), MuPDF's render, and the
   decode-then-resample two-step. A divergence it cannot see is a divergence it cannot
   rule out.
 - **A rule measured on one page is not a measured rule, and this cost a commit.** The
-  leaf-containment rule above was added, then removed on the evidence of a single page
-  where it dropped nothing, then restored when the next page found needed exactly it.
-  The honest reading of "it removes nothing here" is *it does not fix this page* — and
-  the difference between that and "it does nothing" is the whole of the mistake. The
-  sample is now two dozen pages across two chapters, and the rule fires on two of them.
-- **Both skewed-page fixes are samples, not proofs.** `PANEL_SHEAR_INK_RATIO` changes
-  the leaf count on exactly the pages that were broken and on none of the others, where
-  the shear never fires at all (`shear 0/3` - the straight cut handles them). What could
-  still regress: a page whose separator is a real gutter carrying JPEG noise, since the
-  sheared line must now be genuinely empty (that page would come back as one panel
-  rather than several); and a page with an inset panel, which the containment rule would
-  drop. Neither has been seen. Both constants are the first thing to look at if either
-  shape of page misbehaves.
+  leaf-containment rule was added, then removed on the evidence of a single page where it
+  dropped nothing, then restored when the next page found needed exactly it. The honest
+  reading of "it removes nothing here" is *it does not fix this page* — and the
+  difference between that and "it does nothing" is the whole of the mistake. It has since
+  been made inert by the shear's line cut, on a 23-page sample, and it is **kept** rather
+  than deleted for exactly this reason.
+- **Both skewed-page rules are samples, not proofs.** `PANEL_SHEAR_INK_RATIO` changes the
+  leaf count on exactly the pages that were broken and on none of the others, where the
+  shear never fires at all (`shear 0/3` - the straight cut handles them). The line cut is
+  measured over 23 pages — two chapters of a manga whose panels are drawn at visibly
+  different angles, and eight pages of a western comic with clean rectangular ones — and
+  it changes the leaf count on one page of the 23, the reported one, where it is also the
+  difference between five right panels and one. What could still regress: a page whose
+  separator is a real gutter carrying JPEG noise, since the sheared line must be genuinely
+  empty (that page would come back as one panel rather than several); a page with an inset
+  panel, which the containment rule would drop if it ever fires again; and a page whose
+  tiles are tilted enough that the wedge a line cut gives up at a panel's corner is
+  visible — the one case no sample here contains, because it needs a slope past the 8
+  degrees the ladder reaches. Neither of the first two has been seen. The three constants
+  are the first thing to look at if any of those shapes of page misbehaves.
+- **A page the cut cannot decompose at all is still one panel, and that is most of one
+  chapter of the reported series.** Eleven of the fifteen pages sampled from the reported
+  chapter come back as a single whole-page rectangle — accepted, because a lone rectangle
+  over 60% of the page is treated as a splash — because those pages have **no full-width
+  or full-height empty line anywhere**. They are action pages: panels at angles, speed
+  lines crossing everything, artwork off every edge. That is the XY-cut's own limitation
+  and not a defect in it, and the fix for it is a different algorithm, which is the
+  question this project has already settled twice (see the connected-component argument
+  above). What is worth knowing is that the reported page is *not* one of those — it has
+  clean empty gutters and the cut finds five of its six panels — so a reader who sees
+  whole-page "panels" on those pages is looking at a different problem.
+- **The background estimate is wrong on six of those fifteen pages, and fixing it changed
+  nothing.** `backgroundFor` takes the **median** of the outer 1% ring, and on a page whose
+  artwork bleeds to every edge that ring is bimodal — black at the page's border, paper
+  just inside — so the median lands in the valley between them. Measured: the paper can be
+  `255` while the estimate comes back `147`, `187`, `196`, `200`, `203` or `210`, and
+  `PANEL_INK_DELTA` is a *symmetric* band, so paper 47 above the estimate reads as **ink**
+  and 68–76% of the page maps as ink. The near-white override exists for this and its gate
+  is `hasWhiteSeparator`, which these pages fail. Replacing the median with the ring's
+  dominant mode gets `253` on 22 of the 23 pages and `2` on the one where black really does
+  dominate, against `255` on 16 of 23 for the median — a real improvement, and **not made
+  here**, because forcing the estimate to `255` on all six leaves every one of them at one
+  panel anyway (49–63% ink, still no empty line). It is a correctness fix with no measured
+  payoff on the only sample there is, so it wants its own page and its own evidence.
 - **The panel scan is not the reference's scan, and three measured differences are
   live.** They are named as *measured* rather than suspected, so nobody re-derives
   them, and none of them is known to matter on a normal page:

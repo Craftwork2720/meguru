@@ -1,11 +1,15 @@
 """A faithful port of meguru/panel.lua, to run the detector without a Lua
 interpreter. A development aid, not part of the plugin.
 
-Run it as `python tools/panelprobe.py <image> [mode] [noclip] [root] [loose]`.
-The defaults are the shipped behaviour; `loose` restores the sheared projection's
-ink allowance to the straight cut's ratio, which is what the detector did before
-`PANEL_SHEAR_INK_RATIO` was separated out - that is the comparison that found the
-bug on the page this was written for.
+Run it as `python tools/panelprobe.py <image> [flags]`. The defaults are the
+shipped behaviour; each flag names an experiment:
+
+* `loose` gives the sheared projection the straight cut's ink allowance, which
+  is what the detector did before `PANEL_SHEAR_INK_RATIO` was separated out.
+* `root` stops the sheared search at depth 0; `all` (the default) is the shipped
+  `PANEL_SHEAR_MAX_DEPTH`.
+* `noclip` lets the sheared row projection write outside the region. The shipped
+  code always clips, so this is not a behaviour that exists in the plugin.
 
 **What this models and what it does not**, per CLAUDE.md's rule about mirrors:
 it models the *arithmetic* of the detector - the ink predicate, the two
@@ -214,24 +218,24 @@ def min_in_range(proj, frm, to):
 
 
 def try_slope(data, left, top, right, bottom, ctx, slope):
+    """Mirrors meguru/panel.lua's trySlope: the cut is the middle of the empty
+    run the sheared projection found, not the band the run maps back to."""
     width = right - left + 1
     height = bottom - top + 1
     step = ctx.shear_step
+    ratio = ctx.ink_ratio if SHEAR_LOOSE else PANEL_SHEAR_INK_RATIO
     project_cols_sheared(data, left, top, right, bottom, slope, ctx.cols, step)
-    drift = int(np.floor(abs(slope) * height / 2)) + 1
-    ratio = ctx.ink_ratio if SHEAR_STRICT else PANEL_SHEAR_INK_RATIO
     for g in collect_gutters(ctx.cols, left, right, height / step,
                              ratio, ctx.min_gutter):
-        lo, hi = g[0] - drift, g[1] + drift
-        if lo > left and hi < right:
-            return "cols", lo, hi
+        split = (g[0] + g[1]) // 2
+        if split > left and split < right:
+            return "cols", split
     project_rows_sheared(data, left, top, right, bottom, slope, ctx.rows, step)
-    drift = int(np.floor(abs(slope) * width / 2)) + 1
     for g in collect_gutters(ctx.rows, top, bottom, width / step,
                              ratio, ctx.min_gutter):
-        lo, hi = g[0] - drift, g[1] + drift
-        if lo > top and hi < bottom:
-            return "rows", lo, hi
+        split = (g[0] + g[1]) // 2
+        if split > top and split < bottom:
+            return "rows", split
     return None
 
 
@@ -260,13 +264,12 @@ def emit_leaf(x0, y0, x1, y1, ink, ctx, out):
 
 
 TRACE = False
-# 'overlap' = the reference's rule (both children get the whole band);
-# 'consume' = split at the band's centre so no child carries it.
-SHEAR_MODE = 'overlap'
 NOCLIP = False
 SHEAR_DEPTH = 'all'
-# True: a sheared line must be *truly* empty, not merely under the ink ratio.
-SHEAR_STRICT = False
+# True: give the sheared projection the straight cut's ink ratio instead of
+# PANEL_SHEAR_INK_RATIO. That is the comparison that found the bug
+# PANEL_SHEAR_INK_RATIO was split out for; it is an experiment, not a behaviour.
+SHEAR_LOOSE = False
 
 
 def _t(depth, *a):
@@ -309,24 +312,15 @@ def cut(data, x0, y0, x1, y1, depth, ctx, out):
             _t(depth, f"  shear -> {r}")
             if r and r[0] == "cols":
                 ctx.shear_splits += 1
-                lo, hi = (r[1], r[2]) if SHEAR_MODE == "overlap" else (r[1], r[2])
-                if SHEAR_MODE == "consume":
-                    mid = (r[1] + r[2]) // 2
-                    cut(data, left, top, mid, bottom, depth + 1, ctx, out)
-                    cut(data, mid + 1, top, right, bottom, depth + 1, ctx, out)
-                else:
-                    cut(data, left, top, hi, bottom, depth + 1, ctx, out)
-                    cut(data, lo, top, right, bottom, depth + 1, ctx, out)
+                split = r[1]
+                cut(data, left, top, split, bottom, depth + 1, ctx, out)
+                cut(data, split + 1, top, right, bottom, depth + 1, ctx, out)
                 return
             if r and r[0] == "rows":
                 ctx.shear_splits += 1
-                if SHEAR_MODE == "consume":
-                    mid = (r[1] + r[2]) // 2
-                    cut(data, left, top, right, mid, depth + 1, ctx, out)
-                    cut(data, left, mid + 1, right, bottom, depth + 1, ctx, out)
-                else:
-                    cut(data, left, top, right, r[2], depth + 1, ctx, out)
-                    cut(data, left, r[1], right, bottom, depth + 1, ctx, out)
+                split = r[1]
+                cut(data, left, top, right, split, depth + 1, ctx, out)
+                cut(data, left, split + 1, right, bottom, depth + 1, ctx, out)
                 return
     _t(depth, f"  EMIT {left},{top} {right-left+1}x{bottom-top+1} ink={region_ink}")
     emit_leaf(left, top, right, bottom, region_ink, ctx, out)
@@ -385,11 +379,21 @@ def detect(path):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 2:
-        SHEAR_MODE = sys.argv[2]
-    if len(sys.argv) > 3:
-        NOCLIP = sys.argv[3] == 'noclip'
-        SHEAR_DEPTH = 'root' if sys.argv[4] == 'root' else 'all'
-    if len(sys.argv) > 4:
-        SHEAR_STRICT = True  # 'loose': the straight cut's ratio on the shear too
+    # Slots, not positions: every flag is named, so they can be given in any
+    # order and none of them can be "present but empty". The old parsing read
+    # sys.argv[4] whenever a third argument existed, which crashed on
+    # `... noclip` and silently ignored the word it was documented to read.
+    args = sys.argv[2:]
+    unknown = [a for a in args
+               if a not in ("noclip", "root", "all", "loose")]
+    if unknown:
+        raise SystemExit("unknown argument(s): %s\n"
+                         "usage: panelprobe.py <image> [noclip] [root|all] [loose]"
+                         % " ".join(unknown))
+    NOCLIP = "noclip" in args
+    if "root" in args:
+        SHEAR_DEPTH = "root"
+    elif "all" in args:
+        SHEAR_DEPTH = "all"
+    SHEAR_LOOSE = "loose" in args
     detect(sys.argv[1])

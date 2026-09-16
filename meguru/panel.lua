@@ -24,9 +24,12 @@ Two things complicate the cut, and both are ported:
   straight gutter exists and something already looks part-empty, a ladder of
   slopes from 2 to 8 degrees either way is tried instead
   (`PANEL_SHEAR_SLOPES`), and the projection is taken along the slanted line.
-  Both children are then given the whole projected band, so each panel keeps all
-  of its own artwork and gains a thin wedge of its neighbour rather than losing a
-  corner.
+  The split is then **one line through the middle of the empty run that
+  projection found**, which is where the separator sits at the region's own
+  mid-height. A rectangle cannot follow a slanted separator, so each child keeps
+  a wedge of its neighbour on one side and gives one up on the other; what the
+  cut must not do is land `drift` cells off the separator, which is where the
+  band the run maps to put it.
 * **A page furniture strip is not a panel.** A scanlation credit line clears both
   size floors comfortably and would be shown to the reader as a panel holding no
   artwork. `emitLeaf` rejects it on the *conjunction* of elongated and nearly
@@ -435,10 +438,10 @@ end
 -- Every interior gutter run in a projection, widest first.
 --
 -- The slanted search cannot just take the widest run, which is why this exists
--- beside `findWidestGutter`: projecting a slanted band back onto the axis widens
--- it by `drift`, which often makes the widest candidate unusable while a
--- narrower one is fine. It also has to be able to look past a gutter it has
--- already split on, now sitting against the region's edge.
+-- beside `findWidestGutter`: a run whose cut would land on the region's own edge
+-- is no use even when it is the longest one there, and a narrower run further in
+-- is. It also has to be able to look past a gutter it has already split on, now
+-- sitting against the region's edge.
 local function collectGutters(projection, from, to, span, ink_ratio, min_length)
     local max_ink = span * ink_ratio
     local gutters = {}
@@ -537,35 +540,49 @@ local function minInRange(projection, from, to)
     return smallest
 end
 
--- Try one slope, returning the axis it splits on and the band's extent once
--- projected back onto that axis.
+-- Try one slope, returning the axis it splits on and **the line to cut on**.
 --
--- `drift` is how far the band moves across the region, halved — a slanted empty
--- run maps back to an axis range that is wider than the run itself by that much
--- on each side. Both edges are then required to fall strictly inside the region,
--- for the same reason the straight search ignores runs that touch an end.
+-- The cut is a line, not the band the run maps back to. `shift` is measured from
+-- the region's own mid-line, so at that line the sheared projection's axis *is*
+-- the page's axis: a run of empty lines in the projection is a run of empty
+-- columns (or rows) through the middle of the region, and the separator lies
+-- somewhere inside that run. Its middle is where the line is taken.
+--
+-- **The band, and the two children it used to be handed to, is the defect this
+-- replaces.** Widening the run by `drift` at each end gives the axis range the
+-- separator sweeps over the *whole* region, and both children were given all of
+-- it — so each crop overlapped the other by twice the drift, and the cut itself
+-- landed up to `drift` cells away from the separator. On a page whose tiers are
+-- tilted that is not a wedge, it is most of a panel: measured on a 480-wide scan
+-- at 6.5 degrees over a 482-cell region, `drift` is 28 cells, a 5-cell run
+-- becomes a 61-cell band, and a two-panel split cut 30 cells above the boundary
+-- left one child holding the bottom of both tiers — which then blocked every
+-- later split inside it and came out as `1 panel` where the page has two.
+--
+-- The interior test is the straight search's own rule — a run that touches an
+-- end of the range is a margin, not a separator — and `collectGutters` has
+-- already enforced it on the run; what is left to check is that the *cut* is
+-- inside, which `split > left and split < right` says directly.
 local function trySlope(map, left, top, right, bottom, ctx, slope)
     local width = right - left + 1
     local height = bottom - top + 1
     local step = ctx.shear_step
 
     projectColumnsSheared(map, left, top, right, bottom, slope, ctx.cols, step)
-    local drift = math.floor(math.abs(slope) * height / 2) + 1
     for _, gutter in ipairs(collectGutters(ctx.cols, left, right, height / step,
             PANEL_SHEAR_INK_RATIO, ctx.min_gutter)) do
-        local lo, hi = gutter.from - drift, gutter.to + drift
-        if lo > left and hi < right then
-            return "cols", lo, hi
+        local split = math.floor((gutter.from + gutter.to) / 2)
+        if split > left and split < right then
+            return "cols", split
         end
     end
 
     projectRowsSheared(map, left, top, right, bottom, slope, ctx.rows, step)
-    drift = math.floor(math.abs(slope) * width / 2) + 1
     for _, gutter in ipairs(collectGutters(ctx.rows, top, bottom, width / step,
             PANEL_SHEAR_INK_RATIO, ctx.min_gutter)) do
-        local lo, hi = gutter.from - drift, gutter.to + drift
-        if lo > top and hi < bottom then
-            return "rows", lo, hi
+        local split = math.floor((gutter.from + gutter.to) / 2)
+        if split > top and split < bottom then
+            return "rows", split
         end
     end
 
@@ -579,17 +596,17 @@ end
 -- so the hint is tried before the rest of the ladder, and the ladder skips it.
 local function findShearedSplit(map, left, top, right, bottom, ctx)
     if ctx.slope_hint then
-        local axis, lo, hi = trySlope(map, left, top, right, bottom, ctx, ctx.slope_hint)
+        local axis, split = trySlope(map, left, top, right, bottom, ctx, ctx.slope_hint)
         if axis then
-            return axis, lo, hi
+            return axis, split
         end
     end
     for _, slope in ipairs(PANEL_SHEAR_SLOPES) do
         if slope ~= ctx.slope_hint then
-            local axis, lo, hi = trySlope(map, left, top, right, bottom, ctx, slope)
+            local axis, split = trySlope(map, left, top, right, bottom, ctx, slope)
             if axis then
                 ctx.slope_hint = slope
-                return axis, lo, hi
+                return axis, split
             end
         end
     end
@@ -693,21 +710,25 @@ local function cut(map, x0, y0, x1, y1, depth, ctx, out)
         -- slanted lines -- but only when something already looks part-empty. A
         -- splash page has no such line and skips a search that cannot succeed.
         --
-        -- Both children are given the whole projected band, so each panel keeps
-        -- all of its own artwork and gains a thin wedge of its neighbour rather
-        -- than losing a corner. The panels therefore overlap slightly along a
-        -- sheared split, which is the intended trade and not a duplicate.
+        -- The split is one line through the middle of the empty run the sheared
+        -- projection found, and the children do not share it: the separator is
+        -- slanted and their crops are rectangles, so each keeps a wedge of its
+        -- neighbour on one side and gives one up on the other, and which way
+        -- round that falls is decided by where on the page the reader is
+        -- looking. What it is not is a cut placed `drift` cells off the
+        -- separator with both children given the whole band, which is what
+        -- `trySlope` above carries the measurement of.
         if depth <= PANEL_SHEAR_MAX_DEPTH
             and (minInRange(ctx.cols, left, right) <= height * PANEL_SHEAR_TRIGGER
                 or minInRange(ctx.rows, top, bottom) <= width * PANEL_SHEAR_TRIGGER) then
-            local axis, lo, hi = findShearedSplit(map, left, top, right, bottom, ctx)
+            local axis, split = findShearedSplit(map, left, top, right, bottom, ctx)
             if axis == "cols" then
-                cut(map, left, top, hi, bottom, depth + 1, ctx, out)
-                cut(map, lo, top, right, bottom, depth + 1, ctx, out)
+                cut(map, left, top, split, bottom, depth + 1, ctx, out)
+                cut(map, split + 1, top, right, bottom, depth + 1, ctx, out)
                 return
             elseif axis == "rows" then
-                cut(map, left, top, right, hi, depth + 1, ctx, out)
-                cut(map, left, lo, right, bottom, depth + 1, ctx, out)
+                cut(map, left, top, right, split, depth + 1, ctx, out)
+                cut(map, left, split + 1, right, bottom, depth + 1, ctx, out)
                 return
             end
         end
@@ -739,29 +760,34 @@ local function segment(map)
 
     -- A rectangle lying entirely inside another is a *piece of it*, not a panel.
     --
-    -- The second way this cut mints a panel that is really the gap, and it is
-    -- independent of `PANEL_SHEAR_INK_RATIO`: that constant stops the shear
-    -- splitting a panel on white *inside its own drawing*, and this stops the
-    -- recursion carving the band itself out after it has already split on it.
-    -- Both were needed, on different pages, and neither alone fixes both.
+    -- **The symptom this was written for is gone, and the rule is kept as a guard
+    -- on the invariant rather than as a fix for it.** The sheared split used to
+    -- hand both children the whole projected band, so a child split again on that
+    -- same band left a strip of it behind whose top reached back over the other
+    -- child's box — the upper panel's bottom rows, the band, and a sliver of the
+    -- lower panel. That rectangle sat inside the upper panel's, so the reader saw
+    -- the same artwork twice and the lower panel arrived with its top cut off.
+    -- (*This* rule and `PANEL_SHEAR_INK_RATIO` were both needed for it, on
+    -- different pages, and neither alone fixed both.)
     --
-    -- What happens here: the sheared split hands both children the whole projected
-    -- band, so a child split again on that same band leaves a strip of it behind,
-    -- and the strip's *top* reaches back over the other child's box — it is the
-    -- upper panel's bottom rows, the band, and a sliver of the lower panel. That
-    -- rectangle sits inside the upper panel's, so the reader sees the same artwork
-    -- twice and the lower panel arrives with its top cut off.
+    -- With the split taken as one line through the middle of the run — see
+    -- `trySlope` — the two children are disjoint along the axis they were split
+    -- on and a trim only ever shrinks one, so no leaf can contain another. That
+    -- is a property of the shape of the cut rather than of this code, and it is
+    -- why the rule is not deleted with the text above it: it costs a few hundred
+    -- integer comparisons on a list capped at `PANEL_MAX_PANELS`, and the change
+    -- that would make it live again is a change to the cut. Measured across the
+    -- 23-page sample it now drops nothing, where it used to drop that strip.
     --
     -- The test is on the map's cells, before the conversion to native, because in
     -- cells the comparison is exact: the conversion expands every rectangle by a
     -- cell on each side and works in floats, either of which could separate two
     -- boxes that contain one another here.
     --
-    -- **Measured, and the measurement is why this is back.** An earlier version of
-    -- this file had the rule and dropped it, on the evidence of a single page where
-    -- it removed nothing — and the honest reading of that was "it does not fix
-    -- *this* page", not "the rule does nothing". The next page found needs exactly
-    -- it. Since then it is checked against a sample rather than one page.
+    -- The history is worth keeping because it is the same mistake twice over: an
+    -- earlier version had the rule and dropped it on the evidence of a single page
+    -- where it removed nothing, and the honest reading of that was "it does not
+    -- fix *this* page", not "the rule does nothing".
     --
     -- The one thing it costs is an inset panel — a small panel drawn inside a larger
     -- one is a contained rectangle and would be dropped. That needs the cut to have
@@ -1055,10 +1081,11 @@ end
 -- Which panel a point falls in, or the nearest one when it falls in a gutter.
 --
 -- The **smallest** containing panel wins rather than the first in reading
--- order: a sheared split hands both children the whole projected band, so two
--- neighbours overlap by a thin wedge, and the more specific answer to "which
--- panel is under the finger" is the smaller rectangle rather than the larger
--- one that merely includes it.
+-- order. The cut's leaves are disjoint, so this can only matter for panels that
+-- a caller handed over itself — a sheared split used to be able to produce two
+-- neighbours overlapping by a wedge, and the more specific answer to "which
+-- panel is under the finger" is then the smaller rectangle rather than the
+-- larger one that merely includes it.
 --
 -- The nearest-by-centre fallback has to exist: a press that lands on a
 -- separator is a reader aiming at a panel, and refusing to answer would turn
