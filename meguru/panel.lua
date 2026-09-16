@@ -151,11 +151,40 @@ local PANEL_SEPARATOR_MIN_LUMA = 245
 local PANEL_SEPARATOR_FRAC = 0.80
 local PANEL_SEPARATOR_EDGE_FRAC = 0.03
 
+-- The bodies of ink, and the evidence a panel's frame leaves. **A veto, not a
+-- detector.** The cut decides where the panels are; these say only where a body of
+-- ink that shows a frame *is*, so that a split can be refused when it would run
+-- through one — the case in which an empty line is not a separator but a hole in a
+-- panel's own drawing. The five values are the reference's component detector's,
+-- unchanged, which is why they are named for what they feed here rather than for
+-- the pipeline they came from.
+--
+-- `PANEL_BODY_FRAME_SUPPORT` is what `lineSupport` has to reach for a side to count
+-- as drawn, and `..._TOL_FRAC` is how far a side's cells may wander from the fitted
+-- line, in cells, as a fraction of the map's shorter side — it is what forgives a
+-- frame's own stroke being two cells thick. `PANEL_BODY_FRAME_MIN` is how many of
+-- the four sides have to be drawn: **one**, which is the reference's own rule for
+-- calling a body framed, and the reason a body that spans several panels with a
+-- single straight edge can veto the split between them.
+local PANEL_BODY_MIN_SIDE_FRAC = 0.02
+local PANEL_BODY_MIN_AREA_FRAC = 0.002
+local PANEL_BODY_FRAME_SUPPORT = 0.80
+local PANEL_BODY_FRAME_TOL_FRAC = 0.003
+local PANEL_BODY_FRAME_MIN = 1
+
 -- **The number this detector lives or dies by.** What fraction of a line's span
 -- may still carry ink and have the line count as empty. 1.3's 0.005 is ten times
 -- stricter than the later version's 0.05, and the difference is a white band
 -- inside a drawing: at 0.05 a faintly bright strip reads as a gutter and the cut
 -- splits the panel in half, and at 0.005 it has to be genuinely empty to count.
+--
+-- **Strictness alone does not close it, and an earlier version of this comment
+-- implied that it did.** A band that *is* genuinely empty — across the panel and
+-- across the region, with only the frame's two side strokes in the row, which is
+-- under the allowance on any page whose frame is a hairline — still splits the
+-- panel in two, because a projection has no way to tell it from a separator. That
+-- is what the bodies above are for, and `meguru-probe/controls/08` is the drawn
+-- page that shows both halves: 0.005 alone gives two leaves, the veto gives one.
 local PANEL_GUTTER_INK_RATIO = 0.005
 -- The thinnest band worth splitting on, as a fraction of the map's shorter side,
 -- floored at **one** cell. A fraction of the *map*, so it stays a fixed fraction
@@ -399,6 +428,247 @@ local function buildInkMap(raster, bg, native_w, native_h)
         scale_x = native_w / w,
         scale_y = native_h / h,
     }
+end
+
+-- ---------------------------------------------------------------------------
+-- Bodies of ink, and the veto they arm
+-- ---------------------------------------------------------------------------
+
+-- What fraction of one side is supported by a single straight line.
+--
+-- This is what makes the evidence indifferent to a *tilted* panel: the boundary of
+-- a frame drawn at six degrees is still a straight line, and a straight line is
+-- exactly what is being looked for — where a gutter-based cut has to search a whole
+-- ladder of slopes for it. Several well-separated sample pairs (a and b) make the
+-- answer insensitive to a balloon protruding through one corner, and a curved face
+-- outline does not support a straight line over most of its extent.
+--
+-- `values` is indexed from `first`, and `tolerance` is in cells: it is what
+-- forgives the frame's own stroke being two cells thick.
+local function lineSupport(values, first, last, tolerance)
+    local span = last - first
+    if span <= 0 then
+        return 0
+    end
+    local best = 0
+    for a = 0, 4 do
+        for b = a + 3, 8 do
+            local i = first + math.floor(span * a / 8)
+            local j = first + math.floor(span * b / 8)
+            local slope = (values[j] - values[i]) / (j - i)
+            if math.abs(slope) <= 0.35 then
+                local count = 0
+                for k = first, last do
+                    if math.abs(values[k] - values[i] - (k - i) * slope) <= tolerance then
+                        count = count + 1
+                    end
+                end
+                local ratio = count / (span + 1)
+                if ratio > best then
+                    best = ratio
+                    if best >= PANEL_BODY_FRAME_SUPPORT then
+                        return best
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+-- What stands in for "this line has no cell" in the four side arrays below.
+local INF = 100000000
+
+-- How many of the body's four sides are a straight line.
+--
+-- The left and right sides are read as the body's own leftmost and rightmost cell
+-- in each row, the top and bottom as its topmost and bottommost in each column: a
+-- frame's side is a straight run, and reading it as an extreme per line is what
+-- makes a slanted one read as a line rather than as a wall. The arrays are indexed
+-- by the *absolute* cell number, which is what `lineSupport` above expects.
+local function frameSides(scratch, queue, count, map_width, box, tolerance)
+    for y = box.y, box.y + box.h - 1 do
+        scratch.left[y], scratch.right[y] = INF, -1
+    end
+    for x = box.x, box.x + box.w - 1 do
+        scratch.top[x], scratch.bottom[x] = INF, -1
+    end
+    for index = 0, count - 1 do
+        local p = queue[index]
+        local y = math.floor(p / map_width)
+        local x = p - y * map_width
+        if x < scratch.left[y] then
+            scratch.left[y] = x
+        end
+        if x > scratch.right[y] then
+            scratch.right[y] = x
+        end
+        if y < scratch.top[x] then
+            scratch.top[x] = y
+        end
+        if y > scratch.bottom[x] then
+            scratch.bottom[x] = y
+        end
+    end
+    local sides = 0
+    if lineSupport(scratch.left, box.y, box.y + box.h - 1, tolerance)
+        >= PANEL_BODY_FRAME_SUPPORT then
+        sides = sides + 1
+    end
+    if lineSupport(scratch.right, box.y, box.y + box.h - 1, tolerance)
+        >= PANEL_BODY_FRAME_SUPPORT then
+        sides = sides + 1
+    end
+    if lineSupport(scratch.top, box.x, box.x + box.w - 1, tolerance)
+        >= PANEL_BODY_FRAME_SUPPORT then
+        sides = sides + 1
+    end
+    if lineSupport(scratch.bottom, box.x, box.x + box.w - 1, tolerance)
+        >= PANEL_BODY_FRAME_SUPPORT then
+        sides = sides + 1
+    end
+    return sides
+end
+
+-- Every substantial 8-connected body of ink whose frame evidence says it is a
+-- panel, as a box in map cells.
+--
+-- **This is the whole of what the cut takes from the reference's component
+-- detector, and it stops well short of it.** The reference goes on to drop bodies
+-- contained in larger ones, to require a *small* body to show a sampled frame, to
+-- join the floating bodies to the framed neighbour they are flush against or to the
+-- tier they sit in, and then calls the result its panels. None of that is here,
+-- because a veto needs to know where a panel's box is and not which boxes are
+-- panels in the end — and the containment rule in particular would be dead weight:
+-- a box lying inside another is a *subset* of the veto it is already under.
+--
+-- One pass over the map with a queue; a body is walked once and its extent
+-- accumulated as it goes. Bodies below both size floors are dropped before any
+-- evidence is computed, which is what keeps the cost proportional to the page's
+-- real structure rather than to its noise — and what keeps a stipple of small ink,
+-- or a page of text, from arming a veto.
+local function collectBodies(map)
+    local width, height, data = map.w, map.h, map.data
+    local tolerance = math.max(1, math.min(width, height) * PANEL_BODY_FRAME_TOL_FRAC)
+    -- Both arrays are allocated per call and left to the collector, where the
+    -- reference keeps one of each for the life of the process and releases them
+    -- with `clearScratch`. A detection is a long-press, so reuse would buy a second
+    -- lifecycle to keep in step and nothing a reader can feel; the peak is the same
+    -- either way, since the reference's arrays are sized to the largest map it has
+    -- seen and stay resident until the book is closed.
+    --
+    -- The queue is sized to the map's own ink count rather than to its cell count,
+    -- and that is a bound rather than an estimate: a cell enters it when it is first
+    -- marked seen, once, so one body can never put more in it than the page has ink
+    -- — and the count is already measured, `buildInkMap` returns it. On the widest
+    -- map this scan allows that is the difference between 1.4 MB and 4.8 MB, which
+    -- matters on a device whose whole native budget is 12. The seen map has no such
+    -- bound and stays one byte per cell.
+    --
+    -- Where the count is missing the size falls back to the cell count and **not**
+    -- to something small: a queue one entry long would corrupt the heap instead of
+    -- raising, because LuaJIT bounds-checks cdata only in a debug build. An empty
+    -- map is the one case where one is right, and it is right because nothing is
+    -- ever pushed into it.
+    local queue_size = width * height
+    if map.ink then
+        queue_size = math.max(1, map.ink)
+    end
+    local seen = ffi.new("uint8_t[?]", width * height)
+    local queue = ffi.new("int32_t[?]", queue_size)
+    local scratch = {
+        left = ffi.new("int32_t[?]", height),
+        right = ffi.new("int32_t[?]", height),
+        top = ffi.new("int32_t[?]", width),
+        bottom = ffi.new("int32_t[?]", width),
+    }
+
+    local bodies = {}
+    for index = 0, width * height - 1 do
+        if data[index] == 1 and seen[index] == 0 then
+            local head, tail = 0, 1
+            queue[0], seen[index] = index, 1
+            local left, right, top, bottom = width, 0, height, 0
+            while head < tail do
+                local position = queue[head]
+                head = head + 1
+                local y = math.floor(position / width)
+                local x = position - y * width
+                if x < left then
+                    left = x
+                end
+                if x > right then
+                    right = x
+                end
+                if y < top then
+                    top = y
+                end
+                if y > bottom then
+                    bottom = y
+                end
+                -- Clip the columns once per cell, then walk contiguous offsets: the
+                -- same 8-connected traversal without redoing the bounds and the row
+                -- arithmetic for every neighbour.
+                local first_x, last_x = math.max(0, x - 1), math.min(width - 1, x + 1)
+                for ny = math.max(0, y - 1), math.min(height - 1, y + 1) do
+                    local row = ny * width
+                    for neighbour = row + first_x, row + last_x do
+                        if seen[neighbour] == 0 and data[neighbour] == 1 then
+                            seen[neighbour] = 1
+                            queue[tail] = neighbour
+                            tail = tail + 1
+                        end
+                    end
+                end
+            end
+            local w, h = right - left + 1, bottom - top + 1
+            if w >= width * PANEL_BODY_MIN_SIDE_FRAC
+                and h >= height * PANEL_BODY_MIN_SIDE_FRAC
+                and w * h >= width * height * PANEL_BODY_MIN_AREA_FRAC then
+                local box = { x = left, y = top, w = w, h = h }
+                box.frame_sides = frameSides(scratch, queue, tail, width, box, tolerance)
+                if box.frame_sides >= PANEL_BODY_FRAME_MIN then
+                    bodies[#bodies + 1] = box
+                end
+            end
+        end
+    end
+    return bodies
+end
+
+-- The body whose interior this band runs through, or nil.
+--
+-- `x0..x1` and `y0..y1` are the band's own extent in cells, inclusive, and `axis`
+-- says which of the two the cut would separate along. The band has to lie
+-- *strictly* inside the body on that axis — a band at the body's own edge is its
+-- frame, and cutting along a frame is what the cut is for — and the body has to
+-- span the region on the other, so that a body a node merely clips at its edge
+-- does not veto a split of that node.
+--
+-- **The second condition is the conservative one and its price is named rather
+-- than hidden:** two framed panels side by side with a white band across both
+-- leave neither body spanning the region, so no veto fires and the cut still runs
+-- through them. Widening it to a plain overlap catches that case and refuses more
+-- legitimate splits with it, and on the only sample there is neither choice fires
+-- on anything that changes a leaf — see "Known open items".
+local function blocked(ctx, x0, x1, y0, y1, axis)
+    local bodies = ctx.bodies
+    if not bodies then
+        return nil
+    end
+    for i = 1, #bodies do
+        local b = bodies[i]
+        if axis == "rows" then
+            if b.y < y0 and b.y + b.h - 1 > y1
+                and b.x <= x0 and b.x + b.w - 1 >= x1 then
+                return b
+            end
+        elseif b.x < x0 and b.x + b.w - 1 > x1
+            and b.y <= y0 and b.y + b.h - 1 >= y1 then
+            return b
+        end
+    end
+    return nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -785,7 +1055,23 @@ local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
 
         -- Every value needed below is already a local, so the children are free
         -- to overwrite the shared projection buffers.
-        if row_length > 0 and row_length >= col_length then
+        --
+        -- **A row of a panel's own drawing that happens to be empty across the
+        -- region is the one thing a projection cannot tell from a separator**, so
+        -- the bodies say it instead: a candidate whose band runs through a framed
+        -- body's box is refused. What is left when no candidate survives is that
+        -- panel, emitted as a single leaf — a merge, which a reader sees, rather
+        -- than a panel cut in two, which they also see but cannot name.
+        --
+        -- It is a veto on a *candidate* and not on the node: the other axis is still
+        -- tried, and a page whose bodies are all refused by neither is untouched.
+        local row_hit = row_length > 0
+            and blocked(ctx, left, right, row_start, row_stop, "rows")
+        local col_hit = col_length > 0
+            and blocked(ctx, col_start, col_stop, top, bottom, "cols")
+        local row_ok = row_length > 0 and not row_hit
+        local col_ok = col_length > 0 and not col_hit
+        if row_ok and (not col_ok or row_length >= col_length) then
             cut(map, left, top, right, row_start - 1,
                 { l = el, r = er, t = et, bo = { a = row_start - 1, b = 0 } },
                 depth + 1, ctx, out)
@@ -793,7 +1079,7 @@ local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
                 { l = el, r = er, t = { a = row_stop + 1, b = 0 }, bo = ebo },
                 depth + 1, ctx, out)
             return
-        elseif col_length > 0 then
+        elseif col_ok then
             cut(map, left, top, col_start - 1, bottom,
                 { l = el, r = { a = col_start - 1, b = 0 }, t = et, bo = ebo },
                 depth + 1, ctx, out)
@@ -807,6 +1093,11 @@ local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
         -- slanted lines -- but only when something already looks part-empty. A
         -- splash page has no such line and skips a search that cannot succeed.
         --
+        -- **And only when no candidate was refused**, which is not the same as
+        -- nothing having been found: an empty line that ran through a detected panel
+        -- is evidence that the region *is* that panel, and splitting it at an angle
+        -- is the same mistake as splitting it straight.
+        --
         -- The split is one line through the middle of the empty run the sheared
         -- projection found, and the children do not share it: the separator is
         -- slanted and their crops are rectangles, so each keeps a wedge of its
@@ -815,7 +1106,8 @@ local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
         -- looking. What it is not is a cut placed `drift` cells off the
         -- separator with both children given the whole band, which is what
         -- `trySlope` above carries the measurement of.
-        if depth <= PANEL_SHEAR_MAX_DEPTH
+        if row_length == 0 and col_length == 0
+            and depth <= PANEL_SHEAR_MAX_DEPTH
             and (minInRange(ctx.cols, left, right) <= height * PANEL_SHEAR_TRIGGER
                 or minInRange(ctx.rows, top, bottom) <= width * PANEL_SHEAR_TRIGGER) then
             local axis, split = findShearedSplit(map, left, top, right, bottom, ctx)
@@ -824,23 +1116,41 @@ local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
                 -- both children: the value the projection found is that line at
                 -- the region's mid, and `xmid`/`ymid` are recomputed exactly as
                 -- `projectRowsSheared`/`projectColumnsSheared` computed them.
+                --
+                -- `mid` is that mid-line, and the band below is where the line runs
+                -- across the region: a slanted line is not one cell, so the veto is
+                -- asked about the whole strip it sweeps and not about `split`.
                 local slope = ctx.slope_hint
+                local bx0, bx1, by0, by1, mid, line
                 if axis == "cols" then
-                    local ymid = math.floor((top + bottom) / 2)
-                    local line = { a = split - slope * ymid, b = slope }
-                    cut(map, left, top, split, bottom,
-                        { l = el, r = line, t = et, bo = ebo }, depth + 1, ctx, out)
-                    cut(map, split + 1, top, right, bottom,
-                        { l = line, r = er, t = et, bo = ebo }, depth + 1, ctx, out)
+                    mid = math.floor((top + bottom) / 2)
+                    local a = split + slope * (top - mid)
+                    local b = split + slope * (bottom - mid)
+                    bx0, bx1 = math.floor(math.min(a, b)), math.ceil(math.max(a, b))
+                    by0, by1 = top, bottom
+                    line = { a = split - slope * mid, b = slope }
                 else
-                    local xmid = math.floor((left + right) / 2)
-                    local line = { a = split - slope * xmid, b = slope }
-                    cut(map, left, top, right, split,
-                        { l = el, r = er, t = et, bo = line }, depth + 1, ctx, out)
-                    cut(map, left, split + 1, right, bottom,
-                        { l = el, r = er, t = line, bo = ebo }, depth + 1, ctx, out)
+                    mid = math.floor((left + right) / 2)
+                    local a = split + slope * (left - mid)
+                    local b = split + slope * (right - mid)
+                    by0, by1 = math.floor(math.min(a, b)), math.ceil(math.max(a, b))
+                    bx0, bx1 = left, right
+                    line = { a = split - slope * mid, b = slope }
                 end
-                return
+                if not blocked(ctx, bx0, bx1, by0, by1, axis) then
+                    if axis == "cols" then
+                        cut(map, left, top, split, bottom,
+                            { l = el, r = line, t = et, bo = ebo }, depth + 1, ctx, out)
+                        cut(map, split + 1, top, right, bottom,
+                            { l = line, r = er, t = et, bo = ebo }, depth + 1, ctx, out)
+                    else
+                        cut(map, left, top, right, split,
+                            { l = el, r = er, t = et, bo = line }, depth + 1, ctx, out)
+                        cut(map, left, split + 1, right, bottom,
+                            { l = el, r = er, t = line, bo = ebo }, depth + 1, ctx, out)
+                    end
+                    return
+                end
             end
         end
     end
@@ -865,6 +1175,10 @@ local function segment(map)
         sliver_ink = math.floor((map.ink or 0) * PANEL_SLIVER_INK_FRAC),
         shear_step = PANEL_SHEAR_STEP,
         slope_hint = nil,
+        -- The framed bodies of ink a split may not run through. Computed once, over
+        -- the same map the cut is about to walk; an empty list means no veto and the
+        -- cut behaves exactly as it did before this existed.
+        bodies = collectBodies(map),
     }
 
     local cells = {}

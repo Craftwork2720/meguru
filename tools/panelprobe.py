@@ -10,11 +10,15 @@ shipped behaviour; each flag names an experiment:
   `PANEL_SHEAR_MAX_DEPTH`.
 * `noclip` lets the sheared row projection write outside the region. The shipped
   code always clips, so this is not a behaviour that exists in the plugin.
+* `noveto` empties the body pass and with it the guard that refuses a split
+  through a detected panel. That is the parent commit's behaviour, for an A/B on
+  the same page.
 
 **What this models and what it does not**, per CLAUDE.md's rule about mirrors:
 it models the *arithmetic* of the detector - the ink predicate, the two
-projections, the recursive cut, the sheared search, emitLeaf and the containment
-filter - because those are the parts a measurement can settle. It does not model
+projections, the recursive cut, the sheared search, emitLeaf, the containment
+filter, and the bodies of ink the cut is not allowed to run through - because
+those are the parts a measurement can settle. It does not model
 Lua's evaluation rules, which is why anything derived here about *values* is
 evidence and anything derived here about *Lua semantics* is not.
 
@@ -54,6 +58,17 @@ PANEL_SHEAR_TRIGGER = 0.35
 PANEL_SHEAR_STEP = 2
 PANEL_SHEAR_INK_RATIO = 0
 SINGLE_RATIO, PAGE_COV_MIN, COV_MIN = 0.6, 0.4, 0.5
+
+# The bodies of ink, and the evidence a panel's frame leaves. These five are the
+# reference's values, unchanged; only the prefix is this file's, so that what they
+# feed is not mistaken for a detector. They feed a *veto*: a split whose band runs
+# through the box of a body that shows a frame is refused, because a full-width
+# empty band inside a panel's own drawing is not a separator. See `blocked`.
+PANEL_BODY_MIN_SIDE_FRAC = 0.02
+PANEL_BODY_MIN_AREA_FRAC = 0.002
+PANEL_BODY_FRAME_SUPPORT = 0.80
+PANEL_BODY_FRAME_TOL_FRAC = 0.003
+PANEL_BODY_FRAME_MIN = 1
 
 
 def luma_array(im):
@@ -105,6 +120,158 @@ def build_ink_map(L, bg):
     return (np.abs(L - bg) > PANEL_INK_DELTA).astype(np.uint8)
 
 
+# ---------------------------------------------------------------------------
+# Bodies of ink, and the veto they arm
+# ---------------------------------------------------------------------------
+
+def line_support(values, first, last, tolerance):
+    """What fraction of one side is supported by a single straight line.
+
+    Ported from 83a3b7a's `lineSupport`, values and sampling unchanged. It is the
+    evidence that a *tilted* frame is a frame: a boundary drawn at six degrees is
+    still a straight line, where a curved face outline is not one over most of its
+    extent. `tolerance` is in cells, and forgives a stroke being two cells thick.
+    """
+    span = last - first
+    if span <= 0:
+        return 0.0
+    best = 0.0
+    for a in range(5):
+        for b in range(a + 3, 9):
+            i = first + int(span * a / 8)
+            j = first + int(span * b / 8)
+            slope = (values[j] - values[i]) / (j - i)
+            if abs(slope) <= 0.35:
+                count = 0
+                for k in range(first, last + 1):
+                    if abs(values[k] - values[i] - (k - i) * slope) <= tolerance:
+                        count += 1
+                ratio = count / (span + 1)
+                if ratio > best:
+                    best = ratio
+                    if best >= PANEL_BODY_FRAME_SUPPORT:
+                        return best
+    return best
+
+
+def frame_sides(ys, xs, w, h, box, tolerance):
+    """How many of the body's four sides are a straight line.
+
+    The left and right sides are the body's own leftmost and rightmost cell in each
+    row, the top and bottom its topmost and bottommost in each column: reading a
+    side as an extreme per line is what makes a slanted one read as a line rather
+    than as a wall. Absolute indices, as in the Lua - the arrays are sized to the
+    map and only the box's span is read back.
+    """
+    left = [float("inf")] * h
+    right = [-1] * h
+    top = [float("inf")] * w
+    bottom = [-1] * w
+    for y, x in zip(ys, xs):
+        if x < left[y]:
+            left[y] = x
+        if x > right[y]:
+            right[y] = x
+        if y < top[x]:
+            top[x] = y
+        if y > bottom[x]:
+            bottom[x] = y
+    bx, by, bw, bh = box
+    sides = 0
+    for values, first, last in ((left, by, by + bh - 1), (right, by, by + bh - 1),
+                                (top, bx, bx + bw - 1), (bottom, bx, bx + bw - 1)):
+        if line_support(values, first, last, tolerance) >= PANEL_BODY_FRAME_SUPPORT:
+            sides += 1
+    return sides
+
+
+def collect_bodies(data, min_side_frac, min_area):
+    """Every substantial 8-connected body of ink, as a box plus its frame evidence.
+
+    A port of `collectComponents` and the frame evidence it carries, and only of
+    that: the containment rule, the small-box `hasFrame` test, the joining of
+    floating bodies and the tier grouping are all left behind, because a veto needs
+    to know where a panel's box *is* and not which boxes are panels in the end.
+
+    Bodies below either size floor are dropped before any evidence is computed,
+    which is what keeps the cost proportional to the page's real structure rather
+    than to its noise - and what keeps a *stipple* of small ink from arming a veto.
+    """
+    h, w = data.shape
+    flat = data.reshape(-1)
+    seen = bytearray(w * h)
+    # Sized to the ink count and not to the cell count: a cell enters the queue when
+    # it is first marked seen, once, so one body can never put more in it than the
+    # page has ink. The plugin does the same, for the memory.
+    queue = [0] * max(1, int(flat.sum()))
+    tolerance = max(1, min(w, h) * PANEL_BODY_FRAME_TOL_FRAC)
+    bodies = []
+    for index in range(w * h):
+        if flat[index] == 0 or seen[index]:
+            continue
+        seen[index] = 1
+        queue[0] = index
+        head, tail = 0, 1
+        left, right, top, bottom = w, 0, h, 0
+        while head < tail:
+            position = queue[head]
+            head += 1
+            y, x = divmod(position, w)
+            if x < left:
+                left = x
+            if x > right:
+                right = x
+            if y < top:
+                top = y
+            if y > bottom:
+                bottom = y
+            for ny in range(max(0, y - 1), min(h - 1, y + 1) + 1):
+                row = ny * w
+                for neighbour in range(row + max(0, x - 1),
+                                       row + min(w - 1, x + 1) + 1):
+                    if not seen[neighbour] and flat[neighbour]:
+                        seen[neighbour] = 1
+                        queue[tail] = neighbour
+                        tail += 1
+        bw, bh = right - left + 1, bottom - top + 1
+        if bw < w * min_side_frac or bh < h * min_side_frac or bw * bh < min_area:
+            continue
+        ys = [position // w for position in queue[:tail]]
+        xs = [position - (position // w) * w for position in queue[:tail]]
+        bodies.append({"x": left, "y": top, "w": bw, "h": bh,
+                       "sides": frame_sides(ys, xs, w, h,
+                                            (left, top, bw, bh), tolerance)})
+    return bodies
+
+
+def blocked(ctx, x0, x1, y0, y1, axis):
+    """The body whose interior this band runs through, or None.
+
+    `x0..x1` and `y0..y1` are the band's own extent in cells, inclusive, and `axis`
+    says which of the two the cut would separate along. The band has to lie
+    *strictly* inside the body on that axis - a band at the body's own edge is the
+    frame, and cutting there is what the cut is for - and the body has to span the
+    region on the other, so that a body a node merely clips at its edge does not
+    veto a split of that node.
+
+    That second condition is the conservative one, and the price is named rather
+    than hidden: two framed panels side by side with a white band across both leave
+    neither body spanning the region, so no veto fires and the cut still runs
+    through them. Widening it to a plain overlap catches that case and refuses more
+    legitimate splits with it.
+    """
+    for body in ctx.bodies:
+        if axis == "rows":
+            inside = body["y"] < y0 and body["y"] + body["h"] - 1 > y1
+            spans = body["x"] <= x0 and body["x"] + body["w"] - 1 >= x1
+        else:
+            inside = body["x"] < x0 and body["x"] + body["w"] - 1 > x1
+            spans = body["y"] <= y0 and body["y"] + body["h"] - 1 >= y1
+        if inside and spans:
+            return body
+    return None
+
+
 class Ctx:
     def __init__(self, w, h, manga=True):
         self.w, self.h = w, h
@@ -120,6 +287,10 @@ class Ctx:
         self.slope_hint = None
         self.shear_searches = 0
         self.shear_splits = 0
+        # The framed bodies a split may not run through, and how many splits they
+        # took. Empty means no veto, which is the parent commit's behaviour.
+        self.bodies = []
+        self.vetoes = 0
 
 
 def project(data, x0, y0, x1, y1, rows, cols):
@@ -267,6 +438,7 @@ def emit_leaf(x0, y0, x1, y1, ink, ctx, out, edges):
 
 TRACE = False
 NOCLIP = False
+NOVETO = False
 SHEAR_DEPTH = 'all'
 # True: give the sheared projection the straight cut's ink ratio instead of
 # PANEL_SHEAR_INK_RATIO. That is the comparison that found the bug
@@ -300,45 +472,81 @@ def cut(data, x0, y0, x1, y1, edges, depth, ctx, out):
         col = find_widest_gutter(ctx.cols, left, right, height,
                                  ctx.ink_ratio, ctx.min_gutter)
         row_len, col_len = row[2], col[2]
+        # A row of a panel's own drawing that happens to be empty across the region
+        # is the one thing a projection cannot tell from a separator, so the bodies
+        # say it instead: a split whose band runs through a framed body's box is
+        # refused, and the region is that panel rather than two of them.
+        row_hit = blocked(ctx, left, right, row[0], row[1], "rows") if row_len > 0 else None
+        col_hit = blocked(ctx, col[0], col[1], top, bottom, "cols") if col_len > 0 else None
+        if row_hit:
+            ctx.vetoes += 1
+            _t(depth, f"  veto rows {row[0]}..{row[1]} runs through body "
+                      f"{row_hit['x']},{row_hit['y']} {row_hit['w']}x{row_hit['h']}")
+        if col_hit:
+            ctx.vetoes += 1
+            _t(depth, f"  veto cols {col[0]}..{col[1]} runs through body "
+                      f"{col_hit['x']},{col_hit['y']} {col_hit['w']}x{col_hit['h']}")
+        row_ok = row_len > 0 and not row_hit
+        col_ok = col_len > 0 and not col_hit
         _t(depth, f"  straight rows={row[0]}..{row[1]} len={row_len}"
                   f"  cols={col[0]}..{col[1]} len={col_len}")
-        if row_len > 0 and row_len >= col_len:
+        if row_ok and (not col_ok or row_len >= col_len):
             cut(data, left, top, right, row[0] - 1,
                 {"l": el, "r": er, "t": et, "bo": (row[0] - 1, 0.0)}, depth + 1, ctx, out)
             cut(data, left, row[1] + 1, right, bottom,
                 {"l": el, "r": er, "t": (row[1] + 1, 0.0), "bo": ebo}, depth + 1, ctx, out)
             return
-        elif col_len > 0:
+        elif col_ok:
             cut(data, left, top, col[0] - 1, bottom,
                 {"l": el, "r": (col[0] - 1, 0.0), "t": et, "bo": ebo}, depth + 1, ctx, out)
             cut(data, col[1] + 1, top, right, bottom,
                 {"l": (col[1] + 1, 0.0), "r": er, "t": et, "bo": ebo}, depth + 1, ctx, out)
             return
-        if (depth <= (0 if SHEAR_DEPTH == 'root' else PANEL_SHEAR_MAX_DEPTH)
-                and (min_in_range(ctx.cols, left, right) <= height * PANEL_SHEAR_TRIGGER
-                     or min_in_range(ctx.rows, top, bottom) <= width * PANEL_SHEAR_TRIGGER)):
+        # A veto on either axis ends the decomposition here rather than turning to
+        # the slant: if an empty line ran through a detected panel, this region *is*
+        # that panel, and a sheared split of it is the same mistake at an angle.
+        if row_len == 0 and col_len == 0 and depth <= (
+                (0 if SHEAR_DEPTH == 'root' else PANEL_SHEAR_MAX_DEPTH)
+                ) and (min_in_range(ctx.cols, left, right) <= height * PANEL_SHEAR_TRIGGER
+                       or min_in_range(ctx.rows, top, bottom) <= width * PANEL_SHEAR_TRIGGER):
             ctx.shear_searches += 1
             r = find_sheared_split(data, left, top, right, bottom, ctx)
             _t(depth, f"  shear -> {r}")
             if r:
-                ctx.shear_splits += 1
                 axis, split = r
                 slope = ctx.slope_hint
+                # The band the line sweeps, which is what has to be clear of a body.
                 if axis == "cols":
                     ymid = (top + bottom) // 2
-                    line = (split - slope * ymid, slope)
-                    cut(data, left, top, split, bottom,
-                        {"l": el, "r": line, "t": et, "bo": ebo}, depth + 1, ctx, out)
-                    cut(data, split + 1, top, right, bottom,
-                        {"l": line, "r": er, "t": et, "bo": ebo}, depth + 1, ctx, out)
+                    an, ax = sorted((split + slope * (top - ymid),
+                                     split + slope * (bottom - ymid)))
+                    hit = blocked(ctx, int(np.floor(an)), int(np.ceil(ax)), top, bottom, "cols")
                 else:
                     xmid = (left + right) // 2
-                    line = (split - slope * xmid, slope)
-                    cut(data, left, top, right, split,
-                        {"l": el, "r": er, "t": et, "bo": line}, depth + 1, ctx, out)
-                    cut(data, left, split + 1, right, bottom,
-                        {"l": el, "r": er, "t": line, "bo": ebo}, depth + 1, ctx, out)
-                return
+                    an, ax = sorted((split + slope * (left - xmid),
+                                     split + slope * (right - xmid)))
+                    hit = blocked(ctx, left, right, int(np.floor(an)), int(np.ceil(ax)), "rows")
+                if hit:
+                    ctx.vetoes += 1
+                    _t(depth, f"  veto shear {axis} {split} runs through body "
+                              f"{hit['x']},{hit['y']} {hit['w']}x{hit['h']}")
+                else:
+                    ctx.shear_splits += 1
+                    if axis == "cols":
+                        ymid = (top + bottom) // 2
+                        line = (split - slope * ymid, slope)
+                        cut(data, left, top, split, bottom,
+                            {"l": el, "r": line, "t": et, "bo": ebo}, depth + 1, ctx, out)
+                        cut(data, split + 1, top, right, bottom,
+                            {"l": line, "r": er, "t": et, "bo": ebo}, depth + 1, ctx, out)
+                    else:
+                        xmid = (left + right) // 2
+                        line = (split - slope * xmid, slope)
+                        cut(data, left, top, right, split,
+                            {"l": el, "r": er, "t": et, "bo": line}, depth + 1, ctx, out)
+                        cut(data, left, split + 1, right, bottom,
+                            {"l": el, "r": er, "t": line, "bo": ebo}, depth + 1, ctx, out)
+                    return
     _t(depth, f"  EMIT {left},{top} {right-left+1}x{bottom-top+1} ink={region_ink}")
     emit_leaf(left, top, right, bottom, region_ink, ctx, out,
               {"l": el, "r": er, "t": et, "bo": ebo})
@@ -364,6 +572,12 @@ def detect(path):
     ctx.sliver_ink = int(ink * PANEL_SLIVER_INK_FRAC)
     print(f"min_side={ctx.min_side} min_area={ctx.min_area} "
           f"min_gutter={ctx.min_gutter} sliver_ink={ctx.sliver_ink}")
+    bodies = [] if NOVETO else collect_bodies(data, PANEL_BODY_MIN_SIDE_FRAC,
+                                              sw * sh * PANEL_BODY_MIN_AREA_FRAC)
+    ctx.bodies = [b for b in bodies if b["sides"] >= PANEL_BODY_FRAME_MIN]
+    print(f"bodies {len(bodies)} -> framed {len(ctx.bodies)}"
+          + ("".join(f"\n    body {b['x']},{b['y']} {b['w']}x{b['h']} sides={b['sides']}"
+                     for b in bodies if b["sides"] >= PANEL_BODY_FRAME_MIN)))
     cells = []
     global TRACE
     TRACE = True
@@ -371,7 +585,8 @@ def detect(path):
         {"l": (0.0, 0.0), "r": (float(sw - 1), 0.0),
          "t": (0.0, 0.0), "bo": (float(sh - 1), 0.0)}, 0, ctx, cells)
     TRACE = False
-    print(f"cut -> {len(cells)} leaves, shear {ctx.shear_splits}/{ctx.shear_searches}")
+    print(f"cut -> {len(cells)} leaves, shear {ctx.shear_splits}/{ctx.shear_searches}"
+          f", vetoed candidates {ctx.vetoes}")
 
     sx, sy = native_w / sw, native_h / sh
 
@@ -430,12 +645,13 @@ if __name__ == "__main__":
     # `... noclip` and silently ignored the word it was documented to read.
     args = sys.argv[2:]
     unknown = [a for a in args
-               if a not in ("noclip", "root", "all", "loose")]
+               if a not in ("noclip", "root", "all", "loose", "noveto")]
     if unknown:
         raise SystemExit("unknown argument(s): %s\n"
-                         "usage: panelprobe.py <image> [noclip] [root|all] [loose]"
+                         "usage: panelprobe.py <image> [noclip] [root|all] [loose] [noveto]"
                          % " ".join(unknown))
     NOCLIP = "noclip" in args
+    NOVETO = "noveto" in args
     if "root" in args:
         SHEAR_DEPTH = "root"
     elif "all" in args:

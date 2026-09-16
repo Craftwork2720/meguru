@@ -1554,22 +1554,75 @@ no cut at all on a skewed page, because the only answer to tilt had been turned 
 | shear | **on** | off |
 | min panel area | **0.005** | 0.01 |
 | live detector | this cut | connected components |
+| what the components give | **a veto on a split** | the panels |
 
-**The connected-component detector is deliberately not ported.** It groups ink into
-connected bodies and keeps each one as a box, merging only boxes that entirely contain
-one another. So a component and the panel it sits inside stay two boxes, and the
-reader sees the same panel twice with slightly different crops. The cut cannot produce
-that: its leaves are disjoint by construction. That is the whole argument, and it is
-why "the reference's live detector" is not by itself a reason to port something — the
-reference's live detector is whatever its authors last switched on, not a verdict.
+**The connected-component detector is deliberately not ported as a detector.** It
+groups ink into connected bodies and keeps each one as a box, merging only boxes that
+entirely contain one another. So a component and the panel it sits inside stay two
+boxes, and the reader sees the same panel twice with slightly different crops. The cut
+cannot produce that: its leaves are disjoint by construction. That is the whole
+argument, and it is why "the reference's live detector" is not by itself a reason to
+port something — the reference's live detector is whatever its authors last switched
+on, not a verdict.
 
-That argument was once contested from the other side, and the contest is settled.
-`05790d1` replaced the cut with the component detector on the grounds that a genuinely
-white band *inside* a panel was being cut in two; `9c9f042` put the cut back, on the
-grounds that the component detector showed the same panel twice — and neither commit
-had a device reading behind it. The cut has since been exercised on a device and stands,
-so **the thresholds are the part to keep and the algorithm is not the part to swap**.
-Anyone reaching for the component pipeline again is re-litigating a settled question.
+**Its bodies of ink *are* ported, as a veto on the cut — and that is what closes the
+`05790d1` question rather than re-opening it.** `05790d1` replaced the cut with the
+component detector on the grounds that a genuinely white band *inside* a panel was
+being cut in two; `9c9f042` put the cut back, on the grounds that the component
+detector showed the same panel twice — and neither commit had a device reading behind
+it. Both were right about their own symptom and neither had to lose: the cut keeps the
+detection and the crop, and the bodies say only where a panel's box *is*, so a split
+can be refused when its band would run through one. So the thresholds are the part to
+keep *and* the algorithm is not the part to swap — what came across is the evidence,
+not the pipeline.
+
+`meguru/panel`'s `collectBodies` is the reference's `collectComponents` and the frame
+evidence it carries, and nothing else. Left behind, each for its own reason: the
+containment rule (a box inside another is a *subset* of the veto it is already under,
+so it would be dead weight), the sampled small-box frame test, the joining of floating
+bodies to the framed neighbour or tier they belong to, and the tier grouping — none of
+which the veto needs, because it wants a panel's box and not the final list of panels.
+`lineSupport` and `frameSides` are 1:1, values included, and the five `PANEL_BODY_*`
+constants are the reference's own; the prefix is this file's so that what they feed is
+not mistaken for a detector. The one structural departure is that the scratch arrays
+are allocated per call rather than held for the process with a `clearScratch` to release
+them: a detection is a long-press, the peak is the same either way, and a second
+lifecycle is one more thing to keep in step.
+
+**The rule, and the drawn page that decides it.** A candidate split is refused when the
+band it would cut on lies strictly inside a framed body's box on the cut axis *and* the
+body spans the region on the other — a band at the body's own edge is that body's frame,
+and cutting along a frame is what the cut is for. Refusing one candidate leaves the
+other axis to be tried; refusing both leaves the region emitted as **one leaf**, and the
+sheared search is not entered at all, because an empty line that ran through a detected
+panel is evidence that the region *is* that panel and a slanted split of it is the same
+mistake at an angle.
+
+The page that proves the rule is drawn rather than found, and the arithmetic is why the
+control that already existed could not do it: **a row of the band carries the panel
+frame's two vertical strokes**, and a row counts as empty only while it holds at most
+`PANEL_GUTTER_INK_RATIO * span` cells — 2.21 of the 443-cell span a 1600-px page maps
+to, one cell being `native_w / 480` page pixels. A 5-px stroke is 2 cells a side, so
+4 > 2.21 and `controls/02_white_band_inside` does **not** reproduce the failure: the cut
+returns one leaf there, and always did. A one-cell frame does. On a 480x720 page, where
+the scan *is* the page, a framed panel with a dense stipple and a full-width hole
+through its own drawing gives **2 leaves without the veto and 1 with it** — the panel cut
+in half at the hole, and then whole — while the same page with the hole stopped short of
+one side gives 1 either way, which is the guard's other half: it must not fire where the
+band was never a gutter. In the probe the whole thing is visible in three lines: the body
+`19,19 443x683 sides=4`, `veto rows 345..374 runs through body 19,19 443x683`, and the
+leaf count. `--noveto` is that same run with the body pass emptied, and it is byte for
+byte the parent commit on every page tried.
+
+**On the 15-page sample the veto changes nothing at all, and that is the honest result
+rather than a reason to drop it.** All 15 come back with identical leaves — counts and
+boxes both — before and after; two of them (p113, p115) refuse a candidate that the
+other axis would have won anyway. The reason is that the cut on this chapter mostly
+*merges*: p112 returns the whole page where the component detector returns four panels,
+and merging is the one failure a veto cannot make worse. The rule is kept for the same
+reason the containment filter is kept — it guards an invariant this sample does not
+happen to exercise — and the drawn page above is the evidence that it lives.
+
 Also not ported: the comic border-stroke plane (`segment_border_split`), off in 1.3's
 own defaults and for a good reason — at map resolution a shared border between two
 bled panels and a black line drawn *through* one panel produce byte-identical maps, so
@@ -2495,7 +2548,7 @@ Each step must pass before the next:
 
     | page | expected |
     |---|---|
-    | a panel carrying a full-width **white band inside its own drawing** | **ONE panel.** The band must not cut it in two |
+    | a panel carrying a full-width **white band inside its own drawing** | **ONE panel.** The band must not cut it in two. The page needs a *hairline* frame for this to bite at all: a row of the band is empty only while the frame's two strokes fit inside the gutter's allowance, `PANEL_GUTTER_INK_RATIO * span` — 2.21 cells of the 443 a 1600-px page maps to. A 5-px stroke is 2 cells a side, so the band never reads as empty and there is nothing for the veto to refuse; the panel chapter has the drawn page that does reproduce it |
     | a page of **tilted panels** — a skewed scan, or gutters that are not axis-aligned | **the panels, split** — `K panels` in the log with K what the eye counts. The reference page for this is Kavita `chapterId=197664`, `pageNumber=115`: `python tools/panelprobe.py <that page>` must print **6** kept leaves, and the one it gets wrong is `249,276 195x206` — two panels whose shared border is crossed by a speech bubble, which is a known limit and not a regression |
     | the same page, **long-pressed** | every panel opens showing **only itself**. Nothing of a neighbour is visible along a slanted edge, and no part of the panel is missing at one — the crop follows the border. In `-d` the `panel zoom on page N … tilt T` line names a non-zero `T` for the five panels whose borders are tilted and `0.000` for the bottom row, whose are square |
     | a normal manga page, 4–6 panels with hairline gutters | the same sequence, in the same reading order, as before |
@@ -2691,14 +2744,17 @@ Each step must pass before the next:
 - **The panel detector has a measurement harness, and it is the only way anything in
   it has ever been decided rather than argued.** `tools/panelprobe.py` is a faithful
   port of `meguru/panel.lua` - the ink predicate, both projections, the recursive cut,
-  the sheared search, `emitLeaf`, the containment filter - that runs on a page image
+  the sheared search, `emitLeaf`, the containment filter, and the bodies of ink a split
+  may not run through - that runs on a page image
   with no Lua interpreter. Feed it a page from a real server and it prints every leaf's
   cells, ink density and position as a percentage of the page, plus what the
-  containment filter drops and why, and under each leaf the **crop box and its four
+  containment filter drops and why, plus each body with its frame evidence and every
+  candidate a body refused, and under each leaf the **crop box and its four
   edge slopes** - which is how a panel that is a quadrilateral gets told apart from
   one that is a rectangle without a device; its flags compare variants (`loose` for the
   sheared ratio before `PANEL_SHEAR_INK_RATIO`, `root` and `all` for the shear's depth,
-  `noclip` for a projection that is not the plugin's). **Reach for it before touching
+  `noclip` for a projection that is not the plugin's, `noveto` for a body pass that
+  refuses nothing). **Reach for it before touching
   anything here** - the
   two bugs above were both resolved by measuring, after several rounds of reasoning
   that were each confident and each wrong. **What it does not model**: Lua's evaluation rules (so
@@ -2712,6 +2768,25 @@ Each step must pass before the next:
   difference between that and "it does nothing" is the whole of the mistake. It has since
   been made inert by the shear's line cut, on a 23-page sample, and it is **kept** rather
   than deleted for exactly this reason.
+- **The veto that refuses a split through a detected panel has two conditions, and only
+  one of them is measured.** *Coverage* — the body has to span the region on the
+  perpendicular axis — is what ships, and `blocked` names its price: two framed panels
+  side by side with a white band across both leave neither body spanning, so no veto
+  fires and the cut still runs through them. A plain *overlap* catches that case and
+  refuses more legitimate splits with it. On the 15-page sample neither choice changes a
+  leaf, because neither fires on a candidate that wins its node — so the sample cannot
+  settle it, and the conservative condition ships until a page does. What could regress
+  in the other direction: `PANEL_BODY_FRAME_MIN` is **1**, the reference's own rule for
+  calling a body framed, so a body spanning several panels with one straight edge vetoes
+  the split between them and they arrive merged. Both are worth re-measuring on a page
+  that has either shape, and neither shape has been seen yet.
+- **The veto is invisible in a device log, by construction.** It can only *merge*, so it
+  changes neither `accept`'s verdict nor the `K panels` count that reports it — and
+  `meguru/panel.lua` has no logger by design, since it is handed a buffer and returns
+  rectangles. So "two panels arrived as one" is a question for `tools/panelprobe.py`,
+  which prints the bodies with their frame evidence, every refused candidate and the body
+  that refused it, and behind `--noveto` the same page with the body pass emptied for the
+  A/B. The device's own line is unchanged, and deliberately so.
 - **Both skewed-page rules are samples, not proofs.** `PANEL_SHEAR_INK_RATIO` changes the
   leaf count on exactly the pages that were broken and on none of the others, where the
   shear never fires at all (`shear 0/3` - the straight cut handles them). The line cut is
