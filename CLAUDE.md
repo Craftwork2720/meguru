@@ -1442,8 +1442,8 @@ divergence that produced a spurious panel got in.
 Two things complicate the cut, and both are ported. Panels are rarely drawn square,
 and a gutter tilted by two degrees leaves no column empty from top to bottom — enough
 to stop the straight cut dead. When no straight gutter exists and an axis already has
-a near-empty line, a ladder of slopes from 2 to 8 degrees either way is tried instead
-and the projection is taken along the slanted line. **The split is then one line
+a near-empty line, a ladder of slopes from under a degree to eight and a half either
+way is tried instead and the projection is taken along the slanted line. **The split is then one line
 through the middle of the empty run that projection found** — a run of empty *lines*
 in the sheared projection is a run of empty *columns* through the region's own
 mid-height, because `shift` is measured from the region's mid-line and is zero there —
@@ -1452,6 +1452,19 @@ rectangle cannot follow a slanted separator, so each child keeps a wedge of its
 neighbour on one side and gives one up on the other; which way round that falls
 depends on where on the page the reader is looking, and it is the price of the crop
 being axis-aligned.
+
+**The ladder's step is 0.015, and it was 0.035 — a reader found the reason.** They
+reported that panels separated by a *slanted* gap merge more often than square ones,
+and that is the shear's own arithmetic: `floor(slope * (x - xmid) + 0.5)` means a
+ladder half a step off the true angle walks the gap across the region, and at 0.035
+the drift over a 480-cell width is up to 8 cells. A separator two cells thick then
+spreads over three or four projected lines and **none of them is empty**, which is
+the one thing `PANEL_SHEAR_INK_RATIO` will not forgive. The measurement, on the
+second chapter: a 0.005 step — six times the work — gives the *identical* panel
+count on every page tried, so 0.015 is not a compromise; the finer ladder moves one
+page (its 35, 3 panels to 4) and nothing else, including the first chapter's
+reference page at 6 panels, whose tier separator sits at 0.115 and is therefore
+nearer this ladder's 0.120 than its 0.105.
 
 **Handing both children the whole projected band is what this replaced, and it is the
 worst defect this detector has had.** Widening the run by `drift` at each end gives the
@@ -2730,6 +2743,12 @@ Each step must pass before the next:
   above). What is worth knowing is that the reported page is *not* one of those — it has
   clean empty gutters and the cut finds five of its six panels — so a reader who sees
   whole-page "panels" on those pages is looking at a different problem.
+- **Page numbers in these notes are the *URL's*, not the reader's, and they differ by
+  one.** Kavita's `pageNumber=N` returns what the reader's own paging calls page N+1, so
+  every `p32`/`p87`/`p100` in this file is the page a reader would call 33/88/101. The
+  measurements were taken from one numbering and the complaints from the other, and
+  matching them cost a wrong diagnosis — three of five "failing" pages were not the
+  pages being complained about. Quote the `pageNumber` when a page has to be identified.
 - **A *second* chapter of that series merges panels, and chasing it is worth keeping
   whole.** Its mergers are mostly *partial* — a tier's two panels left as one — and their
   boundaries are neither an empty gutter nor a drawn line but simply the artwork stopping.

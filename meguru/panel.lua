@@ -205,17 +205,37 @@ local PANEL_COVERAGE_MIN = 0.5
 --
 -- Panels are rarely drawn perfectly square, and a gutter tilted by even two
 -- degrees leaves no column empty from top to bottom, which is enough to stop the
--- straight cut entirely. The ladder covers 2 to 8 degrees either way, and the
--- spacing matters: a coarser ladder straddles 5 degrees and misses the most
--- common case. 1.3 ships this search **on**, and that is what a skewed page
+-- straight cut entirely. The ladder covers under a degree to eight and a half
+-- either way. 1.3 ships this search **on**, and that is what a skewed page
 -- needs; the later version turned it off, which is one of the two failures this
 -- module has already been through.
+--
+-- **The step is 0.015 rather than 1.3's 0.035, and a thin gap is why.** The
+-- projection shears by `floor(slope * (x - xmid) + 0.5)`, so a ladder that is
+-- half a step off the true angle walks the gap across the region: at a step of
+-- 0.035 the drift over a 480-cell width is up to 8 cells, and a separator two
+-- cells thick then spreads over three or four projected lines and none of them
+-- is empty. A reader reported exactly that shape — "it merges panels with a
+-- slanted gap more often than the rectangular ones" — and it is the shear's own
+-- arithmetic rather than their page.
+--
+-- Measured against a 0.005 step, which is six times the work, this one gives the
+-- identical panel count on every page tried (nine of the second chapter's, ten
+-- of the first's, including the reference page at 6 panels, whose tier separator
+-- sits at 0.115 — nearer to 0.120 than to 0.105, so this is that page's
+-- regression test). The finer ladder moves one page: the second chapter's page
+-- 35, 3 panels to 4.
 local PANEL_SHEAR_SLOPES = {
-    0.035, -0.035,   -- 2.0 degrees
-    0.061, -0.061,   -- 3.5
-    0.087, -0.087,   -- 5.0
-    0.115, -0.115,   -- 6.5
-    0.141, -0.141,   -- 8.0
+    0.015, -0.015,   -- 0.86 degrees
+    0.030, -0.030,   -- 1.7
+    0.045, -0.045,   -- 2.6
+    0.060, -0.060,   -- 3.4
+    0.075, -0.075,   -- 4.3
+    0.090, -0.090,   -- 5.1
+    0.105, -0.105,   -- 6.0
+    0.120, -0.120,   -- 6.8
+    0.135, -0.135,   -- 7.7
+    0.150, -0.150,   -- 8.5
 }
 -- The slanted search runs only this deep, and only where an axis already has a
 -- near-empty line: a splash page has no such line, and the search cannot succeed
