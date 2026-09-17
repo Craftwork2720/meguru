@@ -72,28 +72,33 @@ local DEFAULTS = {
     -- wants that presses the switch. See `meguru/viewport` for the geometry of both.
     panel_view        = "window",
 
-    -- How close the window view sits: a magnification over fit-to-screen, so 1 is a
-    -- whole page on the screen and 1.9 a little over half of one. It is what decides
-    -- how many stops a panel takes — see `meguru/viewport` — and it is one number for
-    -- everything rather than a per-book answer, like the two settings above it.
+    -- How close the window view sits, as **a multiple of the page's width on the screen**:
+    -- 1.0 is a page exactly as wide as the screen, 1.7 a page seventy percent wider than it,
+    -- and 1.9 the top of the range. It is what decides how many stops a panel takes — see
+    -- `meguru/viewport` — and it is one number for everything rather than a per-book answer,
+    -- like the two settings above it.
+    --
+    -- **The width and not "the whole page", because a level has to mean one thing.** The
+    -- measure this replaced was "the whole page fits", which made a level mean a different
+    -- magnification on every page shape and made *rotating the device* change how close the
+    -- view was — a wider screen lowered that fit instead of raising it. A reader who wants the
+    -- whole page has the free view, whose own floor is that measure; see `pageFitScale`.
     --
     -- **Set from the viewer's own button row, not from a menu row**, so the reader
     -- sees the page change as they change it. This is only the store: `ui/reader`
     -- reads it and hands the number to the view, and `ui/panelzoom` writes it back —
     -- the value button cycling the three presets, and the `-`/`+` beside it stepping
-    -- by a tenth anywhere in 1..1.9. 1.7 is the middle of the three, and the level
-    -- that leaves a typical 1600x2400 scan rendering at about 1.16 screen pixels per
-    -- page pixel — a mild magnification of the file rather than 1.9's 1.30.
+    -- by a tenth anywhere in 1..1.9. 1.7 is the middle of the three, and the level that
+    -- leaves a typical 1600x2400 scan on a 1236x1648 screen at about 1.31 screen pixels
+    -- per page pixel — a mild magnification of the file, where 1.9 asks 1.47.
     --
-    -- **In the two window views the fit is measured against the page's *content*.** A
-    -- scan's white border is then not part of what a level is a multiple *of*: at 1.0 the
-    -- window covers the artwork rather than the artwork plus its paper, and a panel the
-    -- window only just missed may fit in one stop instead of two. The window itself stays
-    -- the page's and is clamped to it, so a margin is somewhere these two views can be
-    -- moved onto, not somewhere they refuse to go. Where the reader has cropping off the
-    -- box is the whole page and the sentence above is literally true — which is the point
-    -- of taking the box from that seam rather than deciding for them: see `contentDims`
-    -- in `meguru/ui/panelzoom`.
+    -- **It is a multiple of the page's *content* width wherever the reader's crop gives
+    -- one.** A scan's white border is not part of what a level is a multiple *of*, so the
+    -- same level buys the artwork on a page with fat margins. The window itself stays the
+    -- page's and is clamped to it, so a margin is somewhere these two views can be moved
+    -- onto, not somewhere they refuse to go; where the reader has cropping off the content
+    -- is the whole page and this paragraph says nothing. See `contentDims` in
+    -- `meguru/ui/panelzoom`.
     panel_zoom_level  = 1.7,
 
     -- The free view's zoom, and the one preference here stored as a **scale** rather

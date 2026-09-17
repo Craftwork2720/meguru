@@ -16,11 +16,21 @@ a requested pixel size.
 ## The zoom, and why it is anchored to the page
 
 The zoom is **screen pixels per page pixel**, and the caller passes it in: a *level* —
-1.4, 1.7, 1.9 — is a magnification over fit-to-screen, so the scale is
-`fitScale(dims, screen) * level`. One number for the whole mode rather than per panel
-or per page, because a zoom that moved with the layout would make "one more click"
-mean something different each time. Which level is the reader's, and they say so from
-the button row inside the viewer; this module neither stores nor chooses it.
+1.4, 1.7, 1.9 — is a multiple of the page's width on the screen, so the scale is
+`fitScale(dims, screen) * level`, where the `1` of that is "a page exactly as wide as
+the screen". Which is what makes a level mean the same thing on every page and in every
+orientation, and therefore worth remembering: **the button row inside the viewer says
+which level the reader is on, the preference stores it, and this module neither stores
+nor chooses it.** See `fitScale` for the definition and for the one it replaced.
+
+That is the reader's number and it is what every panel is shown at, with **one
+exception**: a panel the window misses by a few percent is *eased* to fit rather than
+costing a whole extra stop to show a sliver of itself. See `PANEL_WINDOW_TOLERANCE`.
+
+One measure in here is *not* a level and is worth naming before it is mistaken for one:
+`pageFitScale`, the scale at which the whole page is on the screen. It is not
+interchangeable with a level — a page taller than the screen is never one level wide, so
+the whole page sits *below* 1.0 — and the only caller is the free view's floor.
 
 That is the reader's number and it is what every panel is shown at, with **one
 exception**: a panel the window misses by a few percent is *eased* to fit rather than
@@ -81,8 +91,35 @@ letterboxes. See `frameFor`.
 
 local Viewport = {}
 
--- The scale that fits a whole page onto this screen: the `1` of "1.7x fit".
+-- The scale a *level* is a multiple of: **the page's width on the screen's width** — the `1`
+-- of "1.7x".
+--
+-- A level is therefore always "how much wider than the screen the artwork is": 1.0 is a page
+-- exactly as wide as the screen, 1.4 one forty percent wider, and a level reads the same on a
+-- portrait screen, a landscape one, and a page of any shape.
+--
+-- **The definition this replaced was the *smaller* of the two ratios**, so 1.0 meant "the whole
+-- page fits" — friendlier to describe and wrong in two ways a reader actually met. It made one
+-- level mean a different magnification on every *page* shape, since the smaller ratio is the
+-- page's height on a portrait screen and its width on a landscape one; and it made **rotating
+-- the device change the magnification**, the same 1.9 coming out 22% closer standing up than
+-- lying down, because a wider screen lowered the ratio instead of raising it. Neither is a
+-- property anyone chose; both fall straight out of taking a minimum.
+--
+-- `dims` is the page's **content** wherever the reader's crop gives one (see `contentDims` in
+-- `meguru/ui/panelzoom`), so a margin is not part of what a level is a multiple *of*.
 function Viewport.fitScale(dims, screen)
+    return screen.w / dims.w
+end
+
+-- The scale at which the whole of `dims` is on the screen at once.
+--
+-- Exactly one caller needs it — the free view's floor — because that view is "the page, with
+-- nothing in the way" and its `-` has to be able to reach the whole page, which is the one
+-- thing a level cannot name: a page taller than the screen is never one level wide. Everything
+-- that talks about a level uses `fitScale` above, **including that view's own step buttons**,
+-- so the two are not interchangeable and the difference between them is the point.
+function Viewport.pageFitScale(dims, screen)
     return math.min(screen.w / dims.w, screen.h / dims.h)
 end
 
@@ -306,16 +343,19 @@ end
 -- The scale the free view may move between, as `min, max` in screen pixels per page
 -- pixel.
 --
--- **The minimum is not always fit-to-screen.** A page *smaller* than the screen has a fit
--- above 1, and there the whole page at fit is already magnified; the floor has to come
--- down to 1 so that "original size" — one page pixel to one screen pixel, the one scale
--- in that view that is not a magnification of anything — stays reachable. The maximum is
--- the top of the range the view's own step buttons work in, and never below 1 either, for
--- the same reason: a page far smaller than the screen has a fit well above 4, and a ceiling
--- of `4 * fit` would then be nowhere near Original.
+-- **The floor is a whole page and the ceiling is a number of levels, and that they are two
+-- different measures is the whole of it.** The floor comes from `pageFitScale`, because this
+-- view has to be able to show the whole page whatever shape it is; the ceiling is four levels,
+-- because the range a reader steps through is the one the buttons beside them label. A single
+-- measure could not do both: the whole page is below one level on any page taller than the
+-- screen, so a floor taken from `fitScale` would put the page out of reach.
+--
+-- Both are floored at 1 for **original size** — one page pixel to one screen pixel, the one
+-- scale in that view that is not a magnification of anything. A page smaller than the screen
+-- has both measures above 1, so this is the case the floor at 1 is for.
 function Viewport.scaleBounds(dims, screen)
-    local fit = Viewport.fitScale(dims, screen)
-    return math.min(fit, 1), math.max(fit * 4, 1)
+    return math.min(Viewport.pageFitScale(dims, screen), 1),
+        math.max(Viewport.fitScale(dims, screen) * 4, 1)
 end
 
 -- One window, centred on a point of the page and clamped to the **page**.

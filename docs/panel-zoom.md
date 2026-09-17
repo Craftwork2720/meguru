@@ -624,16 +624,35 @@ caller, because that is what a level is once it stops being hardcoded:
 it — but it is no longer true that it never *chooses* one, and the exception is the next
 paragraph.
 
+**And `fitScale` is the page's width on the screen's width, not "the whole page fits".** A
+level is therefore always "how much wider than the screen the page is": 1.0 is a page exactly
+as wide as the screen, 1.4 one forty percent wider, and the definition reads the same on a
+portrait screen, a landscape one, and a page of any shape. `dims` is the page's **content**
+where the reader's crop gives one, so a margin is not part of what a level is a multiple *of*.
+
+| | the measure this replaced | now |
+|---|---|---|
+| what 1.0 means | the whole page fits | a page as wide as the screen |
+| the same level on a page of another shape | a different magnification | the same |
+| same level after rotating the device | **22% closer standing up than lying down** | 29% closer in landscape, because a wider screen is more room |
+
+That 22% was the bug that produced the change, and it is worth keeping the shape of: a
+*minimum* over two ratios is the page's height on a portrait screen and its width on a
+landscape one, so a wider screen lowered the fit instead of raising it. Neither property was
+chosen; both fell out of taking a minimum. The cost is named and accepted: **the whole page is
+now below 1.0**, so these two views can never show it at once — a page taller than the screen is
+never one level wide. The free view is where that lives, and its floor is the whole-page
+measure, not a level: see `pageFitScale` and `Viewport.scaleBounds`.
+
 What the scale decides is how many stops a panel takes — one for a panel the window
 covers, two for one too big in one axis, four for one too big in both — so the level is
-not cosmetic. Measured on a 1600x2400 page against a 1236x1648 screen: 1.4x covers
-1286x1714 page pixels, 1.7x 1059x1412, 1.9x 947x1263, and the render is the screen's
-pixels at every one of them, to within a pixel or two — the window is rounded to whole
-page pixels (the tile key names it), and that rounding times the scale is the residual.
-It is under a pixel until the scale passes 1, which is a page smaller than the screen.
-The default is **1.7**, the middle of the three: a typical page then renders at about
-1.16 screen pixels per page pixel, a mild magnification of the file rather than the 1.30
-that 1.9 asks for.
+not cosmetic. Measured on a 1600x2400 page against a 1236x1648 screen, where the width-fit is
+1236/1600 = 0.7725: 1.4x covers 1143x1524 page pixels, 1.7x 941x1255, 1.9x 842x1123, and the
+render is the screen's pixels at every one of them, to within a pixel or two — the window is
+rounded to whole page pixels (the tile key names it), and that rounding times the scale is the
+residual. It is under a pixel until the scale passes 1, which is a page narrower than the
+screen. The default is **1.7**, the middle of the three: a typical page then renders at about
+1.31 screen pixels per page pixel — a mild magnification of the file, where 1.9 asks 1.47.
 
 ### A panel the window *nearly* holds is eased, not stepped
 
@@ -904,14 +923,20 @@ so remembering it where it moves would be a disk write per gesture. `onCloseWidg
 the reader's answer is final and it happens once per viewer — whether they close it, switch
 views, or a page boundary takes it. The label carries the live value until then.
 
-**The floor is `min(fit, 1)` and the ceiling is `max(4 * fit, 1)`, and neither is a
-simplification.** On a page *smaller* than the screen the fit is already above 1, so a floor
-of fit would put Original below the minimum and out of reach — and a ceiling of `4 * fit` on
-such a page would be nowhere near it either, which is why the maximum is floored at 1 too.
-Measured on the drawn layouts:
-0.687 .. 2.747 for a 1600x2400 page against a 1236x1648 screen, and at the bottom of that
-range the window is the whole page letterboxed — the only scale whose request is *not* the
-screen's pixels, because the window had to shrink to the page.
+**The floor is a whole page and the ceiling is four *levels*, and that they are two different
+measures is the point.** The floor is `pageFitScale` — the smaller of the two ratios, so the
+whole page is reachable whatever its shape, which is the one thing a level cannot name. The
+ceiling is `4 * fitScale`, four of the levels the buttons beside it label, so a reader can step
+from the whole page up to four times the page's width. A single measure could not do both: on
+any page taller than the screen the whole page sits *below* 1.0, so a floor taken from
+`fitScale` would put it out of reach. Both are floored at 1 for **original size** — one page
+pixel to one screen pixel — because a page *smaller* than the screen has both measures above 1
+and Original would otherwise be below the minimum.
+
+Measured for a 1600x2400 page against a 1236x1648 screen: **0.687 .. 3.090**. The floor is the
+whole page, and at it the window is the whole page letterboxed — the only scale whose request is
+*not* the screen's pixels, because the window had to shrink to the page. The ceiling is
+`4 * 1236/1600`, four page-widths on the screen.
 
 **Four ways to set the zoom, and they answer four different questions.** The value button
 *cycles*: 1.5, 2 and 2.5, wrapping back to 1.5 — levels, and the reason this view works in

@@ -336,21 +336,25 @@ Each step must pass before the next:
     label must follow every press, and the window must visibly change with it. From a level
     *between* the presets, the `1.7x` button must walk **up** rather than snapping down —
     at `1.8×` it gives 1.9 — and the range must stop at `1.0×` and `1.9×` rather than
-    running away, with the window at `1.0×` being the whole page letterboxed and `+` at
-    `1.9×` doing nothing at all. `-`/`+` write
+    running away, with `+` at `1.9×` doing nothing at all. **`1.0×` is a page exactly as wide
+    as the screen, not the whole page**: on a page taller than the screen the window is the
+    page's width and as much of its height as fits, so the whole page is *never* one stop here
+    — the free view's `-` is where that lives, and it is the check that the two measures were
+    not quietly merged back into one. `-`/`+` write
     the same preference the cycle does, so a level reached by nudging must survive the next
     page and the next book.
 
     Then the **content crop**, which these two views work their zoom out from and the cropped
     view does not touch at all. With *Page Crop* at `auto` (⋮ → **Page crop** → *auto*),
     long-press the same page and compare it against the same page with the crop off:
-    **the same level is now closer.** A tenth of the page given to margins was a tenth of the
-    magnification the fit was giving away, so at the level the reader was on the window covers
-    *less* page — which means a panel that fitted in one pass can need two or four, and that is
-    the price rather than a defect: the same *on-screen* size is reached about a notch lower.
-    What the crop buys is the bottom of the range — at `1.0×` the window covers the artwork
-    rather than the artwork plus its paper, so a panel inside the content box still fits in one
-    pass at the floor and a scan with fat margins is no longer permanently under-magnified.
+    **the same level is now closer.** The margin was in the denominator of every level — a tenth
+    of the page given to paper was a tenth of the magnification given away — so taking it out
+    shortens the ladder: at the level the reader was on the window covers *less* page, and a
+    panel that fitted in one pass can need two or four. That is the price rather than a defect,
+    and the same *on-screen* size is reached about a notch lower. What the crop buys is that
+    `1.0×` is now the width of the **artwork** rather than the width of the artwork plus its
+    paper, so a scan with fat margins is no longer permanently under-magnified at every level
+    the reader can reach.
     **The margin must still be reachable**: pan the free view towards a page edge and the paper
     must come into view, because only the fit was cropped and the window is still the page's.
     Then set *Page Crop* to `none` and long-press again: everything must be **exactly** as it

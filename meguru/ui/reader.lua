@@ -766,10 +766,11 @@ local function installPanelZoom(ui)
             -- already the page point — `screenToPageTransform` above — so nothing
             -- is converted again here.
             tap = { x = pos.x, y = pos.y },
-            -- The magnification over fit-to-screen, read here and written back by the
-            -- viewer's own button: the *store* is the preference, and the view is
-            -- handed the number rather than the preference's name, like the direction
-            -- and the mode beside it.
+            -- The multiple of the page's width on the screen — see `Viewport.fitScale` for
+            -- what that means and for the measure it replaced, and `meguru/settings` for
+            -- where the reader sets it. Read here and written back by the viewer's own
+            -- button: the *store* is the preference, and the view is handed the number
+            -- rather than the preference's name, like the direction and the mode beside it.
             level = Settings.get("panel_zoom_level"),
         }
         local ok_show, shown = pcall(PanelZoom.open, ui, pos.page, panels, start,

@@ -1349,6 +1349,13 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
     local steps, start = panels, index
     local screen
     local free_state
+    -- What the two window-shaped views measured, for the one line below. **Every number the
+    -- geometry used is here**, because a window that comes out the wrong shape is otherwise
+    -- indistinguishable in a log from a page that is the wrong shape, and the four possible
+    -- culprits — the screen we read, the page's dims, the content box, the level — are only
+    -- separable by printing them side by side. The cropped view leaves it nil: it measures
+    -- nothing against the screen.
+    local geom
     if free then
         -- One window and no walk. The page's dimensions are all this view needs — the
         -- caller fetched and decoded the page for them (`getPageDims` is the decoder), so
@@ -1386,6 +1393,7 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         end
         steps, start = { step }, 1
         free_state = { dims = dims, screen = screen, scale = scale }
+        geom = { dims = dims, content = content, screen = screen, scale = scale }
     elseif window then
         -- The page's own size, in the space the panel rects are in. The bytes are
         -- already in hand — `getPanelsFromPage` fetched and decoded them to find
@@ -1426,6 +1434,7 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         if opts.keep and index then
             start = Viewport.stepNearest(steps, index, opts.keep.x, opts.keep.y) or start
         end
+        geom = { dims = dims, content = content, screen = screen, scale = scale }
     end
     local images = {}
     for i, rect in ipairs(steps) do
@@ -1504,6 +1513,23 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
     -- that call may throw: a throw leaves a viewer on the stack while the caller is told
     -- the open failed, and the caller falls back to stock with a Meguru viewer still up.
     -- Everything the line needs is known by now, so it goes first and the invariant holds.
+    if geom then
+        -- One line, and it is the only place the geometry can be read back. `screen` is the
+        -- size the *plugin* was handed, which is the thing to compare against what the
+        -- device is actually showing: `CanvasContext:getSize()` follows a rotation (the
+        -- framebuffer's `bb:getWidth` swaps on an odd rotation mode), so a line here whose
+        -- screen is portrait while the reader is looking at a landscape panel is the whole
+        -- diagnosis — and one whose screen is landscape moves the fault off this line and
+        -- onto `dims` or `content` beside it.
+        local c = geom.content
+        logger.dbg("Meguru: window geometry page", page,
+            "screen", geom.screen.w .. "x" .. geom.screen.h,
+            "rotation", tostring(Screen:getRotationMode()),
+            "page", geom.dims.w .. "x" .. geom.dims.h,
+            "content", c and (c.w .. "x" .. c.h) or "none",
+            "level", tostring(opts and opts.level),
+            "scale", string.format("%.4f", geom.scale))
+    end
     if free then
         logger.dbg("Meguru: free zoom opened on page", page,
             "(" .. tostring(mode) .. ", " .. freeLabel(free_state.scale,
