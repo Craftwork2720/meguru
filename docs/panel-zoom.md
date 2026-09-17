@@ -551,10 +551,13 @@ call may throw, or a viewer is left on the stack while the caller is told the op
 **A long-press opens one of two views, and the preference picks which.** Cropped — the
 panels cut out of the page, each its own image, quad-masked. Or *window*: the page
 stays whole and a rectangle moves over it at one fixed zoom, anchored to the panel's
-edges. `Panel view` is the row; `meguru/settings.lua`'s `panel_view` is the value; a
-*refused* page ignores it, because a page the detector would not decompose is one
-whole-page rectangle and a window would cut it into a top and a bottom nobody asked to
-step through. Everything else — the detector, the reading order, `Panel.indexAt`,
+edges. `Panel view` is the row; `meguru/settings.lua`'s `panel_view` is the value, and
+**window is the default** — a choice rather than a measurement: it shows the page as it
+is, so a panel the detector merged, or a border it read wrongly, still shows the artwork
+that is there, at the price of a strip of the neighbour at the window's edge, where the
+cropped view would have cut it away. A *refused* page ignores the preference, because a
+page the detector would not decompose is one whole-page rectangle and a window would cut
+it into a top and a bottom nobody asked to step through. Everything else — the detector, the reading order, `Panel.indexAt`,
 navigation, the pre-warm, the page boundary — is one implementation for both, which is
 what makes this a second view rather than a second feature.
 

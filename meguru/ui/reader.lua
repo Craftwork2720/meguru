@@ -439,10 +439,14 @@ end
 --- read straight from the preference every time rather than through a cascade.
 function Reader.panelViewMode()
     local mode = Settings.get("panel_view")
-    if mode == "window" or mode == "zoom" then
+    if mode == "crop" or mode == "window" or mode == "zoom" then
         return mode
     end
-    return "crop"
+    -- A stored value this build does not know — a newer version's view, or a corrupt
+    -- store — and the answer is **the default and not the original view**, so that
+    -- this line and `Settings.DEFAULTS.panel_view` cannot come to say different
+    -- things. They are two places and they must move together.
+    return "window"
 end
 
 --- The direction this book is read in, as `"manga"` or `"comic"`.

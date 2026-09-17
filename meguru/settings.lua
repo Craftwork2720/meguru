@@ -58,14 +58,19 @@ local DEFAULTS = {
     -- and was this plugin's for markers.
     panel_zoom        = true,
 
-    -- Which of the two views a long-press opens: the panels cut out of the page
-    -- and shown one at a time, or the page kept whole with a window moved over it.
-    -- `"crop"` | `"window"`, and it says nothing about *whether* there is a panel
-    -- view — that is `panel_zoom` above, and this is only reached when it is on.
+    -- Which view a long-press opens: the panels cut out of the page and shown one at
+    -- a time, the page kept whole with a window moved over it, or the page alone with
+    -- no panels at all. `"crop"` | `"window"` | `"zoom"`, and it says nothing about
+    -- *whether* there is a panel view — that is `panel_zoom` above, and this is only
+    -- reached when it is on.
     --
-    -- Cropped by default, because it is what this plugin has always done and what
-    -- its panel geometry was measured for. See `meguru/viewport` for the other one.
-    panel_view        = "crop",
+    -- **Window by default, and it is a choice rather than a measurement.** It shows
+    -- the page as it is, so a panel the detector merged, or a border it read wrongly,
+    -- still shows the reader the artwork that is there — at the price of a strip of
+    -- the neighbour at the window's edge, where the cropped view would have cut it
+    -- away. Cropped is the view that fills a panel to the screen, and the reader who
+    -- wants that presses the switch. See `meguru/viewport` for the geometry of both.
+    panel_view        = "window",
 
     -- How close the window view sits: a magnification over fit-to-screen, so 1 is a
     -- whole page on the screen and 2 is half of one. It is what decides how many
