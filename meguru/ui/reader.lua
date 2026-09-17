@@ -534,6 +534,46 @@ end
 --- preference was on would be pinned on for good, and would survive the reader
 --- turning it off — which is precisely the failure the design above was built to
 --- avoid, arriving from the other side.
+--- Stock's own `ReaderHighlight:onPanelZoom`, or nil on a build that moved it.
+---
+--- **Read off the class and never off the instance.** The instance field is the thing every
+--- plugin that wants this gesture overwrites, and whoever installs second captures the other's
+--- wrapper as its own "original" — so the class method is the only handle on stock that does
+--- not depend on the order the plugin directories sort in. It is what every wrapper here falls
+--- back to: a page this detector refuses must land in stock's single-region viewer, never in a
+--- second sequence, or which engine ran would depend on the page.
+---
+--- Lazy and `pcall`ed: it is reached at `ReaderReady` or on a press, when the module is
+--- necessarily loaded, and a build that moved it must cost the fallback and not the feature.
+local function nativePanelZoom()
+    local ok, ReaderHighlight = pcall(require, "apps/reader/modules/readerhighlight")
+    if ok and type(ReaderHighlight) == "table"
+        and type(ReaderHighlight.onPanelZoom) == "function" then
+        return ReaderHighlight.onPanelZoom
+    end
+    return nil
+end
+
+--- Whether the file in front of the reader wants a panel zoom at all.
+---
+--- **Asked of this plugin's own cascade, not read off `panel_zoom_enabled`, and the difference
+--- is the whole reason it exists.** That field is stock's gate and `ReaderHighlight:onHold`
+--- reads it *before* any handler runs, so whichever engine is going to answer the press has to
+--- have won it — and a plugin answering the same gesture wins it last, on every `ReadSettings`.
+--- A handler that trusted the field would be reading the other plugin's answer.
+---
+--- `_meguru_panel_zoom_pinned` and `_meguru_panel_zoom_answer` are the file's own answer when it
+--- has one, remembered by the `onReadSettings` wrap below because the live field it came from is
+--- not reliably ours by the time a press arrives. With no other plugin in the chain the two
+--- agree by construction, which is why this is invisible in the configuration that ships
+--- without one.
+local function meguruPanelZoomWanted(hl)
+    if hl._meguru_panel_zoom_pinned then
+        return hl._meguru_panel_zoom_answer == true
+    end
+    return Settings.get("panel_zoom") == true
+end
+
 --- The body of Meguru's own long-press handling.
 ---
 --- Split out of the wrapper below because there are now two wrappers that reach it: the one
@@ -684,6 +724,18 @@ local function installPanelZoom(ui)
         -- file is allowed to keep a copy. A file answered in an earlier session
         -- counts exactly as much as one answered in this one.
         self._meguru_panel_zoom_pinned = own and true or false
+        -- The file's own answer, kept beside the flag that says it answered: the live field it
+        -- was read from is written over by a rival plugin later in this same event, so the
+        -- press asks this instead. See `meguruPanelZoomWanted`.
+        -- Written as a branch and not as `own and self.panel_zoom_enabled or nil`: that idiom
+        -- collapses the file's "off" to nil, which happens to read the same way through
+        -- `meguruPanelZoomWanted` and is the shape this codebase warns about elsewhere — a
+        -- normalising step that turns one valid answer into another.
+        if own then
+            self._meguru_panel_zoom_answer = self.panel_zoom_enabled == true
+        else
+            self._meguru_panel_zoom_answer = nil
+        end
         -- **Written unconditionally now, where it used to stand aside for a rival.**
         -- The field is stock's gate and `ReaderHighlight:onHold` reads it *before* any
         -- handler runs — so a rival that pins it true (Panels+ does, after every
@@ -711,6 +763,9 @@ local function installPanelZoom(ui)
             orig_toggle(self, ...)
         end
         self._meguru_panel_zoom_pinned = true
+        -- Stock's row is the reader answering for *this* file, mid-session, and the stash above
+        -- would otherwise still hold the answer the file was opened with.
+        self._meguru_panel_zoom_answer = self.panel_zoom_enabled
     end
 
     -- Stock writes the live field into the sidecar on every save, so a file
@@ -740,20 +795,73 @@ local function installPanelZoom(ui)
     -- before this existed, and the two detectors back each other up rather than
     -- one being a rewrite of the other.
     --
-    -- Stock's `onHold` has already gated on `self.panel_zoom_enabled` by the
-    -- time this runs, so the preference is not re-checked here.
-    local orig_zoom = hl.onPanelZoom
-    hl.onPanelZoom = function(self, arg, ges)
-        -- Stock's own handler, for the presses this plugin has nothing to show for.
-        local function stock(s, a, g)
-            if type(orig_zoom) == "function" then
-                return orig_zoom(s, a, g)
-            end
+    -- Stock's `onHold` has already gated on `self.panel_zoom_enabled` by the time this runs, so
+    -- the field is not re-read here — see `meguruPanelZoomWanted` for what *is* asked, and why.
+    --
+    -- **One wrapper, and it is the only thing this plugin puts on the gesture.** It does not
+    -- chain to whatever it displaced: a rival is not consulted, and the fallback for a press
+    -- this detector cannot serve is stock's own handler (`nativePanelZoom`), so the engine a
+    -- press lands in stays a property of this plugin rather than of the page.
+    --
+    -- Held on the highlight as `_meguru_panel_zoom_fn`, which is what lets the re-install at
+    -- `ReaderReady` tell "still ours" from "someone replaced it" — the field is compared against
+    -- the wrapper, not against a flag, because a flag stays true through a foreign assignment.
+    local function press(self, arg, ges)
+        if not meguruPanelZoomWanted(self) then
+            -- `false` and not stock: the reader turned the panel zoom off for this file, and
+            -- stock would open the single region under the finger, which is the thing they
+            -- turned off. `onHold` reads that false with the text-selection fallback pinned off,
+            -- so the press does nothing at all — which is what the row promises.
             return false
         end
-        return meguruPanelZoom(self, arg, ges, stock)
+        return meguruPanelZoom(self, arg, ges, nativePanelZoom())
     end
+    hl._meguru_panel_zoom_fn = press
+    hl.onPanelZoom = press
 
+    return true
+end
+
+--- Logged once per process, like the other repair: "why is my panel viewer not the one
+--- showing" is worth one line, not one per book for a whole session.
+local panel_zoom_top_logged = false
+
+--- Put this plugin's wrapper back on top of whatever holds the gesture now.
+---
+--- `Reader.install` runs at plugin `init()`, and a plugin that wants this gesture patches it at
+--- *its* `init()` — so whichever of the two directories sorts later ends up on top, and in the
+--- order these two sort in it is the other one. `ReaderReady` is the first seam provably past
+--- all of them (`readerui.lua:517` fires the event and only then runs this callback list, and
+--- both `init()` and the `ReadSettings` broadcast are behind it), which makes it the moment
+--- "who has the last word on this gesture" can be settled.
+---
+--- **It reads nothing at all from the other plugin.** The question is whether the field is
+--- still the wrapper this plugin installed; a `false` answer means something replaced it, and
+--- that is the whole test — no name, no private field, nothing to keep in step with code we do
+--- not control. A plugin that patched the *class* instead of the instance would leave this
+--- finding its own wrapper in place, and the press would still be ours: the degradation is the
+--- quiet direction.
+local function installPanelZoomTop(ui)
+    local hl = ui and ui.highlight
+    if not (hl and ui.paging) then
+        return false
+    end
+    local ours = hl._meguru_panel_zoom_fn
+    if not ours then
+        return false
+    end
+    if hl.onPanelZoom == ours then
+        -- Still ours and still on top: nothing displaced it, nothing to repair.
+        return false
+    end
+    if nativePanelZoom() == nil then
+        -- Logged and left alone. Re-installing without stock's handler would make the fallback
+        -- for a refused page the other plugin's sequence, and a wrong engine chosen silently is
+        -- worse than a press that stays with whichever plugin holds it.
+        logger.warn("Meguru: stock onPanelZoom not found; the long-press is left where it is")
+        return false
+    end
+    hl.onPanelZoom = ours
     return true
 end
 
@@ -1523,6 +1631,13 @@ function Reader.install(plugin)
                 config_menu_repair_logged = true
                 logger.info("Meguru: the config menu was replaced since load;"
                     .. " curation re-installed")
+            end
+            -- The same seam and the same kind of repair, for the long-press rather than the
+            -- menu: a plugin that loads after this one has already taken the gesture by now.
+            if installPanelZoomTop(ui) and not panel_zoom_top_logged then
+                panel_zoom_top_logged = true
+                logger.info("Meguru: another plugin held the long-press; Meguru's"
+                    .. " panel viewer has taken it back")
             end
         end)
     end
