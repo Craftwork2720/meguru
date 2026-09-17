@@ -2103,14 +2103,22 @@ spelled out `Original 1:1` instead, and a reader asked for the shorter one. So t
 hold two units, deliberately, and the reason the levels are not labelled as percentages is
 that a percentage of *what* would then need saying.
 
-**The screen is not where the page is drawn, and only the *absolute* conversions care.** The
-button row takes a strip of the screen, so the tile is drawn in what is left of it and best
-fit scales the tile to fit *that* — a little under 1:1, and shifted up by half the strip.
-`meguruFreeMapping` is that answer, and a reader's report is why it exists: **dragging felt
-right and a tap landed somewhere else**, which are both true at once because a *distance*
-between two screen points is unaffected by where the picture sits while an *origin* is not.
-The two conversions that need an origin are a tap and a spread's about-point; the pan needs the
-factor from it as well, a little under one, which is why dragging was slightly short too. The
+**The screen is not where the page is drawn, and the picture area is smaller than it.** The
+button row takes a strip of the screen, and a tile shaped like the screen does not fit beside it
+— nor is it clipped politely: **a viewer given a *function* as its image keeps that function as
+`_scaled_image_func` (`imageviewer.lua:160`) and builds the widget around it with
+`scale_factor = 1` (`:451`), so the tile is drawn 1:1 and what overflows is painted *under* the
+button row.** `stepImage` therefore clamps its output to the size stock hands the image to fit
+into, which is the picture area. In the free view — where the row is always up — a screen-sized
+tile is a tile whose top and bottom the reader never sees, and that is what a reader reported as
+the zoom not working at all.
+
+`meguruFreeMapping` is the other half: one page pixel is `scale x shrink` screen pixels, where
+that clamp is `shrink`, and the origin is where the fitted tile sits inside the area. It was
+written from a reader's report — **dragging felt right and a tap landed somewhere else** — which
+are both true at once, because a *distance* between two screen points is unaffected by where the
+picture sits while an *origin* is not. The two conversions that need an origin are a tap and a
+spread's about-point; the pan needs the factor as well, which it takes from the same place. The
 tap no longer needs any of it — see below — but the spread does.
 
 **A tap closes this view.** The row is permanent here and there are no steps for the thirds to

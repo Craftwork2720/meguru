@@ -97,9 +97,23 @@ end
 -- pixels it has to arrive as, and gets them. The call with neither is byte for byte
 -- the one the cropped sequence has always made, and `Panels+` — which goes through
 -- `drawPagePart` directly — is untouched by either.
+--
+-- **The output size is clamped to what stock says the picture may be, and that is not a
+-- nicety.** A viewer given a *function* as its image keeps it as `_scaled_image_func`
+-- (`imageviewer.lua:160`) and builds the widget around it with `scale_factor = 1` (`:451`) —
+-- so the tile is drawn **1:1**, and one pixel wider than the picture area is one pixel painted
+-- under the button row. The window views' tiles are shaped like the *screen*, and the row takes
+-- a strip of it, so without this the bottom of every window sits behind the buttons. Clamping
+-- the output rather than the region keeps the step the same rectangle, rendered smaller.
 local function stepImage(doc, page, rect)
-    return function()
-        return doc:drawPagePart(page, rect, 0, rect.out_w, rect.out_h)
+    return function(_, max_w, max_h)
+        local tw, th = rect.out_w, rect.out_h
+        if tw and th and max_w and max_h then
+            local shrink = math.min(max_w / tw, max_h / th, 1)
+            tw = math.max(1, math.floor(tw * shrink + 0.5))
+            th = math.max(1, math.floor(th * shrink + 0.5))
+        end
+        return doc:drawPagePart(page, rect, 0, tw, th)
     end
 end
 
@@ -851,6 +865,8 @@ function PanelViewer:meguruCycleFreeZoom()
         return
     end
     local fit = Viewport.fitScale(free.dims, free.screen)
+    logger.dbg("Meguru: free zoom", freeLabel(freeStepAfter(free.scale, fit), fit),
+        "on page", self.page)
     self:meguruFreeWindow(freeStepAfter(free.scale, fit), cur.x + cur.w / 2,
         cur.y + cur.h / 2)
 end
@@ -871,6 +887,11 @@ function PanelViewer:meguruFreeStepZoom(direction)
     local fit = Viewport.fitScale(free.dims, free.screen)
     local level = free.scale / fit + direction * FREE_STEP
     level = math.max(FREE_MIN_LEVEL, math.min(FREE_MAX_LEVEL, level))
+    -- Logged because these are the gestures a reader reports on, and a line per *button press*
+    -- is a deliberate act rather than the per-event chatter a pinch would be. If a press says
+    -- `2.0x` here and the picture does not move, the fault is downstream of the zoom; if there
+    -- is no line at all, the press never reached this view.
+    logger.dbg("Meguru: free zoom", freeLabel(level * fit, fit), "on page", self.page)
     self:meguruFreeWindow(level * fit, cur.x + cur.w / 2, cur.y + cur.h / 2)
 end
 
