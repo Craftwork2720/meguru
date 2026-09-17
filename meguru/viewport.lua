@@ -32,10 +32,6 @@ One measure in here is *not* a level and is worth naming before it is mistaken f
 interchangeable with a level — a page taller than the screen is never one level wide, so
 the whole page sits *below* 1.0 — and the only caller is the free view's floor.
 
-That is the reader's number and it is what every panel is shown at, with **one
-exception**: a panel the window misses by a few percent is *eased* to fit rather than
-costing a whole extra stop to show a sliver of itself. See `PANEL_WINDOW_TOLERANCE`.
-
 What the scale decides is how many stops a panel takes. A panel never wider than
 the window is one stop, centred; one too wide for it is two, its two edges; one too
 wide in *both* axes is four, its four corners — see `positions`. The last is the one
@@ -353,9 +349,14 @@ end
 -- Both are floored at 1 for **original size** — one page pixel to one screen pixel, the one
 -- scale in that view that is not a magnification of anything. A page smaller than the screen
 -- has both measures above 1, so this is the case the floor at 1 is for.
-function Viewport.scaleBounds(dims, screen)
+-- `dims` is the **page** and `content` is the box the levels are measured against, and the two
+-- arguments are not interchangeable: the floor is the whole page, margins included, because
+-- that is the one stop this view exists to reach; the ceiling is levels, which are a multiple
+-- of the content's width. A caller with no crop passes nothing and the two measures come off
+-- the same dims, which is what every caller did before there was a crop to tell them apart.
+function Viewport.scaleBounds(dims, screen, content)
     return math.min(Viewport.pageFitScale(dims, screen), 1),
-        math.max(Viewport.fitScale(dims, screen) * 4, 1)
+        math.max(Viewport.fitScale(content or dims, screen) * 4, 1)
 end
 
 -- One window, centred on a point of the page and clamped to the **page**.

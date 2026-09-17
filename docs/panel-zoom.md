@@ -924,14 +924,24 @@ the reader's answer is final and it happens once per viewer — whether they clo
 views, or a page boundary takes it. The label carries the live value until then.
 
 **The floor is a whole page and the ceiling is four *levels*, and that they are two different
-measures is the point.** The floor is `pageFitScale` — the smaller of the two ratios, so the
-whole page is reachable whatever its shape, which is the one thing a level cannot name. The
-ceiling is `4 * fitScale`, four of the levels the buttons beside it label, so a reader can step
-from the whole page up to four times the page's width. A single measure could not do both: on
-any page taller than the screen the whole page sits *below* 1.0, so a floor taken from
+measures is the point.** The floor is `pageFitScale` **of the page**, the smaller of the two
+ratios, so the whole page is reachable whatever its shape, which is the one thing a level
+cannot name. The ceiling is four levels **of the content**, because a level is a multiple of
+the content's width — so `scaleBounds` takes both dims, and a caller that hands it just one is
+asking for a floor and a ceiling measured in different things. A single measure could not do
+both: on any page taller than the screen the whole page sits *below* 1.0, so a floor taken from
 `fitScale` would put it out of reach. Both are floored at 1 for **original size** — one page
 pixel to one screen pixel — because a page *smaller* than the screen has both measures above 1
 and Original would otherwise be below the minimum.
+
+**That two-dims requirement is not hypothetical, and the bug it prevents was measured.** The
+free view used to pass `content or dims` for both, so its floor was the whole *content* rather
+than the whole page, and — the half a reader sees — `free.dims` is the page while the scale it
+opened at was measured against the content: the level ladder was read against the page's fit.
+Opening at `1.7×` on a page with margins **labelled itself `2.0×`**, off by exactly the ratio
+between the page's width and the content's. Every reader of the free view's fit now goes through
+one `freeFit(free)`, so the six of them cannot drift apart again — the same rule this file
+applies to the level buttons, where one `meguruReopenAtLevel` serves both.
 
 Measured for a 1600x2400 page against a 1236x1648 screen: **0.687 .. 3.090**. The floor is the
 whole page, and at it the window is the whole page letterboxed — the only scale whose request is

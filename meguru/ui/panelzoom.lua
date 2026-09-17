@@ -686,6 +686,19 @@ local function freeLabel(scale, fit)
     return string.format("%.1f×", scale / fit)
 end
 
+-- The fit the free view's *levels* are measured against: the content's width on the screen's,
+-- which is the same measure every other view's levels use.
+--
+-- **`free.dims` is the page and this is the content, and they are two different things.** The
+-- dims are what the window is clamped to, so the reader can pan onto a margin; the fit is what
+-- a level is a multiple of, so a margin is not in the denominator. One field could not be both,
+-- and using the page's dims for the levels is a bug that shows as a button reading one level
+-- while the picture sits at another — which is why every reader of the fit goes through here
+-- rather than calling `fitScale` on whatever dims it happens to have to hand.
+local function freeFit(free)
+    return Viewport.fitScale(free.content or free.dims, free.screen)
+end
+
 -- Where the page is actually drawn, and how big one page pixel is on the glass.
 --
 -- **None of this is the screen's own while the button row is up.** The row takes a strip of
@@ -737,7 +750,7 @@ function PanelViewer:meguruFreeWindow(scale, cx, cy)
     if not cur then
         return false
     end
-    local lo, hi = Viewport.scaleBounds(free.dims, free.screen)
+    local lo, hi = Viewport.scaleBounds(free.dims, free.screen, free.content)
     free.scale = math.max(lo, math.min(hi, scale))
     local step = Viewport.windowAt(free.dims, free.screen, free.scale, cx, cy)
     if not step then
@@ -775,8 +788,7 @@ function PanelViewer:meguruFreeLabel()
     local button = buttons and type(buttons.getButtonById) == "function"
         and buttons:getButtonById("zoom_level")
     if free and type(button) == "table" then
-        button:setText(freeLabel(free.scale, Viewport.fitScale(free.dims, free.screen)),
-            button.width)
+        button:setText(freeLabel(free.scale, freeFit(free)), button.width)
     end
 end
 
@@ -846,7 +858,7 @@ function PanelViewer:meguruFreeZoom(ges, closer)
         -- moves by the difference between where that point sat at the old scale and where
         -- it sits at the new one. The point itself comes from `meguruFreePageAt`, because
         -- the screen's own centre is not where the picture is.
-        local lo, hi = Viewport.scaleBounds(free.dims, free.screen)
+        local lo, hi = Viewport.scaleBounds(free.dims, free.screen, free.content)
         local scale = math.max(lo, math.min(hi, target))
         local px, py = self:meguruFreePageAt(ges.pos)
         if px then
@@ -879,7 +891,7 @@ function PanelViewer:meguruCycleFreeZoom()
     if not cur then
         return
     end
-    local fit = Viewport.fitScale(free.dims, free.screen)
+    local fit = freeFit(free)
     logger.dbg("Meguru: free zoom", freeLabel(freeStepAfter(free.scale, fit), fit),
         "on page", self.page)
     self:meguruFreeWindow(freeStepAfter(free.scale, fit), cur.x + cur.w / 2,
@@ -899,7 +911,7 @@ function PanelViewer:meguruFreeStepZoom(direction)
     if not cur then
         return
     end
-    local fit = Viewport.fitScale(free.dims, free.screen)
+    local fit = freeFit(free)
     local level = free.scale / fit + direction * FREE_STEP
     level = math.max(FREE_MIN_LEVEL, math.min(FREE_MAX_LEVEL, level))
     -- Logged because these are the gestures a reader reports on, and a line per *button press*
@@ -1182,7 +1194,7 @@ local function installRow(viewer)
         entries[#entries + 1] = {
             id = "zoom_level",
             text = freeLabel(viewer.meguru_free.scale,
-                Viewport.fitScale(viewer.meguru_free.dims, viewer.meguru_free.screen)),
+                freeFit(viewer.meguru_free)),
             callback = function()
                 viewer:meguruCycleFreeZoom()
             end,
@@ -1373,7 +1385,7 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         -- left. The window itself is still the page's, and is clamped to it — a margin is
         -- something this view can be moved onto, not something it refuses to show.
         local content = contentDims(doc, page, dims)
-        local lo, hi = Viewport.scaleBounds(content or dims, screen)
+        local lo, hi = Viewport.scaleBounds(dims, screen, content)
         -- **The zoom is remembered**, and this is where it is read back: a scale rather than
         -- a level, because Original is scale 1 and a level is a magnification of the fit. With
         -- nothing stored the view starts at the level the other views use, so there is no
@@ -1392,7 +1404,7 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
             return false
         end
         steps, start = { step }, 1
-        free_state = { dims = dims, screen = screen, scale = scale }
+        free_state = { dims = dims, content = content, screen = screen, scale = scale }
         geom = { dims = dims, content = content, screen = screen, scale = scale }
     elseif window then
         -- The page's own size, in the space the panel rects are in. The bytes are
@@ -1533,7 +1545,7 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
     if free then
         logger.dbg("Meguru: free zoom opened on page", page,
             "(" .. tostring(mode) .. ", " .. freeLabel(free_state.scale,
-                Viewport.fitScale(free_state.dims, free_state.screen)) .. ")")
+                freeFit(free_state)) .. ")")
     else
         logger.dbg("Meguru: panel zoom opened on page", page, "panel", index or 1,
             "of", #panels, "(" .. tostring(mode) .. ")",
