@@ -73,16 +73,25 @@ local DEFAULTS = {
     panel_view        = "window",
 
     -- How close the window view sits: a magnification over fit-to-screen, so 1 is a
-    -- whole page on the screen and 2 is half of one. It is what decides how many
-    -- stops a panel takes — see `meguru/viewport` — and it is one number for
+    -- whole page on the screen and 1.9 a little over half of one. It is what decides
+    -- how many stops a panel takes — see `meguru/viewport` — and it is one number for
     -- everything rather than a per-book answer, like the two settings above it.
     --
     -- **Set from the viewer's own button row, not from a menu row**, so the reader
     -- sees the page change as they change it. This is only the store: `ui/reader`
-    -- reads it and hands the number to the view, and `ui/panelzoom` writes it back
-    -- when the button cycles. 1.7 is the middle of the three levels, and the level
+    -- reads it and hands the number to the view, and `ui/panelzoom` writes it back —
+    -- the value button cycling the three presets, and the `-`/`+` beside it stepping
+    -- by a tenth anywhere in 1..1.9. 1.7 is the middle of the three, and the level
     -- that leaves a typical 1600x2400 scan rendering at about 1.16 screen pixels per
     -- page pixel — a mild magnification of the file rather than 1.9's 1.30.
+    --
+    -- **"A whole page" means the page's *content* in the two window views.** They
+    -- measure in the box `getPageBBox` answers, so a scan's white border is not part of
+    -- what the fit is a fit *of*, and `-` at the bottom of its range reaches the content
+    -- rather than the paper around it. Where the reader has cropping off that box is the
+    -- whole page and the sentence above is literally true — which is the point of taking
+    -- the box from that seam rather than deciding for them: see `contentFrame` in
+    -- `meguru/ui/panelzoom`.
     panel_zoom_level  = 1.7,
 
     -- The free view's zoom, and the one preference here stored as a **scale** rather

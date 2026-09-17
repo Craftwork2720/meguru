@@ -327,7 +327,30 @@ Each step must pass before the next:
     `1.7x` button must cycle 1.4 / 1.7 / 1.9, change how much of the page the window
     covers — narrower as the number rises — with the step count following it, and
     **remember the choice**, so the next page, the next book and the next start are at the
-    level the reader landed on. **The row must still be there after the tap**: two levels
+    level the reader landed on. Then the `-` and `+` beside it, which move by a **tenth**:
+    from 1.7, `+` twice must read `1.9×`, and a third press `2.0×` — a level that is on no
+    preset, and the one that catches a stepping path sharing no state with the cycle. The
+    label must follow every press, and the window must visibly change with it. From a level
+    *between* the presets, the `1.7x` button must walk **up** rather than snapping down —
+    at `1.8×` it gives 1.9 — and the range must stop at `1.0×` and `1.9×` rather than
+    running away, with the window at `1.0×` being the whole page letterboxed and `+` at
+    `1.9×` doing nothing at all. `-`/`+` write
+    the same preference the cycle does, so a level reached by nudging must survive the next
+    page and the next book.
+
+    Then the **content crop**, which those two views measure in and the cropped view does not.
+    With *Page Crop* at `auto` (⋮ → **Page crop** → *auto*), long-press the same page: the
+    window is clamped to the content box, so **the margin can never be panned to** — at `1.0×`
+    the window is the content on the screen rather than the content plus its white border, and
+    a panel at the page's edge reaches the screen's edge rather than a strip of paper. Then set
+    *Page Crop* to `none` and long-press again: everything must be **exactly** as it was before
+    this existed — same steps, same count, the margins reachable again — because the mechanism
+    is required to be inert when the reader asked for no crop. The free view carries the same
+    pair: with the crop on its bottom stop is the content, with it off nothing moved. The check
+    that catches a *wrong* frame rather than a missing one is the panels: they are detected on
+    the whole page, so a panel whose border sits at the content's edge must still be anchored
+    to that edge — an off-by-origin frame shows a window a margin's width away from the panel
+    it names, which reads as a detector fault and is not one. **The row must still be there after the tap**: two levels
     are compared by pressing twice, and a viewer that came back with its chrome hidden
     would send the reader to the middle of the screen between every pair. **And it must
     still be *Meguru's* row** — the re-open paints the row it was built with, so a

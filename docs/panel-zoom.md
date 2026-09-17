@@ -561,6 +561,32 @@ it into a top and a bottom nobody asked to step through. Everything else — the
 navigation, the pre-warm, the page boundary — is one implementation for both, which is
 what makes this a second view rather than a second feature.
 
+**Both window views measure in the page's *content*, not in its raw scan.** A scan usually
+carries a white border, and a level that ignored it would be mostly margin at the bottom of
+its range: at 1.0 the reader would get the content *plus* the border, and every step of a
+panel would start by crossing the space between them. So the panels and the reader's finger
+are moved into the content box, `Viewport` walks there, and the steps come back out — the
+rectangle stays a *page* rectangle, because that is what the document renders and what the
+tile key is built from. It is a translation and never a rescale, so it also cannot move a
+panel relative to the artwork it was detected in.
+
+**The box comes from `getPageBBox`, and that is the reader's own answer rather than ours.**
+That seam is `autoContentBox`'s margin scan when *Page Crop* is auto, a detected page-number
+strip when that row is on, and **the whole page when the reader has cropping off** — so the
+two views follow the setting instead of second-guessing it, and switch themselves off exactly
+when the reader asked for no crop. `contentFrame` is the whole of it, and its three refusals
+are what keep the change inert where it has nothing to do: no crop, a page the scan refused,
+and a box that is simply the whole page. A box it cannot *read* is refused too, `pcall`ed,
+because that seam may be `pagenumbercrop`'s and a foreign plugin's throw must cost the crop
+and never the long-press.
+
+Two consequences worth knowing rather than discovering. The window is clamped to the box, so
+**the margins are unreachable in these two views** — that is the point, and panning to them is
+not a missing feature. And the free view's remembered zoom is a *scale*, screen pixels per
+page pixel, so a crop that moves the fit does not move what the reader asked for: 1:1 stays
+1:1 and a remembered magnification stays what it was, while the same scale is now a different
+multiple of the fit.
+
 **A step is a rectangle of the page, and nothing is cut.** Where the cropped view asks
 `drawPagePart` for a panel at the region's own size, the window asks for a viewport at
 *screen* size: `tw`/`th` are two optional arguments the cropped path passes as `nil`, so
@@ -640,8 +666,8 @@ zoom, and it is the one number to move if that judgement is wrong. **Zero switch
 mechanism off**, which is what to reach for first if a page ever looks wrong here.
 
 **The row has two shapes, one per view, and both carry the view switch.** *Pan & zoom*
-holds `[Pan & zoom] [1.7x] [Close]`; *cropped panels* keeps stock's three and gains the
-switch in front — `[Cropped panels] [Original size] [Rotate] [Close]`. **The switch's
+holds `[Pan & zoom] [-] [1.7x] [+] [Close]`; *cropped panels* keeps stock's three and gains
+the switch in front — `[Cropped panels] [Original size] [Rotate] [Close]`. **The switch's
 label names the view the reader is in**, not the one the press leads to: it is the shape
 the zoom button beside it already has (that one shows the level it is on) and the shape
 the menu's *Panel view* row has, so the button, the row and the setting all name the same
@@ -651,7 +677,30 @@ thing to avoid. The zoom button is
 the level right where a reader can see what it does: tapping it cycles 1.4, 1.7, 1.9 and
 writes the preference, so the next page, the next book and the next start keep it. That is
 why there is no menu row for the level — the choice moved into the viewer, the store did
-not, and `ui/reader` still reads it and hands the number in. Stock's three
+not, and `ui/reader` still reads it and hands the number in.
+
+**The two buttons beside that one are the free view's pair, with its own step and its own
+range.** `-` and `+` move the level by a **tenth**, so a reader can reach 1.5 or 2.1 rather
+than only the three presets; the value button still *cycles*, and because a tenth leaves
+numbers that are on no list it walks **up** from wherever the reader is — 1.8 answers 1.9,
+and past the top the cycle starts again, which is what a cycle does. The range is 1 to 1.9 —
+the floor being the fit, where the window is the whole page, and **the ceiling the top of the
+cycle**, so `+` stops exactly where the value button stops and a reader can never sit at a
+level that button would answer by jumping back to the bottom. Four things about it are worth
+naming rather than discovering:
+
+- **The step is a level and not a scale**, like the value button's, because a level is what
+  the button between them reads off and what the preference stores.
+- **The new level is rounded to one decimal before anything reads it.** 1.7 + 0.1 is
+  1.7999999999999998 in binary, which the cycle's comparison would miss — that rounding is
+  what keeps the two buttons agreeing, and it is why the label is `%.1f` rather than
+  `tostring`, which would print the seventeen digits of a raw double.
+- **`-` and `+` do not have the free view's range or its reason for it.** That pair is bounded
+  by `Viewport.scaleBounds` so a pinch cannot outrun it; this view has no pinch, so 1..4 here
+  is a choice. The two share `levelAfter` and nothing else.
+- **Both buttons re-open through one function** (`meguruReopenAtLevel`), so a step and a cycle
+  cannot come to re-open differently — which is the kind of drift that shows as one of them
+  losing the reader's place and the other not. Stock's three
 *stay* there because in that view they mean what they say, and the removal a reader asked
 for was explicitly scoped to pan & zoom. They are **forwarded, not re-implemented**:
 `Button` calls `self.callback`, so the existing objects are read out of the table before

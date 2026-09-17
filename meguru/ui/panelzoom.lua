@@ -618,13 +618,22 @@ end
 -- geometry is handed the scale that comes of it.
 local ZOOM_LEVELS = { 1.4, 1.7, 1.9 }
 
-local function levelAfter(level)
-    for i = 1, #ZOOM_LEVELS do
-        if ZOOM_LEVELS[i] == level then
-            return ZOOM_LEVELS[i % #ZOOM_LEVELS + 1]
+-- The next level above `level`, wrapping back to the first, from a given list.
+--
+-- **It walks *up* from wherever the reader is rather than looking the value up**, and that
+-- stopped being a style choice the moment `-`/`+` existed in either view: they leave levels
+-- that are on no list, so a lookup would miss and drop the reader at the bottom of the cycle
+-- — 1.8 would answer 1.4. Past the top it starts again, which is what a cycle does.
+--
+-- One function for both views' lists, because the two buttons differ in their numbers and not
+-- in this rule — see `freeStepAfter` below.
+local function levelAfter(list, level)
+    for i = 1, #list do
+        if list[i] > level + 0.001 then
+            return list[i]
         end
     end
-    return ZOOM_LEVELS[1]
+    return list[1]
 end
 
 -- The three levels the zoom button cycles, and **levels only**: a preset is a multiple of the
@@ -644,17 +653,23 @@ local FREE_STEP = 0.5
 local FREE_MIN_LEVEL = 1
 local FREE_MAX_LEVEL = 4
 
--- The next level above a scale, wrapping back to the first. A pinch leaves numbers that are
--- not on the list, so this walks *up* from wherever the reader is rather than looking the value
--- up — and past the top the cycle starts again, which is what a cycle does.
+-- The window view's fine control: the same two buttons as the free view's above, and
+-- **deliberately not the same numbers**. That range is bounded by `Viewport.scaleBounds`
+-- because a pinch has to stay inside it; this view has no pinch, so its range is a choice.
+-- The step is 0.1, which is what a reader asked for: a nudge rather than the jump between
+-- presets that the value button beside these two makes.
+--
+-- **The ceiling is the top of `ZOOM_LEVELS`**, so the two controls agree on where the view
+-- ends: `+` stops where the cycle stops, and a reader can never be at a level the value
+-- button would answer by jumping back down to the bottom of the cycle. The floor is the fit,
+-- where the window is the whole page and `-` reaches it.
+local WINDOW_STEP = 0.1
+local WINDOW_MIN_LEVEL = 1
+local WINDOW_MAX_LEVEL = ZOOM_LEVELS[#ZOOM_LEVELS]
+
+-- The next level above a scale, wrapping back to the first, as a scale.
 local function freeStepAfter(scale, fit)
-    local level = scale / fit
-    for i = 1, #FREE_LEVELS do
-        if FREE_LEVELS[i] > level + 0.001 then
-            return FREE_LEVELS[i] * fit
-        end
-    end
-    return FREE_LEVELS[1] * fit
+    return levelAfter(FREE_LEVELS, scale / fit) * fit
 end
 
 -- What the zoom button says: `1x` for the file's own pixels, a multiple of the fit otherwise.
@@ -724,10 +739,21 @@ function PanelViewer:meguruFreeWindow(scale, cx, cy)
     end
     local lo, hi = Viewport.scaleBounds(free.dims, free.screen)
     free.scale = math.max(lo, math.min(hi, scale))
-    local step = Viewport.windowAt(free.dims, free.screen, free.scale, cx, cy)
+    -- `cx`/`cy` arrive in *page* coordinates — they are the middle of the rectangle on screen,
+    -- which is a page rectangle — while `free.dims` is the content box they are measured
+    -- against. So the geometry takes the point in its own space and the step it answers with
+    -- goes straight back out, exactly as `PanelZoom.open` does it. Both are `0` with no crop,
+    -- and then this is the call it has always been.
+    local ox, oy = free.ox or 0, free.oy or 0
+    local step = Viewport.windowAt(free.dims, free.screen, free.scale,
+        cx and (cx - ox), cy and (cy - oy))
     if not step then
         return false
     end
+    -- Added rather than routed through `stepsToPage`: this runs on every pan event, and a
+    -- helper that needs a frame table would cost two allocations per gesture to say what two
+    -- additions say — and with no crop both are `0`, so this is the line it always was.
+    step.x, step.y = step.x + ox, step.y + oy
     for key, value in pairs(step) do
         cur[key] = value
     end
@@ -895,7 +921,7 @@ function PanelViewer:meguruFreeStepZoom(direction)
     self:meguruFreeWindow(level * fit, cur.x + cur.w / 2, cur.y + cur.h / 2)
 end
 
--- Move the zoom on by one level, and remember it.
+-- Re-open the window view at a level, keeping the reader's place and the row.
 --
 -- **The remembered part is the whole point.** The level is a preference, so a reader
 -- who likes 1.9 gets 1.9 on the next page, the next book and the next start — and
@@ -908,7 +934,11 @@ end
 -- for anything that changes the step list: the reader's place is a *point* on the page
 -- — the middle of the view they are looking at — and `PanelZoom.open` already knows
 -- how to open at one.
-function PanelViewer:meguruCycleZoomLevel()
+--
+-- **Both buttons come through here** — the cycle and the `-`/`+` pair — so that a step
+-- and a cycle cannot come to re-open differently, which is the kind of drift that shows
+-- as one of them losing the reader's place and the other not.
+function PanelViewer:meguruReopenAtLevel(level)
     local view = self.view
     local cur = self.steps and self.steps[self._images_list_cur]
     -- Read before anything is closed: the viewer this is called from is gone by the
@@ -921,7 +951,6 @@ function PanelViewer:meguruCycleZoomLevel()
     if not (view and view.window and cur and panels and ui) then
         return
     end
-    local level = levelAfter(view.level)
     Settings.set("panel_zoom_level", level)
     UIManager:close(self)
     PanelZoom.open(ui, page, panels, cur.panel, mode, rotate, {
@@ -935,6 +964,42 @@ function PanelViewer:meguruCycleZoomLevel()
         -- possible at all.
         buttons_visible = show_buttons,
     })
+end
+
+-- Move the zoom on to the next preset of the cycle, and remember it.
+function PanelViewer:meguruCycleZoomLevel()
+    local level = self.view and self.view.level
+    if level then
+        self:meguruReopenAtLevel(levelAfter(ZOOM_LEVELS, level))
+    end
+end
+
+-- Nudge the zoom by one step, and remember it.
+--
+-- The unit is the *level* and not the scale, because a level is what the button between these
+-- two reads off and what the preference stores; the geometry is handed the scale that comes of
+-- it, as everywhere else here. It moves from wherever the reader is rather than snapping to the
+-- cycle's list, so 1.8 answers `+` with 1.9.
+--
+-- **Two lines of that are load-bearing and neither is tidiness.** The rounding to one decimal
+-- is what keeps `-`/`+` and the cycle button agreeing: 1.7 + 0.1 is 1.7999999999999998 in
+-- binary, which `levelAfter` would miss. And the clamp is what stops a held finger marching the
+-- window down to a sliver of a page, or in past a level the geometry still has an answer for.
+--
+-- Logged because these are the gestures a reader reports on, and a line per *button press* is a
+-- deliberate act rather than the per-event chatter a pinch would be — the same argument the
+-- free view's stepper makes.
+function PanelViewer:meguruStepZoomLevel(direction)
+    local view = self.view
+    local level = view and (view.level or WINDOW_MIN_LEVEL)
+    if not level then
+        return
+    end
+    level = level + direction * WINDOW_STEP
+    level = math.floor(level * 10 + 0.5) / 10
+    level = math.max(WINDOW_MIN_LEVEL, math.min(WINDOW_MAX_LEVEL, level))
+    logger.dbg("Meguru: panel zoom", string.format("%.1f×", level), "on page", self.page)
+    self:meguruReopenAtLevel(level)
 end
 
 -- Show the same page the way the next view shows it.
@@ -1104,11 +1169,30 @@ local function installRow(viewer)
         }
         entries[#entries + 1] = close
     elseif window then
+        -- The same three buttons the free view has, and for the same reason: the value *cycles*
+        -- through the presets, while `-` and `+` nudge from wherever the reader is — which is
+        -- the only way to reach a level between them, and the reader asked for this one to move
+        -- by a tenth. The label is `%.1f` rather than `tostring` because the levels are now
+        -- arbitrary tenths and a raw double would print seventeen digits of one.
+        entries[#entries + 1] = {
+            id = "zoom_out",
+            text = "-",
+            callback = function()
+                viewer:meguruStepZoomLevel(-1)
+            end,
+        }
         entries[#entries + 1] = {
             id = "zoom_level",
-            text = tostring(level) .. "×",
+            text = string.format("%.1f×", level),
             callback = function()
                 viewer:meguruCycleZoomLevel()
+            end,
+        }
+        entries[#entries + 1] = {
+            id = "zoom_in",
+            text = "+",
+            callback = function()
+                viewer:meguruStepZoomLevel(1)
             end,
         }
         entries[#entries + 1] = close
@@ -1151,6 +1235,92 @@ local function installRow(viewer)
     return true
 end
 
+-- The page's content box, as a frame the two window-shaped views measure in.
+--
+-- **A window measures in the page's *content* and not in its raw scan**, so that a level
+-- means the same thing whatever white border the scanner left: at 1.0 the window is the
+-- content on the screen rather than the content plus a margin, and no stop of a panel is
+-- spent crossing one. The panels and the tap point are moved into the box, the geometry runs
+-- there, and the steps come back out — see `panelsInFrame` and `stepsToPage`.
+--
+-- It comes from `getPageBBox`, and that is a decision rather than a convenience. That seam is
+-- the reader's own answer — `autoContentBox`'s margin scan when *Page Crop* is auto, a detected
+-- page-number strip when that row is on, and the whole page whenever the reader has cropping
+-- off — so this follows the setting instead of second-guessing it, and switches itself off
+-- exactly when the reader asked for no crop. The box is in **native pixels**, the same space
+-- `getPageDims` reports and every rectangle here is drawn in, so this is a translation and
+-- never a rescale.
+--
+-- Returns nil when there is nothing to do — no crop, a page the scan refused, or a box that is
+-- simply the whole page — and every caller then leaves the geometry byte for byte as it was
+-- before this existed.
+local function contentFrame(doc, page, dims)
+    if not (doc and page and dims and type(doc.getPageBBox) == "function") then
+        return nil
+    end
+    -- pcall'd because that seam may be a foreign plugin's: `pagenumbercrop` replaces
+    -- `getPageBBox` outright, and it is not ours to constrain. A box this cannot read has to
+    -- cost the crop and never the long-press.
+    local ok, box = pcall(doc.getPageBBox, doc, page)
+    if not ok or type(box) ~= "table" then
+        return nil
+    end
+    local x0, y0 = tonumber(box.x0), tonumber(box.y0)
+    local x1, y1 = tonumber(box.x1), tonumber(box.y1)
+    if not (x0 and y0 and x1 and y1) then
+        return nil
+    end
+    local w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0 then
+        return nil
+    end
+    if x0 == 0 and y0 == 0 and w >= dims.w and h >= dims.h then
+        return nil
+    end
+    return { dims = { w = w, h = h }, ox = x0, oy = y0 }
+end
+
+-- A panel list moved into a frame's coordinates.
+--
+-- **Copied, never moved in place**, and that is not tidiness: the panel list is the
+-- document's per-page cache entry (`getPanelsFromPage`'s RAM LRU), so translating it in
+-- place would leave the *next* open of that page measuring in a box that is no longer
+-- there — and the symptom would arrive on a different press from the cause.
+--
+-- Only `x, y, w, h` come across, which is all the geometry reads: `Viewport.steps` copies
+-- those four off each panel itself, so a panel's `planes` were already dropped on the way in.
+local function panelsInFrame(panels, frame)
+    if not frame then
+        return panels
+    end
+    local out = {}
+    for i, p in ipairs(panels) do
+        out[i] = { x = p.x - frame.ox, y = p.y - frame.oy, w = p.w, h = p.h }
+    end
+    return out
+end
+
+-- A step list moved back out of a frame, into page coordinates.
+--
+-- A step's rectangle is what the document renders and what the tile key is built from, so it
+-- has to be a page rectangle; only the geometry between the two calls happens in the frame.
+local function stepsToPage(steps, frame)
+    if frame and steps then
+        for _, s in ipairs(steps) do
+            s.x, s.y = s.x + frame.ox, s.y + frame.oy
+        end
+    end
+    return steps
+end
+
+-- A caller's tap point, in page coordinates, as the frame's.
+local function tapInFrame(tap, ox, oy)
+    if not (tap and tap.x and tap.y) then
+        return nil, nil
+    end
+    return tap.x - ox, tap.y - oy
+end
+
 -- Show the steps of one page, starting at `index`.
 --
 -- `mode` and `rotate` are two adjacent strings of the same shape — the reading
@@ -1191,22 +1361,37 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         if not (dims and screen) then
             return false
         end
+        -- The reader's own crop, if they have one: this view's page is the page's *content*,
+        -- so its whole-page stop is the content on the screen and a margin is never something
+        -- it pans across. `view_dims` is what every number below is measured against, and it
+        -- is `dims` unchanged when there is no crop to honour.
+        local frame = contentFrame(doc, page, dims)
+        local view_dims = frame and frame.dims or dims
+        local ox, oy = frame and frame.ox or 0, frame and frame.oy or 0
         -- **The zoom is remembered**, and this is where it is read back: a scale rather than
         -- a level, because Original is scale 1 and a level is a magnification of the fit. With
         -- nothing stored the view starts at the level the other views use, so there is no
         -- second default to choose anywhere.
-        local lo, hi = Viewport.scaleBounds(dims, screen)
+        --
+        -- The stored scale is screen pixels per *page* pixel, so a crop moving the fit does
+        -- not move what the reader asked for: 1:1 stays 1:1, and a remembered magnification
+        -- stays the magnification it was.
+        local lo, hi = Viewport.scaleBounds(view_dims, screen)
         local stored = Settings.get("free_zoom_scale")
         local scale = (type(stored) == "number" and stored > 0) and stored
-            or Viewport.fitScale(dims, screen) * (opts.level or 1)
+            or Viewport.fitScale(view_dims, screen) * (opts.level or 1)
         scale = math.max(lo, math.min(hi, scale))
-        local step = Viewport.windowAt(dims, screen, scale, opts.tap and opts.tap.x,
-            opts.tap and opts.tap.y)
+        local tx, ty = tapInFrame(opts.tap, ox, oy)
+        local step = Viewport.windowAt(view_dims, screen, scale, tx, ty)
         if not step then
             return false
         end
         steps, start = { step }, 1
-        free_state = { dims = dims, screen = screen, scale = scale }
+        stepsToPage(steps, frame)
+        -- `ox`/`oy` travel with the view because it keeps moving its own window:
+        -- `meguruFreeWindow` re-derives the rectangle on every pan, pinch and zoom step, and
+        -- the geometry it hands over is in the frame while the rectangle it keeps is not.
+        free_state = { dims = view_dims, screen = screen, scale = scale, ox = ox, oy = oy }
     elseif window then
         -- The page's own size, in the space the panel rects are in. The bytes are
         -- already in hand — `getPanelsFromPage` fetched and decoded them to find
@@ -1219,16 +1404,25 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         -- and a manga reads those the other way round. The zoom is the other, and it
         -- arrives as a *scale* — screen pixels per page pixel — because that is the
         -- one number that expresses both a level and 1:1.
+        --
+        -- The third is the frame: this view measures the page's *content*, so a panel and the
+        -- reader's finger are moved into that box for the walk and the steps come back out of
+        -- it — see `contentFrame`. With no crop to honour the frame is nil and every line
+        -- below is the one it has always been.
         local dims
         dims, screen = doc:getPageDims(page), CanvasContext:getSize()
-        local scale = Viewport.fitScale(dims, screen) * (opts.level or 1)
-        steps, start = Viewport.steps(panels, dims, screen,
-            index and { panel = index, x = opts.tap and opts.tap.x,
-                        y = opts.tap and opts.tap.y, at_end = opts.at_end },
+        local frame = contentFrame(doc, page, dims)
+        local view_dims = frame and frame.dims or dims
+        local ox, oy = frame and frame.ox or 0, frame and frame.oy or 0
+        local tx, ty = tapInFrame(opts.tap, ox, oy)
+        local scale = Viewport.fitScale(view_dims, screen) * (opts.level or 1)
+        steps, start = Viewport.steps(panelsInFrame(panels, frame), view_dims, screen,
+            index and { panel = index, x = tx, y = ty, at_end = opts.at_end },
             mode == "manga", scale)
         if not steps then
             return false
         end
+        stepsToPage(steps, frame)
     end
     local images = {}
     for i, rect in ipairs(steps) do
