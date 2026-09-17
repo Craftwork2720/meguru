@@ -2064,7 +2064,7 @@ not**, a reader reported exactly that, and the line above this one had said the 
 
 **The zoom is remembered, in a scale, and written once.** Each open starts at the scale the
 last one closed on; with nothing stored it starts at the *Panel zoom level* × fit, the number
-the other views use. The button cycles 1.5, 1.7, 2, 3 and then **Original** — one page pixel
+the other views use. The button cycles 1, 2 and then **Original** — one page pixel
 to one screen pixel, the one stop in that list that magnifies nothing — and because a pinch
 leaves numbers on no list, the button walks *up* from wherever the reader is rather than
 looking the value up.
@@ -2085,7 +2085,7 @@ range the window is the whole page letterboxed — the only scale whose request 
 screen's pixels, because the window had to shrink to the page.
 
 **Four ways to set the zoom, and they answer four different questions.** The value button
-*cycles*: 1.5, 1.7, 2, 3 and then **Original** — one page pixel to one screen pixel, the one
+*cycles*: 1, 2 and then **Original** — one page pixel to one screen pixel, the one
 stop in that list that magnifies nothing, and the reason this view works in scales while the
 other two work in levels. `-` and `+` beside it nudge by **half a level inside 1x to 4x** — the
 bottom of that range is the whole page, so `-` reaches the fit without pinching —
@@ -2924,7 +2924,7 @@ Each step must pass before the next:
     and a swipe in any direction do **not** turn the page ✓, and the zoom is three buttons:
     `-` and `+` move by half a level, stop at 1x and 4x, and step from wherever the reader is
     (pinch to 2.4x, press `+`, get 2.9x ✓), while the value between them cycles
-    1.5 → 1.7 → 2 → 3 → Original → 1.5 ✓ with `Original` showing the file 1:1 ✓ (on a page
+    1 → 2 → Original → 1 ✓ with `Original` showing the file 1:1 ✓ (on a page
     smaller than the screen: at its true size in the middle, not filled out to the edges ✓).
     A pinch to something off the list — say 2.4× — must make the button **read 2.4×** ✓, the
     **picture must change with it** ✓ (a number that moves while the page stands still is the

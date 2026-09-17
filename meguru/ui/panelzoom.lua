@@ -618,7 +618,7 @@ end
 -- two units. The view works in scales for that reason, and the scale it ends on is
 -- remembered — written once at close, read once at open — so the next one starts where the
 -- reader left it. See `meguru/settings`.
-local FREE_LEVELS = { 1.5, 1.7, 2, 3 }
+local FREE_LEVELS = { 1, 2 }
 
 -- The fine control: how far one press of `-` or `+` moves, and the range it moves in.
 -- Separate from the list above, because the two answer different questions — the list is what
