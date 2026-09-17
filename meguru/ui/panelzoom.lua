@@ -613,12 +613,12 @@ local function levelAfter(level)
     return ZOOM_LEVELS[1]
 end
 
--- The free view's presets, and Original *beside* them rather than among them: Original
--- is scale 1, and a preset is a multiple of the fit, so one list holding both would hold
--- two units. The view works in scales for that reason, and the scale it ends on is
--- remembered — written once at close, read once at open — so the next one starts where the
--- reader left it. See `meguru/settings`.
-local FREE_LEVELS = { 1, 2 }
+-- The three levels the zoom button cycles, and **levels only**: a preset is a multiple of the
+-- fit, while Original is a *scale* — one page pixel to one screen pixel — so a list holding both
+-- would hold two units and a reader asked for the levels alone. Original is not lost with it:
+-- a pinch reaches that scale, and the label says so when it does. See `meguru/settings` for the
+-- scale this view remembers across opens.
+local FREE_LEVELS = { 1.5, 2, 2.5 }
 
 -- The fine control: how far one press of `-` or `+` moves, and the range it moves in.
 -- Separate from the list above, because the two answer different questions — the list is what
@@ -630,10 +630,9 @@ local FREE_STEP = 0.5
 local FREE_MIN_LEVEL = 1
 local FREE_MAX_LEVEL = 4
 
--- The next preset above a scale, as a scale. A pinch leaves numbers that are not on the
--- list, so this walks *up* from wherever the reader is rather than looking the value up,
--- and past the top it returns Original — the one stop above the last preset, after which
--- the walk starts again.
+-- The next level above a scale, wrapping back to the first. A pinch leaves numbers that are
+-- not on the list, so this walks *up* from wherever the reader is rather than looking the value
+-- up — and past the top the cycle starts again, which is what a cycle does.
 local function freeStepAfter(scale, fit)
     local level = scale / fit
     for i = 1, #FREE_LEVELS do
@@ -641,17 +640,17 @@ local function freeStepAfter(scale, fit)
             return FREE_LEVELS[i] * fit
         end
     end
-    return 1
+    return FREE_LEVELS[1] * fit
 end
 
 -- What the zoom button says: the file's own pixels, or the magnification of the fit.
 --
 -- **`Original 1:1` rather than `Original`, and that is not a long label for its own sake.** The
--- other stops are multiples of the fit, and `1.0x` among them *reads* like "original size" to
--- anyone who has used another image viewer — a reader pressed to that stop, saw the page fitted
--- to the screen, and reported that Original was wrong. It was not: the stop they wanted was the
--- next one, whose scale is 1 and whose meaning a multiplication sign cannot express. So the
--- label carries the ratio.
+-- cycle is levels, so `1.5x` and its neighbours are multiples of the fit — and `1.0x` among them
+-- *reads* like "original size" to anyone who has used another image viewer. A reader pressed to
+-- the fit, saw the page scaled to the screen, and reported that the 1:1 stop was wrong, when
+-- what had happened was that they were reading one label as the other. This label carries the
+-- ratio, so the scale a pinch can reach says what it is.
 local function freeLabel(scale, fit)
     if math.abs(scale - 1) < 0.001 then
         return _("Original 1:1")
