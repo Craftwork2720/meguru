@@ -48,19 +48,21 @@ Everything below applies whether the book came from your device or from a stream
 | Auto-rotate | Wide double-page spreads rotate the screen to fit |
 | Night mode | Keeps colours natural instead of a harsh negative |
 | Hidden status bar | Removes clutter while you read |
-| Panel zoom | Long-press a panel to zoom in and read panel by panel — cropped, or with the page kept whole and a window moving over it |
+| Panel zoom | Long-press to read panel by panel — panels cropped, a window over the whole page, or free pinch-and-drag |
 
 > [!TIP]
 > Tap a setting to apply it to the book you're reading. Long-press it to make
 > it the default for every new book Meguru opens.
 
 Panel zoom is Meguru's own, on by default for the books it opens (*Settings* →
-*Panel zoom in Meguru books*). It comes in two views, one switch apart (*Settings*
+*Panel zoom in Meguru books*). It comes in three views, one switch apart (*Settings*
 → *Panel view*): **Cropped panels** cuts each panel out of the page and shows it by
-itself, and **Pan & zoom** keeps the whole page and moves a window over it, one
-panel at a time. In Pan & zoom a middle tap brings up a button row whose first
-button is that window's zoom — tap it to step through 1.4×, 1.7× and 1.9×, and the
-choice is remembered for the next page and the next book.
+itself; **Pan & zoom** keeps the whole page and moves a window over it, one panel at a
+time; and **Zoom only** drops the panels altogether — the page, with pinch and drag and
+no page turning, for reading a page rather than following its panels. In the two window
+views a middle tap brings up a button row whose first button is the view and whose second
+is the zoom — tap it to step through 1.4×/1.7×/1.9× (or 1.5×/1.7×/2×/3×/Original in
+Zoom only), and the window views remember the level for the next page and the next book.
 
 ## Opening `.cbz` files
 

@@ -427,17 +427,22 @@ function Reader.setPanelZoom(ui, on)
     end
 end
 
---- Which of the two panel views a long-press opens: `"crop"` or `"window"`.
+--- Which of the panel views a long-press opens: `"crop"`, `"window"` or `"zoom"`.
 ---
 --- One preference for everything Meguru opens, like the toggle above it and for the
 --- same reason — but this one is about the *view* and not about whether there is
---- one. The two show the same panels in the same order; they differ in whether the
---- page is cut up to do it. `meguru/viewport` is what the second one is.
+--- one. The first two show the same panels in the same order and differ in whether the
+--- page is cut up to do it; the third walks no steps at all. `meguru/viewport` is what
+--- the windows are, and `ui/panelzoom` is what the free one is.
 ---
 --- There is no per-book answer and no stock row behind this one, which is why it is
 --- read straight from the preference every time rather than through a cascade.
 function Reader.panelViewMode()
-    return Settings.get("panel_view") == "window" and "window" or "crop"
+    local mode = Settings.get("panel_view")
+    if mode == "window" or mode == "zoom" then
+        return mode
+    end
+    return "crop"
 end
 
 --- The direction this book is read in, as `"manga"` or `"comic"`.
@@ -687,6 +692,34 @@ local function installPanelZoom(ui)
         -- closed and the next open follows it.
         local direction = Reader.panelZoomDirection(ui)
         local t_start = nowMs()
+        -- **The free view asks no detector**, and that is a property of the view rather
+        -- than a shortcut: it walks no steps, so it has no use for panels, and a page the
+        -- detector would have refused opens in it like any other. What it does need is the
+        -- page's own size — and `getPageDims` *is* the fetch and the decode, so asking it
+        -- puts the bytes in hand that the render will want anyway.
+        if Reader.panelViewMode() == "zoom" then
+            local ok_dims, dims = pcall(doc.getPageDims, doc, pos.page)
+            if not ok_dims or not dims then
+                logger.dbg("Meguru: page", pos.page, "panel zoom: no page ("
+                    .. tostring(dims) .. ")")
+                return stock()
+            end
+            logger.dbg(string.format(
+                "Meguru: page %d panel zoom: free view (%s) in %d ms",
+                pos.page, mode, nowMs() - t_start))
+            local ok_free, shown_free = pcall(PanelZoom.open, ui, pos.page, nil, nil,
+                mode, direction, {
+                    free = true,
+                    tap = { x = pos.x, y = pos.y },
+                    level = Settings.get("panel_zoom_level"),
+                })
+            if not ok_free or not shown_free then
+                logger.warn("Meguru: panel zoom viewer failed:",
+                    ok_free and "not shown" or tostring(shown_free))
+                return stock()
+            end
+            return
+        end
         -- Four values: `getPanelsFromPage` returns panels, accepted and reason,
         -- and `pcall` adds its own. A missing slot here does not fail — it
         -- shifts `accepted` into `reason` and the reason into nothing, and the

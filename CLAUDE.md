@@ -2012,6 +2012,65 @@ left), so the pre-warm is the same one call the viewer is about to make, and
 machinery is not used at all — a window is the screen's shape, so there is no wide-versus-
 tall decision to make, and a panel too wide for it is walked in x instead.
 
+### The third view: the page, with nothing in the way
+
+**The free view walks no steps and asks no detector.** A long-press opens the whole page with
+pinch and drag, centred on the finger; there are no panels, no stops and no page turning, and
+the button row is permanent — under it the reader is simply *looking at the page*, which is
+what the other two views are alternatives to. The gesture asks `getPageDims` and not
+`getPanelsFromPage` for exactly that reason, and it costs nothing: `getPageDims` **is** the
+fetch and the decode, so the bytes the render wants are in hand either way, and a page the
+detector would have refused opens in this view like any other.
+
+**Every gesture ends in one of three stock seams, each read in the source rather than
+assumed:**
+
+| gesture | seam | what this view does |
+|---|---|---|
+| pinch / spread | `ImageViewer:onPinch` / `onSpread` | the scale changes, about `ges.pos` for a spread |
+| drag | `ImageViewer:panBy(x, y)` — `onSwipe`, `onCursorPan`, `onHoldRelease` and `onPanRelease` all end here | the window moves by `(-x/scale, -y/scale)` page pixels |
+| horizontal swipe | `PanelViewer:onSwipe` | the other views walk the chain; here every direction is a drag, the signs stock's own |
+
+**Stock's scale arithmetic cannot be borrowed, and that is the one real constraint.**
+`onZoomIn`/`onZoomOut` multiply `self.scale_factor`, and that same field is what `ImageWidget`
+scales the tile by — so a view that wants a render *of the page* at every zoom has to keep its
+own number and leave the field at best fit. What it does borrow is the shape of the gesture,
+`ges.distance / min(screen, image)`, whose denominator collapses to the screen here because
+every tile in this view already is the screen's size. A spread zooms about the point under the
+fingers and a pinch keeps the centre, which is what stock does and says why.
+
+**The step is mutated in place rather than replaced**, and that is not an optimisation: a
+step's image is a lazy closure over the step table, and `switchToImageNum` returns early when
+the number has not changed, so writing the new rectangle into the same table and calling
+`update()` is what makes the closure see it. The tile LRU follows for free — a window is keyed
+by its rectangle *and* its size — so coming back to a scale the reader was already at is a
+cache hit rather than a second render.
+
+**The zoom is not remembered.** Each open starts at the *Panel zoom level* × fit, the same
+number the window view uses, and a pinch lasts as long as the viewer does. The button cycles
+1.5, 1.7, 2, 3 and then **Original** — one page pixel to one screen pixel, the one stop in
+that list that magnifies nothing — and because a pinch leaves numbers on no list, the button
+walks *up* from wherever the reader is rather than looking the value up.
+
+**The floor is `min(fit, 1)` and the ceiling is `max(3 * fit, 1)`, and neither is a
+simplification.** On a page *smaller* than the screen the fit is already above 1, so a floor
+of fit would put Original below the minimum and out of reach. Measured on the drawn layouts:
+0.687 .. 2.060 for a 1600x2400 page against a 1236x1648 screen, and at the bottom of that
+range the window is the whole page letterboxed — the only scale whose request is *not* the
+screen's pixels, because the window had to shrink to the page.
+
+**Three things are off here, each for a reason rather than by omission.** Page turning,
+because the reader asked for a page and not a book — the step methods are inert, and the
+hardware keys bound to them with it. The middle-tap toggle, because the row is meant to be
+permanent, and this is the only view whose reader cannot summon the buttons back themselves.
+And the pre-warm, because there is no next step and its page branch would fetch the next
+page's dims *and panels* to prepare a turn that cannot happen.
+
+**Leaving it is the one place that costs a detector scan.** The free view has no panels to
+hand over, so cycling out of it into either panel view asks for them — *before* anything is
+closed, the order `meguruHandoff` already follows, so a page whose panels cannot be had
+leaves the reader where they were instead of closing their viewer onto nothing.
+
 ## Reading options and the menus
 
 Meguru books share KOReader's per-book `kopt_*` settings, so the bottom `ConfigDialog`
@@ -2767,8 +2826,21 @@ Each step must pass before the next:
     on, leaves the row open, and must agree with the menu's *Panel view* row afterwards,
     since both write the same preference. The *cropped* row is the one place
     **Scale**/*Original size* and **Rotate** belong: pressing them there must still work,
-    which is the check that they were forwarded rather than dropped. Then the skip:
-    on a page
+    which is the check that they were forwarded rather than dropped.
+
+    Then the third view (*Panel view: Zoom only*, or the row's switch twice). Long-press a
+    point: the page must open **centred on that point**, sharp at 2× and 3× — it is a render
+    from the file, not a magnified tile — and then: pinch changes the scale ✓, drag moves the
+    window ✓ **in every direction including down** (which must *not* close the viewer ✓),
+    the row is up from the first paint and a middle tap does **not** hide it ✓, PgFwd/PgBack
+    and a swipe in any direction do **not** turn the page ✓, and the zoom button cycles
+    1.5 → 1.7 → 2 → 3 → Original → 1.5 ✓ with `Original` showing the file 1:1 ✓ (on a page
+    smaller than the screen: at its true size in the middle, not filled out to the edges ✓).
+    A pinch to something off the list — say 2.4× — must make the button **read 2.4×** ✓, and
+    closing and re-opening must come back at the level, **not** at 2.4×, because this zoom is
+    deliberately not remembered ✓. Then the switch out: from the free view it must land in
+    *both* other views ✓, keeping the reader's place, and land back ✓.
+    Then the skip: on a page
     with small panels beside a full-height one, position the window so they are all
     inside it and press forward — **one press must pass all of them** and land on the
     next panel the window does not cover, with the `-d` line showing a step count

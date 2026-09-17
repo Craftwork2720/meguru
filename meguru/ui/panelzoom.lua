@@ -177,6 +177,10 @@ local PanelViewer = ImageViewer:extend{
     -- Read here and in `meguruHandoff`, which must pass it on: the same trap
     -- `mode` and `rotate` carry a note about, and it fails only at a page boundary.
     view = nil,
+    -- `{ dims, screen, scale }` in the free view, nil in the other two. Its presence is
+    -- the mode switch for every override below: what it means is that this viewer walks
+    -- no steps at all — one window, moved and scaled by the reader's own gestures.
+    free = nil,
     -- "left" | "right" | nil — the book's `Rotate wide pages`, resolved by
     -- `ui/reader.lua` and handed in like `mode`. Not to be confused with the two
     -- rotation fields beside it: `rotated` (stock) is *whether*, and
@@ -209,6 +213,11 @@ end
 
 -- Arm the pre-warm, replacing any warm still queued from the panel before.
 function PanelViewer:meguruArmWarm()
+    if self.free then
+        -- Nothing to warm: there is no next step, and the page branch would fetch the
+        -- next page's dims and panels — work for a page turn this view does not do.
+        return
+    end
     if self._meguru_warm then
         UIManager:unschedule(self._meguru_warm)
         self._meguru_warm = nil
@@ -340,6 +349,12 @@ end
 -- no longer counts anything, so bounding navigation by it would send every
 -- forward gesture to the page boundary.
 function PanelViewer:onShowNextImage()
+    if self.free then
+        -- No steps to walk and no boundary to cross: page turning is off in this view,
+        -- which is what its reader asked for. The hardware keys bound to this and to
+        -- `onShowPrevImage` are therefore inert too.
+        return true
+    end
     if self._images_list_cur < #self.steps then
         self:switchToImageNum(self._images_list_cur + 1)
         return true
@@ -348,6 +363,9 @@ function PanelViewer:onShowNextImage()
 end
 
 function PanelViewer:onShowPrevImage()
+    if self.free then
+        return true
+    end
     if self._images_list_cur > 1 then
         self:switchToImageNum(self._images_list_cur - 1)
         return true
@@ -368,6 +386,11 @@ end
 -- device without multitouch the bottom-left corner saves a screenshot — a
 -- deliberate gesture this must not quietly take over.
 function PanelViewer:onTap(arg, ges)
+    if self.free then
+        -- The row is always up in this view, so a middle tap has nothing to toggle, and
+        -- there are no steps for the thirds to move through. A tap does nothing.
+        return true
+    end
     if self._images_list and ges.pos:intersectWith(self.main_frame.dimen) then
         local screen_w = Screen:getWidth()
         if ges.pos.x < screen_w/3 or ges.pos.x > screen_w*2/3 then
@@ -399,6 +422,23 @@ end
 -- magnifies the tile the reader is looking at, and panning it is what they asked for.
 function PanelViewer:onSwipe(arg, ges)
     local direction = ges.direction
+    if self.free then
+        -- **Every direction pans, including south.** Stock closes the viewer on a swipe
+        -- south while the picture is at best fit, because there is no use for panning
+        -- then — but here there is: a vertical drag is how the reader moves the window,
+        -- and the way out is Close in the row. The signs are stock's own, unchanged.
+        local distance = ges.distance or 0
+        if direction == "west" then
+            return self:panBy(distance, 0)
+        elseif direction == "east" then
+            return self:panBy(-distance, 0)
+        elseif direction == "north" then
+            return self:panBy(0, distance)
+        elseif direction == "south" then
+            return self:panBy(0, -distance)
+        end
+        return true
+    end
     if self.scale_factor == 0 and (direction == "west" or direction == "east") then
         local forward = (self.mode == "manga") and "east" or "west"
         if direction == forward then
@@ -559,6 +599,166 @@ local function levelAfter(level)
     return ZOOM_LEVELS[1]
 end
 
+-- The free view's presets, and Original *beside* them rather than among them: Original
+-- is scale 1, and a preset is a multiple of the fit, so one list holding both would hold
+-- two units. The view works in scales for that reason, but nothing about the scale
+-- outlives the viewer: **the zoom is not remembered** — each open starts at the level the
+-- other views use, and a pinch lasts as long as the reader is in there.
+local FREE_LEVELS = { 1.5, 1.7, 2, 3 }
+
+-- The next preset above a scale, as a scale. A pinch leaves numbers that are not on the
+-- list, so this walks *up* from wherever the reader is rather than looking the value up,
+-- and past the top it returns Original — the one stop above the last preset, after which
+-- the walk starts again.
+local function freeStepAfter(scale, fit)
+    local level = scale / fit
+    for i = 1, #FREE_LEVELS do
+        if FREE_LEVELS[i] > level + 0.001 then
+            return FREE_LEVELS[i] * fit
+        end
+    end
+    return 1
+end
+
+-- What the zoom button says: the file's own pixels, or the magnification of the fit.
+local function freeLabel(scale, fit)
+    if math.abs(scale - 1) < 0.001 then
+        return _("Original")
+    end
+    return string.format("%.1f×", scale / fit)
+end
+
+-- The free view's window: where it is, how close it is, and the one place either moves.
+--
+-- **The step is mutated in place, and that is not an optimisation.** Each step's image is
+-- a lazy closure over the step table, and `ImageViewer` resolves it through
+-- `switchToImageNum`, which returns early when the number has not changed. Writing the
+-- new rectangle into the same table and calling `update()` is what makes the closure see
+-- it; a fresh table would be a step nobody re-resolves.
+--
+-- The tile LRU follows from the same place: a window is keyed by its rectangle *and* its
+-- output size, so returning to a scale the reader was at before is a cache hit rather
+-- than a second render.
+function PanelViewer:meguruFreeWindow(scale, cx, cy)
+    local free = self.free
+    local cur = free and self.steps and self.steps[1]
+    if not cur then
+        return false
+    end
+    local lo, hi = Viewport.scaleBounds(free.dims, free.screen)
+    free.scale = math.max(lo, math.min(hi, scale))
+    local step = Viewport.windowAt(free.dims, free.screen, free.scale, cx, cy)
+    if not step then
+        return false
+    end
+    for key, value in pairs(step) do
+        cur[key] = value
+    end
+    self:meguruFreeLabel()
+    self:update()
+    return true
+end
+
+-- Re-letter the zoom button, which is the only place the current scale is written down.
+function PanelViewer:meguruFreeLabel()
+    local free = self.free
+    local buttons = self.button_table
+    local button = buttons and type(buttons.getButtonById) == "function"
+        and buttons:getButtonById("zoom_level")
+    if free and type(button) == "table" then
+        button:setText(freeLabel(free.scale, Viewport.fitScale(free.dims, free.screen)),
+            button.width)
+    end
+end
+
+-- Pan by a number of *screen* pixels, whatever gesture asked for it.
+--
+-- `ImageViewer:panBy` is the one seam every panning gesture in stock goes through —
+-- `onSwipe`, `onCursorPan`, `onHoldRelease` and `onPanRelease` all end here — so the free
+-- view gets its panning by answering this one call, with stock's own signs: the argument
+-- moves the *picture*, so the window moves the other way, and by a scale less in page
+-- pixels than in screen ones.
+function PanelViewer:panBy(x, y)
+    local free = self.free
+    local cur = free and self.steps and self.steps[1]
+    if not cur then
+        return ImageViewer.panBy(self, x, y)
+    end
+    return self:meguruFreeWindow(free.scale,
+        cur.x + cur.w / 2 - x / free.scale,
+        cur.y + cur.h / 2 - y / free.scale)
+end
+
+-- A pinch or a spread: the scale they ask for, about the point they happened at.
+--
+-- Stock's own arithmetic is `ges.distance / min(screen, image)` — how far the fingers
+-- travelled over the smaller of the screen and the picture. Every tile in this view *is*
+-- the screen's size, so the denominator is simply the screen's dimension along the
+-- gesture, and the feel stays stock's. What cannot be borrowed is the rest: stock's
+-- `onZoomIn`/`onZoomOut` multiply `self.scale_factor`, and that same field is what
+-- `ImageWidget` scales the tile by — so the view keeps its own scale and leaves the field
+-- at best fit, which is what lets the tile stay a render *of the page*.
+--
+-- A spread zooms about the point under the fingers, as stock does; a pinch keeps the
+-- centre, which stock also does and says why.
+function PanelViewer:meguruFreeZoom(ges, closer)
+    local free = self.free
+    local cur = free and self.steps and self.steps[1]
+    if not cur or not ges then
+        return false
+    end
+    local dim
+    if ges.direction == "vertical" then
+        dim = free.screen.h
+    elseif ges.direction == "horizontal" then
+        dim = free.screen.w
+    else
+        dim = math.sqrt(free.screen.w ^ 2 + free.screen.h ^ 2)
+    end
+    local amount = (ges.distance or 0) / dim
+    local target = free.scale * (closer and (1 - amount) or (1 + amount))
+    local cx, cy = cur.x + cur.w / 2, cur.y + cur.h / 2
+    if not closer and ges.pos then
+        -- Whatever page point is under the fingers stays under them: the window's centre
+        -- moves by the difference between where that point sat at the old scale and where
+        -- it sits at the new one.
+        local lo, hi = Viewport.scaleBounds(free.dims, free.screen)
+        local scale = math.max(lo, math.min(hi, target))
+        local dx = (ges.pos.x - free.screen.w / 2) / free.scale
+        local dy = (ges.pos.y - free.screen.h / 2) / free.scale
+        cx = cx + dx - dx * free.scale / scale
+        cy = cy + dy - dy * free.scale / scale
+        target = scale
+    end
+    return self:meguruFreeWindow(target, cx, cy)
+end
+
+function PanelViewer:onPinch(arg, ges)
+    if self.free then
+        return self:meguruFreeZoom(ges, true)
+    end
+    return ImageViewer.onPinch(self, arg, ges)
+end
+
+function PanelViewer:onSpread(arg, ges)
+    if self.free then
+        return self:meguruFreeZoom(ges, false)
+    end
+    return ImageViewer.onSpread(self, arg, ges)
+end
+
+-- Move the zoom on to the next preset, from wherever the reader is.
+function PanelViewer:meguruCycleFreeZoom()
+    local free = self.free
+    local cur = free and self.steps and self.steps[1]
+    if not cur then
+        return
+    end
+    local fit = Viewport.fitScale(free.dims, free.screen)
+    self:meguruFreeWindow(freeStepAfter(free.scale, fit), cur.x + cur.w / 2,
+        cur.y + cur.h / 2)
+end
+
 -- Move the zoom on by one level, and remember it.
 --
 -- **The remembered part is the whole point.** The level is a preference, so a reader
@@ -601,46 +801,65 @@ function PanelViewer:meguruCycleZoomLevel()
     })
 end
 
--- Show the same panel the way the other view shows it.
+-- Show the same page the way the next view shows it.
 --
--- The same close-and-reopen as the zoom button, and for the same reason: what changes is
--- how the page is cut up, which is a different step list, and the reader's place has to
--- survive it. Their place is a *panel* — the crop view's step list is the panel list, so
--- its step index is a panel index, and the window view carries the panel each of its
--- windows belongs to — and a point to re-enter the window view at, which is the middle
--- of whatever they are looking at.
+-- Three views now, so this cycles rather than toggles: cropped panels, the window over
+-- the page, and the free one. The same close-and-reopen as the zoom button, and for the
+-- same reason: what changes is how the page is cut up, which is a different step list,
+-- and the reader's place has to survive it. Their place is a *panel* — the crop view's
+-- step list is the panel list, so its step index is a panel index, and the window view
+-- carries the panel each of its windows belongs to — and a point to re-enter the two
+-- window-shaped views at, which is the middle of whatever they are looking at.
 --
 -- The preference is written here for the same reason the level is: it is a plain
 -- preference with no cascade, and the menu's *Panel view* row reads and writes the same
 -- one, so the two controls cannot disagree.
-function PanelViewer:meguruToggleView()
+function PanelViewer:meguruCycleView()
     local view = self.view
     local cur = self.steps and self.steps[self._images_list_cur]
     -- Read before the close, like the zoom button and the handoff: the viewer this was
     -- called from is gone by the time the call that follows has done anything.
     local panels = self.panel_rects
     local ui, page = self.ui, self.page
+    local doc = ui and ui.document
     local mode, rotate = self.mode, self.rotate
-    local show_buttons = self.buttons_visible
-    if not (view and cur and panels and ui) then
+    if not (view and cur and ui and doc) then
         return
     end
-    local to_window = not view.window
-    Settings.set("panel_view", to_window and "window" or "crop")
-    UIManager:close(self)
+    local kind = self.free and "zoom" or (view.window and "window" or "crop")
+    kind = ({ crop = "window", window = "zoom", zoom = "crop" })[kind]
+    -- **The free view has no panels to hand over**, because it never asked the detector —
+    -- that is the whole point of a view that walks no steps. Leaving it for either *panel*
+    -- view therefore needs them asked for now, and asked for **before** anything is
+    -- closed: a page whose panels cannot be had would otherwise take the viewer down and
+    -- give the reader nothing in its place. Same order as `meguruHandoff`, same reason.
+    if not panels and kind ~= "zoom" then
+        local ok, got = pcall(doc.getPanelsFromPage, doc, page, mode)
+        panels = ok and got or nil
+        if not panels then
+            logger.info("Meguru: cannot leave the free view for", kind,
+                "- no panels for page", page)
+            return
+        end
+    end
+    Settings.set("panel_view", kind)
     -- Which panel the reader is on, read from the *old* view's shape: the crop view's
-    -- step list is the panel list, so its step index is the panel index, while a window
-    -- carries the panel it belongs to. Asking the step itself would work by accident —
-    -- a crop step has no `panel` field, so `cur.panel or index` falls through to the
-    -- index — and this says which of the two is meant.
-    local panel = view.window and cur.panel or self._images_list_cur
+    -- step list is the panel list, so its step index is the panel index, while a step in
+    -- either window-shaped view carries the panel it belongs to. The free view has none,
+    -- and nothing on the way out of it needs one.
+    local panel
+    if not self.free then
+        panel = view.window and cur.panel or self._images_list_cur
+    end
+    UIManager:close(self)
     PanelZoom.open(ui, page, panels, panel, mode, rotate, {
-        window = to_window,
+        window = kind == "window",
+        free = kind == "zoom",
         level = view.level,
-        -- Only the window view has an entry point to give: it opens centred on a point,
-        -- and the point worth centring on is where the reader already was.
-        tap = to_window and { x = cur.x + cur.w / 2, y = cur.y + cur.h / 2 } or nil,
-        buttons_visible = show_buttons,
+        buttons_visible = true,
+        -- Both window-shaped views open centred on a point, and the point worth centring
+        -- on is where the reader already was. The cropped view has no entry point.
+        tap = kind ~= "crop" and { x = cur.x + cur.w / 2, y = cur.y + cur.h / 2 } or nil,
     })
 end
 
@@ -694,7 +913,8 @@ local function installRow(viewer)
         end
         return false
     end
-    local window = viewer.view and viewer.view.window
+    local free = viewer.free ~= nil
+    local window = not free and viewer.view and viewer.view.window
     -- `or 1` for the same reason the scale's own arithmetic uses it: a caller that
     -- hands no level means fit-to-screen, and the label should say what the view does.
     local level = (viewer.view and viewer.view.level) or 1
@@ -710,14 +930,28 @@ local function installRow(viewer)
         -- **The label names the view the reader is *in*.** It is the shape the zoom
         -- button beside it already has — that one shows the level it is on — and the
         -- shape the menu's *Panel view* row has, so the two controls and the row all
-        -- name the same thing rather than one of them naming the destination.
-        text = window and _("Pan & zoom") or _("Cropped panels"),
+        -- name the same thing rather than one of them naming the destination. With three
+        -- views it also has to cycle rather than toggle.
+        text = free and _("Zoom only")
+            or (window and _("Pan & zoom") or _("Cropped panels")),
         callback = function()
-            viewer:meguruToggleView()
+            viewer:meguruCycleView()
         end,
     }
     local entries = { switch }
-    if window then
+    if free then
+        -- The free view's zoom is the button the reader came for: it names the scale they
+        -- are looking at, whether it came from a preset or from their own fingers.
+        entries[#entries + 1] = {
+            id = "zoom_level",
+            text = freeLabel(viewer.free.scale,
+                Viewport.fitScale(viewer.free.dims, viewer.free.screen)),
+            callback = function()
+                viewer:meguruCycleFreeZoom()
+            end,
+        }
+        entries[#entries + 1] = close
+    elseif window then
         entries[#entries + 1] = {
             id = "zoom_level",
             text = tostring(level) .. "×",
@@ -746,7 +980,7 @@ local function installRow(viewer)
         zero_sep = true,
         show_parent = viewer,
     }
-    if window then
+    if window or free then
         local sink = { width = 0, setText = function() end }
         table_.button_by_id.scale = sink
         table_.button_by_id.rotate = sink
@@ -775,23 +1009,50 @@ end
 -- A nil `rotate` means this viewer is exactly the one that existed before
 -- directions did: every rotation decision is stock's.
 --
--- `opts` is the view: nil for the cropped sequence, or `{ window = true, tap = {
--- x, y } }` — where the reader's finger landed, in page coordinates, so the window
--- they asked for is the one they get. `index` is a *panel* either way; the window
--- view turns it into a step through `Viewport`, which is also what decides how many
--- steps the page has at all.
+-- `opts` is the view: nil for the cropped sequence, `{ window = true, tap = { x, y } }`
+-- for the window view, or `{ free = true, tap = { x, y } }` for the free one — where the
+-- reader's finger landed, in page coordinates, so the view opens looking at it. `index`
+-- is a *panel*, and only the two panel views have one: the window view turns it into a
+-- step through `Viewport`, which is also what decides how many steps the page has at all,
+-- while the free view walks no steps and needs neither panels nor a detector.
 --
 -- Returns false when there is nothing to show, which is what lets the caller
 -- fall back to the single-region viewer rather than opening an empty one.
 function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
     local doc = ui and ui.document
-    if not (doc and panels and #panels > 0) then
+    local free = opts and opts.free
+    if not (doc and (free or (panels and #panels > 0))) then
         return false
     end
     local window = opts and opts.window
     local steps, start = panels, index
     local screen
-    if window then
+    local free_state
+    if free then
+        -- One window and no walk. The page's dimensions are all this view needs — the
+        -- caller fetched and decoded the page for them (`getPageDims` is the decoder), so
+        -- the bytes the render wants are in hand, and the detector has not been asked at
+        -- all: there are no panels in a view that walks none, and a page the detector
+        -- would have refused opens here like any other.
+        local dims = doc:getPageDims(page)
+        screen = CanvasContext:getSize()
+        if not (dims and screen) then
+            return false
+        end
+        -- The zoom is *not* remembered — see `FREE_LEVELS` — so this starts where the
+        -- other views start: the reader's level times fit-to-screen. Original size is one
+        -- button press away and lasts as long as the viewer does.
+        local lo, hi = Viewport.scaleBounds(dims, screen)
+        local scale = math.max(lo, math.min(hi,
+            Viewport.fitScale(dims, screen) * (opts.level or 1)))
+        local step = Viewport.windowAt(dims, screen, scale, opts.tap and opts.tap.x,
+            opts.tap and opts.tap.y)
+        if not step then
+            return false
+        end
+        steps, start = { step }, 1
+        free_state = { dims = dims, screen = screen, scale = scale }
+    elseif window then
         -- The page's own size, in the space the panel rects are in. The bytes are
         -- already in hand — `getPanelsFromPage` fetched and decoded them to find
         -- the panels — so this is a lookup rather than a fetch, and a page with no
@@ -823,11 +1084,12 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
     -- BlitBuffer is malloc'd outside the Lua heap, so a buffer freed here would
     -- be freed twice.
     images.image_disposable = false
-    -- Nothing turns in the window view, and that is not a gap: a window is the
-    -- screen's shape, so there is no wide-versus-tall decision to make, and a panel
-    -- too wide for it is walked side to side instead. Stock's own
-    -- `rotated` stays false throughout, which is what the overrides below expect.
-    local rotates = window and {} or panelRotations(panels)
+    -- Nothing turns in either of the window-shaped views, and that is not a gap: a window
+    -- is the screen's shape, so there is no wide-versus-tall decision to make. Stock's own
+    -- `rotated` stays false throughout, which is what the overrides above expect — and the
+    -- free view has no panels to ask about at all, which is why it is named here and not
+    -- left to `panelRotations`.
+    local rotates = (window or free) and {} or panelRotations(panels)
 
     local viewer = PanelViewer:new{
         ui = ui,
@@ -837,6 +1099,7 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         mode = mode,
         rotate = rotate,
         view = opts,
+        free = free_state,
         meguru_rotates = rotates,
         image = images,
         -- **One, and deliberately not the step count.** Stock builds, draws and
@@ -859,8 +1122,10 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         fullscreen = true,
         -- Chrome is the reader's to summon and their state to keep: a re-open that the
         -- reader asked for — the zoom button, a page boundary — must not hide the row
-        -- they were just using. See `meguruCycleZoomLevel` and `meguruHandoff`.
-        buttons_visible = opts and opts.buttons_visible == true,
+        -- they were just using. See `meguruCycleZoomLevel` and `meguruHandoff`. The free
+        -- view is the one that *asks* for its row to be permanent, since it is the only
+        -- view whose reader cannot summon it back with a middle tap.
+        buttons_visible = (opts and opts.buttons_visible == true) or free == true,
         rotated = rotates[1] or false,
     }
     -- **The row is cosmetic, so a failure to build it must cost the buttons and not the

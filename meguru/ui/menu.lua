@@ -451,15 +451,18 @@ function Menu.addReaderItems(plugin, menu_items)
         -- call the row would keep the old wording until the menu was rebuilt.
         settings[#settings + 1] = {
             text_func = function()
-                return Reader.panelViewMode() == "window"
-                    and _("Panel view: Pan & zoom (no crop)")
-                    or _("Panel view: Cropped panels")
+                return ({
+                    crop = _("Panel view: Cropped panels"),
+                    window = _("Panel view: Pan & zoom (no crop)"),
+                    zoom = _("Panel view: Zoom only"),
+                })[Reader.panelViewMode()]
             end,
-            help_text = _("Cropped panels shows each panel on its own. Pan & zoom keeps the whole page and moves a window over it, one panel at a time."),
+            help_text = _("Cropped panels shows each panel on its own. Pan & zoom keeps the whole page and moves a window over it, one panel at a time. Zoom only drops the panels entirely: the page, with pinch and drag, and no page turning."),
             keep_menu_open = true,
             callback = function(touchmenu_instance)
-                Settings.set("panel_view",
-                    Reader.panelViewMode() == "window" and "crop" or "window")
+                Settings.set("panel_view", ({
+                    crop = "window", window = "zoom", zoom = "crop",
+                })[Reader.panelViewMode()])
                 if touchmenu_instance
                     and type(touchmenu_instance.updateItems) == "function" then
                     touchmenu_instance:updateItems()

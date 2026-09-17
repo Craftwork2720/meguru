@@ -228,6 +228,41 @@ function Viewport.entryView(panels, dims, screen, index, x, y, scale)
     return view
 end
 
+-- The scale the free view may move between, as `min, max` in screen pixels per page
+-- pixel.
+--
+-- **The minimum is not always fit-to-screen.** A page *smaller* than the screen has a fit
+-- above 1, and there the whole page at fit is already magnified; the floor has to come
+-- down to 1 so that "original size" — one page pixel to one screen pixel, the one scale
+-- in that view that is not a magnification of anything — stays reachable. The maximum is
+-- the top level the list offers, and never below 1 either, for the same reason.
+function Viewport.scaleBounds(dims, screen)
+    local fit = Viewport.fitScale(dims, screen)
+    return math.min(fit, 1), math.max(fit * 3, 1)
+end
+
+-- One window, centred on a point of the page and clamped to the **page**.
+--
+-- This is the free view's whole geometry: no panels, no stops, and the only thing that
+-- bounds the window is the page's own edge. The step comes back in the same shape the
+-- walk produces, so the document, the tile key and the LRU cannot tell the two modes
+-- apart.
+function Viewport.windowAt(dims, screen, scale, cx, cy)
+    if not (dims and screen and scale) then
+        return nil
+    end
+    local w, h = windowFor(dims, screen, scale)
+    local view = centred(cx or dims.w / 2, cy or dims.h / 2, w, h, dims)
+    return {
+        x = view.x,
+        y = view.y,
+        w = w,
+        h = h,
+        out_w = math.max(1, math.floor(w * scale + 0.5)),
+        out_h = math.max(1, math.floor(h * scale + 0.5)),
+    }
+end
+
 -- The page's steps, in the order the forward gesture reaches them.
 --
 -- `entry` is nil for a plain start at the first panel, or `{ panel = i, x, y }` for a
