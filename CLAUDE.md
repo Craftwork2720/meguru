@@ -2518,7 +2518,7 @@ python tools/check.py       # structure of the Lua
 ```
 
 There is no Lua interpreter on the development machine, so `check.py` stands in for
-one. It runs ten passes:
+one. It runs eleven passes:
 
 1. **Block balance** — `function`/`if`/`for`/`while`/`do` against `end`/`until`, over
    comment- and string-stripped source.
@@ -2610,6 +2610,26 @@ one. It runs ten passes:
    The block extent comes from pass 9's matcher, extracted into `block_spans` so both
    passes ask one implementation the same question. What it cannot see is an assignment
    whose `=` sits on a later line than its targets; nothing here writes one.
+11. **A field named after a method the host's widgets already define.** The free view
+   declared its state as `free = nil` on a class extending `ImageViewer` — and
+   `free` is `WidgetContainer:free(full)`, so `self.free` is a *function*, not the table
+   that was put there. The second failure is the one that matters: the field read back
+   fine at the point of assignment and only threw where it was *used*, which was inside a
+   paint, so the plugin's own `pcall` around the button row caught the first one and the
+   reader got a viewer whose gestures crashed. **This one shipped as well**, on the first
+   device run of the view that introduced it, and the error names it exactly —
+   `attempt to index field 'free' (a function value)`.
+   The rule the file already had and this broke: **a field this plugin hangs on a stock
+   widget is named so that it cannot collide** — `meguru_rotates`, `_meguru_warm` — and
+   the one that collided was named for what it *was* rather than for whose it was. The
+   pass reports field names only, so an override written as `function
+   PanelViewer:onSwipe(...)` is left alone, which is right: that one *is* the file's own
+   method and the two look nothing alike in the source.
+   Its list of reserved names is short and deliberately so — the widget lifecycle and the
+   viewer's event handlers — because a name on it is a claim that the host owns the name,
+   and a wrong claim would be a false positive that teaches a reader to skim the pass.
+   What it cannot see is the same collision reached any other way: an assignment
+   `self.free = x` outside an `extend{}` or a `:new{}` table is not reported.
 
 None of these is a parser. They are the failure modes that have actually bitten this
 codebase, and that a reader cannot reliably catch by eye: a name or member that is fine

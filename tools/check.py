@@ -43,6 +43,15 @@ bitten this codebase, and that a reader cannot reliably catch by eye:
      to call the loop counter. Every part of it is individually correct and it
      reads perfectly, which is why it survived into a released build and was
      found by a device instead.
+  10. an assignment to `_`, which is pass 9's collision seen from the other side:
+     `panels, _, reason = f()` writes straight through to the file's gettext,
+     because that binding is not a `local`. It shipped too, and it cost a device
+     crash on the page-boundary crossing of a view nobody had exercised before.
+  11. a field named after a method the host's widgets already define -- `free = nil`
+     on a class that extends `ImageViewer`, whose `free` is
+     `WidgetContainer:free(full)`. The field reads back as the method, so the next
+     index on it throws, and it throws from inside a paint. Shipped, and found by
+     a device.
 
 The item-upsert check is gone with the catalog it belonged to: it compared
 `UPSERT_ITEM` against the `items` DDL, and neither exists.
@@ -958,6 +967,55 @@ def check_gettext_assign(path, text, raw):
         offset += len(line) + 1
     return errors
 
+# The methods KOReader's own widget classes define, and which therefore cannot be
+# *fields* of a class that extends one: `ImageViewer` is a `WidgetContainer`, so
+# `self.free` is `WidgetContainer:free(full)` — a function, and the next `.scale` on it
+# is `attempt to index field 'free' (a function value)`, thrown from inside a paint.
+# This shipped, and a device found it.
+#
+# The list is the widget lifecycle plus the viewer's own event handlers, and it is short
+# on purpose: a name here is a claim that the host owns it, and a name the host does not
+# own would be a false positive that teaches a reader to ignore the pass.
+WIDGET_METHODS = {
+    "free", "init", "update", "paintTo", "getSize", "handleEvent", "setText",
+    "onShow", "onClose", "onCloseWidget", "onTap", "onSwipe", "onHold",
+    "onHoldRelease", "onPan", "onPanRelease", "onPinch", "onSpread",
+    "onZoomIn", "onZoomOut", "onSaveImageView", "openFile", "close", "show", "hide",
+}
+
+TABLE_OPEN = re.compile(r":(?:extend|new)\s*\{")
+
+
+def check_widget_fields(path, text):
+    """Report a field named after a method the host's widgets already define.
+
+    Only *field* names are reported — a `name = value` inside an `extend{...}` table or a
+    `:new{...}` call. An override written as `function PanelViewer:onSwipe(...)` is this
+    file's own method and is exactly right, and the two look nothing alike in the source,
+    which is why the distinction is mechanical rather than a judgement.
+    """
+    errors = []
+    for open_brace in TABLE_OPEN.finditer(text):
+        depth = 1
+        i = open_brace.end()
+        while i < len(text) and depth > 0:
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+            i += 1
+        body = text[open_brace.end():i - 1]
+        for field in re.finditer(r"(?<![\w.:])(\w+)\s*=(?!=)", body):
+            name = field.group(1)
+            if name in WIDGET_METHODS:
+                lineno = text.count("\n", 0, open_brace.end() + field.start()) + 1
+                errors.append(
+                    f"{path}:{lineno}: `{name}` is a method of the widget classes this "
+                    f"file extends, so a field of that name is not a field -- it reads "
+                    f"back as the method, and indexing it throws inside a paint"
+                )
+    return errors
+
 def main():
     members, by_stem, stems = module_members()
     all_errors = []
@@ -974,6 +1032,7 @@ def main():
         all_errors += check_receiver_uses(rel, text)
         all_errors += check_gettext_shadow(rel, text)
         all_errors += check_gettext_assign(rel, text, raw)
+        all_errors += check_widget_fields(rel, text)
 
     all_errors += check_marker_fields(marker_fields())
     all_errors += check_series_context(series_context_fields())

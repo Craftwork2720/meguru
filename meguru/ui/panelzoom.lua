@@ -180,7 +180,7 @@ local PanelViewer = ImageViewer:extend{
     -- `{ dims, screen, scale }` in the free view, nil in the other two. Its presence is
     -- the mode switch for every override below: what it means is that this viewer walks
     -- no steps at all — one window, moved and scaled by the reader's own gestures.
-    free = nil,
+    meguru_free = nil,
     -- "left" | "right" | nil — the book's `Rotate wide pages`, resolved by
     -- `ui/reader.lua` and handed in like `mode`. Not to be confused with the two
     -- rotation fields beside it: `rotated` (stock) is *whether*, and
@@ -213,7 +213,7 @@ end
 
 -- Arm the pre-warm, replacing any warm still queued from the panel before.
 function PanelViewer:meguruArmWarm()
-    if self.free then
+    if self.meguru_free then
         -- Nothing to warm: there is no next step, and the page branch would fetch the
         -- next page's dims and panels — work for a page turn this view does not do.
         return
@@ -349,7 +349,7 @@ end
 -- no longer counts anything, so bounding navigation by it would send every
 -- forward gesture to the page boundary.
 function PanelViewer:onShowNextImage()
-    if self.free then
+    if self.meguru_free then
         -- No steps to walk and no boundary to cross: page turning is off in this view,
         -- which is what its reader asked for. The hardware keys bound to this and to
         -- `onShowPrevImage` are therefore inert too.
@@ -363,7 +363,7 @@ function PanelViewer:onShowNextImage()
 end
 
 function PanelViewer:onShowPrevImage()
-    if self.free then
+    if self.meguru_free then
         return true
     end
     if self._images_list_cur > 1 then
@@ -386,7 +386,7 @@ end
 -- device without multitouch the bottom-left corner saves a screenshot — a
 -- deliberate gesture this must not quietly take over.
 function PanelViewer:onTap(arg, ges)
-    if self.free then
+    if self.meguru_free then
         -- The row is always up in this view, so a middle tap has nothing to toggle, and
         -- there are no steps for the thirds to move through. A tap does nothing.
         return true
@@ -422,7 +422,7 @@ end
 -- magnifies the tile the reader is looking at, and panning it is what they asked for.
 function PanelViewer:onSwipe(arg, ges)
     local direction = ges.direction
-    if self.free then
+    if self.meguru_free then
         -- **Every direction pans, including south.** Stock closes the viewer on a swipe
         -- south while the picture is at best fit, because there is no use for panning
         -- then — but here there is: a vertical drag is how the reader moves the window,
@@ -640,7 +640,7 @@ end
 -- output size, so returning to a scale the reader was at before is a cache hit rather
 -- than a second render.
 function PanelViewer:meguruFreeWindow(scale, cx, cy)
-    local free = self.free
+    local free = self.meguru_free
     local cur = free and self.steps and self.steps[1]
     if not cur then
         return false
@@ -661,7 +661,7 @@ end
 
 -- Re-letter the zoom button, which is the only place the current scale is written down.
 function PanelViewer:meguruFreeLabel()
-    local free = self.free
+    local free = self.meguru_free
     local buttons = self.button_table
     local button = buttons and type(buttons.getButtonById) == "function"
         and buttons:getButtonById("zoom_level")
@@ -679,7 +679,7 @@ end
 -- moves the *picture*, so the window moves the other way, and by a scale less in page
 -- pixels than in screen ones.
 function PanelViewer:panBy(x, y)
-    local free = self.free
+    local free = self.meguru_free
     local cur = free and self.steps and self.steps[1]
     if not cur then
         return ImageViewer.panBy(self, x, y)
@@ -702,7 +702,7 @@ end
 -- A spread zooms about the point under the fingers, as stock does; a pinch keeps the
 -- centre, which stock also does and says why.
 function PanelViewer:meguruFreeZoom(ges, closer)
-    local free = self.free
+    local free = self.meguru_free
     local cur = free and self.steps and self.steps[1]
     if not cur or not ges then
         return false
@@ -734,14 +734,14 @@ function PanelViewer:meguruFreeZoom(ges, closer)
 end
 
 function PanelViewer:onPinch(arg, ges)
-    if self.free then
+    if self.meguru_free then
         return self:meguruFreeZoom(ges, true)
     end
     return ImageViewer.onPinch(self, arg, ges)
 end
 
 function PanelViewer:onSpread(arg, ges)
-    if self.free then
+    if self.meguru_free then
         return self:meguruFreeZoom(ges, false)
     end
     return ImageViewer.onSpread(self, arg, ges)
@@ -749,7 +749,7 @@ end
 
 -- Move the zoom on to the next preset, from wherever the reader is.
 function PanelViewer:meguruCycleFreeZoom()
-    local free = self.free
+    local free = self.meguru_free
     local cur = free and self.steps and self.steps[1]
     if not cur then
         return
@@ -826,7 +826,7 @@ function PanelViewer:meguruCycleView()
     if not (view and cur and ui and doc) then
         return
     end
-    local kind = self.free and "zoom" or (view.window and "window" or "crop")
+    local kind = self.meguru_free and "zoom" or (view.window and "window" or "crop")
     kind = ({ crop = "window", window = "zoom", zoom = "crop" })[kind]
     -- **The free view has no panels to hand over**, because it never asked the detector —
     -- that is the whole point of a view that walks no steps. Leaving it for either *panel*
@@ -848,7 +848,7 @@ function PanelViewer:meguruCycleView()
     -- either window-shaped view carries the panel it belongs to. The free view has none,
     -- and nothing on the way out of it needs one.
     local panel
-    if not self.free then
+    if not self.meguru_free then
         panel = view.window and cur.panel or self._images_list_cur
     end
     UIManager:close(self)
@@ -913,7 +913,7 @@ local function installRow(viewer)
         end
         return false
     end
-    local free = viewer.free ~= nil
+    local free = viewer.meguru_free ~= nil
     local window = not free and viewer.view and viewer.view.window
     -- `or 1` for the same reason the scale's own arithmetic uses it: a caller that
     -- hands no level means fit-to-screen, and the label should say what the view does.
@@ -944,8 +944,8 @@ local function installRow(viewer)
         -- are looking at, whether it came from a preset or from their own fingers.
         entries[#entries + 1] = {
             id = "zoom_level",
-            text = freeLabel(viewer.free.scale,
-                Viewport.fitScale(viewer.free.dims, viewer.free.screen)),
+            text = freeLabel(viewer.meguru_free.scale,
+                Viewport.fitScale(viewer.meguru_free.dims, viewer.meguru_free.screen)),
             callback = function()
                 viewer:meguruCycleFreeZoom()
             end,
@@ -1099,7 +1099,7 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         mode = mode,
         rotate = rotate,
         view = opts,
-        free = free_state,
+        meguru_free = free_state,
         meguru_rotates = rotates,
         image = images,
         -- **One, and deliberately not the step count.** Stock builds, draws and
