@@ -282,16 +282,29 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
     as long as `show` follows and the repaint at the end of the event paints it.
 
   So the precondition is precise: **a viewer whose `update()` ran and which was never painted
-  before the repaint that consumed the queue.** Nothing else produces this error. What put the
-  viewer in that state happened earlier **in the same input event** — so the first thing to look
-  for is still never this line, it is the throw or the early return above it. If a Meguru open
-  ran in that event it logged, and the paths that can leave a viewer built and unshown are the
-  close-and-reopen buttons: `meguruReopenAtLevel` and `meguruCycleView`, both `pcall`ed now so
-  that a throw costs the press rather than leaving a queued closure to kill the session one
-  repaint later.
+  before the repaint that consumed the queue.** Nothing else produces this error.
 
-  **Not measured:** which producer actually fired on the device. The two reports so far came
-  with the traceback alone and no `Meguru:` lines above it, and the queue is consumed at the end
-  of the same event, so the evidence is in the log rather than in the crash. A `dbg` pair around
-  the build and the `show` would make the next occurrence name itself.
+  **And the producer is found: two input events in one batch.** `UIManager:handleInput` waits
+  and then dispatches **the whole batch** before it repaints —
+  `for __, ev in ipairs(input_events) do self:handleInputEvent(ev) end` — so two taps that
+  arrive together are handled back to back with a *single* repaint after both. A Meguru viewer
+  is torn down and rebuilt per press (`meguruReopenAtLevel`), so with `+`/`-` pressed quickly
+  the first press builds a viewer, the second closes it before it has ever been painted, and
+  the repaint then runs that dead viewer's queued closure against a nil `dimen`. Hence the
+  report's shape exactly: **only with a rapid press, and only in the window views** — the free
+  view's steps are mutated in place (`meguruFreeWindow`), so it never builds a second viewer
+  and never reproduced it.
+
+  No throw is involved, which is the part this note got wrong for two rounds of looking: it
+  insisted on a failure above the traceback, and the log above it was clean because there was
+  nothing to log. The `pcall`s around the two re-opens are still right for what they were
+  written for, but they were never the fix.
+
+  **The guard is in `PanelZoom.open`**: `main_frame.dimen` is filled with `frame:getSize()`
+  before `UIManager:show`, which is *exactly* what `FrameContainer:paintTo` would compute — so a
+  viewer that never reaches the screen still has a frame the queued closure can read, and
+  `paintTo` later only rewrites `x`/`y`. The cost is one wasted refresh of a phantom region.
+  What would remove the class rather than the instance is not rebuilding at all: `-`/`+` could
+  replace the step list in place the way the free view already does, which is the same change
+  that would make a rapid press cheap on e-ink instead of a teardown per tenth.
 

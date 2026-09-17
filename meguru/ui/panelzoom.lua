@@ -1554,6 +1554,29 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
             rotate and ("turned " .. rotate) or "no turn direction")
     end
 
+    -- **Fill the frame's `dimen` before the viewer is ever shown, or a viewer that is built and
+    -- never painted takes the session down one repaint later.** `FrameContainer:paintTo` is the
+    -- only thing that assigns it, and `ImageViewer:update` queues a repaint closure that
+    -- *indexes* it — so the closure of a viewer that never reached the screen reads nil
+    -- (`imageviewer.lua:384`, `attempt to index field 'dimen'`), and `UIManager:close` cannot
+    -- reach it because `_refresh_func_stack` is a plain list and not keyed by widget.
+    --
+    -- What makes this safe rather than a guess is that the value below is **exactly** the one
+    -- that `paintTo` would compute: it is `self:getSize()` and nothing else, so setting it early
+    -- changes no layout — `paintTo` then takes its `else` branch and rewrites only `x`/`y`.
+    -- Every step of these views is a screen-shaped tile, so the size cannot move between here
+    -- and the paint either; where it could, the cost would be a stale refresh region and not a
+    -- wrong picture.
+    --
+    -- This is a guard and not the cause. See `meguruReopenAtLevel` for what puts a viewer in
+    -- that state at all, and docs/known-issues.md for the mechanism in full.
+    do
+        local frame = viewer.main_frame
+        if frame and not frame.dimen then
+            local size = frame:getSize()
+            frame.dimen = Geom:new{ x = 0, y = 0, w = size.w, h = size.h }
+        end
+    end
     -- `show` dispatches the `Show` event, which is where the pre-warm is armed;
     -- nothing is armed here.
     UIManager:show(viewer)
