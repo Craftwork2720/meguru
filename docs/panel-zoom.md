@@ -992,7 +992,7 @@ whole page, and at it the window is the whole page letterboxed — the only scal
 **Four ways to set the zoom, and they answer four different questions.** The value button
 *cycles*: 1.5, 2 and 2.5, wrapping back to 1.5 — levels, and the reason this view works in
 *scales* underneath while the other two work in levels is Original, which is one page pixel to
-one screen pixel and is not a level at all. `-` and `+` beside it nudge by **half a level inside 1x to 4x** — the
+one screen pixel and is not a level at all. `-` and `+` beside it nudge by **a quarter of a level inside 1x to 4x** — the
 bottom of that range is the whole page, so `-` reaches the fit without pinching —
 and they step from wherever the reader *is* rather than snapping to that list, so a pinch to
 2.4x answers `+` with 2.9x. A pinch changes the scale about the fingers. And a drag or a tap

@@ -663,10 +663,10 @@ local FREE_LEVELS = { 1.5, 2, 2.5 }
 -- The fine control: how far one press of `-` or `+` moves, and the range it moves in.
 -- Separate from the list above, because the two answer different questions — the list is what
 -- the zoom button *cycles*, Original included, and this is what a reader nudges with. It steps
--- from wherever they are rather than snapping to the list, which is why 2.4x goes to 2.9x, and
+-- from wherever they are rather than snapping to the list, which is why 2.4x goes to 2.65x, and
 -- the range starts at the fit itself, so the whole page is the bottom of it. The ceiling is the
 -- one `Viewport.scaleBounds` uses, so the buttons cannot outrun a pinch.
-local FREE_STEP = 0.5
+local FREE_STEP = 0.25
 local FREE_MIN_LEVEL = 1
 local FREE_MAX_LEVEL = 4
 
@@ -696,11 +696,17 @@ end
 -- pixel and cannot be written as a level at all. A reader asked for the word every other image
 -- viewer uses for that scale, and `1x` is it; the alternative, spelling out the ratio, was
 -- longer and still needed to be read.
+--
+--- **Two decimals at most, and a trailing zero dropped**, which a step of a quarter is what asked
+--- for: `%.1f` would print 1.75 as `1.8×` — a label lying by five hundredths about the one number
+--- it exists to report — and `%.2f` alone would print a level of 1.7 as `1.70×`. The zero is the
+--- only thing dropped, so `2.0×` keeps its decimal and reads like the levels beside it.
 local function freeLabel(scale, fit)
     if math.abs(scale - 1) < 0.001 then
         return "1×"
     end
-    return string.format("%.1f×", scale / fit)
+    local text = string.format("%.2f", scale / fit):gsub("0$", "")
+    return text .. "×"
 end
 
 -- The fit the free view's *levels* are measured against: the content's width on the screen's,
@@ -915,7 +921,7 @@ function PanelViewer:meguruCycleFreeZoom()
         cur.y + cur.h / 2)
 end
 
--- One press of `-` or `+`: half a level, inside the range the buttons work in.
+-- One press of `-` or `+`: a quarter of a level, inside the range the buttons work in.
 --
 -- It moves from wherever the reader *is* rather than snapping to the cycle button's list, so
 -- a pinch to 2.4x answers `+` with 2.9x — nudging what they are looking at instead of throwing
@@ -1199,7 +1205,7 @@ local function installRow(viewer)
     if free then
         -- The free view's zoom is three buttons: `-`, the value, `+`. The value is the one
         -- that *cycles* — through the presets and Original, which is a scale and not a level
-        -- and so is unreachable by stepping — while the two beside it nudge by half a level
+        -- and so is unreachable by stepping — while the two beside it nudge by a quarter
         -- and stop at the ends of the range.
         entries[#entries + 1] = {
             id = "zoom_out",
