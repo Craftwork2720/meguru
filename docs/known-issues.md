@@ -257,15 +257,41 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   `Feed.dedupe` by decision rather than by oversight. Not measured on a device: no
   marker has been written from an alias row and then reopened from History.
 
-- **A closed viewer leaves one queued repaint that names its frame, and the line is
-  stock's.** `ImageViewer:onCloseWidget` ends by calling
-  `UIManager:setDirty(nil, function() return "flashui", self.main_frame.dimen end)` — keyed
-  on **nil**, so `UIManager:close`'s `_dirty[w] = nil` cannot reach it, and the closure
-  reads a frame the widget may already have let go of. An ordinary close is safe because
-  the flush happens before anything is freed; both device crashes in this file happened when
-  a viewer was closed or abandoned **in the same event**, and both were knock-ons of a throw
-  of ours — `attempt to index field 'dimen' (a nil value)` arriving one line after our own
-  `panel zoom viewer failed`. So the first thing to look for is never this, it is what threw;
-  if it ever appears with no failure before it, the repair is to close the viewer without its
-  parent `onCloseWidget`, or to give it a frame that cannot go away.
+- **A viewer that is built and never painted crashes the next repaint, and the crash is one
+  event away from whatever caused it.** `attempt to index field 'dimen' (a nil value)` at
+  `imageviewer.lua:384` — and **that line is `ImageViewer:update()`'s queued repaint closure**,
+  `self.main_frame.dimen:combine(orig_dimen)` (`orig_dimen` read at `:329`), not the one in
+  `onCloseWidget` this entry used to blame. That one (`:889`) writes `self.main_frame.dimen`
+  without indexing it, so it can only ever fail on `main_frame` itself — it cannot produce this
+  message, and the repair this note used to suggest ("close the viewer without its parent
+  `onCloseWidget`, or give it a frame that cannot go away") was aimed at the wrong closure. The
+  second half of it is also **actively unsafe**: `WidgetContainer:paintTo` assigns `dimen` only
+  `if not self.dimen`, so a frame pre-set by us is the size that viewer keeps for good.
+
+  The chain, all of it read in the stock source rather than inferred:
+
+  - `main_frame.dimen` **is assigned lazily inside `WidgetContainer:paintTo`**. A viewer that
+    has never been painted has no `dimen` at all.
+  - `UIManager:setDirty(widget, fn)` pushes `fn` onto `_refresh_func_stack` — **a plain list,
+    not keyed by widget**. `UIManager:close` clears `_dirty[widget]` and does not touch the
+    list; only `_repaint` empties it, and only after running it.
+  - `ImageViewer:init` **ends with `self:update()`**, so merely constructing a viewer queues
+    that closure — which is why this is not specific to Meguru. Our `installRow` calls
+    `update()` a second time, and it does it **before `UIManager:show`**, so every Meguru open
+    queues a closure for a viewer that is not yet on the window stack. That is harmless exactly
+    as long as `show` follows and the repaint at the end of the event paints it.
+
+  So the precondition is precise: **a viewer whose `update()` ran and which was never painted
+  before the repaint that consumed the queue.** Nothing else produces this error. What put the
+  viewer in that state happened earlier **in the same input event** — so the first thing to look
+  for is still never this line, it is the throw or the early return above it. If a Meguru open
+  ran in that event it logged, and the paths that can leave a viewer built and unshown are the
+  close-and-reopen buttons: `meguruReopenAtLevel` and `meguruCycleView`, both `pcall`ed now so
+  that a throw costs the press rather than leaving a queued closure to kill the session one
+  repaint later.
+
+  **Not measured:** which producer actually fired on the device. The two reports so far came
+  with the traceback alone and no `Meguru:` lines above it, and the queue is consumed at the end
+  of the same event, so the evidence is in the log rather than in the crash. A `dbg` pair around
+  the build and the `show` would make the next occurrence name itself.
 

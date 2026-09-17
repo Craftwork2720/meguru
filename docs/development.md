@@ -338,19 +338,24 @@ Each step must pass before the next:
     the same preference the cycle does, so a level reached by nudging must survive the next
     page and the next book.
 
-    Then the **content crop**, which those two views measure in and the cropped view does not.
-    With *Page Crop* at `auto` (⋮ → **Page crop** → *auto*), long-press the same page: the
-    window is clamped to the content box, so **the margin can never be panned to** — at `1.0×`
-    the window is the content on the screen rather than the content plus its white border, and
-    a panel at the page's edge reaches the screen's edge rather than a strip of paper. Then set
-    *Page Crop* to `none` and long-press again: everything must be **exactly** as it was before
-    this existed — same steps, same count, the margins reachable again — because the mechanism
-    is required to be inert when the reader asked for no crop. The free view carries the same
-    pair: with the crop on its bottom stop is the content, with it off nothing moved. The check
-    that catches a *wrong* frame rather than a missing one is the panels: they are detected on
-    the whole page, so a panel whose border sits at the content's edge must still be anchored
-    to that edge — an off-by-origin frame shows a window a margin's width away from the panel
-    it names, which reads as a detector fault and is not one. **The row must still be there after the tap**: two levels
+    Then the **content crop**, which these two views work their zoom out from and the cropped
+    view does not touch at all. With *Page Crop* at `auto` (⋮ → **Page crop** → *auto*),
+    long-press the same page and compare it against the same page with the crop off:
+    **the same level is now closer.** A tenth of the page given to margins was a tenth of the
+    magnification the fit was giving away, so at the level the reader was on the window covers
+    *less* page — which means a panel that fitted in one pass can need two or four, and that is
+    the price rather than a defect: the same *on-screen* size is reached about a notch lower.
+    What the crop buys is the bottom of the range — at `1.0×` the window covers the artwork
+    rather than the artwork plus its paper, so a panel inside the content box still fits in one
+    pass at the floor and a scan with fat margins is no longer permanently under-magnified.
+    **The margin must still be reachable**: pan the free view towards a page edge and the paper
+    must come into view, because only the fit was cropped and the window is still the page's.
+    Then set *Page Crop* to `none` and long-press again: everything must be **exactly** as it
+    was before this existed — same steps, same count, the same level buying the same
+    magnification — because the mechanism is required to be inert when the reader asked for no
+    crop. The free view carries the same pair: with the crop on, its bottom stop is the content;
+    with it off nothing moved, and since its remembered zoom is a scale rather than a level,
+    1:1 must still be 1:1 either way. **The row must still be there after the tap**: two levels
     are compared by pressing twice, and a viewer that came back with its chrome hidden
     would send the reader to the middle of the screen between every pair. **And it must
     still be *Meguru's* row** — the re-open paints the row it was built with, so a

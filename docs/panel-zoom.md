@@ -561,31 +561,50 @@ it into a top and a bottom nobody asked to step through. Everything else — the
 navigation, the pre-warm, the page boundary — is one implementation for both, which is
 what makes this a second view rather than a second feature.
 
-**Both window views measure in the page's *content*, not in its raw scan.** A scan usually
-carries a white border, and a level that ignored it would be mostly margin at the bottom of
-its range: at 1.0 the reader would get the content *plus* the border, and every step of a
-panel would start by crossing the space between them. So the panels and the reader's finger
-are moved into the content box, `Viewport` walks there, and the steps come back out — the
-rectangle stays a *page* rectangle, because that is what the document renders and what the
-tile key is built from. It is a translation and never a rescale, so it also cannot move a
-panel relative to the artwork it was detected in.
+**Both window views work their zoom out from the page's *content*, not from its raw scan.** A
+scan usually carries a white border, and a fit that counted it gives magnification away to
+paper: a tenth of the page in margins is a tenth of the zoom lost, and a panel that only just
+fails to fit the window costs a whole extra stop for the strip of blank it is missing. So the
+**fit** is measured against the content box — the `1` that a level is a multiple of, and the
+floor of the free view's range. The crop decides how close a level is, and nothing else.
+
+**The window is still the whole page, and that is the half that matters.** Nothing is rewritten
+into another coordinate space: the panels, the windows and the reader's finger all stay in the
+page's own coordinates, so a stop is anchored to the panel it names with nothing in between to
+get an origin wrong. The margin is not taken from the reader either — the window stays clamped
+to the *page*, so it can be moved onto a margin, and a panel whose border sits in one still
+anchors to it. This replaced a version that measured **in** the box, moving the panels and the
+touch point into it and the steps back out; that one made the margins unreachable and put every
+stop one origin mistake away from naming the wrong rectangle, for no gain the fit alone does not
+give.
 
 **The box comes from `getPageBBox`, and that is the reader's own answer rather than ours.**
 That seam is `autoContentBox`'s margin scan when *Page Crop* is auto, a detected page-number
 strip when that row is on, and **the whole page when the reader has cropping off** — so the
 two views follow the setting instead of second-guessing it, and switch themselves off exactly
-when the reader asked for no crop. `contentFrame` is the whole of it, and its three refusals
-are what keep the change inert where it has nothing to do: no crop, a page the scan refused,
-and a box that is simply the whole page. A box it cannot *read* is refused too, `pcall`ed,
-because that seam may be `pagenumbercrop`'s and a foreign plugin's throw must cost the crop
-and never the long-press.
+when the reader asked for no crop. `contentDims` is the whole of it, and its three refusals are
+what keep the change inert where it has nothing to do: no crop, a page the scan refused, and a
+box that is simply the whole page. A box it cannot *read* is refused too, `pcall`ed, because
+that seam may be `pagenumbercrop`'s and a foreign plugin's throw must cost the crop and never
+the long-press. Since only the box's **ratio** to the page is used, the units it arrives in stop
+mattering — native pixels, a foreign plugin's, anything proportional measures the same.
 
-Two consequences worth knowing rather than discovering. The window is clamped to the box, so
-**the margins are unreachable in these two views** — that is the point, and panning to them is
-not a missing feature. And the free view's remembered zoom is a *scale*, screen pixels per
-page pixel, so a crop that moves the fit does not move what the reader asked for: 1:1 stays
-1:1 and a remembered magnification stays what it was, while the same scale is now a different
-multiple of the fit.
+**The same level is therefore closer than it was before the crop, and that is accepted rather
+than overlooked.** A tenth of the page in margins was a tenth of the magnification the fit was
+giving away, so taking it out of the fit shortens the whole ladder: at the level a reader was
+on, the window covers *less* page than it did, and a panel that fitted in one pass can now need
+two or four. Measured on a 1600x2400 page with a 1500x2200 content box, a 1000x1400 panel at
+1.7 goes from **1 pass to 4**. The trade is the bottom of the range — at 1.0 the window covers
+the artwork rather than the artwork plus its paper, so a fat-margined scan is no longer
+permanently under-magnified — and the reader who wants the framing they had presses `-` once.
+**Nothing here is to be "fixed" back**: the level a reader lands on is remembered by
+`meguru/settings`, so the adjustment is once per reader and not once per page, and the default
+level is left where it was rather than bent to hide the shift.
+
+One consequence of the same kind, in the free view: its remembered zoom is a *scale*, screen
+pixels per page pixel, so a crop that moves the fit does not move what the reader asked for —
+1:1 stays 1:1 and a remembered magnification stays what it was, while the same scale is now a
+smaller multiple of the fit.
 
 **A step is a rectangle of the page, and nothing is cut.** Where the cropped view asks
 `drawPagePart` for a panel at the region's own size, the window asks for a viewport at

@@ -85,13 +85,15 @@ local DEFAULTS = {
     -- that leaves a typical 1600x2400 scan rendering at about 1.16 screen pixels per
     -- page pixel — a mild magnification of the file rather than 1.9's 1.30.
     --
-    -- **"A whole page" means the page's *content* in the two window views.** They
-    -- measure in the box `getPageBBox` answers, so a scan's white border is not part of
-    -- what the fit is a fit *of*, and `-` at the bottom of its range reaches the content
-    -- rather than the paper around it. Where the reader has cropping off that box is the
-    -- whole page and the sentence above is literally true — which is the point of taking
-    -- the box from that seam rather than deciding for them: see `contentFrame` in
-    -- `meguru/ui/panelzoom`.
+    -- **In the two window views the fit is measured against the page's *content*.** A
+    -- scan's white border is then not part of what a level is a multiple *of*: at 1.0 the
+    -- window covers the artwork rather than the artwork plus its paper, and a panel the
+    -- window only just missed may fit in one stop instead of two. The window itself stays
+    -- the page's and is clamped to it, so a margin is somewhere these two views can be
+    -- moved onto, not somewhere they refuse to go. Where the reader has cropping off the
+    -- box is the whole page and the sentence above is literally true — which is the point
+    -- of taking the box from that seam rather than deciding for them: see `contentDims`
+    -- in `meguru/ui/panelzoom`.
     panel_zoom_level  = 1.7,
 
     -- The free view's zoom, and the one preference here stored as a **scale** rather
