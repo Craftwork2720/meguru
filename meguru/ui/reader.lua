@@ -409,24 +409,6 @@ end
 --- worth keeping: the plugin opens `.cbz` too, so a reader looking at a `.cbz`
 --- was being shown the answer for markers while the book in front of them
 --- followed `cbz`. One preference for everything Meguru opens has no such gap.
-function Reader.panelZoomEnabled()
-    return Settings.get("panel_zoom") == true
-end
-
---- Set it, live for the book on screen — unless that book answered for itself.
----
---- `panel_zoom_enabled` is the very field the stock row flips, so a book with no
---- answer of its own follows immediately rather than on the next open. A book
---- that *has* one keeps it: the preference is what it falls back to, and a
---- fallback that overrode the answer would not be one.
-function Reader.setPanelZoom(ui, on)
-    Settings.set("panel_zoom", on == true)
-    local hl = ui and ui.highlight
-    if hl and not hl._meguru_panel_zoom_pinned then
-        hl.panel_zoom_enabled = on == true
-    end
-end
-
 --- Which of the panel views a long-press opens: `"crop"`, `"window"` or `"zoom"`.
 ---
 --- One preference for everything Meguru opens, like the toggle above it and for the
@@ -509,31 +491,6 @@ function Reader.panelZoomDirection(ui)
     return nil
 end
 
---- Leave KOReader's own cascade alone, and put Meguru's preference underneath it.
----
---- The switch is the stock "⋮ → Panel zoom (manga/comic) → Allow panel zoom", and
---- stock keeps its answer on two levels: a per-file copy in the sidecar, and a
---- per-extension entry that answers for every file that has none. **Both levels
---- stay exactly where they are.** All this changes is what the second one is: for
---- a file Meguru opened, "nobody has answered for this" resolves to
---- `Settings.panel_zoom` rather than to whatever KOReader has for the extension.
----
---- That is the whole of it, and the reason it is this small is worth keeping from
---- the design it replaces. An earlier version made the extension entry
---- authoritative for markers — read on open, written the moment the row was
---- flipped, and the sidecar copy deleted so nothing could contradict it. That
---- gave one answer for all of a series' chapters, which is right, but it did it
---- by naming an *extension*, and this engine opens `.cbz` too: a reader looking
---- at a `.cbz` was shown the answer for markers while the book in front of them
---- followed `cbz`. A preference for everything Meguru opens has no such gap, and
---- costs no machinery.
----
---- The line the wraps below must not cross: a file that was only *opened* may not
---- come away with an answer of its own. Stock writes the live field into the
---- sidecar on every save, so without the third wrap a book opened while the
---- preference was on would be pinned on for good, and would survive the reader
---- turning it off — which is precisely the failure the design above was built to
---- avoid, arriving from the other side.
 --- Stock's own `ReaderHighlight:onPanelZoom`, or nil on a build that moved it.
 ---
 --- **Read off the class and never off the instance.** The instance field is the thing every
@@ -556,22 +513,23 @@ end
 
 --- Whether the file in front of the reader wants a panel zoom at all.
 ---
---- **Asked of this plugin's own cascade, not read off `panel_zoom_enabled`, and the difference
---- is the whole reason it exists.** That field is stock's gate and `ReaderHighlight:onHold`
---- reads it *before* any handler runs, so whichever engine is going to answer the press has to
---- have won it — and a plugin answering the same gesture wins it last, on every `ReadSettings`.
---- A handler that trusted the field would be reading the other plugin's answer.
+--- **A book has one unless the book itself says otherwise**, which is what `_meguru_panel_zoom_pinned`
+--- records — the reader answering for *this* file with KOReader's own row. There is no plugin-wide
+--- switch to consult: the per-file answer is the only one there is, and a file nobody has answered
+--- for is the reason the default is yes.
 ---
---- `_meguru_panel_zoom_pinned` and `_meguru_panel_zoom_answer` are the file's own answer when it
---- has one, remembered by the `onReadSettings` wrap below because the live field it came from is
---- not reliably ours by the time a press arrives. With no other plugin in the chain the two
---- agree by construction, which is why this is invisible in the configuration that ships
---- without one.
+--- **Asked here rather than read off `panel_zoom_enabled`, and the difference is the whole reason
+--- this function exists.** That field is stock's gate and `ReaderHighlight:onHold` reads it *before*
+--- any handler runs, so whichever engine answers the press has to have won it — and another plugin
+--- answering the same gesture wins it last, on every `ReadSettings`. A handler that trusted the
+--- field would be reading that plugin's answer. `_meguru_panel_zoom_answer` is the file's own
+--- answer, stashed by the `onReadSettings` wrap below because the live field it came from is not
+--- reliably ours by the time a press arrives.
 local function meguruPanelZoomWanted(hl)
     if hl._meguru_panel_zoom_pinned then
         return hl._meguru_panel_zoom_answer == true
     end
-    return Settings.get("panel_zoom") == true
+    return true
 end
 
 --- The body of Meguru's own long-press handling.
@@ -698,6 +656,33 @@ local function meguruPanelZoom(self, arg, ges, fallback)
     return true
 end
 
+--- Leave KOReader's own cascade alone, and give its per-file level the answer this engine wants.
+---
+--- The switch is the stock ⋮ → Panel zoom (manga/comic) → Allow panel zoom, and stock keeps its
+--- answer on two levels: a per-file copy in the sidecar, and a per-extension entry that answers
+--- for every file that has none. **Both levels stay exactly where they are.** All this changes is
+--- what the second one is: KOReader has nothing at all for the extensions this engine claims, so
+--- a file nobody has answered for is told `true` here rather than left to an extension table that
+--- does not mention it.
+---
+--- **There is no plugin-wide switch above that, and there was one.** It was a menu row, and it is
+--- gone because it answered a question nobody asked twice: a reader who wants no long-press zoom
+--- in a book turns it off *in that book*, with the page in front of them. That per-file level is
+--- the one that has always been the interesting one, and it is still stock's own row.
+---
+--- That is the whole of it, and the reason it is this small is worth keeping from the design it
+--- replaces. An earlier version made the extension entry authoritative for markers — read on
+--- open, written the moment the row was flipped, and the sidecar copy deleted so nothing could
+--- contradict it. That gave one answer for all of a series' chapters, which is right, but it did
+--- it by naming an *extension*, and this engine opens `.cbz` too: a reader looking at a `.cbz`
+--- was shown the answer for markers while the book in front of them followed `cbz`. One answer
+--- for everything this engine opens has no such gap, and costs no machinery.
+---
+--- The line the wraps below must not cross: a file that was only *opened* may not come away with
+--- an answer of its own. Stock writes the live field into the sidecar on every save, so without
+--- the third wrap a book opened while the field said on would be pinned on for good, and would
+--- survive the reader turning it off — which is precisely the failure the design above was built
+--- to avoid, arriving from the other side.
 local function installPanelZoom(ui)
     local hl = ui and ui.highlight
     if not (hl and ui.paging) then
@@ -744,9 +729,11 @@ local function installPanelZoom(ui)
         -- rival write over it costs nothing: the press is decided at the handler, and
         -- `meguruPanelZoomWanted` asks *this* cascade there rather than the field.
         if not own then
-            -- Stock put the per-extension entry here. This preference is the only
-            -- default this plugin recognises.
-            self.panel_zoom_enabled = Settings.get("panel_zoom")
+            -- Stock put the per-extension entry here, and it has nothing to put there for these
+            -- extensions — `.meguru` is not a format it knows and `.cbz` is one it reads with
+            -- another engine. A file nobody has answered for is told yes, so that the long-press
+            -- works at all; the per-file row is what can say no.
+            self.panel_zoom_enabled = true
         end
         -- Nothing on a streamed page is text, and the fallback reaches
         -- `getImageFromPosition`, which no engine-less paging document

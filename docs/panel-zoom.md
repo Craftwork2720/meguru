@@ -8,20 +8,29 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
 
 ### The preference, and the stock cascade
 
-**One preference, and the stock cascade left exactly where it is.** What a file gets
-is KOReader's own rule — the answer in the file's sidecar if it has one, and otherwise
-the fallback:
+**The stock cascade, left exactly where it is, with one answer of ours put underneath it.**
+What a file gets is KOReader's own rule — the answer in the file's sidecar if it has one, and
+otherwise the per-extension entry for its format:
 
 ```
 the file's own answer (sidecar), if it has one
-otherwise  Settings.panel_zoom        -- the menu row, default on
+otherwise  the per-extension entry -- which has nothing to say for what this engine claims
 ```
 
-The stock switch is ⋮ → **Panel zoom (manga/comic)** → *Allow panel zoom*, and
-`ui/menu.lua`'s `Panel zoom in Meguru books` reads and writes the fallback through
-`Reader.panelZoomEnabled` / `Reader.setPanelZoom`. The stock row therefore shows the
-*resolved* value while flipping it answers for one file and never touches the
-preference. Two rows, two different jobs, and neither owns the other.
+The switch is ⋮ → **Panel zoom (manga/comic)** → *Allow panel zoom*, and it is the per-file one
+that matters: an answer there is the reader looking at the page, and a file that answered keeps
+its answer for good. `installPanelZoom`'s `onReadSettings` wrap is what fills the level below it
+for a file nobody has answered for, and the answer it writes is **yes** — KOReader has no
+per-extension entry for an extension it does not know, and "no entry" is not the same thing as
+"no".
+
+**There is no plugin-wide switch above that, and there was one.** A row (`Panel zoom in Meguru
+books`) wrote `Settings.panel_zoom` and the wraps put it on every file that had not answered. It
+was removed, by decision: it answered a question nobody asked twice, and the reader who wants no
+long-press zoom in a book is looking at that book. What the row could do that the stock one
+cannot is nothing the stock one does not already do better, so the choice is now only where it
+matters. A `meguru_panel_zoom` key left in an old `settings.reader.lua` is read by nothing —
+delete it or ignore it, the way `meguru.sqlite3` and `cache/meguru/` are handled.
 
 **This replaced a design that named an extension, and the reason is a bug the naming
 caused.** The row used to govern KOReader's per-*extension* entry for `meguru`, but
@@ -34,7 +43,7 @@ Three wraps, and the third is the one that will be forgotten:
 
 | wrap | job |
 |---|---|
-| `onReadSettings` | remember whether the file answered for itself, and when it did not, put the preference where stock put the extension entry; the text-selection fallback is forced off |
+| `onReadSettings` | remember whether the file answered for itself, and when it did not, put **yes** where stock put the extension entry; the text-selection fallback is forced off |
 | `onTogglePanelZoomSetting` | record that the reader just answered for **this** file |
 | `onSaveSettings` | delete the per-file copy stock just wrote — unless that file answered for itself |
 
@@ -45,8 +54,8 @@ place before stock computes a value. `installPanelZoom` is called from
 
 **The line those wraps must not cross: a file that was only *opened* may not come
 away with an answer of its own.** Stock writes the live field into the sidecar on
-every save, so without that third wrap a book opened while the preference was on
-would be pinned on for good, and would survive the reader turning the preference off.
+every save, so without that third wrap a book that was merely opened would come away
+pinned on for good, and would ignore the reader turning it off for that book afterwards.
 That is why "delete unless pinned" is not the same thing as the old unconditional
 delete.
 

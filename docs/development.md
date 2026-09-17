@@ -246,7 +246,7 @@ Each step must pass before the next:
     with it disabled the row is the first thing on the page. Turning the AI plugin on
     must move the row under it rather than leaving a second copy behind. Nothing
     anywhere offers a cover, a cache to clear, a library or a server list. Inside `Settings`, on both surfaces: `Auto-open next in series` (reader
-    only), `Panel zoom in Meguru books` (reader only), `Hide status bar` + a line, `Main
+    only), `Hide status bar` + a line, `Main
     folder for .meguru streams: …`, `Subfolder per server` + a line, `Set Meguru as
     default reader for .cbz`. The folder row opens the picker and shows the new path
     afterwards; the toggle's checkbox survives a restart; a new book lands in
@@ -282,27 +282,27 @@ Each step must pass before the next:
     `filter=unread&sort=number_asc`. The same chapter must come from the row above the
     series list and from the same book opened from History — three entries into one
     answer.
-17. **Panel zoom: the preference is the floor, and a file may stand on it.** Start from
-    a device with `panel_zoom_enabled` removed from `settings.reader.lua` *and* from the
-    sidecars of the books in play, so nothing has answered for anything:
+17. **Panel zoom: the file's own answer, and yes for everything that has none.** Start from
+    a device with `panel_zoom_enabled` removed from the sidecars of the books in play, so
+    nothing has answered for anything. **There is no plugin-wide switch any more** — the row
+    that was one is gone — so every question here is per file:
 
     | situation | expected |
     |---|---|
-    | preference off, a fresh marker | no zoom on long-press, and the **stock ⋮ row reads off too** |
-    | same file, stock row tapped on | zoom works — and `Panel zoom in Meguru books` **still reads off** |
-    | close and reopen that file | zoom **still works**: the file answered |
-    | preference off, a *different* marker | no zoom |
-    | preference on, a fresh file | zoom works |
-    | …then preference off, reopen that file | **no zoom** |
+    | a fresh marker | zoom works on long-press, and the stock ⋮ row reads **on** |
+    | stock ⋮ row tapped off | no zoom, and the row reads off |
+    | close and reopen that file | **no zoom still**: the file answered |
+    | a *different* marker | zoom works — the answer did not travel |
+    | that second file's row tapped off, then the first file reopened | no zoom in either, each for its own reason |
 
-    The last row is the one that matters, and it is the whole reason `onSaveSettings`
-    still deletes something: a file that was only *opened* must not come away with an
-    answer of its own. Confirm it on disk — open and close that file under the
-    preference on, then check its sidecar has **no** `panel_zoom_enabled`. Also confirm
-    the preference applies **live** to a file with no answer of its own, and does **not**
-    to a file that has answered. Finally `.cbz`, where the two readings are allowed to
-    differ: one opened through Meguru with no answer of its own follows the preference,
-    while the same file opened by KOReader's own reader follows the `cbz` entry.
+    The third row is the one that matters, and it is the whole reason `onSaveSettings` still
+    deletes something: a file that was only *opened* must not come away with an answer of its
+    own. Confirm it on disk — open and close a file nobody has switched, then check its sidecar
+    has **no** `panel_zoom_enabled`. And the last row is the per-file reading of the old
+    "preference" column: two books, two answers, neither copied to the other. Finally `.cbz`,
+    where the two readings are allowed to differ: one opened through Meguru with no answer of
+    its own is told yes, while the same file opened by KOReader's own reader follows the `cbz`
+    entry.
 18. **Panel zoom is a crop of the page, not of the screen.** On a book whose pages are
     bigger than the screen (a Kavita volume; anything at or under 4 Mpx is not capped),
     long-press a panel that covers a good part of the page. In `-d` the `panel zoom on
@@ -624,8 +624,8 @@ Each step must pass before the next:
     |---|---|---|
     | a | the other plugin **enabled** | the long-press opens **Meguru's** viewer; its sequence never appears |
     | b | the other plugin **disabled** | Meguru's viewer — *not* stock's single-region one, which is what a reader got before this changed |
-    | c | `Panel zoom in Meguru books` **off**, other plugin enabled | **no** panel zoom at all: this plugin's own cascade refuses, even though the other plugin pins `panel_zoom_enabled` true |
-    | d | the same book, its own stock ⋮ row switched on | the file's own answer wins, and the Meguru row still reads the preference |
+    | c | the book's own stock ⋮ row switched **off**, other plugin enabled | **no** panel zoom at all: the file refused it, even though the other plugin pins `panel_zoom_enabled` true |
+    | d | the same book, its own stock ⋮ row switched back on | zoom works again, and the other plugin still never appears |
     | e | the other plugin **uninstalled** | the new row absent, and everything byte for byte as it was |
     | f | `.cbz` opened through Meguru | Meguru's viewer — the scope is the provider, not the extension |
     | g | a splash page the detector refuses, other plugin enabled | **stock's** viewer opens, not the other plugin's sequence, and never two viewers |

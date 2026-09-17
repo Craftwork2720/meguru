@@ -49,20 +49,11 @@ local DEFAULTS = {
     auto_next_item    = true,
     manga_order       = true,
 
-    -- The default answer to "does a long-press zoom into a panel" for everything
-    -- Meguru opens — markers, and the `.cbz` files this engine also reads.
-    --
-    -- It is only the *default*: a file that answered for itself, which is what
-    -- KOReader's own ⋮ row makes it do, keeps its own answer and this one never
-    -- overrides it. `true` because that is KOReader's own default for `cbz`/`cbt`
-    -- and was this plugin's for markers.
-    panel_zoom        = true,
-
     -- Which view a long-press opens: the panels cut out of the page and shown one at
     -- a time, the page kept whole with a window moved over it, or the page alone with
     -- no panels at all. `"crop"` | `"window"` | `"zoom"`, and it says nothing about
-    -- *whether* there is a panel view — that is `panel_zoom` above, and this is only
-    -- reached when it is on.
+    -- *whether* there is a panel view — a book has one unless the reader turned it off
+    -- for that book with KOReader's own row, and this is only reached when it is on.
     --
     -- **Window by default, and it is a choice rather than a measurement.** It shows
     -- the page as it is, so a panel the detector merged, or a border it read wrongly,

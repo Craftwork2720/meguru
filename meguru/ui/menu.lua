@@ -421,36 +421,21 @@ function Menu.addReaderItems(plugin, menu_items)
         }
     end
 
-    -- A default for everything Meguru opens, not an override of anything: the
-    -- stock ⋮ row still answers per book, and a book that has an answer keeps it.
+    -- **There is no row for whether a long-press zooms at all, and it was removed rather than
+    -- forgotten.** A Meguru book has a panel zoom unless *that book* says otherwise, and the
+    -- per-book answer is KOReader's own row — which is the one that has always been the
+    -- interesting one, since it is the reader looking at the page. A plugin-wide switch above it
+    -- only ever answered a question nobody asked twice.
     --
-    -- **Drawn always, where it used to be hidden whenever another plugin held the
-    -- long-press.** That rule existed to stop this row offering a switch that switched
-    -- nothing: a rival forces `panel_zoom_enabled` on, so the row would have read one way
-    -- while the panels behaved another. Two things ended it — the gesture in a Meguru book
-    -- is this plugin's whatever else is installed (`installOwnPanelZoom`), and this row's
-    -- answer is asked of *this* plugin's own cascade at the press rather than read off
-    -- that field (`meguruPanelZoomWanted`). So it now switches exactly what it names, in
-    -- every configuration, and the reader is never left without it.
-    settings[#settings + 1] = {
-        text = _("Panel zoom in Meguru books"),
-        help_text = _("The default for everything Meguru opens, streams and .cbz alike. A book you switch individually with KOReader's own ⋮ → Panel zoom (manga/comic) keeps its own answer; this is what the rest follow."),
-        keep_menu_open = true,
-        checked_func = Reader.panelZoomEnabled,
-        callback = function()
-            Reader.setPanelZoom(plugin.ui, not Reader.panelZoomEnabled())
-        end,
-    }
-    -- The view, not whether there is one: two ways of showing the same panels
-    -- in the same order, and the state lives in the text because that is what
-    -- names it — a tick beside "Panel view" would say neither which one is on
-    -- nor what the other one is. `updateItems` is what redraws it; without the
-    -- call the row would keep the old wording until the menu was rebuilt.
+    -- What stays here is the *view*: two ways of showing the same panels in the same order, and
+    -- the state lives in the text because that is what names it — a tick beside "Panel view"
+    -- would say neither which one is on nor what the other one is. `updateItems` is what redraws
+    -- it; without the call the row would keep the old wording until the menu was rebuilt.
     settings[#settings + 1] = {
         text_func = function()
             return ({
                 crop = _("Panel view: Cropped panels"),
-                window = _("Panel view: Pan & zoom (no crop)"),
+                window = _("Panel view: Pan & zoom"),
                 zoom = _("Panel view: Zoom only"),
             })[Reader.panelViewMode()]
         end,
