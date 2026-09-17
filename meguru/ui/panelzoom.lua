@@ -465,7 +465,11 @@ function PanelViewer:meguruHandoff(direction)
     local view = self.view and {
         window = self.view.window,
         level = self.view.level,
-    } or nil    UIManager:tickAfterNext(function()
+    } or nil
+    -- Read outside the tick with `mode` and `rotate`, for the same reason: the viewer
+    -- this is handed off from is closed before the new one is built.
+    local show_buttons = self.buttons_visible
+    UIManager:tickAfterNext(function()
         local ok, err = pcall(function()
             if not UIManager:isWidgetShown(this) then
                 return
@@ -510,6 +514,10 @@ function PanelViewer:meguruHandoff(direction)
                     window = view.window,
                     level = view.level,
                     at_end = direction == "previous",
+                    -- The row stays where the reader left it, for the same reason the
+                    -- zoom button keeps it: a boundary crossing is not a reason to take
+                    -- the buttons out from under a finger that was just using them.
+                    buttons_visible = show_buttons,
                 } or nil
                 PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
             else
@@ -574,6 +582,7 @@ function PanelViewer:meguruCycleZoomLevel()
     local panels = self.panel_rects
     local ui, page = self.ui, self.page
     local mode, rotate = self.mode, self.rotate
+    local show_buttons = self.buttons_visible
     if not (view and view.window and cur and panels and ui) then
         return
     end
@@ -584,6 +593,12 @@ function PanelViewer:meguruCycleZoomLevel()
         window = true,
         level = level,
         tap = { x = cur.x + cur.w / 2, y = cur.y + cur.h / 2 },
+        -- **The row stays open, which is the whole point of pressing this button.** A
+        -- reader comparing two levels would otherwise have to middle-tap to get the
+        -- buttons back between every pair — and this button can only be pressed while
+        -- the row is up, so carrying its state through is what makes a second press
+        -- possible at all.
+        buttons_visible = show_buttons,
     })
 end
 
@@ -753,7 +768,10 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         images_keep_pan_and_zoom = false,
         with_title_bar = false,
         fullscreen = true,
-        buttons_visible = false,
+        -- Chrome is the reader's to summon and their state to keep: a re-open that the
+        -- reader asked for — the zoom button, a page boundary — must not hide the row
+        -- they were just using. See `meguruCycleZoomLevel` and `meguruHandoff`.
+        buttons_visible = opts and opts.buttons_visible == true,
         rotated = rotates[1] or false,
     }
     if window then

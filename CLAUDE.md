@@ -1883,6 +1883,17 @@ the preference, so the next page, the next book and the next start keep it. That
 there is no menu row for the level — the choice moved into the viewer, the store did not,
 and `ui/reader` still reads it and hands the number in.
 
+**The row stays open across the re-opens, and that is what makes the button usable.**
+Changing the level is a close-and-reopen, and the new viewer would start with its chrome
+hidden — so a reader comparing two levels had to middle-tap to bring the buttons back
+between every pair, and the button can only be pressed while the row is up. Its state
+travels with the re-open, on the call rather than on the carried view, exactly as
+`at_end` does; the page boundary carries it too, since a crossing is not a reason to take
+the buttons out from under a finger that was using them. Both are read *before* the close
+that precedes the reopen, which is the rule the handoff already follows for `mode` and
+`rotate` — and one of them was first written reading `self.buttons_visible` inside the
+tick, which is after the close, and would have worked by luck rather than by design.
+
 Two details of the rebuild are load-bearing. Stock builds the table inside `init` and has
 no way to take a button out of one, so the table and its container are replaced whole —
 both stock's own widgets, with stock's own shape. And **`update` re-letters the two
@@ -2720,7 +2731,10 @@ Each step must pass before the next:
     `1.7x` button must cycle 1.4 / 1.7 / 1.9, change how much of the page the window
     covers — narrower as the number rises — with the step count following it, and
     **remember the choice**, so the next page, the next book and the next start are at the
-    level the reader landed on. The row must hold the zoom and *Close* and nothing else: a
+    level the reader landed on. **The row must still be there after the tap**: two levels
+    are compared by pressing twice, and a viewer that came back with its chrome hidden
+    would send the reader to the middle of the screen between every pair. The row must
+    hold the zoom and *Close* and nothing else: a
     **Scale** or **Rotate** button in the window view is the bug, since neither means
     anything there. Then the skip:
     on a page
