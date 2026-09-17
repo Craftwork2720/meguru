@@ -620,6 +620,15 @@ end
 -- reader left it. See `meguru/settings`.
 local FREE_LEVELS = { 1.5, 1.7, 2, 3 }
 
+-- The fine control: how far one press of `-` or `+` moves, and the range it moves in.
+-- Separate from the list above, because the two answer different questions — the list is what
+-- the zoom button *cycles*, Original included, and this is what a reader nudges with. It steps
+-- from wherever they are rather than snapping to the list, which is why 2.4x goes to 2.9x, and
+-- the ceiling is the one `Viewport.scaleBounds` uses so the buttons cannot outrun a pinch.
+local FREE_STEP = 0.5
+local FREE_MIN_LEVEL = 1.5
+local FREE_MAX_LEVEL = 4
+
 -- The next preset above a scale, as a scale. A pinch leaves numbers that are not on the
 -- list, so this walks *up* from wherever the reader is rather than looking the value up,
 -- and past the top it returns Original — the one stop above the last preset, after which
@@ -840,6 +849,24 @@ function PanelViewer:meguruCycleFreeZoom()
         cur.y + cur.h / 2)
 end
 
+-- One press of `-` or `+`: half a level, inside the range the buttons work in.
+--
+-- It moves from wherever the reader *is* rather than snapping to the cycle button's list, so
+-- a pinch to 2.4x answers `+` with 2.9x — nudging what they are looking at instead of throwing
+-- it to the nearest preset. The level is the unit here because that is what a reader reads off
+-- the button; the window is then built from the scale that level means on this page.
+function PanelViewer:meguruFreeStepZoom(direction)
+    local free = self.meguru_free
+    local cur = free and self.steps and self.steps[1]
+    if not cur then
+        return
+    end
+    local fit = Viewport.fitScale(free.dims, free.screen)
+    local level = free.scale / fit + direction * FREE_STEP
+    level = math.max(FREE_MIN_LEVEL, math.min(FREE_MAX_LEVEL, level))
+    self:meguruFreeWindow(level * fit, cur.x + cur.w / 2, cur.y + cur.h / 2)
+end
+
 -- Move the zoom on by one level, and remember it.
 --
 -- **The remembered part is the whole point.** The level is a preference, so a reader
@@ -1021,14 +1048,30 @@ local function installRow(viewer)
     }
     local entries = { switch }
     if free then
-        -- The free view's zoom is the button the reader came for: it names the scale they
-        -- are looking at, whether it came from a preset or from their own fingers.
+        -- The free view's zoom is three buttons: `-`, the value, `+`. The value is the one
+        -- that *cycles* — through the presets and Original, which is a scale and not a level
+        -- and so is unreachable by stepping — while the two beside it nudge by half a level
+        -- and stop at the ends of the range.
+        entries[#entries + 1] = {
+            id = "zoom_out",
+            text = "-",
+            callback = function()
+                viewer:meguruFreeStepZoom(-1)
+            end,
+        }
         entries[#entries + 1] = {
             id = "zoom_level",
             text = freeLabel(viewer.meguru_free.scale,
                 Viewport.fitScale(viewer.meguru_free.dims, viewer.meguru_free.screen)),
             callback = function()
                 viewer:meguruCycleFreeZoom()
+            end,
+        }
+        entries[#entries + 1] = {
+            id = "zoom_in",
+            text = "+",
+            callback = function()
+                viewer:meguruFreeStepZoom(1)
             end,
         }
         entries[#entries + 1] = close

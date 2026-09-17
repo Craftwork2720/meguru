@@ -2075,12 +2075,23 @@ so remembering it where it moves would be a disk write per gesture. `onCloseWidg
 the reader's answer is final and it happens once per viewer — whether they close it, switch
 views, or a page boundary takes it. The label carries the live value until then.
 
-**The floor is `min(fit, 1)` and the ceiling is `max(3 * fit, 1)`, and neither is a
+**The floor is `min(fit, 1)` and the ceiling is `max(4 * fit, 1)`, and neither is a
 simplification.** On a page *smaller* than the screen the fit is already above 1, so a floor
-of fit would put Original below the minimum and out of reach. Measured on the drawn layouts:
-0.687 .. 2.060 for a 1600x2400 page against a 1236x1648 screen, and at the bottom of that
+of fit would put Original below the minimum and out of reach — and a ceiling of `4 * fit` on
+such a page would be nowhere near it either, which is why the maximum is floored at 1 too.
+Measured on the drawn layouts:
+0.687 .. 2.747 for a 1600x2400 page against a 1236x1648 screen, and at the bottom of that
 range the window is the whole page letterboxed — the only scale whose request is *not* the
 screen's pixels, because the window had to shrink to the page.
+
+**Four ways to set the zoom, and they answer four different questions.** The value button
+*cycles*: 1.5, 1.7, 2, 3 and then **Original** — one page pixel to one screen pixel, the one
+stop in that list that magnifies nothing, and the reason this view works in scales while the
+other two work in levels. `-` and `+` beside it nudge by **half a level inside 1.5x to 4x**,
+and they step from wherever the reader *is* rather than snapping to that list, so a pinch to
+2.4x answers `+` with 2.9x. A pinch changes the scale about the fingers. And a drag or a tap
+moves the window. The two lists are separate on purpose: Original has no level, and a stepper
+that could reach it would have to have an opinion about what half a step below it means.
 
 **The screen is not where the page is drawn, and only the *absolute* conversions care.** The
 button row takes a strip of the screen, so the tile is drawn in what is left of it and best
@@ -2909,7 +2920,9 @@ Each step must pass before the next:
     way a map does, not against it ✓ —
     a **tap closes the view** ✓ — the way out that needs no aim —
     the row is up from the first paint and a middle tap does **not** hide it ✓, PgFwd/PgBack
-    and a swipe in any direction do **not** turn the page ✓, and the zoom button cycles
+    and a swipe in any direction do **not** turn the page ✓, and the zoom is three buttons:
+    `-` and `+` move by half a level, stop at 1.5x and 4x, and step from wherever the reader is
+    (pinch to 2.4x, press `+`, get 2.9x ✓), while the value between them cycles
     1.5 → 1.7 → 2 → 3 → Original → 1.5 ✓ with `Original` showing the file 1:1 ✓ (on a page
     smaller than the screen: at its true size in the middle, not filled out to the edges ✓).
     A pinch to something off the list — say 2.4× — must make the button **read 2.4×** ✓, the

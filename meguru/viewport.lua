@@ -235,10 +235,12 @@ end
 -- above 1, and there the whole page at fit is already magnified; the floor has to come
 -- down to 1 so that "original size" — one page pixel to one screen pixel, the one scale
 -- in that view that is not a magnification of anything — stays reachable. The maximum is
--- the top level the list offers, and never below 1 either, for the same reason.
+-- the top of the range the view's own step buttons work in, and never below 1 either, for
+-- the same reason: a page far smaller than the screen has a fit well above 4, and a ceiling
+-- of `4 * fit` would then be nowhere near Original.
 function Viewport.scaleBounds(dims, screen)
     local fit = Viewport.fitScale(dims, screen)
-    return math.min(fit, 1), math.max(fit * 3, 1)
+    return math.min(fit, 1), math.max(fit * 4, 1)
 end
 
 -- One window, centred on a point of the page and clamped to the **page**.
