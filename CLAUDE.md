@@ -2085,9 +2085,11 @@ screen's pixels, because the window had to shrink to the page.
 **Three things are off here, each for a reason rather than by omission.** Page turning,
 because the reader asked for a page and not a book — the step methods are inert, and the
 hardware keys bound to them with it. The middle-tap toggle, because the row is meant to be
-permanent, and this is the only view whose reader cannot summon the buttons back themselves.
-And the pre-warm, because there is no next step and its page branch would fetch the next
-page's dims *and panels* to prepare a turn that cannot happen.
+permanent, and this is the only view whose reader cannot summon the buttons back themselves;
+**a tap does something else instead** — it moves the window's centre to the point touched, so
+that showing the screen where to look is one gesture and not a drag. And the pre-warm, because
+there is no next step and its page branch would fetch the next page's dims *and panels* to
+prepare a turn that cannot happen.
 
 **Leaving it is the one place that costs a detector scan.** The free view has no panels to
 hand over, so cycling out of it into either panel view asks for them — *before* anything is
@@ -2875,6 +2877,8 @@ Each step must pass before the next:
     point: the page must open **centred on that point**, sharp at 2× and 3× — it is a render
     from the file, not a magnified tile — and then: pinch changes the scale ✓, drag moves the
     window ✓ **in every direction including down** (which must *not* close the viewer ✓),
+    a **tap moves the centre to the point tapped** ✓ — and near an edge the window stops at the
+    page rather than showing what is beyond it ✓ —
     the row is up from the first paint and a middle tap does **not** hide it ✓, PgFwd/PgBack
     and a swipe in any direction do **not** turn the page ✓, and the zoom button cycles
     1.5 → 1.7 → 2 → 3 → Original → 1.5 ✓ with `Original` showing the file 1:1 ✓ (on a page

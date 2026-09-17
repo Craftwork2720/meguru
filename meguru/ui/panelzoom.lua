@@ -386,9 +386,23 @@ end
 -- device without multitouch the bottom-left corner saves a screenshot — a
 -- deliberate gesture this must not quietly take over.
 function PanelViewer:onTap(arg, ges)
-    if self.meguru_free then
-        -- The row is always up in this view, so a middle tap has nothing to toggle, and
-        -- there are no steps for the thirds to move through. A tap does nothing.
+    local free = self.meguru_free
+    if free then
+        -- **A tap moves the window's centre to the point touched.** The reader shows the
+        -- screen where to look rather than dragging it there, which for a page they are
+        -- hunting around is one gesture instead of several. The tapped screen point becomes
+        -- the middle of the screen, and the window is clamped to the page like every other
+        -- move, so a tap near the edge simply stops at the edge.
+        --
+        -- Nothing else is owed to a tap here: the row is always up, so there is nothing to
+        -- toggle, and there are no steps for the thirds to walk. Stock's screenshot corner
+        -- needs the row *hidden*, so it is not a gesture this view has.
+        local cur = self.steps[1]
+        if cur then
+            self:meguruFreeWindow(free.scale,
+                cur.x + cur.w / 2 + (ges.pos.x - Screen:getWidth() / 2) / free.scale,
+                cur.y + cur.h / 2 + (ges.pos.y - Screen:getHeight() / 2) / free.scale)
+        end
         return true
     end
     if self._images_list and ges.pos:intersectWith(self.main_frame.dimen) then
