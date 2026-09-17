@@ -1259,15 +1259,24 @@ local function installRow(viewer)
         }
         entries[#entries + 1] = close
     else
-        for _, id in ipairs({ "scale", "rotate" }) do
-            local button = viewer.button_table:getButtonById(id)
-            if button then
-                entries[#entries + 1] = {
-                    id = id,
-                    text = button.text,
-                    callback = button.callback,
-                }
-            end
+        -- **Rotate, and not the Scale / Original size button beside it.** What that one sets is
+        -- the *viewer's* `scale_factor` — one image pixel to one screen pixel — and every step in
+        -- this view is a panel rendered at the panel's own size and shown at best fit, so it
+        -- scaled a picture that was already fitted and its label promised a size the panel never
+        -- took. It was removed from this row for the same reason it was removed from the window
+        -- one; that row's own note carries the argument, and this view is where it applies most
+        -- directly, because a panel *is* the size the row was claiming to change.
+        --
+        -- The button is forwarded rather than re-implemented, so the reader gets stock's own
+        -- object with stock's own callback. See the sink below for the half of that which is not
+        -- optional: stock re-letters this button by id.
+        local rotate_button = viewer.button_table:getButtonById("rotate")
+        if rotate_button then
+            entries[#entries + 1] = {
+                id = "rotate",
+                text = rotate_button.text,
+                callback = rotate_button.callback,
+            }
         end
         entries[#entries + 1] = close
     end
@@ -1278,10 +1287,18 @@ local function installRow(viewer)
         zero_sep = true,
         show_parent = viewer,
     }
+    -- **`ImageViewer:update` re-letters the buttons it expects by id and does not check that they
+    -- are there** — a nil call inside a paint, which is a crash rather than a wrong label. The map
+    -- those lookups read is seeded with a sink for every button this row does not carry: both of
+    -- them in the two views that have neither, and only `scale` in the cropped one, where
+    -- `rotate` is a real button and seeding it would leave the label stock keeps truthful
+    -- pointing at a sink instead.
+    local sink = { width = 0, setText = function() end }
     if window or free then
-        local sink = { width = 0, setText = function() end }
         table_.button_by_id.scale = sink
         table_.button_by_id.rotate = sink
+    else
+        table_.button_by_id.scale = sink
     end
     viewer.button_table = table_
     viewer.button_container = CenterContainer:new{

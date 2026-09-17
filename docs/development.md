@@ -372,9 +372,13 @@ Each step must pass before the next:
     `Panel Cut` while cut — the same thing the menu's *Panel view* row says;
     pressing it changes what the page is cut into, keeps the panel the reader is
     on, leaves the row open, and must agree with the menu's *Panel view* row afterwards,
-    since both write the same preference. The *cropped* row is the one place
-    **Scale**/*Original size* and **Rotate** belong: pressing them there must still work,
-    which is the check that they were forwarded rather than dropped.
+    since both write the same preference. The *cropped* row is the one that carries
+    **Rotate**: pressing it there must still work — which is the check that it was forwarded
+    rather than dropped — and there must be **no Scale / Original size button** beside it, in
+    this row or the other two. That button is the one whose absence is load-bearing rather than
+    cosmetic: stock re-letters it by id without checking it exists, and `check.py` cannot see a
+    field reached through `self`, so a row that dropped it without seeding the sink would crash
+    inside a paint and nothing automated would say so.
 
     Then the **easing** (*A panel the window nearly holds is eased, not stepped*, above),
     which is the part of this view a log can confirm and a screenshot cannot. On a page

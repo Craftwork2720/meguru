@@ -749,7 +749,7 @@ mechanism off**, which is what to reach for first if a page ever looks wrong her
 
 **The row has two shapes, one per view, and both carry the view switch.** *Pan & Zoom*
 holds `[Pan & Zoom] [-] [1.7x] [+] [Close]`; *Panel Cut* keeps stock's three and gains the
-switch in front — `[Panel Cut] [Original size] [Rotate] [Close]`. **The switch's
+switch in front — `[Panel Cut] [Rotate] [Close]`. **The switch's
 label names the view the reader is in**, not the one the press leads to: it is the shape
 the zoom button beside it already has (that one shows the level it is on) and the shape
 the menu's *Panel view* row has, so the button, the row and the setting all name the same
@@ -761,12 +761,12 @@ writes the preference, so the next page, the next book and the next start keep i
 why there is no menu row for the level — the choice moved into the viewer, the store did
 not, and `ui/reader` still reads it and hands the number in.
 
-**The two buttons beside that one are the free view's pair, with its own step and its own
-range.** `-` and `+` move the level by a **tenth**, so a reader can reach 1.5 or 2.1 rather
+**The two buttons beside that one are the same pair Free View has, with this view's own step and
+its own range.** `-` and `+` move the level by a **tenth**, so a reader can reach 1.5 or 2.1 rather
 than only the three presets; the value button still *cycles*, and because a tenth leaves
 numbers that are on no list it walks **up** from wherever the reader is — 1.8 answers 1.9,
 and past the top the cycle starts again, which is what a cycle does. The range is 1 to 1.9 —
-the floor being the fit, where the window is the whole page, and **the ceiling the top of the
+the floor being the fit, where the page's content is as wide as the screen, and **the ceiling the top of the
 cycle**, so `+` stops exactly where the value button stops and a reader can never sit at a
 level that button would answer by jumping back to the bottom. Four things about it are worth
 naming rather than discovering:
@@ -782,12 +782,22 @@ naming rather than discovering:
   is a choice. The two share `levelAfter` and nothing else.
 - **Both buttons re-open through one function** (`meguruReopenAtLevel`), so a step and a cycle
   cannot come to re-open differently — which is the kind of drift that shows as one of them
-  losing the reader's place and the other not. Stock's three
-*stay* there because in that view they mean what they say, and the removal a reader asked
-for was explicitly scoped to pan & zoom. They are **forwarded, not re-implemented**:
-`Button` calls `self.callback`, so the existing objects are read out of the table before
-it is replaced and their callbacks passed straight back in — no upstream logic copied, and
-upstream's own `update` re-letters them by id so their labels stay true. The switch writes
+  losing the reader's place and the other not.
+
+**The cropped view's row keeps Rotate and has dropped Scale / Original size.** Rotate means what
+it says there — a panel wider than the screen is turned — and it is **forwarded, not
+re-implemented**: `Button` calls `self.callback`, so the existing object is read out of the table
+before it is replaced and its callback passed straight back in, which is no upstream logic copied
+and upstream's own `update` re-letters it by id so its label stays true. Scale went for the reason
+the row above gives at length — what it sets is the *viewer's* `scale_factor`, and a panel is
+already rendered at the panel's own size — and it applies here most directly, since a panel *is*
+the size that button was claiming to change. The removal was first asked for in Pan & Zoom; this
+is the same argument reaching the view it fits best.
+
+Dropping it has one requirement that is not optional. `ImageViewer:update` re-letters the buttons
+it expects **by id and without checking that they are there**, so a row without one is a nil call
+inside a paint: `installRow` seeds the map those lookups read with a sink for every button its row
+does not carry — `scale` here, and both of them in the two views that have neither. The switch writes
 the same `panel_view` the menu's row does, from a close-and-reopen that keeps the reader's
 panel, which is `steps[cur].panel` in the window view and the bare step index in the crop
 one — read from *that* view's shape rather than from the step, whose `panel` field is nil
