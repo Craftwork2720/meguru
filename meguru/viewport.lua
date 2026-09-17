@@ -22,11 +22,16 @@ or per page, because a zoom that moved with the layout would make "one more clic
 mean something different each time. Which level is the reader's, and they say so from
 the button row inside the viewer; this module neither stores nor chooses it.
 
+That is the reader's number and it is what every panel is shown at, with **one
+exception**: a panel the window misses by a few percent is *eased* to fit rather than
+costing a whole extra stop to show a sliver of itself. See `PANEL_WINDOW_TOLERANCE`.
+
 What the scale decides is how many stops a panel takes. A panel never wider than
 the window is one stop, centred; one too wide for it is two, its two edges; one too
 wide in *both* axes is four, its four corners — see `positions`. The last is the one
 to keep in mind when moving the scale: the closer in, the more stops a big panel
-costs.
+costs. The easing above can only ever *remove* stops from that count, and only from a
+panel it can fit in one.
 
 The window is shaped like the screen and clamped to the page, so on a page smaller
 than the window the request shrinks with it and the viewer letterboxes rather than
@@ -55,12 +60,23 @@ reads is state that drifts; this has none.
 
 ```
 { x, y, w, h,        -- the window, in the page space `self.dims` lives in
-  out_w, out_h,      -- the pixels to render it at (the screen, unless clipped)
+  out_w, out_h,      -- the pixels to render it at
   panel = i }        -- which panel of the list this step is in
 ```
 
 `panel` is what lets the caller open at the right step and what a log can say; the
 geometry never uses it.
+
+**`w`/`h` are the panel's and not the page's**, so two steps of one page may sit at two
+zooms: an eased panel's window is larger in page pixels, and the same screenful of pixels
+covers more page. Nothing downstream has to know — every reader of a step reads the step —
+and that is the property to keep when adding one.
+
+`out_w`/`out_h` are the screen's own size, and an eased panel's are too — its *window* is
+what grew, so the same screenful of pixels is simply covering more page, and the panel
+reads smaller inside it. They fall short of the screen in exactly one case: a page too
+small to fill the window, where the window is clamped to the page and the viewer
+letterboxes. See `frameFor`.
 --]]
 
 local Viewport = {}
@@ -69,6 +85,17 @@ local Viewport = {}
 function Viewport.fitScale(dims, screen)
     return math.min(screen.w / dims.w, screen.h / dims.h)
 end
+
+-- How far past the window a panel may reach and still be *eased* to fit instead of costing an
+-- extra stop, as a fraction of the window's own dimension — so 0.18 means a panel up to eighteen
+-- percent too wide or too tall is shown slightly smaller and whole, rather than shown at the
+-- reader's scale in two stops.
+--
+-- The figure is a guess at where a reader stops noticing the shrink and starts wanting the zoom;
+-- it is a ratio and not a length, so it reads the same on any screen, and it is the one number to
+-- move if that judgement turns out to be wrong. **Zero disables the whole mechanism**, which is
+-- what to reach for if it ever misbehaves.
+local PANEL_WINDOW_TOLERANCE = 0.18
 
 -- How far two window positions may differ and still count as the same place.
 -- Only positions are compared — a page's steps all share one size — and the
@@ -205,6 +232,65 @@ local function samePlace(a, b)
     return math.abs(a.x - b.x) < SAME_EPSILON and math.abs(a.y - b.y) < SAME_EPSILON
 end
 
+-- One scale's window: its size in page pixels, and the pixels to render it to.
+--
+-- **The one place the output size is derived from a scale**, so a step's `out_w`/`out_h` cannot
+-- disagree with the `w`/`h` beside it — which matters more than it looks, because the tile LRU
+-- keys on the rectangle *and* that size, and two that drifted would be two entries for one
+-- picture. `Viewport.windowAt` goes through it for the same reason.
+local function frameFor(dims, screen, scale)
+    local w, h = windowFor(dims, screen, scale)
+    return {
+        w = w,
+        h = h,
+        scale = scale,
+        out_w = math.max(1, math.floor(w * scale + 0.5)),
+        out_h = math.max(1, math.floor(h * scale + 0.5)),
+    }
+end
+
+-- Whether one axis may be eased: the panel overflows the window on it, but by little enough that
+-- the scale which fits it stays within the tolerance of the reader's.
+local function eases(overflow, room)
+    return overflow > room and overflow <= room * (1 + PANEL_WINDOW_TOLERANCE)
+end
+
+-- The frame one panel is shown in: the reader's, unless a slight easing lets the panel fit whole.
+--
+-- A panel that misses the window by a few percent costs a whole extra stop, and that stop shows a
+-- sliver rather than new artwork — which is the whole reason this exists. **The easing is decided
+-- per axis and the answer is one scale**, because the window keeps the screen's shape: an axis is
+-- eased when its *own* overflow is within the tolerance, and the strictest eased axis sets the
+-- scale for both. The other axes of that decision are what keep it honest:
+--
+--   * an axis past the tolerance is left alone. No scale within the tolerance could have fitted
+--     it, so nothing is given up by not trying — and it keeps its full stops below;
+--   * a panel past the tolerance in **both** axes gets the reader's frame exactly, which is the
+--     behaviour this had before any of it. Nowhere does it cost a stop the reader did not
+--     already have — it only ever answers with fewer.
+--
+-- What it costs: the scale is no longer one number for the page. A panel eased to fit is shown
+-- slightly smaller than the one beside it, and a panel eased in one axis only is shown at that
+-- smaller scale for *all* of its stops. That is the price of not making a reader press in order
+-- to see a strip, and the tolerance is what bounds it.
+local function frameForPanel(panel, dims, screen, scale)
+    if PANEL_WINDOW_TOLERANCE <= 0 then
+        return frameFor(dims, screen, scale)
+    end
+    local frame = frameFor(dims, screen, scale)
+    local eased = scale
+    if eases(panel.w, frame.w) then
+        eased = math.min(eased, screen.w / panel.w)
+    end
+    if eases(panel.h, frame.h) then
+        eased = math.min(eased, screen.h / panel.h)
+    end
+    if eased >= scale then
+        return frame
+    end
+    return frameFor(dims, screen, eased)
+end
+
 -- The window the reader asked for by touching a point on a panel.
 --
 -- Centred on the finger, then clamped to the panel on each axis the panel
@@ -212,6 +298,11 @@ end
 -- larger than the panel — so the view stays centred where they touched, as asked.
 -- The page clamp still applies, because a touch near the page's edge would
 -- otherwise ask for a window that reaches past it.
+--
+-- `scale` is the panel's **own** scale and not necessarily the reader's, because
+-- this view stands for one of that panel's views and has to be in the same frame as
+-- the rest of them — a tap on a panel the easing has fitted would otherwise open at
+-- the reader's zoom and then jump to a different one a press later.
 function Viewport.entryView(panels, dims, screen, index, x, y, scale)
     local panel = panels and panels[index] and whole(panels[index])
     if not (panel and dims and screen and x and y and scale) then
@@ -253,15 +344,15 @@ function Viewport.windowAt(dims, screen, scale, cx, cy)
     if not (dims and screen and scale) then
         return nil
     end
-    local w, h = windowFor(dims, screen, scale)
-    local view = centred(cx or dims.w / 2, cy or dims.h / 2, w, h, dims)
+    local frame = frameFor(dims, screen, scale)
+    local view = centred(cx or dims.w / 2, cy or dims.h / 2, frame.w, frame.h, dims)
     return {
         x = view.x,
         y = view.y,
-        w = w,
-        h = h,
-        out_w = math.max(1, math.floor(w * scale + 0.5)),
-        out_h = math.max(1, math.floor(h * scale + 0.5)),
+        w = frame.w,
+        h = frame.h,
+        out_w = frame.out_w,
+        out_h = frame.out_h,
     }
 end
 
@@ -277,11 +368,11 @@ end
 -- cut off everything above it — and it is why the entry is found by the panel it
 -- belongs to and not by position.
 --
--- `right_to_left` is the book's reading direction and `scale` is the zoom — screen
--- pixels per page pixel, from `fitScale` times a level or from `FILE_SCALE`. Both
--- arrive as arguments because this module decides neither: the direction is the
--- book's and the zoom is the reader's, and nothing here has the standing to guess
--- either.
+-- `right_to_left` is the book's reading direction and `scale` is the reader's zoom —
+-- screen pixels per page pixel, `fitScale` times a level. Both arrive as arguments
+-- because this module decides neither: the direction is the book's and the zoom is the
+-- reader's, and nothing here has the standing to guess either. The one scale this
+-- *does* choose is a panel's own, and only ever a smaller one — see `frameForPanel`.
 --
 -- Returns the step list and the index the viewer should open at, or nil when there
 -- is nothing to walk.
@@ -289,30 +380,33 @@ function Viewport.steps(panels, dims, screen, entry, right_to_left, scale)
     if not (panels and #panels > 0 and dims and screen and scale) then
         return nil
     end
-    local w, h = windowFor(dims, screen, scale)
-    local out_w = math.max(1, math.floor(w * scale + 0.5))
-    local out_h = math.max(1, math.floor(h * scale + 0.5))
     local steps = {}
     local open_at = 1
     local cur
 
-    local function push(index, view)
+    -- **The frame is the panel's and not the page's.** Every step carries the window it was
+    -- walked in, so a panel the easing has fitted pushes its own larger `w`/`h` and its own
+    -- smaller `out_w`/`out_h` beside it, and the viewer, the tile key and the log line all read
+    -- the step rather than a scale — which is what lets one page's steps hold two zooms.
+    local function push(index, view, frame)
         steps[#steps + 1] = {
-            x = view.x, y = view.y, w = w, h = h,
-            out_w = out_w, out_h = out_h,
+            x = view.x, y = view.y, w = view.w, h = view.h,
+            out_w = frame.out_w, out_h = frame.out_h,
             panel = index,
         }
     end
 
     for i = 1, #panels do
         local panel = whole(panels[i])
+        local frame = frameForPanel(panel, dims, screen, scale)
+        local w, h = frame.w, frame.h
         -- The panel the caller asked to open at, which is a *panel* and not always a
         -- point: the page boundary hands over this way, with no tap to centre on.
         local wanted = entry and entry.panel == i
         local touched = wanted
-            and Viewport.entryView(panels, dims, screen, i, entry.x, entry.y, scale)
+            and Viewport.entryView(panels, dims, screen, i, entry.x, entry.y, frame.scale)
         if touched then
-            push(i, touched)
+            push(i, touched, frame)
             cur = touched
             open_at = #steps
             -- **Which of the panel's views the reader's own view stands for**, and
@@ -346,7 +440,7 @@ function Viewport.steps(panels, dims, screen, entry, right_to_left, scale)
             if not contains(touched, panel) then
                 for k = 1, #views do
                     if k ~= stands_for then
-                        push(i, views[k])
+                        push(i, views[k], frame)
                         cur = views[k]
                     end
                 end
@@ -362,7 +456,7 @@ function Viewport.steps(panels, dims, screen, entry, right_to_left, scale)
             -- this panel either: the caller named it.
             local views = positions(panel, w, h, dims, right_to_left)
             for _, view in ipairs(views) do
-                push(i, view)
+                push(i, view, frame)
                 cur = view
             end
             if wanted then

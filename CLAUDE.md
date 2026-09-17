@@ -1864,8 +1864,9 @@ apart would share a tile. Rounding is what makes the render-path log line truthf
 **The zoom is a scale, and it is the one number that had to change shape.** `Viewport`
 used to hold a constant of its own; it now takes *screen pixels per page pixel* from its
 caller, because that is what a level is once it stops being hardcoded:
-`fitScale(dims, screen) * level`, with the level the reader's. Nothing in the geometry
-stores or chooses it, and there is no constant left to move by accident.
+`fitScale(dims, screen) * level`, with the level the reader's. The geometry does not store
+it — but it is no longer true that it never *chooses* one, and the exception is the next
+paragraph.
 
 What the scale decides is how many stops a panel takes — one for a panel the window
 covers, two for one too big in one axis, four for one too big in both — so the level is
@@ -1877,6 +1878,55 @@ It is under a pixel until the scale passes 1, which is a page smaller than the s
 The default is **1.7**, the middle of the three: a typical page then renders at about
 1.16 screen pixels per page pixel, a mild magnification of the file rather than the 1.30
 that 1.9 asks for.
+
+### A panel the window *nearly* holds is eased, not stepped
+
+**A panel the window misses by a few percent is shown whole at a slightly smaller zoom,
+rather than costing a whole extra stop to show a sliver of itself.** `PANEL_WINDOW_TOLERANCE`
+(0.18) is the whole of the setting and `frameForPanel` the whole of the mechanism: an axis
+the panel overflows by no more than that fraction of the window is fitted by shrinking the
+scale **for that panel alone**, so the panel arrives complete in one centred stop where it
+used to cost two.
+
+Measured on the 1600x2400 page against the 1236x1648 screen at 1.7x, where the reader's
+window is 1059x1412 page pixels: a panel eight percent too wide goes from **2 stops to 1**,
+its window growing to 1144x1525 — which renders at 1236x1648, the whole screen, at 92.6% of
+the reader's zoom. The output size does not change: the same screenful of pixels simply
+covers more page, and the panel reads smaller inside it.
+
+Four things about it are the design rather than the arithmetic:
+
+- **The easing is decided per axis and the scale is one number.** The window keeps the
+  screen's shape, so one scale has to serve both axes, and the strictest *eased* axis sets
+  it. A panel five percent too wide and fifty percent too tall is therefore eased on x only:
+  one centred stop across, and its two y stops at that reduced scale — **2 stops where there
+  were 4**. That mixed case is the one the two rules in the request disagreed about, and it
+  was settled by asking: the failing axis keeps its full stops beside an eased one rather
+  than dragging the whole panel back to four corners.
+- **An axis past the tolerance contributes nothing**, because no scale within it could have
+  fitted that axis. A panel past it in *both* axes gets the reader's frame exactly, which is
+  the behaviour this had before any of it — measured, four corners either way.
+- **It can only ever remove stops.** Per panel that is arithmetic, since a larger window
+  gives `positions` no more views than a smaller one; across a page it is the A/B over ten
+  drawn layouts against `PANEL_WINDOW_TOLERANCE = 0`, which also holds that a layout where
+  *no* panel can ease comes out identical — every window, every output size, the same order.
+  That second half is the one that matters on a real book: most pages have nothing near the
+  edge, and on those the mechanism has to be inert.
+- **The price is that the scale is no longer one number for the page.** A panel eased to fit
+  is shown up to 15% smaller than the one beside it, and a panel eased in one axis only is
+  shown at that smaller scale for all of its stops. That is what was bought, and the
+  tolerance is what bounds it.
+
+**Nothing downstream has to know, and that is not an accident of this change.** Every step
+already carried its own `w`/`h`, `out_w`/`out_h` and `panel` — that is why a step carries
+them at all — so the viewer, the tile key, the pre-warm and the render-path log line read
+the step and cannot tell an eased panel from a page whose steps simply differ. `entryView`
+is the one caller that has to be told: `steps` hands it the panel's **own** scale, or a tap
+on an eased panel would open at the reader's zoom and jump to another one a press later.
+
+The constant is a guess at where a reader stops noticing the shrink and starts wanting the
+zoom, and it is the one number to move if that judgement is wrong. **Zero switches the whole
+mechanism off**, which is what to reach for first if a page ever looks wrong here.
 
 **The row has two shapes, one per view, and both carry the view switch.** *Pan & zoom*
 holds `[Pan & zoom] [1.7x] [Close]`; *cropped panels* keeps stock's three and gains the
@@ -2930,6 +2980,24 @@ Each step must pass before the next:
     **Scale**/*Original size* and **Rotate** belong: pressing them there must still work,
     which is the check that they were forwarded rather than dropped.
 
+    Then the **easing** (*A panel the window nearly holds is eased, not stepped*, above),
+    which is the part of this view a log can confirm and a screenshot cannot. On a page
+    with a panel the window very nearly holds — a full-width panel a little wider than the
+    window, or a tier whose edge just misses — the forward gesture must reach past it in
+    **one** press, showing the whole panel at a slightly smaller zoom, where it used to take
+    two and the second showed a strip. The `-d` line `window view, step S of T` is the check,
+    and the A/B is the **level**: raising *Panel zoom level* in the row shrinks the window in
+    page pixels, so the same panel that is eased at 1.4x must not be at 1.9x. Two more, and
+    they are the ones the mixed case is for: a panel nearly fitting across but clearly too
+    tall must take **two** passes rather than four, both at the reduced zoom; and a panel
+    past the tolerance in **both** axes must be untouched — four corners at the reader's own
+    zoom, exactly as before. Then the half that is easy to get wrong: the zoom button must
+    still read the reader's chosen level throughout, because the easing is per panel and
+    must never write the preference. The boundary itself is not a device question — it is a
+    fraction of the window, and it lands between whole page pixels — so the way to see that
+    it is the mechanism moving rather than the page is to set `PANEL_WINDOW_TOLERANCE` to
+    **0** and re-read the same panel: the step count must go back to what it was.
+
     Then the third view (*Panel view: Zoom only*, or the row's switch twice). Long-press a
     point: the page must open **centred on that point**, sharp at 2× and 3× — it is a render
     from the file, not a magnified tile — and then: pinch changes the scale ✓, drag moves the
@@ -3209,12 +3277,23 @@ Each step must pass before the next:
   stops swap sides with the direction. It is not in the
   repository yet — the generator lives in the session's scratch directory with the
   control pages — and what it cannot model is anything about rendering, which is what
-  the device item is for. **Unmeasured on a real page:** the 1.27 screen-pixels-per-page-
-  pixel that `1.85` comes to on a 1600x2400 scan against a 1236x1648 screen, and so how
-  soft the window looks on a page whose `fit` is near 1; whether the skip ever passes a
+  the device item is for. **Unmeasured on a real page:** the 1.30 screen-pixels-per-page-
+  pixel that the top level, `1.9`, comes to on a 1600x2400 scan against a 1236x1648 screen,
+  and so how soft the window looks on a page whose `fit` is near 1; whether the skip ever passes a
   panel a reader wanted to stop at; and the whole thing on a page whose panels are
   quadrilaterals rather than rectangles, where the cropped view's mask has no counterpart
   and the window simply shows the neighbour at its edge — by design, and still unseen.
+
+  **The easing tolerance is measured the same way and settled the same way.** The mirror
+  was extended for it: the same layouts, sized relative to the reader's own window, run at
+  8%, 18% and beyond it in each axis and in both, plus an entry onto an eased panel, plus
+  the page the window is clamped to. It is what established that a panel eight percent too
+  wide is 1 stop where it was 2, that the mixed case is 2 where it was 4, that both axes
+  past the tolerance are 4 either way, and — the half that matters on a real book — that
+  the A/B against `PANEL_WINDOW_TOLERANCE = 0` over ten layouts is identical wherever no
+  panel can ease. What it cannot say is how any of it *looks*, so the judgement the
+  constant encodes — whether 18% is where a reader stops noticing the shrink — is unmeasured
+  anywhere and is the first thing to revisit if a page reads oddly.
 
 - **A rule measured on one page is not a measured rule, and this cost a commit.** The
   leaf-containment rule was added, then removed on the evidence of a single page where it
