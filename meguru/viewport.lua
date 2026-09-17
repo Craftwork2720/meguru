@@ -266,7 +266,10 @@ function Viewport.steps(panels, dims, screen, entry, right_to_left, scale)
 
     for i = 1, #panels do
         local panel = whole(panels[i])
-        local touched = entry and entry.panel == i
+        -- The panel the caller asked to open at, which is a *panel* and not always a
+        -- point: the page boundary hands over this way, with no tap to centre on.
+        local wanted = entry and entry.panel == i
+        local touched = wanted
             and Viewport.entryView(panels, dims, screen, i, entry.x, entry.y, scale)
         if touched then
             push(i, touched)
@@ -308,9 +311,18 @@ function Viewport.steps(panels, dims, screen, entry, right_to_left, scale)
                     end
                 end
             end
-        elseif cur and contains(cur, panel) then
+        elseif not wanted and cur and contains(cur, panel) then
             -- Wholly visible already: read, and not a step. This is the skip.
         else
+            -- **A panel the caller asked to open at always gets its stops, and the
+            -- viewer opens at the first of them.** Without a tap point there is no
+            -- view to start from, and the fallback used to be the whole walk's first
+            -- step — so crossing *back* a page, which asks for the last panel of it,
+            -- opened at panel 1 and read the page from the top. The skip does not get
+            -- to drop this panel either: the caller named it.
+            if wanted then
+                open_at = #steps + 1
+            end
             for _, view in ipairs(positions(panel, w, h, dims, right_to_left)) do
                 push(i, view)
                 cur = view

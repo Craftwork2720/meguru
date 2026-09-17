@@ -1913,7 +1913,11 @@ the reader will actually visit:
 - the entry is a long-press *point*: the view is centred on the finger and clamped to
   the panel, and it *takes the place* of one of that panel's own views rather than being
   inserted beside them — see the rule further down for which, and why the steps before
-  the touched panel survive it.
+  the touched panel survive it. **A caller that names a panel with no point** — which is
+  how the page boundary hands over, and the only way it does — gets that panel's own
+  stops walked, the viewer opened at the first of them, and the panel never skipped,
+  since the caller named it. Without that, crossing *back* a page (which asks for the
+  page's **last** panel) opened at step 1: the whole page, read from the top.
 
 **There is no stage to keep and no "read" flag to set.** A skipped panel is one the
 chain never stopped at; the reader's place is the step index. State that nothing reads
@@ -2719,7 +2723,10 @@ Each step must pass before the next:
     inside it and press forward — **one press must pass all of them** and land on the
     next panel the window does not cover, with the `-d` line showing a step count
     smaller than the panel count. Back from there must reach the panels *before* the
-    one touched, not only the ones after it. Then the
+    one touched, not only the ones after it. **And the boundary in both directions**:
+    swiping forward off the last panel opens the next page's **first** panel, and
+    swiping back off the first opens the previous page's **last** — not its first, which
+    is what it did until a reader said so. Then the
     direction: in Manga mode a panel too wide for the window must be walked from its
     **right** edge to its left, and in Comic mode from left to right — the same thing
     `Manga mode` already does to the panel order. And a splash page the detector refuses
