@@ -97,12 +97,6 @@ end
 -- what to reach for if it ever misbehaves.
 local PANEL_WINDOW_TOLERANCE = 0.18
 
--- How far two window positions may differ and still count as the same place.
--- Only positions are compared — a page's steps all share one size — and the
--- tolerance exists for float noise in the centre-then-clamp arithmetic, not to
--- forgive a deliberate move.
-local SAME_EPSILON = 0.5
-
 -- Nearest whole page pixel. See `windowFor` for why the geometry works in them.
 local function round(value)
     return math.floor(value + 0.5)
@@ -228,10 +222,6 @@ local function contains(view, rect)
         and view.y + view.h >= rect.y + rect.h
 end
 
-local function samePlace(a, b)
-    return math.abs(a.x - b.x) < SAME_EPSILON and math.abs(a.y - b.y) < SAME_EPSILON
-end
-
 -- One scale's window: its size in page pixels, and the pixels to render it to.
 --
 -- **The one place the output size is derived from a scale**, so a step's `out_w`/`out_h` cannot
@@ -291,32 +281,26 @@ local function frameForPanel(panel, dims, screen, scale)
     return frameFor(dims, screen, eased)
 end
 
--- The window the reader asked for by touching a point on a panel.
+-- The step of `panel` nearest a point, or nil when that panel has none.
 --
--- Centred on the finger, then clamped to the panel on each axis the panel
--- overflows. When the panel fits, there is nothing to clamp to — the window is
--- larger than the panel — so the view stays centred where they touched, as asked.
--- The page clamp still applies, because a touch near the page's edge would
--- otherwise ask for a window that reaches past it.
---
--- `scale` is the panel's **own** scale and not necessarily the reader's, because
--- this view stands for one of that panel's views and has to be in the same frame as
--- the rest of them — a tap on a panel the easing has fitted would otherwise open at
--- the reader's zoom and then jump to a different one a press later.
-function Viewport.entryView(panels, dims, screen, index, x, y, scale)
-    local panel = panels and panels[index] and whole(panels[index])
-    if not (panel and dims and screen and x and y and scale) then
-        return nil
+-- This is how a **re-open keeps the reader's place** now that the walk always starts a named
+-- panel at its own beginning — the zoom buttons change the window under the reader and then
+-- rebuild the walk, and a step *index* does not survive that (a different scale means a
+-- different number of stops per panel), while the corner they were looking at does. It is
+-- the step's own start corner that is compared, because that is what `positions` anchors a
+-- stop to, so the answer is stable across a scale change rather than approximate.
+function Viewport.stepNearest(steps, panel, x, y)
+    local best, best_d
+    for i, step in ipairs(steps or {}) do
+        if step.panel == panel then
+            local dx, dy = step.x - x, step.y - y
+            local d = dx * dx + dy * dy
+            if not best_d or d < best_d then
+                best, best_d = i, d
+            end
+        end
     end
-    local w, h = windowFor(dims, screen, scale)
-    local view = centred(x, y, w, h, dims)
-    if panel.w > w then
-        view.x = clampAxis(view.x, w, panel.x, panel.x + panel.w)
-    end
-    if panel.h > h then
-        view.y = clampAxis(view.y, h, panel.y, panel.y + panel.h)
-    end
-    return view
+    return best
 end
 
 -- The scale the free view may move between, as `min, max` in screen pixels per page
@@ -358,15 +342,18 @@ end
 
 -- The page's steps, in the order the forward gesture reaches them.
 --
--- `entry` is nil for a plain start at the first panel, or `{ panel = i, x, y }` for a
--- reader who long-pressed a point — that panel's *first* view is replaced by the view
--- they asked for, and the rest of its views follow. `entry.at_end` asks for the panel's
--- **last** view instead, which is what a caller working *backwards* through the book
--- wants: the page boundary crossing back asks for the previous page's last panel, and
--- the reader is arriving from below it. Replacing rather than inserting is what keeps
--- the steps before the touched panel reachable — a tap in the middle of a page must not
--- cut off everything above it — and it is why the entry is found by the panel it
--- belongs to and not by position.
+-- `entry` is nil for a plain start, or `{ panel = i }` for a caller that wants the walk to
+-- **open at a named panel**. Which panel is the only thing it decides: the reader then walks
+-- that panel the way it has always been walked, from its own first view, so a long-press
+-- anywhere on a panel starts at the panel's beginning rather than at the point under the
+-- finger. Two things fall out of that and both are the point of it: the panel's top is never
+-- skipped — a reader who pressed the lower half of a tall panel used to be shown the view
+-- their finger stood for and never the top at all — and the two window views now agree with
+-- the cropped one, which has always shown a panel from its start.
+--
+-- `entry.at_end` asks for the panel's **last** view instead, which is what a caller working
+-- *backwards* through the book wants: the page boundary crossing back asks for the previous
+-- page's last panel, and the reader is arriving from below it.
 --
 -- `right_to_left` is the book's reading direction and `scale` is the reader's zoom —
 -- screen pixels per page pixel, `fitScale` times a level. Both arrive as arguments
@@ -400,60 +387,20 @@ function Viewport.steps(panels, dims, screen, entry, right_to_left, scale)
         local panel = whole(panels[i])
         local frame = frameForPanel(panel, dims, screen, scale)
         local w, h = frame.w, frame.h
-        -- The panel the caller asked to open at, which is a *panel* and not always a
-        -- point: the page boundary hands over this way, with no tap to centre on.
+        -- The panel the caller named, if any. It decides only *which* panel the viewer
+        -- opens at: the walk below is one walk for every panel, so a named one is shown
+        -- from its own beginning exactly as it would be if the reader had arrived by
+        -- pressing forward. That is the whole of the entry rule now, and it replaced one
+        -- that let the finger's position replace the panel's first view — which meant a
+        -- long-press on the lower half of a tall panel never showed the reader its top.
         local wanted = entry and entry.panel == i
-        local touched = wanted
-            and Viewport.entryView(panels, dims, screen, i, entry.x, entry.y, frame.scale)
-        if touched then
-            push(i, touched, frame)
-            cur = touched
-            open_at = #steps
-            -- **Which of the panel's views the reader's own view stands for**, and
-            -- the whole of the entry rule:
-            --
-            --   * on a corner — that corner. Pushing it as well would show the
-            --     reader the view they are standing on, and dropping the wrong one
-            --     would leave a corner of the panel unseen;
-            --   * between corners — the first, which is the rule this has always
-            --     followed: a tall panel tapped in the middle goes straight to its
-            --     lower edge rather than back up to a top the reader has chosen to
-            --     skip;
-            --   * a panel that fits — none, because its one view is the only thing
-            --     that shows the whole of it. That is what keeps a tap the page's
-            --     edge clamped from leaving the panel half seen.
-            --
-            -- Nothing at all is pushed for a panel the entry already shows in full,
-            -- which is the same question the skip below asks of a panel the window
-            -- happens to cover.
-            local views = positions(panel, w, h, dims, right_to_left)
-            local stands_for
-            for k = 1, #views do
-                if samePlace(views[k], touched) then
-                    stands_for = k
-                    break
-                end
-            end
-            if not stands_for and #views > 1 then
-                stands_for = 1
-            end
-            if not contains(touched, panel) then
-                for k = 1, #views do
-                    if k ~= stands_for then
-                        push(i, views[k], frame)
-                        cur = views[k]
-                    end
-                end
-            end
-        elseif not wanted and cur and contains(cur, panel) then
+        if not wanted and cur and contains(cur, panel) then
             -- Wholly visible already: read, and not a step. This is the skip.
         else
-            -- **A panel the caller asked to open at always gets its stops, and the
-            -- viewer opens at one of them.** Without a tap point there is no view to
-            -- start from, and the fallback used to be the whole walk's first step — so
-            -- crossing *back* a page, which asks for the last panel of it, opened at
-            -- panel 1 and read the page from the top. The skip does not get to drop
-            -- this panel either: the caller named it.
+            -- **A panel the caller named always gets its stops**, and the skip does not get
+            -- to drop it: the caller asked for it by name, and crossing *back* a page names
+            -- the previous page's last panel — which the skip would otherwise swallow on a
+            -- page whose window happens to cover it.
             local views = positions(panel, w, h, dims, right_to_left)
             for _, view in ipairs(views) do
                 push(i, view, frame)

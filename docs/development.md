@@ -315,9 +315,12 @@ Each step must pass before the next:
 
     Then the same page in the **window view** (*Panel view: Pan & zoom*), which is the
     second half of this item because it is the same crop question asked the other way.
-    Long-press a point in a large panel: the view must be centred on that point, and the
-    panel's own edge must sit at the screen's edge — **never a strip of the page's
-    margin**, which is what anchoring to the page would show. Forward once: the panel's
+    Long-press a point in a large panel: **the panel opens at its own beginning**, not at
+    the point under the finger — a panel taller than the window pressed in its lower half
+    must show its *top* first, and every stop of it must still be in the walk, in order.
+    Which panel you got is the finger's doing; where in it you start is not. Then the
+    anchoring: the panel's own edge must sit at the window's edge — **never a strip of the
+    page's margin**, which is what anchoring to the page would show. Forward once: the panel's
     far edge arrives and the panel is done — unless it is bigger than the window in
     *both* axes, where it must take **four** passes, one per corner, and the log's step
     count must say four. A panel **taller** than the window takes two passes and the

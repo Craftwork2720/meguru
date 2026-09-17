@@ -781,16 +781,13 @@ the reader will actually visit:
   edge at the window's edge, then — if it still does not fit — the panel's end edge
   there. A panel that fits in an axis is *centred* on that axis, since a window larger
   than the panel cannot be flushed to anything;
-- the entry is a long-press *point*: the view is centred on the finger and clamped to
-  the panel, and it *takes the place* of one of that panel's own views rather than being
-  inserted beside them — see the rule further down for which, and why the steps before
-  the touched panel survive it. **A caller that names a panel with no point** — which is
-  how the page boundary hands over, and the only way it does — gets that panel's own
-  stops walked, the viewer opened at one of them, and the panel never skipped, since the
-  caller named it. Which one is `entry.at_end`: the **first** stop going forward, and the
-  **last** coming back, because a reader crossing back into a page arrives at it from
-  below and the corner nearest where they came from is the end of its last panel. Two
-  bugs lived here. Before the flag, crossing back asked for the last panel and opened at
+- the entry is a panel **named**, and nothing more: a long-press decides *which* panel the
+  reader wants and the walk then shows it from its own first stop, exactly as if they had
+  pressed forward into it. The panel is never skipped — the caller named it — and which of
+  its stops the viewer opens at is `entry.at_end`: the **first** going forward, and the
+  **last** coming back, because a reader crossing back into a page arrives at it from below
+  and the corner nearest where they came from is the end of its last panel. Two bugs lived
+  here. Before the flag, crossing back asked for the last panel and opened at
   step 1 — the whole page, read from the top. Before the fix that introduced the flag,
   the first version of this opened at the first stop of the named panel and made the
   reader press forward to reach the bottom of a page they had just come *down* from.
@@ -826,18 +823,20 @@ boolean beside the panel list, resolved from the same `mode` `ui/reader` hands t
 everything else. The vertical order needs no flag: both kinds of book are read down
 the page.
 
-**Where the reader tapped, their view stands for one of the panel's own.** On a
-corner, it stands for that corner and the others follow; between corners, for the
-first, which is the rule this has always followed and is why a tall panel tapped in
-the middle goes straight to its lower edge rather than back up to a top they chose to
-skip; and for **none** on a panel that fits, because there its one view is the only
-thing that shows the whole of it — which is what keeps a tap the page's edge clamped
-from leaving the panel half seen. What is left over: a tap *between* corners of a
-panel too big in both axes stands for the first corner, and if the tap is near the
-opposite one, that first corner's region is only partly covered by it. The views after
-it are all there, and the corner they leave is a sliver of the panel rather than a
-quarter — the alternative, resuming from the tap, is what lost corners in the first
-place.
+**Where the reader tapped decides which panel they meant, and nothing else.** The panel is
+then walked from its own beginning, so a long-press anywhere on it starts at its top-left
+stop — `Viewport.entryView` and the "which of the panel's views the reader's own view stands
+for" rule beside it are gone, and `steps` has one walk for every panel.
+
+That replaced a rule that let the finger replace one of the panel's own stops: on a corner,
+that corner, and between corners the first. It read as respectful of where the reader put
+their finger and it was wrong in the case that matters, which is a panel taller than the
+window — measured on a 1000x2200 panel in a 1059x1412 window, a press three quarters of the
+way down **opened at the panel's bottom stop**, y=828, and showed the panel's top *second*.
+The reader asked for a panel, not for a corner of it, and the two window views now also
+agree with the cropped one, which has always shown a panel from its start. What the rule was
+protecting — that a tap near a panel's edge, clamped to the page, does not leave the panel
+half seen — is kept by the walk itself: every stop of the panel is pushed, in order.
 
 **What it reuses, unchanged.** `ImageViewer` and its four overrides: with the image
 screen-sized and best fit still `scale_factor == 0`, `onSwipe`'s gate, `onTap`'s thirds,

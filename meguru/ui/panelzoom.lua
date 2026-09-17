@@ -920,9 +920,13 @@ end
 -- it; the *reading* side is still `ui/reader`'s, which passes the number in.
 --
 -- The switch itself is a close-and-reopen, the same shape the rest of this file uses
--- for anything that changes the step list: the reader's place is a *point* on the page
--- — the middle of the view they are looking at — and `PanelZoom.open` already knows
--- how to open at one.
+-- for anything that changes the step list: the reader's place is the **corner of the window
+-- they are on**, handed over as `opts.keep`, and `Viewport.stepNearest` finds that same
+-- corner again in the walk the new level produces. It used to be a *point* the view was
+-- re-opened on; a point stopped being enough when a named panel began opening at its own
+-- first stop rather than at the one built around the finger, and the corner is the better
+-- thing to carry anyway — it is what the stops are anchored to, so it survives a scale
+-- change instead of approximating it.
 --
 -- **Both buttons come through here** — the cycle and the `-`/`+` pair — so that a step
 -- and a cycle cannot come to re-open differently, which is the kind of drift that shows
@@ -954,7 +958,11 @@ function PanelViewer:meguruReopenAtLevel(level)
     local ok, err = pcall(PanelZoom.open, ui, page, panels, cur.panel, mode, rotate, {
         window = true,
         level = level,
-        tap = { x = cur.x + cur.w / 2, y = cur.y + cur.h / 2 },
+        -- The reader's place is the corner of the window they are on, and `keep` is what
+        -- carries it across the new walk: a level change rebuilds the stops, so an index
+        -- would not survive it and the panel's first stop would be a jump to the top of a
+        -- panel they were halfway down. See `Viewport.stepNearest`.
+        keep = { x = cur.x, y = cur.y },
         -- **The row stays open, which is the whole point of pressing this button.** A
         -- reader comparing two levels would otherwise have to middle-tap to get the
         -- buttons back between every pair — and this button can only be pressed while
@@ -1071,9 +1079,12 @@ function PanelViewer:meguruCycleView()
         free = kind == "zoom",
         level = view.level,
         buttons_visible = true,
-        -- Both window-shaped views open centred on a point, and the point worth centring
-        -- on is where the reader already was. The cropped view has no entry point.
+        -- Both window-shaped views are told where the reader already was, and each reads the
+        -- half it needs: the free one opens *centred* on the point, the window one opens at
+        -- the stop nearest the corner. The cropped view has no place of its own — its step
+        -- index is a panel index, which is what `panel` above already carried.
         tap = kind ~= "crop" and { x = cur.x + cur.w / 2, y = cur.y + cur.h / 2 } or nil,
+        keep = kind == "window" and { x = cur.x, y = cur.y } or nil,
     })
     if not ok then
         logger.warn("Meguru: the next view could not be opened:", err)
@@ -1315,12 +1326,16 @@ end
 -- A nil `rotate` means this viewer is exactly the one that existed before
 -- directions did: every rotation decision is stock's.
 --
--- `opts` is the view: nil for the cropped sequence, `{ window = true, tap = { x, y } }`
--- for the window view, or `{ free = true, tap = { x, y } }` for the free one — where the
--- reader's finger landed, in page coordinates, so the view opens looking at it. `index`
--- is a *panel*, and only the two panel views have one: the window view turns it into a
--- step through `Viewport`, which is also what decides how many steps the page has at all,
--- while the free view walks no steps and needs neither panels nor a detector.
+-- `opts` is the view: nil for the cropped sequence, `{ window = true }` for the window one,
+-- or `{ free = true }` for the free one. Two optional fields say where to open, and each is
+-- read by the view that can use it — **the window view never opens on a point**: a named
+-- panel is walked from its own beginning, and a caller that was already looking at something
+-- passes `keep = { x, y }`, the corner it wants back (`Viewport.stepNearest`). `free`'s
+-- `tap = { x, y }` is the reader's finger in page coordinates, and that view *is* centred on
+-- it, because it has no stops for a corner to be found among. `index` is a *panel*, and only
+-- the two panel views have one: the window view turns it into a step through `Viewport`,
+-- which is also what decides how many steps the page has at all, while the free view walks
+-- no steps and needs neither panels nor a detector.
 --
 -- Returns false when there is nothing to show, which is what lets the caller
 -- fall back to the single-region viewer rather than opening an empty one.
@@ -1393,12 +1408,23 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         dims, screen = doc:getPageDims(page), CanvasContext:getSize()
         local content = contentDims(doc, page, dims)
         local scale = Viewport.fitScale(content or dims, screen) * (opts.level or 1)
+        -- **The tap point is not handed to the walk**, and that is the entry rule rather
+        -- than an omission: it chose the *panel* (upstream, through `Panel.indexAt`) and
+        -- nothing else. The panel is walked from its own first view, so a long-press
+        -- anywhere on it starts at its beginning — see `Viewport.steps`.
         steps, start = Viewport.steps(panels, dims, screen,
-            index and { panel = index, x = opts.tap and opts.tap.x,
-                        y = opts.tap and opts.tap.y, at_end = opts.at_end },
+            index and { panel = index, at_end = opts.at_end },
             mode == "manga", scale)
         if not steps then
             return false
+        end
+        -- **A caller that was already looking at something says where.** The zoom buttons
+        -- and the view switch change the walk under the reader and re-open it, and "the
+        -- reader's place" is not the panel's first stop but the corner of it they were on —
+        -- which is the one thing that survives a scale change. A long-press passes no
+        -- `keep`, and opens at the beginning as it should.
+        if opts.keep and index then
+            start = Viewport.stepNearest(steps, index, opts.keep.x, opts.keep.y) or start
         end
     end
     local images = {}
