@@ -405,7 +405,7 @@ Each step must pass before the next:
     the row is up from the first paint and a middle tap does **not** hide it ✓, PgFwd/PgBack
     and a swipe in any direction do **not** turn the page ✓, and the zoom is three buttons:
     `-` and `+` move by a **quarter** of a level, stop at 1x and 4x, and step from wherever the reader is
-    (pinch to 2.4x, press `+`, get 2.9x ✓), while the value between them cycles
+    (pinch to 2.4x, press `+`, get 2.65x ✓), while the value between them cycles
     1.5 → 2 → 2.5 → 1.5 ✓, and a **pinch** down to the file's own pixels must make that button
     read `1×` ✓ (on a page smaller than the screen: at its true size in the middle, not filled
     out to the edges ✓).

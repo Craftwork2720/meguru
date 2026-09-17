@@ -924,7 +924,7 @@ end
 -- One press of `-` or `+`: a quarter of a level, inside the range the buttons work in.
 --
 -- It moves from wherever the reader *is* rather than snapping to the cycle button's list, so
--- a pinch to 2.4x answers `+` with 2.9x — nudging what they are looking at instead of throwing
+-- a pinch to 2.4x answers `+` with 2.65x — nudging what they are looking at instead of throwing
 -- it to the nearest preset. The level is the unit here because that is what a reader reads off
 -- the button — and the bottom of the range is the fit, so `-` reaches the whole page. The
 -- window is then built from the scale that level means on this page.

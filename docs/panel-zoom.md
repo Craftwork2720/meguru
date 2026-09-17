@@ -995,7 +995,7 @@ whole page, and at it the window is the whole page letterboxed — the only scal
 one screen pixel and is not a level at all. `-` and `+` beside it nudge by **a quarter of a level inside 1x to 4x** — the
 bottom of that range is the whole page, so `-` reaches the fit without pinching —
 and they step from wherever the reader *is* rather than snapping to that list, so a pinch to
-2.4x answers `+` with 2.9x. A pinch changes the scale about the fingers. And a drag or a tap
+2.4x answers `+` with 2.65x. A pinch changes the scale about the fingers. And a drag or a tap
 moves the window. The two lists are separate on purpose: Original has no level, and a stepper
 that could reach it would have to have an opinion about what half a step below it means.
 
