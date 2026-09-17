@@ -1872,8 +1872,14 @@ The default is **1.7**, the middle of the three: a typical page then renders at 
 that 1.9 asks for.
 
 **The row has two shapes, one per view, and both carry the view switch.** *Pan & zoom*
-holds `[Cropped panels] [1.7x] [Close]`; *cropped panels* keeps stock's three and gains
-the switch in front — `[Pan & zoom] [Original size] [Rotate] [Close]`. The zoom button is
+holds `[Pan & zoom] [1.7x] [Close]`; *cropped panels* keeps stock's three and gains the
+switch in front — `[Cropped panels] [Original size] [Rotate] [Close]`. **The switch's
+label names the view the reader is in**, not the one the press leads to: it is the shape
+the zoom button beside it already has (that one shows the level it is on) and the shape
+the menu's *Panel view* row has, so the button, the row and the setting all name the same
+thing. The first version named the destination, which is defensible for a button and was
+not what a reader wanted — three controls saying different things about one state is the
+thing to avoid. The zoom button is
 the level right where a reader can see what it does: tapping it cycles 1.4, 1.7, 1.9 and
 writes the preference, so the next page, the next book and the next start keep it. That is
 why there is no menu row for the level — the choice moved into the viewer, the store did
@@ -2755,7 +2761,9 @@ Each step must pass before the next:
     still be *Meguru's* row** — the re-open paints the row it was built with, so a
     `[1.7x]` that turns into `[Original size]` is the `update()`-after-the-swap bug, not a
     preference going missing. The **view switch** sits at the front of the row in both
-    views: pressing it changes what the page is cut into, keeps the panel the reader is
+    views and names the view the reader is **in** — `Pan & zoom` while in pan & zoom,
+    `Cropped panels` while cropped — the same thing the menu's *Panel view* row says;
+    pressing it changes what the page is cut into, keeps the panel the reader is
     on, leaves the row open, and must agree with the menu's *Panel view* row afterwards,
     since both write the same preference. The *cropped* row is the one place
     **Scale**/*Original size* and **Rotate** belong: pressing them there must still work,

@@ -707,9 +707,11 @@ local function installRow(viewer)
     }
     local switch = {
         id = "view",
-        -- The label names where the press *goes*, because that is what a button is for;
-        -- the menu row names where the reader *is*, because that is what a setting is.
-        text = window and _("Cropped panels") or _("Pan & zoom"),
+        -- **The label names the view the reader is *in*.** It is the shape the zoom
+        -- button beside it already has — that one shows the level it is on — and the
+        -- shape the menu's *Panel view* row has, so the two controls and the row all
+        -- name the same thing rather than one of them naming the destination.
+        text = window and _("Pan & zoom") or _("Cropped panels"),
         callback = function()
             viewer:meguruToggleView()
         end,
