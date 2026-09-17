@@ -624,9 +624,10 @@ local FREE_LEVELS = { 1.5, 1.7, 2, 3 }
 -- Separate from the list above, because the two answer different questions — the list is what
 -- the zoom button *cycles*, Original included, and this is what a reader nudges with. It steps
 -- from wherever they are rather than snapping to the list, which is why 2.4x goes to 2.9x, and
--- the ceiling is the one `Viewport.scaleBounds` uses so the buttons cannot outrun a pinch.
+-- the range starts at the fit itself, so the whole page is the bottom of it. The ceiling is the
+-- one `Viewport.scaleBounds` uses, so the buttons cannot outrun a pinch.
 local FREE_STEP = 0.5
-local FREE_MIN_LEVEL = 1.5
+local FREE_MIN_LEVEL = 1
 local FREE_MAX_LEVEL = 4
 
 -- The next preset above a scale, as a scale. A pinch leaves numbers that are not on the
@@ -854,7 +855,8 @@ end
 -- It moves from wherever the reader *is* rather than snapping to the cycle button's list, so
 -- a pinch to 2.4x answers `+` with 2.9x — nudging what they are looking at instead of throwing
 -- it to the nearest preset. The level is the unit here because that is what a reader reads off
--- the button; the window is then built from the scale that level means on this page.
+-- the button — and the bottom of the range is the fit, so `-` reaches the whole page. The
+-- window is then built from the scale that level means on this page.
 function PanelViewer:meguruFreeStepZoom(direction)
     local free = self.meguru_free
     local cur = free and self.steps and self.steps[1]

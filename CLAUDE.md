@@ -2087,7 +2087,8 @@ screen's pixels, because the window had to shrink to the page.
 **Four ways to set the zoom, and they answer four different questions.** The value button
 *cycles*: 1.5, 1.7, 2, 3 and then **Original** — one page pixel to one screen pixel, the one
 stop in that list that magnifies nothing, and the reason this view works in scales while the
-other two work in levels. `-` and `+` beside it nudge by **half a level inside 1.5x to 4x**,
+other two work in levels. `-` and `+` beside it nudge by **half a level inside 1x to 4x** — the
+bottom of that range is the whole page, so `-` reaches the fit without pinching —
 and they step from wherever the reader *is* rather than snapping to that list, so a pinch to
 2.4x answers `+` with 2.9x. A pinch changes the scale about the fingers. And a drag or a tap
 moves the window. The two lists are separate on purpose: Original has no level, and a stepper
@@ -2921,7 +2922,7 @@ Each step must pass before the next:
     a **tap closes the view** ✓ — the way out that needs no aim —
     the row is up from the first paint and a middle tap does **not** hide it ✓, PgFwd/PgBack
     and a swipe in any direction do **not** turn the page ✓, and the zoom is three buttons:
-    `-` and `+` move by half a level, stop at 1.5x and 4x, and step from wherever the reader is
+    `-` and `+` move by half a level, stop at 1x and 4x, and step from wherever the reader is
     (pinch to 2.4x, press `+`, get 2.9x ✓), while the value between them cycles
     1.5 → 1.7 → 2 → 3 → Original → 1.5 ✓ with `Original` showing the file 1:1 ✓ (on a page
     smaller than the screen: at its true size in the middle, not filled out to the edges ✓).
