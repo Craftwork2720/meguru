@@ -442,11 +442,28 @@ end
 function PanelViewer:onSwipe(arg, ges)
     local direction = ges.direction
     if self.meguru_free then
-        -- **Every direction pans, including south.** Stock closes the viewer on a swipe
-        -- south while the picture is at best fit, because there is no use for panning
-        -- then — but here there is: a vertical drag is how the reader moves the window,
-        -- and the way out is Close in the row. The signs are stock's own, unchanged; which
-        -- way the page then ends up moving is `panBy`'s to decide, and its note says why.
+        -- **The finger's own path, not the direction it was classified as**, and that is the
+        -- difference between a drag that works and one that does not. The detector names a
+        -- diagonal as a *compound* direction — `northwest`, `southeast` — and the four single
+        -- names below can express neither that nor its two halves: a diagonal drag was moving
+        -- one axis, and a compound one was moving nothing at all, because the chain fell through
+        -- to the `return true` at the end. The event carries both ends of the gesture
+        -- (`gesturedetector.lua:949-951`), so the movement is read directly and the direction is
+        -- not consulted for it.
+        --
+        -- **Every direction pans, including south.** Stock closes the viewer on a swipe south
+        -- while the picture is at best fit, because there is no use for panning then — but here
+        -- there is: a vertical drag is how the reader moves the window, and the way out is Close
+        -- in the row. The signs are stock's own, unchanged (the travel negated, as every one of
+        -- its own callers passes it); which way the page then ends up moving is `panBy`'s to
+        -- decide, and its note says why.
+        local from, to = ges.pos, ges.end_pos
+        if from and to and (to.x ~= from.x or to.y ~= from.y) then
+            return self:panBy(from.x - to.x, from.y - to.y)
+        end
+        -- No path on this event — a build that stopped sending one, or a test that made one up.
+        -- The four directions are the fallback, and they are everything this view could do
+        -- before the path was read.
         local distance = ges.distance or 0
         if direction == "west" then
             return self:panBy(distance, 0)

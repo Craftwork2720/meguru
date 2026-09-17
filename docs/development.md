@@ -397,7 +397,8 @@ Each step must pass before the next:
     Then the third view (*Panel view: Zoom only*, or the row's switch twice). Long-press a
     point: the page must open **centred on that point**, sharp at 2× and 3× — it is a render
     from the file, not a magnified tile — and then: pinch changes the scale ✓, drag moves the
-    window ✓ **in every direction including down** (which must *not* close the viewer ✓),
+    window ✓ **in every direction — down, and on the diagonal**, which is the one a drag is
+    most often made at and the one the four-direction swipe names cannot express (which must *not* close the viewer ✓),
     and the page must move **with the finger** — dragging right carries the artwork right, the
     way a map does, not against it ✓ —
     a **tap closes the view** ✓ — the way out that needs no aim —
