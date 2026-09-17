@@ -612,3 +612,27 @@ Each step must pass before the next:
     row, which is Kavita's entry drawn by KOReader's OPDS plugin and not ours to
     remove — what changed is only which of the two Meguru treats as the book.
 
+
+25. **Another plugin wants the same long-press.** This plugin now answers the panel zoom in its
+    own books whatever else is installed, and the test for "someone else took it" names no
+    plugin — it compares `hl.onPanelZoom` against the wrapper this plugin installed. **This has
+    to be run with the other plugin actually installed**: every mechanism here is aimed at code
+    that is absent otherwise, so a run without it exercises only the stock path and proves
+    nothing. The recorded lesson from the zen-os episode is exactly this.
+
+    | # | configuration | expected |
+    |---|---|---|
+    | a | the other plugin **enabled** | the long-press opens **Meguru's** viewer; its sequence never appears |
+    | b | the other plugin **disabled** | Meguru's viewer — *not* stock's single-region one, which is what a reader got before this changed |
+    | c | `Panel zoom in Meguru books` **off**, other plugin enabled | **no** panel zoom at all: this plugin's own cascade refuses, even though the other plugin pins `panel_zoom_enabled` true |
+    | d | the same book, its own stock ⋮ row switched on | the file's own answer wins, and the Meguru row still reads the preference |
+    | e | the other plugin **uninstalled** | the new row absent, and everything byte for byte as it was |
+    | f | `.cbz` opened through Meguru | Meguru's viewer — the scope is the provider, not the extension |
+    | g | a splash page the detector refuses, other plugin enabled | **stock's** viewer opens, not the other plugin's sequence, and never two viewers |
+    | h | reading the log | one line when the gesture is taken back, none per press |
+
+    Then the one that reasoning cannot close: **force the other load order** by renaming the
+    other plugin's directory so it sorts *before* `meguru.koplugin`, and repeat (a) and (b). That
+    is the only arrangement in which this plugin's init-time wrapper captures a foreign wrapper
+    as its "original", and it is why the wrapper falls back to stock read off the *class* instead
+    of to anything it displaced. Nothing may hang and two viewers must never open.

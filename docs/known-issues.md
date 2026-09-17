@@ -308,3 +308,34 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   replace the step list in place the way the free view already does, which is the same change
   that would make a rapid press cheap on e-ink instead of a teardown per tenth.
 
+
+- **The stock ⋮ → *Allow panel zoom* row is inert for a Meguru book while another plugin
+  wants the same gesture.** `ReaderHighlight:onHold` gates on `panel_zoom_enabled` before any
+  handler runs, and a plugin answering the same gesture pins that field true after every
+  `ReadSettings`. So the field says "on" whatever the reader chose, and the choice is honoured
+  one level down instead — by `meguruPanelZoomWanted`, which returns `false` for a press the
+  reader turned off. The behaviour is right and the row still reads wrong: turning it off
+  changes nothing on screen until a press, and its tick is not the reader's answer. Nothing in
+  this plugin can fix that from underneath, because the field is read before it is reached.
+  What would settle it is a stock seam that asks the handler instead of the field.
+
+- **A third plugin that patches `onPanelZoom` after `ReaderReady` is undetectable.** The
+  re-install in `installPanelZoomTop` runs once per reader, from the post-reader-ready callback,
+  because that is the last seam this plugin has. Anything that replaces the field later — a
+  second panel plugin, a user patch applied at runtime — takes the gesture from underneath it,
+  silently, and the symptom is that the press opens the other plugin's viewer. There is no second
+  seam to check at, and no event is emitted for the gesture to listen for. A reader who reports
+  it can be diagnosed by comparing `hl.onPanelZoom` against `hl._meguru_panel_zoom_fn` in the
+  debugger; there is nothing to log it from inside.
+
+- **Everything this plugin knows about how another plugin takes the gesture was read from that
+  plugin's source on 2026-09-17, and nothing verifies it at runtime.** The design was chosen to
+  make that cheap: the test is whether *our* wrapper is still the field, the fallback is stock
+  read off the class, and no field of theirs is read — so a rename or a rewrite on their side
+  cannot make the press go to the wrong engine, it can only make the take-back fail. What is
+  *not* covered: a version that patches the class instead of the instance leaves this plugin
+  finding its own wrapper in place, so no re-install happens and the press is still ours (the
+  quiet direction); and a version that patches earlier in the same event would win the
+  `panel_zoom_enabled` gate, which is the case `meguruPanelZoomWanted` exists for. Verifying
+  either needs a device with that plugin actually installed — the lesson recorded for zen-os
+  applies, and a run without it proves nothing.

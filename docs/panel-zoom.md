@@ -67,25 +67,57 @@ is forced off with it: nothing on a streamed page is text, and that fallback rea
 Nothing reads it, and nothing sweeps it — delete it by hand or ignore it, the way
 `meguru.sqlite3` and `cache/meguru/` are handled.
 
-**Panels+ present means Meguru takes no part — and the test is per press.**
-`hl._panels_plus_plugin` and `hl._panels_plus_original_panel_zoom` are that plugin's
-own fields, set together when it takes the gesture and cleared together when it gives
-it back. They answer the question that matters — *is Panels+ what will handle this
-press* — where "is Panels+ installed" answers a different one. A reader who has it
-installed but **switched off** is asking for someone else's panel zoom, and Panels+'
-own wrapper delegates to the original handler in exactly that case; standing down on
-mere presence would take panel zoom away from them. The check is per press and never
-cached, because which plugin patches `onPanelZoom` first depends on the order their
-directories sort in.
+**A long-press in a Meguru book is Meguru's, whatever else is installed.** It used to
+stand down whenever Panels+ had patched the highlight instance, reading that plugin's two
+private fields to decide. That is gone, and what replaced it reads **nothing** from code this
+plugin does not control:
 
-**The stand-down has to cover the three `panel_zoom_enabled` wraps too, not just the
-viewer.** Those wraps put `Settings.panel_zoom` onto a book with no answer of its own
-— so with the preference off they would set `panel_zoom_enabled` false, which is the
-very field Panels+ gates its own handler on: Meguru would be switching off the plugin
-that replaced it. So when Panels+ owns the gesture, `installPanelZoom` installs
-nothing at all, and the `Panel zoom in Meguru books` row is hidden — Panels+ forces
-`panel_zoom_enabled` on, so the row would be a control that reads one way while the
-panels behave another.
+- **"Is someone else on this gesture?"** is a question about *our* object: whether
+  `hl.onPanelZoom` is still the wrapper this plugin installed, held on the highlight as
+  `_meguru_panel_zoom_fn`. A field compared against the wrapper, not a flag — a flag stays true
+  through a foreign assignment, which is the lesson `curateConfigMenu` records. A rename or a
+  rewrite on the other side cannot make this wrong.
+- **The re-install** is `installPanelZoomTop`, from the same post-reader-ready callback that
+  repairs the config menu. `Reader.install` runs at plugin `init()` and so does the other
+  plugin's patch, so whichever directory sorts later is on top — between these two it is the
+  other one. `ReaderReady` is the first seam provably past all of them.
+- **The wrapper is one function used at both seams**, and it does not chain to what it
+  displaced: the rival is not consulted, and the fallback for a press this detector cannot serve
+  is **stock's** handler, read off the *class* rather than off the instance. The instance field
+  is the thing every one of these plugins overwrites, so whoever installed second would
+  otherwise capture the other's wrapper as its "original" and hand a refused page to a second
+  sequence — which engine ran would then depend on the page.
+
+**What is still the reader's is whether there is a panel zoom at all**, and that is asked of
+this plugin's own cascade (`meguruPanelZoomWanted`) rather than read off `panel_zoom_enabled`.
+That field is stock's gate and `ReaderHighlight:onHold` reads it *before* any handler runs, so
+whichever engine answers the press has to have won it — and a plugin answering the same gesture
+wins it last, on every `ReadSettings`. A handler that trusted the field would be reading the
+other plugin's answer. The two `_meguru_panel_zoom_answer` / `_meguru_panel_zoom_pinned` fields
+are the file's own answer, kept because the live field it came from is not reliably ours by the
+time a press arrives.
+
+**The row is therefore drawn always, where it used to be hidden whenever Panels+ held the
+gesture.** That rule existed to avoid offering a switch that switched nothing — a rival forces
+`panel_zoom_enabled` on, so the row would have read one way while the panels behaved another.
+With the press decided by this plugin and the cascade asked of this plugin, the row now switches
+exactly what it names in every configuration.
+
+**The bug this replaced, measured on the way in.** The old test — "has Panels+ patched this
+instance" — answered a different question from "will Panels+ handle this press", because those
+fields are cleared when that plugin *closes*, not when it is switched off. Panels+ delegates to
+the handler it saved whenever its own setting is off, and in this load order the handler it saved
+is **Meguru's wrapper** — so a reader who installed Panels+ and disabled it was handed stock's
+single-panel viewer instead of the sequence, with both Meguru panel rows hidden from them at the
+same time. Deleting the stand-down is what fixed it, and the same deletion is what removed the
+last thing this plugin read out of another one.
+
+**The cost, named rather than discovered:** a reader with Panels+ enabled loses Panels+'s viewer
+*in Meguru books* and has no control to get it back — there is no row for who owns the gesture,
+by decision. And what cannot be settled here: everything above about how that plugin behaves
+was read from its source on 2026-09-17, so a version that patches the class instead of the
+instance would simply find this plugin's wrapper already in place and the press would still be
+ours — a quiet degradation rather than a broken one.
 
 ### The sequence
 
