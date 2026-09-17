@@ -534,6 +534,130 @@ end
 --- preference was on would be pinned on for good, and would survive the reader
 --- turning it off — which is precisely the failure the design above was built to
 --- avoid, arriving from the other side.
+--- The body of Meguru's own long-press handling.
+---
+--- Split out of the wrapper below because there are now two wrappers that reach it: the one
+--- `installPanelZoom` installs at plugin init, and the one `installOuterPanelZoom` puts on
+--- top of a foreign plugin's at `ReaderReady`. A second copy of this body is how the two
+--- engines would come to drift a page apart, with only one of them ever exercised.
+---
+--- `fallback` is the handler a press belongs to when this plugin has nothing to show, and
+--- every caller passes **stock's** `onPanelZoom` — never another plugin's. A page this
+--- detector refuses must not be handed to a second detector: which engine ran would then
+--- depend on the page, which is a failure that cannot be reported.
+---
+--- It arrives as an argument rather than being captured here because the two wrappers sit at
+--- different depths of the same field: what counts as "the original" depends on who installed
+--- when, and only the wrapper that *is* the outermost knows what it displaced.
+local function meguruPanelZoom(self, arg, ges, fallback)
+    local ui = self.ui
+    local doc = ui and ui.document
+    if not (doc and doc.provider == "meguru"
+        and type(doc.getPanelsFromPage) == "function") then
+        fallback(self, arg, ges)
+    end
+    self:clear()
+    local view = ui.view
+    local pos = view and type(view.screenToPageTransform) == "function"
+        and view:screenToPageTransform(ges.pos)
+    -- `page` as well as the point: the document below will happily try to
+    -- fetch page `nil`, which is a socket call rather than an error.
+    if not (pos and pos.page) then
+        fallback(self, arg, ges)
+    end
+
+    local mode = Reader.panelZoomMode(ui)
+    -- Resolved per press, like `mode`: the row can be changed with the viewer
+    -- closed and the next open follows it.
+    local direction = Reader.panelZoomDirection(ui)
+    local t_start = nowMs()
+    -- **The free view asks no detector**, and that is a property of the view rather
+    -- than a shortcut: it walks no steps, so it has no use for panels, and a page the
+    -- detector would have refused opens in it like any other. What it does need is the
+    -- page's own size — and `getPageDims` *is* the fetch and the decode, so asking it
+    -- puts the bytes in hand that the render will want anyway.
+    if Reader.panelViewMode() == "zoom" then
+        local ok_dims, dims = pcall(doc.getPageDims, doc, pos.page)
+        if not ok_dims or not dims then
+            logger.dbg("Meguru: page", pos.page, "panel zoom: no page ("
+                .. tostring(dims) .. ")")
+            fallback(self, arg, ges)
+        end
+        logger.dbg(string.format(
+            "Meguru: page %d panel zoom: free view (%s) in %d ms",
+            pos.page, mode, nowMs() - t_start))
+        local ok_free, shown_free = pcall(PanelZoom.open, ui, pos.page, nil, nil,
+            mode, direction, {
+                free = true,
+                tap = { x = pos.x, y = pos.y },
+                level = Settings.get("panel_zoom_level"),
+            })
+        if not ok_free or not shown_free then
+            logger.warn("Meguru: panel zoom viewer failed:",
+                ok_free and "not shown" or tostring(shown_free))
+            fallback(self, arg, ges)
+        end
+        return
+    end
+    -- Four values: `getPanelsFromPage` returns panels, accepted and reason,
+    -- and `pcall` adds its own. A missing slot here does not fail — it
+    -- shifts `accepted` into `reason` and the reason into nothing, and the
+    -- feature still works — so the count is worth counting.
+    local ok_detect, panels, accepted, reason = pcall(doc.getPanelsFromPage,
+        doc, pos.page, mode)
+    if not ok_detect then
+        logger.warn("Meguru: panel zoom detection failed:", panels)
+        fallback(self, arg, ges)
+    end
+    if not panels then
+        -- One meaning only: the page itself could not be decoded, so there
+        -- is neither a sequence nor a page to show as one. `dbg` because a
+        -- book read offline repeats it per press, the same frequency
+        -- argument the crop-skip line lost on.
+        logger.dbg("Meguru: page", pos.page, "panel zoom: no page ("
+            .. tostring(reason) .. ")")
+        fallback(self, arg, ges)
+    end
+    -- The count alone cannot tell a real sequence from the whole-page
+    -- fallback, and those need opposite fixes, so a refused page says so and
+    -- names the test that refused.
+    logger.dbg(string.format(
+        "Meguru: page %d panel zoom: %d panels%s (%s) in %d ms",
+        pos.page, #panels,
+        accepted and "" or (", whole page (" .. tostring(reason) .. ")"),
+        mode, nowMs() - t_start))
+
+    local start = Panel.indexAt(panels, pos.x, pos.y) or 1
+    -- **A refused page is shown cropped whatever the preference says.** A page
+    -- the detector would not decompose comes back as one rectangle covering it,
+    -- and the window view would cut that rectangle into a top and a bottom —
+    -- two steps through a splash nobody asked to be stepped through. Cropping
+    -- a whole-page rectangle shows the whole page, which is what a refusal has
+    -- always meant here.
+    local opts = {
+        window = Reader.panelViewMode() == "window" and accepted == true,
+        -- In page coordinates, and the reason it travels: the window view opens
+        -- centred on the finger rather than at the panel's own edge. `pos` is
+        -- already the page point — `screenToPageTransform` above — so nothing
+        -- is converted again here.
+        tap = { x = pos.x, y = pos.y },
+        -- The multiple of the page's width on the screen — see `Viewport.fitScale` for
+        -- what that means and for the measure it replaced, and `meguru/settings` for
+        -- where the reader sets it. Read here and written back by the viewer's own
+        -- button: the *store* is the preference, and the view is handed the number
+        -- rather than the preference's name, like the direction and the mode beside it.
+        level = Settings.get("panel_zoom_level"),
+    }
+    local ok_show, shown = pcall(PanelZoom.open, ui, pos.page, panels, start,
+        mode, direction, opts)
+    if not ok_show or not shown then
+        logger.warn("Meguru: panel zoom viewer failed:",
+            ok_show and "not shown" or tostring(shown))
+        fallback(self, arg, ges)
+    end
+    return true
+end
+
 local function installPanelZoom(ui)
     local hl = ui and ui.highlight
     if not (hl and ui.paging) then
@@ -620,119 +744,14 @@ local function installPanelZoom(ui)
     -- time this runs, so the preference is not re-checked here.
     local orig_zoom = hl.onPanelZoom
     hl.onPanelZoom = function(self, arg, ges)
-        local function stock()
+        -- Stock's own handler, for the presses this plugin has nothing to show for.
+        local function stock(s, a, g)
             if type(orig_zoom) == "function" then
-                return orig_zoom(self, arg, ges)
+                return orig_zoom(s, a, g)
             end
             return false
         end
-
-        local ui = self.ui
-        local doc = ui and ui.document
-        if not (doc and doc.provider == "meguru"
-            and type(doc.getPanelsFromPage) == "function") then
-            return stock()
-        end
-        self:clear()
-        local view = ui.view
-        local pos = view and type(view.screenToPageTransform) == "function"
-            and view:screenToPageTransform(ges.pos)
-        -- `page` as well as the point: the document below will happily try to
-        -- fetch page `nil`, which is a socket call rather than an error.
-        if not (pos and pos.page) then
-            return stock()
-        end
-
-        local mode = Reader.panelZoomMode(ui)
-        -- Resolved per press, like `mode`: the row can be changed with the viewer
-        -- closed and the next open follows it.
-        local direction = Reader.panelZoomDirection(ui)
-        local t_start = nowMs()
-        -- **The free view asks no detector**, and that is a property of the view rather
-        -- than a shortcut: it walks no steps, so it has no use for panels, and a page the
-        -- detector would have refused opens in it like any other. What it does need is the
-        -- page's own size — and `getPageDims` *is* the fetch and the decode, so asking it
-        -- puts the bytes in hand that the render will want anyway.
-        if Reader.panelViewMode() == "zoom" then
-            local ok_dims, dims = pcall(doc.getPageDims, doc, pos.page)
-            if not ok_dims or not dims then
-                logger.dbg("Meguru: page", pos.page, "panel zoom: no page ("
-                    .. tostring(dims) .. ")")
-                return stock()
-            end
-            logger.dbg(string.format(
-                "Meguru: page %d panel zoom: free view (%s) in %d ms",
-                pos.page, mode, nowMs() - t_start))
-            local ok_free, shown_free = pcall(PanelZoom.open, ui, pos.page, nil, nil,
-                mode, direction, {
-                    free = true,
-                    tap = { x = pos.x, y = pos.y },
-                    level = Settings.get("panel_zoom_level"),
-                })
-            if not ok_free or not shown_free then
-                logger.warn("Meguru: panel zoom viewer failed:",
-                    ok_free and "not shown" or tostring(shown_free))
-                return stock()
-            end
-            return
-        end
-        -- Four values: `getPanelsFromPage` returns panels, accepted and reason,
-        -- and `pcall` adds its own. A missing slot here does not fail — it
-        -- shifts `accepted` into `reason` and the reason into nothing, and the
-        -- feature still works — so the count is worth counting.
-        local ok_detect, panels, accepted, reason = pcall(doc.getPanelsFromPage,
-            doc, pos.page, mode)
-        if not ok_detect then
-            logger.warn("Meguru: panel zoom detection failed:", panels)
-            return stock()
-        end
-        if not panels then
-            -- One meaning only: the page itself could not be decoded, so there
-            -- is neither a sequence nor a page to show as one. `dbg` because a
-            -- book read offline repeats it per press, the same frequency
-            -- argument the crop-skip line lost on.
-            logger.dbg("Meguru: page", pos.page, "panel zoom: no page ("
-                .. tostring(reason) .. ")")
-            return stock()
-        end
-        -- The count alone cannot tell a real sequence from the whole-page
-        -- fallback, and those need opposite fixes, so a refused page says so and
-        -- names the test that refused.
-        logger.dbg(string.format(
-            "Meguru: page %d panel zoom: %d panels%s (%s) in %d ms",
-            pos.page, #panels,
-            accepted and "" or (", whole page (" .. tostring(reason) .. ")"),
-            mode, nowMs() - t_start))
-
-        local start = Panel.indexAt(panels, pos.x, pos.y) or 1
-        -- **A refused page is shown cropped whatever the preference says.** A page
-        -- the detector would not decompose comes back as one rectangle covering it,
-        -- and the window view would cut that rectangle into a top and a bottom —
-        -- two steps through a splash nobody asked to be stepped through. Cropping
-        -- a whole-page rectangle shows the whole page, which is what a refusal has
-        -- always meant here.
-        local opts = {
-            window = Reader.panelViewMode() == "window" and accepted == true,
-            -- In page coordinates, and the reason it travels: the window view opens
-            -- centred on the finger rather than at the panel's own edge. `pos` is
-            -- already the page point — `screenToPageTransform` above — so nothing
-            -- is converted again here.
-            tap = { x = pos.x, y = pos.y },
-            -- The multiple of the page's width on the screen — see `Viewport.fitScale` for
-            -- what that means and for the measure it replaced, and `meguru/settings` for
-            -- where the reader sets it. Read here and written back by the viewer's own
-            -- button: the *store* is the preference, and the view is handed the number
-            -- rather than the preference's name, like the direction and the mode beside it.
-            level = Settings.get("panel_zoom_level"),
-        }
-        local ok_show, shown = pcall(PanelZoom.open, ui, pos.page, panels, start,
-            mode, direction, opts)
-        if not ok_show or not shown then
-            logger.warn("Meguru: panel zoom viewer failed:",
-                ok_show and "not shown" or tostring(shown))
-            return stock()
-        end
-        return true
+        return meguruPanelZoom(self, arg, ges, stock)
     end
 
     return true
