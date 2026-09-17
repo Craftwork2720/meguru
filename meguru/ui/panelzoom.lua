@@ -386,23 +386,14 @@ end
 -- device without multitouch the bottom-left corner saves a screenshot — a
 -- deliberate gesture this must not quietly take over.
 function PanelViewer:onTap(arg, ges)
-    local free = self.meguru_free
-    if free then
-        -- **A tap moves the window's centre to the point touched.** The reader shows the
-        -- screen where to look rather than dragging it there, which for a page they are
-        -- hunting around is one gesture instead of several. The tapped screen point becomes
-        -- the middle of the screen, and the window is clamped to the page like every other
-        -- move, so a tap near the edge simply stops at the edge.
-        --
-        -- Nothing else is owed to a tap here: the row is always up, so there is nothing to
-        -- toggle, and there are no steps for the thirds to walk. Stock's screenshot corner
-        -- needs the row *hidden*, so it is not a gesture this view has.
-        local cur = self.steps[1]
-        if cur then
-            self:meguruFreeWindow(free.scale,
-                cur.x + cur.w / 2 + (ges.pos.x - Screen:getWidth() / 2) / free.scale,
-                cur.y + cur.h / 2 + (ges.pos.y - Screen:getHeight() / 2) / free.scale)
-        end
+    if self.meguru_free then
+        -- **A tap closes this view.** It has no thirds to walk and its row is permanent, so
+        -- the gesture a reader reaches for first was doing nothing at all; closing is what
+        -- stock's own viewer does with a tap outside its frame, and it is the way out that
+        -- needs no aim. Moving the centre to the point tapped was tried first and was the
+        -- wrong shape: it reads as a jump, and it needs the absolute mapping below to be
+        -- right before it can be trusted at all.
+        self:onClose()
         return true
     end
     if self._images_list and ges.pos:intersectWith(self.main_frame.dimen) then
@@ -650,6 +641,40 @@ local function freeLabel(scale, fit)
     return string.format("%.1f×", scale / fit)
 end
 
+-- Where the page is actually drawn, and how big one page pixel is on the glass.
+--
+-- **None of this is the screen's own while the button row is up.** The row takes a strip of
+-- the screen, so the tile is drawn in what is left of it and best fit scales the tile to fit
+-- *that* — a little under 1:1, and shifted up by half the strip. Distances *between* two
+-- screen points are immune to where the picture sits, which is why dragging felt right while
+-- a tap, and a spread's about-point, landed somewhere else: those are the two conversions
+-- that need an absolute origin, and the screen's corner is not it.
+function PanelViewer:meguruFreeMapping()
+    local cur = self.steps and self.steps[1]
+    if not cur then
+        return nil
+    end
+    local padding = self.image_padding or 0
+    local w = (self.width or Screen:getWidth()) - 2 * padding
+    local h = (self.img_container_h or Screen:getHeight()) - 2 * padding
+    local fit = math.min(w / cur.out_w, h / cur.out_h, 1)
+    return fit,
+        padding + (w - cur.out_w * fit) / 2,
+        padding + (h - cur.out_h * fit) / 2
+end
+
+-- The page point under a screen point, or nil before the first layout.
+function PanelViewer:meguruFreePageAt(pos)
+    local free = self.meguru_free
+    local cur = free and self.steps and self.steps[1]
+    local fit, x0, y0 = self:meguruFreeMapping()
+    if not (cur and fit and pos) then
+        return nil
+    end
+    local drawn = free.scale * fit
+    return cur.x + (pos.x - x0) / drawn, cur.y + (pos.y - y0) / drawn
+end
+
 -- The free view's window: where it is, how close it is, and the one place either moves.
 --
 -- **The step is mutated in place, and that is not an optimisation.** Each step's image is
@@ -723,9 +748,11 @@ function PanelViewer:panBy(x, y)
     if not cur then
         return ImageViewer.panBy(self, x, y)
     end
+    local fit = self:meguruFreeMapping()
+    local drawn = free.scale * (fit or 1)
     return self:meguruFreeWindow(free.scale,
-        cur.x + cur.w / 2 - x / free.scale,
-        cur.y + cur.h / 2 - y / free.scale)
+        cur.x + cur.w / 2 - x / drawn,
+        cur.y + cur.h / 2 - y / drawn)
 end
 
 -- A pinch or a spread: the scale they ask for, about the point they happened at.
@@ -760,13 +787,15 @@ function PanelViewer:meguruFreeZoom(ges, closer)
     if not closer and ges.pos then
         -- Whatever page point is under the fingers stays under them: the window's centre
         -- moves by the difference between where that point sat at the old scale and where
-        -- it sits at the new one.
+        -- it sits at the new one. The point itself comes from `meguruFreePageAt`, because
+        -- the screen's own centre is not where the picture is.
         local lo, hi = Viewport.scaleBounds(free.dims, free.screen)
         local scale = math.max(lo, math.min(hi, target))
-        local dx = (ges.pos.x - free.screen.w / 2) / free.scale
-        local dy = (ges.pos.y - free.screen.h / 2) / free.scale
-        cx = cx + dx - dx * free.scale / scale
-        cy = cy + dy - dy * free.scale / scale
+        local px, py = self:meguruFreePageAt(ges.pos)
+        if px then
+            cx = cx + (px - cx) * (1 - free.scale / scale)
+            cy = cy + (py - cy) * (1 - free.scale / scale)
+        end
         target = scale
     end
     return self:meguruFreeWindow(target, cx, cy)

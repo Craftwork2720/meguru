@@ -2082,12 +2082,28 @@ of fit would put Original below the minimum and out of reach. Measured on the dr
 range the window is the whole page letterboxed — the only scale whose request is *not* the
 screen's pixels, because the window had to shrink to the page.
 
+**The screen is not where the page is drawn, and only the *absolute* conversions care.** The
+button row takes a strip of the screen, so the tile is drawn in what is left of it and best
+fit scales the tile to fit *that* — a little under 1:1, and shifted up by half the strip.
+`meguruFreeMapping` is that answer, and a reader's report is why it exists: **dragging felt
+right and a tap landed somewhere else**, which are both true at once because a *distance*
+between two screen points is unaffected by where the picture sits while an *origin* is not.
+The two conversions that need an origin are a tap and a spread's about-point; the pan needs the
+factor from it as well, a little under one, which is why dragging was slightly short too. The
+tap no longer needs any of it — see below — but the spread does.
+
+**A tap closes this view.** The row is permanent here and there are no steps for the thirds to
+walk, so the gesture a reader reaches for first was doing nothing; closing is what stock's own
+viewer does with a tap outside its frame, and it is the way out that needs no aim. Moving the
+centre to the point tapped was tried first and was the wrong shape: it reads as a jump, and it
+needs the mapping above to be right before it can be trusted at all.
+
 **Three things are off here, each for a reason rather than by omission.** Page turning,
 because the reader asked for a page and not a book — the step methods are inert, and the
 hardware keys bound to them with it. The middle-tap toggle, because the row is meant to be
 permanent, and this is the only view whose reader cannot summon the buttons back themselves;
-**a tap does something else instead** — it moves the window's centre to the point touched, so
-that showing the screen where to look is one gesture and not a drag. And the pre-warm, because
+**a tap closes the view instead**, which is the way out that needs no aim. And the pre-warm,
+because
 there is no next step and its page branch would fetch the next page's dims *and panels* to
 prepare a turn that cannot happen.
 
@@ -2877,8 +2893,7 @@ Each step must pass before the next:
     point: the page must open **centred on that point**, sharp at 2× and 3× — it is a render
     from the file, not a magnified tile — and then: pinch changes the scale ✓, drag moves the
     window ✓ **in every direction including down** (which must *not* close the viewer ✓),
-    a **tap moves the centre to the point tapped** ✓ — and near an edge the window stops at the
-    page rather than showing what is beyond it ✓ —
+    a **tap closes the view** ✓ — the way out that needs no aim —
     the row is up from the first paint and a middle tap does **not** hide it ✓, PgFwd/PgBack
     and a swipe in any direction do **not** turn the page ✓, and the zoom button cycles
     1.5 → 1.7 → 2 → 3 → Original → 1.5 ✓ with `Original` showing the file 1:1 ✓ (on a page
