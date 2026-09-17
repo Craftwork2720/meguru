@@ -1152,12 +1152,36 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
     end
     -- The direction is named because this is the only place the resolved answer
     -- appears, and a panel turned the wrong way is otherwise indistinguishable
-    -- in a log from a panel that was never meant to turn.
-    logger.dbg("Meguru: panel zoom opened on page", page, "panel", index or 1,
-        "of", #panels, "(" .. tostring(mode) .. ")",
-        window and ("window view, step " .. (start or 1) .. " of " .. #steps)
-            or "cropped panels",
-        rotate and ("turned " .. rotate) or "no turn direction")
+    -- in a log from a panel that was never meant to turn. **The free view gets its own
+    -- line** rather than a branch of this one: it has no panel count and no step count to
+    -- report, and a line written for the other two views reads back a `nil` the moment one
+    -- of its fields becomes optional — which is exactly how this one shipped.
+    --
+    -- **It is logged before `show`, and that is the point of it being here.** Nothing after
+    -- that call may throw: a throw leaves a viewer on the stack while the caller is told
+    -- the open failed, and the caller falls back to stock with a Meguru viewer still up.
+    -- Everything the line needs is known by now, so it goes first and the invariant holds.
+    if free then
+        logger.dbg("Meguru: free zoom opened on page", page,
+            "(" .. tostring(mode) .. ", " .. freeLabel(free_state.scale,
+                Viewport.fitScale(free_state.dims, free_state.screen)) .. ")")
+    else
+        logger.dbg("Meguru: panel zoom opened on page", page, "panel", index or 1,
+            "of", #panels, "(" .. tostring(mode) .. ")",
+            window and ("window view, step " .. (start or 1) .. " of " .. #steps)
+                or "cropped panels",
+            rotate and ("turned " .. rotate) or "no turn direction")
+    end
+
+    -- `show` dispatches the `Show` event, which is where the pre-warm is armed;
+    -- nothing is armed here.
+    UIManager:show(viewer)
+    -- `init` has already rendered the first step to fill `self.image`; a long-press
+    -- that landed on panel 4 gets there through the same switch a swipe uses,
+    -- which also hands the first step's tile back and re-arms the warm.
+    if start and start > 1 and start <= #steps then
+        viewer:switchToImageNum(start)
+    end
     return true
 end
 

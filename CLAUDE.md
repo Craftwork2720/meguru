@@ -1827,9 +1827,16 @@ that *throws* is `warn`, which is what `crash.log` is read for. There is deliber
 **no** separate "panel warmed" line: the existing `panel zoom on page N, region ...
 rendered WxH` already fires once per panel render, including once per warm. The one
 line that names the *view* is the viewer's own open line — `... (mode) window view,
-step S of T` or `... (mode) cropped panels` — and the step count is deliberately not
+step S of T`, `... (mode) cropped panels`, or `free zoom opened on page N (mode, level)`
+— and the step count is deliberately not
 `K panels`: the two are the same detection and different walks, which is the whole
-point of the second view.
+point of the second view. **The free view has its own line rather than a branch of that
+one**, because a line written for the other two reads `#panels` — a value that became
+optional the moment a view without panels existed, and which shipped as `attempt to get
+length of local 'panels' (a nil value)` on the first device run. It is also logged
+**before** `UIManager:show`, and every path out of `open` should be: nothing after that
+call may throw, or a viewer is left on the stack while the caller is told the open failed
+— and the caller falls back to stock with a Meguru viewer still up.
 
 ### The other view: a window over the page
 
@@ -3299,6 +3306,18 @@ Each step must pass before the next:
   survives the replacement — and it was left out of the change that introduced
   `Feed.dedupe` by decision rather than by oversight. Not measured on a device: no
   marker has been written from an alias row and then reopened from History.
+
+- **A closed viewer leaves one queued repaint that names its frame, and the line is
+  stock's.** `ImageViewer:onCloseWidget` ends by calling
+  `UIManager:setDirty(nil, function() return "flashui", self.main_frame.dimen end)` — keyed
+  on **nil**, so `UIManager:close`'s `_dirty[w] = nil` cannot reach it, and the closure
+  reads a frame the widget may already have let go of. An ordinary close is safe because
+  the flush happens before anything is freed; both device crashes in this file happened when
+  a viewer was closed or abandoned **in the same event**, and both were knock-ons of a throw
+  of ours — `attempt to index field 'dimen' (a nil value)` arriving one line after our own
+  `panel zoom viewer failed`. So the first thing to look for is never this, it is what threw;
+  if it ever appears with no failure before it, the repair is to close the viewer without its
+  parent `onCloseWidget`, or to give it a frame that cannot go away.
 
 Settled and worth not re-litigating: `Settings.DEFAULTS.rotate_wide = 1` is correct. The
 old plugin's fallback *row* carries `default_value = 0`, which looks like a conflict, but
