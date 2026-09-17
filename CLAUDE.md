@@ -2098,6 +2098,18 @@ viewer does with a tap outside its frame, and it is the way out that needs no ai
 centre to the point tapped was tried first and was the wrong shape: it reads as a jump, and it
 needs the mapping above to be right before it can be trusted at all.
 
+**Panning carries the page with the finger, and that is a decision about stock's convention
+rather than about signs.** `ImageViewer:panBy(x, y)` moves the *image* by `(x, y)`, and every
+caller of it passes the finger's travel negated: a swipe **west** is `x_diff < 0` in
+`gesturedetector.lua:331` — so the finger went *left* — and stock arrives with
+`panBy(+distance)`, while a drag right arrives as `panBy(-travel)`. The picture in stock's
+viewer therefore always moves *against* the finger, which is a swipe's feel and is not a drag's.
+Following the argument into the window — picture and window move opposite ways — lands the page
+against the finger as well, and that is what shipped: a reader reported "panning works
+backwards". The window now takes the argument **as it stands**, so the page moves with the
+finger, and both of stock's calling conventions reach the same place without either being
+second-guessed.
+
 **Three things are off here, each for a reason rather than by omission.** Page turning,
 because the reader asked for a page and not a book — the step methods are inert, and the
 hardware keys bound to them with it. The middle-tap toggle, because the row is meant to be
@@ -2893,6 +2905,8 @@ Each step must pass before the next:
     point: the page must open **centred on that point**, sharp at 2× and 3× — it is a render
     from the file, not a magnified tile — and then: pinch changes the scale ✓, drag moves the
     window ✓ **in every direction including down** (which must *not* close the viewer ✓),
+    and the page must move **with the finger** — dragging right carries the artwork right, the
+    way a map does, not against it ✓ —
     a **tap closes the view** ✓ — the way out that needs no aim —
     the row is up from the first paint and a middle tap does **not** hide it ✓, PgFwd/PgBack
     and a swipe in any direction do **not** turn the page ✓, and the zoom button cycles

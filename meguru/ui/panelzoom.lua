@@ -431,7 +431,8 @@ function PanelViewer:onSwipe(arg, ges)
         -- **Every direction pans, including south.** Stock closes the viewer on a swipe
         -- south while the picture is at best fit, because there is no use for panning
         -- then — but here there is: a vertical drag is how the reader moves the window,
-        -- and the way out is Close in the row. The signs are stock's own, unchanged.
+        -- and the way out is Close in the row. The signs are stock's own, unchanged; which
+        -- way the page then ends up moving is `panBy`'s to decide, and its note says why.
         local distance = ges.distance or 0
         if direction == "west" then
             return self:panBy(distance, 0)
@@ -739,9 +740,21 @@ end
 --
 -- `ImageViewer:panBy` is the one seam every panning gesture in stock goes through —
 -- `onSwipe`, `onCursorPan`, `onHoldRelease` and `onPanRelease` all end here — so the free
--- view gets its panning by answering this one call, with stock's own signs: the argument
--- moves the *picture*, so the window moves the other way, and by a scale less in page
--- pixels than in screen ones.
+-- view gets its panning by answering this one call, with stock's own signs.
+--
+-- **The window moves the way stock's argument says, and the picture therefore moves the way
+-- it does not** — which is the half that has to be got right, because it is the difference
+-- between a touchscreen and a trackpad. Stock's `panBy(x, y)` moves the *image* by `(x, y)`,
+-- and every one of its callers passes the finger's travel negated: a swipe west (`x_diff < 0`
+-- in `gesturedetector.lua:331`, so the finger went left) arrives here as `panBy(+distance)`,
+-- and a drag right arrives as `panBy(-travel)`. So the picture there always moves *against*
+-- the finger, which is a swipe's feel and not a drag's.
+--
+-- Following the argument into the window — the picture and the window move opposite ways —
+-- would therefore land the page against the finger as well, and a reader reported exactly
+-- that: "panning works backwards". So the window takes the argument **as it stands**: the
+-- picture it shows moves the other way, which is with the finger, and both of stock's calling
+-- conventions reach the same place without either of them being second-guessed.
 function PanelViewer:panBy(x, y)
     local free = self.meguru_free
     local cur = free and self.steps and self.steps[1]
@@ -751,8 +764,8 @@ function PanelViewer:panBy(x, y)
     local fit = self:meguruFreeMapping()
     local drawn = free.scale * (fit or 1)
     return self:meguruFreeWindow(free.scale,
-        cur.x + cur.w / 2 - x / drawn,
-        cur.y + cur.h / 2 - y / drawn)
+        cur.x + cur.w / 2 + x / drawn,
+        cur.y + cur.h / 2 + y / drawn)
 end
 
 -- A pinch or a spread: the scale they ask for, about the point they happened at.
