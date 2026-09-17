@@ -534,35 +534,6 @@ end
 --- preference was on would be pinned on for good, and would survive the reader
 --- turning it off — which is precisely the failure the design above was built to
 --- avoid, arriving from the other side.
---- Is another plugin the one currently sitting on the long-press?
----
---- The fields are `Panels+`'s own, set together when it takes the gesture over
---- and cleared together when it gives it back (`restoreNativePanelZoom`, from
---- its `onCloseWidget`). They answer the question that matters — not "is
---- Panels+ installed", but "is Panels+ the thing that will handle this press" —
---- and they are the only signal that does.
----
---- That distinction has teeth. A reader who has Panels+ installed but switched
---- *off* in the plugin manager is asking for someone else's panel zoom, and
---- Panels+' own wrapper delegates to the original handler in exactly that case.
---- Standing down on the mere presence of the plugin would take panel zoom away
---- from them; standing down on this leaves it working.
----
---- Read per press and never cached, because whichever plugin patches
---- `onPanelZoom` first depends on the order their directories sort in, and this
---- has to be right in both.
-local function panelsPlusOwnsGesture(hl)
-    if not hl then
-        return false
-    end
-    return (hl._panels_plus_plugin or hl._panels_plus_original_panel_zoom) and true or false
-end
-
---- Logged once per process, not once per press: a stand-down is a decision a
---- reader might ask about, and the answer to "why is Meguru's viewer not
---- showing" is worth one line — not one per long-press for a whole session.
-local panel_zoom_standdown_logged = false
-
 local function installPanelZoom(ui)
     local hl = ui and ui.highlight
     if not (hl and ui.paging) then
@@ -572,20 +543,6 @@ local function installPanelZoom(ui)
         return true
     end
     hl._meguru_panel_zoom_installed = true
-
-    -- Panels+ handles the long-press for this document, so Meguru takes no part
-    -- in it at all — and that has to include the three wraps below, not just
-    -- the viewer. An `onReadSettings` wrap that put `Settings.panel_zoom` onto
-    -- a book with no answer of its own would turn `panel_zoom_enabled` *off*
-    -- when the preference is off, and Panels+ gates its own handler on that
-    -- very field: Meguru would be switching off the plugin that replaced it.
-    if panelsPlusOwnsGesture(hl) then
-        if not panel_zoom_standdown_logged then
-            panel_zoom_standdown_logged = true
-            logger.info("Meguru: Panels+ owns panel zoom; Meguru's panel viewer stands down")
-        end
-        return false
-    end
 
     -- `config` is named rather than reached through `...`, because the cascade
     -- turns on `config:has(...)`. The rest is still forwarded, so a build that
@@ -603,13 +560,14 @@ local function installPanelZoom(ui)
         -- file is allowed to keep a copy. A file answered in an earlier session
         -- counts exactly as much as one answered in this one.
         self._meguru_panel_zoom_pinned = own and true or false
-        -- Re-asked here, not only at install: a Panels+ that patched the
-        -- long-press *after* this wrap went in would otherwise have its own gate
-        -- (`panel_zoom_enabled`) switched off by the line below whenever the
-        -- Meguru preference is off — Meguru disabling the plugin that replaced
-        -- it. The three wraps stay installed in that ordering; they just stop
-        -- having a vote about what Panels+ does.
-        if not own and not panelsPlusOwnsGesture(self) then
+        -- **Written unconditionally now, where it used to stand aside for a rival.**
+        -- The field is stock's gate and `ReaderHighlight:onHold` reads it *before* any
+        -- handler runs — so a rival that pins it true (Panels+ does, after every
+        -- `ReadSettings`) would otherwise have Meguru's own preference overruled by a
+        -- plugin the reader may not even have enabled. Writing it here and letting the
+        -- rival write over it costs nothing: the press is decided at the handler, and
+        -- `meguruPanelZoomWanted` asks *this* cascade there rather than the field.
+        if not own then
             -- Stock put the per-extension entry here. This preference is the only
             -- default this plugin recognises.
             self.panel_zoom_enabled = Settings.get("panel_zoom")
@@ -669,12 +627,6 @@ local function installPanelZoom(ui)
             return false
         end
 
-        -- Panels+ is on this gesture: let it through rather than showing a
-        -- second viewer on top of its own. Asked per press, so a Panels+ closed
-        -- mid-session hands the gesture straight back.
-        if panelsPlusOwnsGesture(self) then
-            return stock()
-        end
         local ui = self.ui
         local doc = ui and ui.document
         if not (doc and doc.provider == "meguru"

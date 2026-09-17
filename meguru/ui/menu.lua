@@ -424,56 +424,52 @@ function Menu.addReaderItems(plugin, menu_items)
     -- A default for everything Meguru opens, not an override of anything: the
     -- stock ⋮ row still answers per book, and a book that has an answer keeps it.
     --
-    -- Absent when Panels+ owns the long-press, and that is not tidiness. That
-    -- plugin forces `panel_zoom_enabled` on for every document it takes over, so
-    -- the row would flip a preference with no effect on the book in front of the
-    -- reader — a control that reads one way while the panels behave another.
-    -- That is the same shape of bug the old per-extension version of this row
-    -- shipped, and the fix is the same: do not offer a switch that does not
-    -- switch anything.
-    local hl = plugin.ui and plugin.ui.highlight
-    local panels_plus_owns = hl
-        and (hl._panels_plus_plugin or hl._panels_plus_original_panel_zoom)
-    if not panels_plus_owns then
-        settings[#settings + 1] = {
-            text = _("Panel zoom in Meguru books"),
-            help_text = _("The default for everything Meguru opens, streams and .cbz alike. A book you switch individually with KOReader's own ⋮ → Panel zoom (manga/comic) keeps its own answer; this is what the rest follow."),
-            keep_menu_open = true,
-            checked_func = Reader.panelZoomEnabled,
-            callback = function()
-                Reader.setPanelZoom(plugin.ui, not Reader.panelZoomEnabled())
-            end,
-        }
-        -- The view, not whether there is one: two ways of showing the same panels
-        -- in the same order, and the state lives in the text because that is what
-        -- names it — a tick beside "Panel view" would say neither which one is on
-        -- nor what the other one is. `updateItems` is what redraws it; without the
-        -- call the row would keep the old wording until the menu was rebuilt.
-        settings[#settings + 1] = {
-            text_func = function()
-                return ({
-                    crop = _("Panel view: Cropped panels"),
-                    window = _("Panel view: Pan & zoom (no crop)"),
-                    zoom = _("Panel view: Zoom only"),
-                })[Reader.panelViewMode()]
-            end,
-            help_text = _("Cropped panels shows each panel on its own. Pan & zoom keeps the whole page and moves a window over it, one panel at a time. Zoom only drops the panels entirely: the page, with pinch and drag, and no page turning."),
-            keep_menu_open = true,
-            callback = function(touchmenu_instance)
-                Settings.set("panel_view", ({
-                    crop = "window", window = "zoom", zoom = "crop",
-                })[Reader.panelViewMode()])
-                if touchmenu_instance
-                    and type(touchmenu_instance.updateItems) == "function" then
-                    touchmenu_instance:updateItems()
-                end
-            end,
-        }
-        -- No row for the zoom level, and that is a decision rather than an omission:
-        -- the choice lives in the viewer's own button row, where the reader can see
-        -- what it does while looking at the page it does it to. See
-        -- `PanelViewer:meguruCycleZoomLevel` — the preference is still the store.
-    end
+    -- **Drawn always, where it used to be hidden whenever another plugin held the
+    -- long-press.** That rule existed to stop this row offering a switch that switched
+    -- nothing: a rival forces `panel_zoom_enabled` on, so the row would have read one way
+    -- while the panels behaved another. Two things ended it — the gesture in a Meguru book
+    -- is this plugin's whatever else is installed (`installOwnPanelZoom`), and this row's
+    -- answer is asked of *this* plugin's own cascade at the press rather than read off
+    -- that field (`meguruPanelZoomWanted`). So it now switches exactly what it names, in
+    -- every configuration, and the reader is never left without it.
+    settings[#settings + 1] = {
+        text = _("Panel zoom in Meguru books"),
+        help_text = _("The default for everything Meguru opens, streams and .cbz alike. A book you switch individually with KOReader's own ⋮ → Panel zoom (manga/comic) keeps its own answer; this is what the rest follow."),
+        keep_menu_open = true,
+        checked_func = Reader.panelZoomEnabled,
+        callback = function()
+            Reader.setPanelZoom(plugin.ui, not Reader.panelZoomEnabled())
+        end,
+    }
+    -- The view, not whether there is one: two ways of showing the same panels
+    -- in the same order, and the state lives in the text because that is what
+    -- names it — a tick beside "Panel view" would say neither which one is on
+    -- nor what the other one is. `updateItems` is what redraws it; without the
+    -- call the row would keep the old wording until the menu was rebuilt.
+    settings[#settings + 1] = {
+        text_func = function()
+            return ({
+                crop = _("Panel view: Cropped panels"),
+                window = _("Panel view: Pan & zoom (no crop)"),
+                zoom = _("Panel view: Zoom only"),
+            })[Reader.panelViewMode()]
+        end,
+        help_text = _("Cropped panels shows each panel on its own. Pan & zoom keeps the whole page and moves a window over it, one panel at a time. Zoom only drops the panels entirely: the page, with pinch and drag, and no page turning."),
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            Settings.set("panel_view", ({
+                crop = "window", window = "zoom", zoom = "crop",
+            })[Reader.panelViewMode()])
+            if touchmenu_instance
+                and type(touchmenu_instance.updateItems) == "function" then
+                touchmenu_instance:updateItems()
+            end
+        end,
+    }
+    -- No row for the zoom level, and that is a decision rather than an omission:
+    -- the choice lives in the viewer's own button row, where the reader can see
+    -- what it does while looking at the page it does it to. See
+    -- `PanelViewer:meguruCycleZoomLevel` — the preference is still the store.
 
     settings[#settings + 1] = {
         text = _("Hide status bar"),
