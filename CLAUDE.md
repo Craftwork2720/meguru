@@ -1854,13 +1854,14 @@ pixels: the key formats the rectangle with `%d`, so a fractional window would be
 under a key naming a rectangle it was not rendered from, and two windows a fraction
 apart would share a tile. Rounding is what makes the render-path log line truthful too.
 
-**The zoom is 1.85, anchored to the page, and the number is a promise rather than a
-taste.** It is the magnification over fit-to-screen, so the window covers `1/1.85` of
-the fitted page — one number for the whole mode, identical on every page and in every
-panel, because a zoom that moved with the layout would make "one more click" mean
-something different each time. What it buys is arithmetic: a panel is never bigger than
-the page and two windows reach `2/1.85 = 1.08` of it in each axis, so **no panel ever
-needs a third step**. Nothing enforces that; it falls out of 1.85 < 2.
+**The zoom is 1.85, anchored to the page, and the number decides how many stops a
+panel takes.** It is the magnification over fit-to-screen, so the window covers
+`1/1.85` of the fitted page — one number for the whole mode, identical on every page
+and in every panel, because a zoom that moved with the layout would make "one more
+click" mean something different each time. What it decides is the stop count below:
+a panel the window covers is one stop, a panel too big for it in **one** axis is two,
+and one too big in **both** is four. The last is the case to keep in mind before
+touching the constant, since it is the one that grows as the zoom goes up.
 
 **The chain is a simulation of the forward gesture, not a list per panel.** Where the
 next step lands depends on what is *already on screen*, not only on which panel the
@@ -1885,15 +1886,36 @@ chain never stopped at; the reader's place is the step index. State that nothing
 is state that drifts, and the two things the design was asked to store — which stage of
 a panel, which panels are read — are both already implied by the rectangle on screen.
 
-**Two things it does not do, both named rather than hidden.** A panel **bigger than the
-window in both axes is covered diagonally** — start corner, then end corner — so the
-middle is seen twice and the off-diagonal corners not at all. That is what "at most two
-steps" means once the zoom is fixed below 2, and it is the price of the mode; a panel
-that overflows in one axis only is covered completely. And the horizontal axis goes
-**left to right even in manga**, which is the one place in this plugin where the book's
-direction does not decide the direction of travel: a wide panel's two steps are ordered
-by the spec this was built to, and mirroring them for `mode == "manga"` is one condition
-in `Viewport`'s two anchors if a reader ever asks.
+**The stops inside a panel are its corners, and a panel too big in both axes gets
+four of them.** One rule per axis — centred on an axis the panel fits, anchored to
+both of its edges on an axis it overflows — crossed in reading order. That gives one
+view for a panel the window covers, two for a panel overflowing one axis, and **four,
+corner to corner, for a panel overflowing both**. The four is the one worth defending:
+the first version anchored such a panel to its start corner and then its end corner,
+which covers the middle twice and leaves the other two corners **never shown at all**.
+A reader reported it, and the fix is the cross product rather than the pair.
+
+**The horizontal direction is a parameter, and it is the book's.** Which side of a
+panel the window stops on first, and so the order of a row's two corners, follows
+`mode` — left to right for a comic, right to left for a manga. The detector already
+hands the panels over in reading order, so this is the only place in the plugin where
+direction is not decided upstream of the view; it travels into `meguru/viewport` as a
+boolean beside the panel list, resolved from the same `mode` `ui/reader` hands to
+everything else. The vertical order needs no flag: both kinds of book are read down
+the page.
+
+**Where the reader tapped, their view stands for one of the panel's own.** On a
+corner, it stands for that corner and the others follow; between corners, for the
+first, which is the rule this has always followed and is why a tall panel tapped in
+the middle goes straight to its lower edge rather than back up to a top they chose to
+skip; and for **none** on a panel that fits, because there its one view is the only
+thing that shows the whole of it — which is what keeps a tap the page's edge clamped
+from leaving the panel half seen. What is left over: a tap *between* corners of a
+panel too big in both axes stands for the first corner, and if the tap is near the
+opposite one, that first corner's region is only partly covered by it. The views after
+it are all there, and the corner they leave is a sliver of the panel rather than a
+quarter — the alternative, resuming from the tap, is what lost corners in the first
+place.
 
 **What it reuses, unchanged.** `ImageViewer` and its four overrides: with the image
 screen-sized and best fit still `scale_factor == 0`, `onSwipe`'s gate, `onTap`'s thirds,
@@ -2615,12 +2637,16 @@ Each step must pass before the next:
     Long-press a point in a large panel: the view must be centred on that point, and the
     panel's own edge must sit at the screen's edge — **never a strip of the page's
     margin**, which is what anchoring to the page would show. Forward once: the panel's
-    far edge arrives and the panel is done; forward again leaves the panel. Then the
-    skip: on a page with small panels beside a full-height one, position the window so
-    they are all inside it and press forward — **one press must pass all of them** and
-    land on the next panel the window does not cover, with the `-d` line showing a step
-    count smaller than the panel count. Back from there must reach the panels *before*
-    the one touched, not only the ones after it. And a splash page the detector refuses
+    far edge arrives and the panel is done — unless it is bigger than the window in
+    *both* axes, where it must take **four** passes, one per corner, and the log's step
+    count must say four. Then the skip: on a page with small panels beside a full-height
+    one, position the window so they are all inside it and press forward — **one press
+    must pass all of them** and land on the next panel the window does not cover, with
+    the `-d` line showing a step count smaller than the panel count. Back from there
+    must reach the panels *before* the one touched, not only the ones after it. Then the
+    direction: in Manga mode a panel too wide for the window must be walked from its
+    **right** edge to its left, and in Comic mode from left to right — the same thing
+    `Manga mode` already does to the panel order. And a splash page the detector refuses
     must open whole, cropped, whatever this preference says.
 19. **A book that cannot get its pages says why, once, and stops asking.** With the wifi
     off, open a marker: the page area holds *Can't load this page / You're offline right
@@ -2860,8 +2886,10 @@ Each step must pass before the next:
   over layouts whose truth is known because they were drawn (six equal panels, a tall
   one with a grid of small ones beside it, a panel that fits, one that overflows both
   axes, one starting mid-page, an entry into the third of six). It is what settled that
-  a panel already on screen contributes **no** step, and that the window's left edge is
-  the *panel's* (300 in the drawn case) and not the page's (0). It is not in the
+  a panel already on screen contributes **no** step, that the window's left edge is the
+  *panel's* (300 in the drawn case) and not the page's (0), that a panel too big in
+  both axes is four corners and not a diagonal pair, and that the same wide panel's two
+  stops swap sides with the direction. It is not in the
   repository yet — the generator lives in the session's scratch directory with the
   control pages — and what it cannot model is anything about rendering, which is what
   the device item is for. **Unmeasured on a real page:** the 1.27 screen-pixels-per-page-

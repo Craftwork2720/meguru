@@ -534,10 +534,16 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         -- already in hand — `getPanelsFromPage` fetched and decoded them to find
         -- the panels — so this is a lookup rather than a fetch, and a page with no
         -- bytes at all is one that has already failed above.
+        --
+        -- `mode` goes on from here, and this is the half of it the window view
+        -- needs: the detector already hands the panels over in reading order, but
+        -- which side of a panel the window stops on first is the geometry's to
+        -- know, and a manga reads those the other way round.
         steps, start = Viewport.steps(panels, doc:getPageDims(page),
             CanvasContext:getSize(),
             index and { panel = index, x = opts.tap and opts.tap.x,
-                        y = opts.tap and opts.tap.y })
+                        y = opts.tap and opts.tap.y },
+            mode == "manga")
         if not steps then
             return false
         end
@@ -553,7 +559,7 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
     images.image_disposable = false
     -- Nothing turns in the window view, and that is not a gap: a window is the
     -- screen's shape, so there is no wide-versus-tall decision to make, and a panel
-    -- too wide for it is walked in x by its two anchors instead. Stock's own
+    -- too wide for it is walked side to side instead. Stock's own
     -- `rotated` stays false throughout, which is what the overrides below expect.
     local rotates = window and {} or panelRotations(panels)
 
