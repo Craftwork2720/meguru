@@ -230,12 +230,15 @@ end
 
 -- The page's steps, in the order the forward gesture reaches them.
 --
--- `entry` is nil for a plain start at the first panel, or `{ panel = i, x, y }`
--- for a reader who long-pressed a point: that panel's *first* view is replaced by
--- the view they asked for, and the rest of its views follow. Replacing rather than
--- inserting is what keeps the steps before the touched panel reachable — a tap in
--- the middle of a page must not cut off everything above it — and it is why the
--- entry is found by the panel it belongs to and not by position.
+-- `entry` is nil for a plain start at the first panel, or `{ panel = i, x, y }` for a
+-- reader who long-pressed a point — that panel's *first* view is replaced by the view
+-- they asked for, and the rest of its views follow. `entry.at_end` asks for the panel's
+-- **last** view instead, which is what a caller working *backwards* through the book
+-- wants: the page boundary crossing back asks for the previous page's last panel, and
+-- the reader is arriving from below it. Replacing rather than inserting is what keeps
+-- the steps before the touched panel reachable — a tap in the middle of a page must not
+-- cut off everything above it — and it is why the entry is found by the panel it
+-- belongs to and not by position.
 --
 -- `right_to_left` is the book's reading direction and `scale` is the zoom — screen
 -- pixels per page pixel, from `fitScale` times a level or from `FILE_SCALE`. Both
@@ -315,17 +318,21 @@ function Viewport.steps(panels, dims, screen, entry, right_to_left, scale)
             -- Wholly visible already: read, and not a step. This is the skip.
         else
             -- **A panel the caller asked to open at always gets its stops, and the
-            -- viewer opens at the first of them.** Without a tap point there is no
-            -- view to start from, and the fallback used to be the whole walk's first
-            -- step — so crossing *back* a page, which asks for the last panel of it,
-            -- opened at panel 1 and read the page from the top. The skip does not get
-            -- to drop this panel either: the caller named it.
-            if wanted then
-                open_at = #steps + 1
-            end
-            for _, view in ipairs(positions(panel, w, h, dims, right_to_left)) do
+            -- viewer opens at one of them.** Without a tap point there is no view to
+            -- start from, and the fallback used to be the whole walk's first step — so
+            -- crossing *back* a page, which asks for the last panel of it, opened at
+            -- panel 1 and read the page from the top. The skip does not get to drop
+            -- this panel either: the caller named it.
+            local views = positions(panel, w, h, dims, right_to_left)
+            for _, view in ipairs(views) do
                 push(i, view)
                 cur = view
+            end
+            if wanted then
+                -- The first stop, or the last when the caller is reading backwards:
+                -- arriving at the bottom of the last panel is arriving where the
+                -- content the reader just left continues.
+                open_at = entry.at_end and #steps or (#steps - #views + 1)
             end
         end
     end

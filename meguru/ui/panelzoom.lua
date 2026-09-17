@@ -465,8 +465,7 @@ function PanelViewer:meguruHandoff(direction)
     local view = self.view and {
         window = self.view.window,
         level = self.view.level,
-    } or nil
-    UIManager:tickAfterNext(function()
+    } or nil    UIManager:tickAfterNext(function()
         local ok, err = pcall(function()
             if not UIManager:isWidgetShown(this) then
                 return
@@ -501,7 +500,18 @@ function PanelViewer:meguruHandoff(direction)
             ui:handleEvent(Event:new("GotoPage", page))
             if panels then
                 local index = (direction == "next") and 1 or #panels
-                PanelZoom.open(ui, page, panels, index, mode, rotate, view)
+                -- **Coming back, the reader arrives at the page from below it**, so the
+                -- page's last panel is entered at its *end* — the corner nearest where
+                -- they came from — and going forward the first panel is entered at its
+                -- start. Same call, one flag, and it is a flag on this call rather than
+                -- on the carried view: it describes the crossing, not the reader's
+                -- settings, and the step after them must not inherit it.
+                local opts = view and {
+                    window = view.window,
+                    level = view.level,
+                    at_end = direction == "previous",
+                } or nil
+                PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
             else
                 -- Only reachable when the page would not decode: a page the
                 -- detector refused comes back as the whole page, so the
@@ -694,7 +704,7 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         local scale = Viewport.fitScale(dims, screen) * (opts.level or 1)
         steps, start = Viewport.steps(panels, dims, screen,
             index and { panel = index, x = opts.tap and opts.tap.x,
-                        y = opts.tap and opts.tap.y },
+                        y = opts.tap and opts.tap.y, at_end = opts.at_end },
             mode == "manga", scale)
         if not steps then
             return false
