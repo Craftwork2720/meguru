@@ -1296,15 +1296,6 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         logger.warn("Meguru: the panel view's button row was not built:", err)
     end
 
-    -- `show` dispatches the `Show` event, which is where the pre-warm is armed;
-    -- nothing is armed here.
-    UIManager:show(viewer)
-    -- `init` has already rendered the first step to fill `self.image`; a long-press
-    -- that landed on panel 4 gets there through the same switch a swipe uses,
-    -- which also hands the first step's tile back and re-arms the warm.
-    if start and start > 1 and start <= #steps then
-        viewer:switchToImageNum(start)
-    end
     -- The direction is named because this is the only place the resolved answer
     -- appears, and a panel turned the wrong way is otherwise indistinguishable
     -- in a log from a panel that was never meant to turn. **The free view gets its own
