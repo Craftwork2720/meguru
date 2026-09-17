@@ -1871,17 +1871,35 @@ The default is **1.7**, the middle of the three: a typical page then renders at 
 1.16 screen pixels per page pixel, a mild magnification of the file rather than the 1.30
 that 1.9 asks for.
 
-**The zoom is chosen from the viewer's own button row, and stock's row had to be
-rebuilt to hold it.** Stock's row is Scale/Original size, Rotate, Close, and in this
-view two of the three mean nothing. *Scale* sets the *viewer's* scale factor, and every
-step here is already a screen-sized render shown at best fit, so it changed nothing
-while its label promised something else; *Rotate* turns a picture, and nothing turns in
-this view — a window is the screen's shape, and a panel too wide for it is walked side to
-side. So the row is rebuilt holding the zoom and Close, and what the reader gains is the
-level right where they can see what it does: tapping it cycles 1.4, 1.7, 1.9 and writes
-the preference, so the next page, the next book and the next start keep it. That is why
-there is no menu row for the level — the choice moved into the viewer, the store did not,
-and `ui/reader` still reads it and hands the number in.
+**The row has two shapes, one per view, and both carry the view switch.** *Pan & zoom*
+holds `[Cropped panels] [1.7x] [Close]`; *cropped panels* keeps stock's three and gains
+the switch in front — `[Pan & zoom] [Original size] [Rotate] [Close]`. The zoom button is
+the level right where a reader can see what it does: tapping it cycles 1.4, 1.7, 1.9 and
+writes the preference, so the next page, the next book and the next start keep it. That is
+why there is no menu row for the level — the choice moved into the viewer, the store did
+not, and `ui/reader` still reads it and hands the number in. Stock's three
+*stay* there because in that view they mean what they say, and the removal a reader asked
+for was explicitly scoped to pan & zoom. They are **forwarded, not re-implemented**:
+`Button` calls `self.callback`, so the existing objects are read out of the table before
+it is replaced and their callbacks passed straight back in — no upstream logic copied, and
+upstream's own `update` re-letters them by id so their labels stay true. The switch writes
+the same `panel_view` the menu's row does, from a close-and-reopen that keeps the reader's
+panel, which is `steps[cur].panel` in the window view and the bare step index in the crop
+one — read from *that* view's shape rather than from the step, whose `panel` field is nil
+in the crop view and would make `and/or` pick the right answer by accident.
+
+**And the row must be re-installed *after* `init`, because `init` has already built the
+frame around stock's.** `ImageViewer:init` builds `main_frame` and calls `update()` as its
+last statement, and `update()` is what puts `button_container` into the frame;
+`ImageViewer:onShow` does *not* rebuild it. So swapping the table and the container after
+`new{}` leaves the frame holding stock's, and a viewer that opens with the row already
+**visible** — which is every re-open this file does — paints stock's row. What hid that
+until a reader reported it is the middle tap: it calls `update()` itself, so a row
+summoned by hand was always the right one, and only the re-opens showed the wrong one. The
+repair is one `viewer:update()` after the swap. The general shape is worth keeping: **a
+widget that replaces parts of itself after its constructor has to re-run whatever puts
+those parts into its layout**, and the failure is invisible in every path where something
+else happens to call it later.
 
 **The row stays open across the re-opens, and that is what makes the button usable.**
 Changing the level is a close-and-reopen, and the new viewer would start with its chrome
@@ -2733,10 +2751,15 @@ Each step must pass before the next:
     **remember the choice**, so the next page, the next book and the next start are at the
     level the reader landed on. **The row must still be there after the tap**: two levels
     are compared by pressing twice, and a viewer that came back with its chrome hidden
-    would send the reader to the middle of the screen between every pair. The row must
-    hold the zoom and *Close* and nothing else: a
-    **Scale** or **Rotate** button in the window view is the bug, since neither means
-    anything there. Then the skip:
+    would send the reader to the middle of the screen between every pair. **And it must
+    still be *Meguru's* row** — the re-open paints the row it was built with, so a
+    `[1.7x]` that turns into `[Original size]` is the `update()`-after-the-swap bug, not a
+    preference going missing. The **view switch** sits at the front of the row in both
+    views: pressing it changes what the page is cut into, keeps the panel the reader is
+    on, leaves the row open, and must agree with the menu's *Panel view* row afterwards,
+    since both write the same preference. The *cropped* row is the one place
+    **Scale**/*Original size* and **Rotate** belong: pressing them there must still work,
+    which is the check that they were forwarded rather than dropped. Then the skip:
     on a page
     with small panels beside a full-height one, position the window so they are all
     inside it and press forward — **one press must pass all of them** and land on the

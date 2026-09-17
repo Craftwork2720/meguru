@@ -52,7 +52,6 @@ going back). See `meguruHandoff` for why the order inside that is what it is.
 
 local _ = require("gettext")
 
-local Button = require("ui/widget/button")
 local ButtonTable = require("ui/widget/buttontable")
 local CanvasContext = require("document/canvascontext")
 local CenterContainer = require("ui/widget/container/centercontainer")
@@ -602,69 +601,154 @@ function PanelViewer:meguruCycleZoomLevel()
     })
 end
 
--- The window view's own button row: the zoom, and Close.
+-- Show the same panel the way the other view shows it.
 --
--- **Stock's row is three buttons and two of them mean nothing here.** *Scale /
--- Original size* sets the *viewer's* scale factor — one image pixel to one screen
--- pixel — and every step in this view is already a screen-sized render shown at best
--- fit, so it changed nothing while its label promised something else. *Rotate* turns a
--- picture, and nothing turns here: a window is the screen's shape, and a panel too wide
--- for it is walked side to side. What a reader of this view actually wants to change
--- is how close the window sits, so that is what the row holds, and it holds it where
--- they can see what it does.
+-- The same close-and-reopen as the zoom button, and for the same reason: what changes is
+-- how the page is cut up, which is a different step list, and the reader's place has to
+-- survive it. Their place is a *panel* — the crop view's step list is the panel list, so
+-- its step index is a panel index, and the window view carries the panel each of its
+-- windows belongs to — and a point to re-enter the window view at, which is the middle
+-- of whatever they are looking at.
 --
--- Stock builds the table inside `init` and has no way to remove a button from one, so
+-- The preference is written here for the same reason the level is: it is a plain
+-- preference with no cascade, and the menu's *Panel view* row reads and writes the same
+-- one, so the two controls cannot disagree.
+function PanelViewer:meguruToggleView()
+    local view = self.view
+    local cur = self.steps and self.steps[self._images_list_cur]
+    -- Read before the close, like the zoom button and the handoff: the viewer this was
+    -- called from is gone by the time the call that follows has done anything.
+    local panels = self.panel_rects
+    local ui, page = self.ui, self.page
+    local mode, rotate = self.mode, self.rotate
+    local show_buttons = self.buttons_visible
+    if not (view and cur and panels and ui) then
+        return
+    end
+    local to_window = not view.window
+    Settings.set("panel_view", to_window and "window" or "crop")
+    UIManager:close(self)
+    -- Which panel the reader is on, read from the *old* view's shape: the crop view's
+    -- step list is the panel list, so its step index is the panel index, while a window
+    -- carries the panel it belongs to. Asking the step itself would work by accident —
+    -- a crop step has no `panel` field, so `cur.panel or index` falls through to the
+    -- index — and this says which of the two is meant.
+    local panel = view.window and cur.panel or self._images_list_cur
+    PanelZoom.open(ui, page, panels, panel, mode, rotate, {
+        window = to_window,
+        level = view.level,
+        -- Only the window view has an entry point to give: it opens centred on a point,
+        -- and the point worth centring on is where the reader already was.
+        tap = to_window and { x = cur.x + cur.w / 2, y = cur.y + cur.h / 2 } or nil,
+        buttons_visible = show_buttons,
+    })
+end
+
+-- The row, and it has two shapes: one per view, because what is worth a button differs.
+--
+-- **Pan & zoom** holds the zoom and Close. Stock's *Scale / Original size* sets the
+-- *viewer's* scale factor — one image pixel to one screen pixel — and every step in this
+-- view is already a screen-sized render shown at best fit, so it changed nothing while
+-- its label promised something else; *Rotate* turns a picture, and nothing turns here,
+-- since a window is the screen's shape and a panel too wide for it is walked side to
+-- side. What a reader of this view actually wants to change is how close the window
+-- sits, so that is what the row holds.
+--
+-- **Cropped panels keeps stock's three**, because there they mean what they say: the
+-- tile is the panel at its own size, so Original size is the panel's own pixels, and a
+-- wide panel is one a Rotate can turn. They are *forwarded* rather than re-implemented —
+-- `Button` calls `self.callback`, so the existing objects are read out of the table
+-- before it is replaced and their callbacks passed straight back in. Nothing of
+-- upstream's logic is copied, and upstream's own `update` re-letters them by id, so
+-- their labels stay true.
+--
+-- Both shapes carry the view switch, which writes the same preference the *Panel view*
+-- row in the menu does.
+--
+-- Stock builds the table inside `init` and has no way to take a button out of one, so
 -- the table and its container are rebuilt — both stock's own widgets, with stock's own
--- shape. The one thing that needs care is that **`update` re-letters the two buttons it
--- expects by id, and does not check that they are there**: a row without them is a nil
--- call inside a paint. They are answered with buttons that are not in the row at all —
--- `button_by_id` is the map those lookups read, so seeding it is enough, and none of
--- stock's code is patched. Guarded like the rest of this file: if the table is not
--- where it was, the row stays stock's and the warning says so once.
+-- shape. Two details are load-bearing:
+--
+--   * **`update` has to run afterwards.** `init` builds `main_frame` and calls
+--     `update()` itself, before any of this, so the frame it built holds *stock's*
+--     container; `ImageViewer:onShow` does not rebuild it, so a viewer that opens with
+--     the row already visible — which is every re-open — would paint stock's row. The
+--     reader's middle tap is what hid that until now: it calls `update()` after the
+--     swap, so a row summoned by hand was always the right one.
+--   * **`update` also re-letters `scale` and `rotate` by id without checking that they
+--     are there**, so a row without them is a nil call inside a paint. They are answered
+--     by seeding `button_by_id` — the map those lookups read — with a plain table that
+--     has the two fields stock touches. Not a Button: that was the only widget this file
+--     built itself on this path, and it is not needed to swallow `setText`.
+--
+-- Guarded like the rest of this file: if the table is not where it was, the row stays
+-- stock's and the warning says so once.
 local buttons_warned = false
 
-local function installWindowButtons(viewer)
+local function installRow(viewer)
     if type(viewer.button_table) ~= "table" then
         if not buttons_warned then
             buttons_warned = true
             logger.warn("Meguru: the viewer's button table was not found; "
-                .. "the window view keeps stock's Scale and Rotate buttons")
+                .. "the panel view keeps stock's row")
         end
         return false
     end
+    local window = viewer.view and viewer.view.window
     -- `or 1` for the same reason the scale's own arithmetic uses it: a caller that
     -- hands no level means fit-to-screen, and the label should say what the view does.
     local level = (viewer.view and viewer.view.level) or 1
+    local close = {
+        id = "close",
+        text = _("Close"),
+        callback = function()
+            viewer:onClose()
+        end,
+    }
+    local switch = {
+        id = "view",
+        -- The label names where the press *goes*, because that is what a button is for;
+        -- the menu row names where the reader *is*, because that is what a setting is.
+        text = window and _("Cropped panels") or _("Pan & zoom"),
+        callback = function()
+            viewer:meguruToggleView()
+        end,
+    }
+    local entries = { switch }
+    if window then
+        entries[#entries + 1] = {
+            id = "zoom_level",
+            text = tostring(level) .. "×",
+            callback = function()
+                viewer:meguruCycleZoomLevel()
+            end,
+        }
+        entries[#entries + 1] = close
+    else
+        for _, id in ipairs({ "scale", "rotate" }) do
+            local button = viewer.button_table:getButtonById(id)
+            if button then
+                entries[#entries + 1] = {
+                    id = id,
+                    text = button.text,
+                    callback = button.callback,
+                }
+            end
+        end
+        entries[#entries + 1] = close
+    end
+
     local table_ = ButtonTable:new{
         width = viewer.width - 2 * viewer.button_padding,
-        buttons = {
-            {
-                {
-                    id = "zoom_level",
-                    text = tostring(level) .. "×",
-                    callback = function()
-                        viewer:meguruCycleZoomLevel()
-                    end,
-                },
-                {
-                    id = "close",
-                    text = _("Close"),
-                    callback = function()
-                        viewer:onClose()
-                    end,
-                },
-            },
-        },
+        buttons = { entries },
         zero_sep = true,
         show_parent = viewer,
     }
-    local sink = Button:new{
-        text = "",
-        width = 0,
-        callback = function() end,
-    }
-    table_.button_by_id.scale = sink
-    table_.button_by_id.rotate = sink
+    if window then
+        local sink = { width = 0, setText = function() end }
+        table_.button_by_id.scale = sink
+        table_.button_by_id.rotate = sink
+    end
     viewer.button_table = table_
     viewer.button_container = CenterContainer:new{
         dimen = Geom:new{
@@ -673,6 +757,9 @@ local function installWindowButtons(viewer)
         },
         table_,
     }
+    -- The frame `init` built holds the old container; this is what puts the new one in
+    -- it. Safe because it is the call stock's own `init` ends with.
+    viewer:update()
     return true
 end
 
@@ -774,19 +861,17 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         buttons_visible = opts and opts.buttons_visible == true,
         rotated = rotates[1] or false,
     }
-    if window then
-        -- **The row is cosmetic, so a failure to build it must cost the zoom button and
-        -- not the view.** This calls into stock's widget constructors, and a stock that
-        -- moves under it should not take the window down — which is the rule the crop
-        -- mask already follows on the render path ("costs the crop and not the panel").
-        -- It is also the difference between a reader seeing a viewer with the wrong
-        -- buttons and a reader seeing nothing at all: the viewer is built by now, and
-        -- an unshown one leaves a queued repaint behind that names a frame it never
-        -- finished — the second half of the crash this was found by.
-        local ok, err = pcall(installWindowButtons, viewer)
-        if not ok then
-            logger.warn("Meguru: the window view's button row was not built:", err)
-        end
+    -- **The row is cosmetic, so a failure to build it must cost the buttons and not the
+    -- view.** This calls into stock's widget constructors, and a stock that moves under
+    -- it should not take the panel view down — which is the rule the crop mask already
+    -- follows on the render path ("costs the crop and not the panel"). It is also the
+    -- difference between a reader seeing a viewer with the wrong buttons and a reader
+    -- seeing nothing at all: the viewer is built by now, and an unshown one leaves a
+    -- queued repaint behind that names a frame it never finished — the second half of
+    -- the crash this was found by.
+    local ok, err = pcall(installRow, viewer)
+    if not ok then
+        logger.warn("Meguru: the panel view's button row was not built:", err)
     end
 
     -- `show` dispatches the `Show` event, which is where the pre-warm is armed;
