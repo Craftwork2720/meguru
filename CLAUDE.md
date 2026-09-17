@@ -2046,18 +2046,34 @@ own number and leave the field at best fit. What it does borrow is the shape of 
 every tile in this view already is the screen's size. A spread zooms about the point under the
 fingers and a pinch keeps the centre, which is what stock does and says why.
 
-**The step is mutated in place rather than replaced**, and that is not an optimisation: a
-step's image is a lazy closure over the step table, and `switchToImageNum` returns early when
-the number has not changed, so writing the new rectangle into the same table and calling
-`update()` is what makes the closure see it. The tile LRU follows for free — a window is keyed
-by its rectangle *and* its size — so coming back to a scale the reader was already at is a
-cache hit rather than a second render.
+**The step is mutated in place rather than replaced, and the image has to be resolved again
+by hand.** A step's image is a lazy closure over the step table, and `switchToImageNum`
+returns early when the number has not changed, so writing the new rectangle into the same
+table and calling `update()` is what makes the closure see it. The tile LRU follows for free
+— a window is keyed by its rectangle *and* its size — so coming back to a scale the reader
+was already at is a cache hit rather than a second render.
 
-**The zoom is not remembered.** Each open starts at the *Panel zoom level* × fit, the same
-number the window view uses, and a pinch lasts as long as the viewer does. The button cycles
-1.5, 1.7, 2, 3 and then **Original** — one page pixel to one screen pixel, the one stop in
-that list that magnifies nothing — and because a pinch leaves numbers on no list, the button
-walks *up* from wherever the reader is rather than looking the value up.
+**But `update()` never re-resolves that closure.** `ImageViewer:_new_image_wg` rebuilds the
+widget around **`self.image`**, the buffer it already holds, and only refreshes it through
+`_scaled_image_func`, which this plugin does not set. The other two views move because
+`switchToImageNum` resolves the *new entry* into `self.image`; this view changes the
+rectangle under one entry, so it has to resolve that entry again itself and put the result
+where the paint will look. That is what shipped first: **the label moved and the picture did
+not**, a reader reported exactly that, and the line above this one had said the closure
+"sees" the new rectangle — which it did, and nobody asked it again.
+
+**The zoom is remembered, in a scale, and written once.** Each open starts at the scale the
+last one closed on; with nothing stored it starts at the *Panel zoom level* × fit, the number
+the other views use. The button cycles 1.5, 1.7, 2, 3 and then **Original** — one page pixel
+to one screen pixel, the one stop in that list that magnifies nothing — and because a pinch
+leaves numbers on no list, the button walks *up* from wherever the reader is rather than
+looking the value up.
+
+**It is written at close, not where it changes**, and that is about the card rather than
+tidiness: `Settings.set` flushes, and this number changes on every pinch event and every drag,
+so remembering it where it moves would be a disk write per gesture. `onCloseWidget` is where
+the reader's answer is final and it happens once per viewer — whether they close it, switch
+views, or a page boundary takes it. The label carries the live value until then.
 
 **The floor is `min(fit, 1)` and the ceiling is `max(3 * fit, 1)`, and neither is a
 simplification.** On a page *smaller* than the screen the fit is already above 1, so a floor
@@ -2863,9 +2879,11 @@ Each step must pass before the next:
     and a swipe in any direction do **not** turn the page ✓, and the zoom button cycles
     1.5 → 1.7 → 2 → 3 → Original → 1.5 ✓ with `Original` showing the file 1:1 ✓ (on a page
     smaller than the screen: at its true size in the middle, not filled out to the edges ✓).
-    A pinch to something off the list — say 2.4× — must make the button **read 2.4×** ✓, and
-    closing and re-opening must come back at the level, **not** at 2.4×, because this zoom is
-    deliberately not remembered ✓. Then the switch out: from the free view it must land in
+    A pinch to something off the list — say 2.4× — must make the button **read 2.4×** ✓, the
+    **picture must change with it** ✓ (a number that moves while the page stands still is the
+    callback that forgot to re-resolve `self.image`, and it is the bug this view shipped
+    first), and closing and re-opening must come back **at 2.4×** ✓ — this zoom is remembered,
+    written once at close. Then the switch out: from the free view it must land in
     *both* other views ✓, keeping the reader's place, and land back ✓.
     Then the skip: on a page
     with small panels beside a full-height one, position the window so they are all

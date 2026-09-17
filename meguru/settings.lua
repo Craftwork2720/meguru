@@ -80,6 +80,20 @@ local DEFAULTS = {
     -- page pixel — a mild magnification of the file rather than 1.9's 1.30.
     panel_zoom_level  = 1.7,
 
+    -- The free view's zoom, and the one preference here stored as a **scale** rather
+    -- than a level: screen pixels per page pixel. Levels are magnifications *of* the
+    -- fit, and that is what the other two views want — a stop is a stop whatever the
+    -- page's size. This view has levels too (1.5x, 1.7x, 2x, 3x) but it also has
+    -- *original size*, which is one page pixel to one screen pixel and magnifies
+    -- nothing, so it cannot be written as a level at all. A manual pinch leaves the same
+    -- kind of number behind, which is what "remembered" means here: the reader's own
+    -- zoom, kept for the next open, written back by the view.
+    --
+    -- `false` is "nothing chosen yet" rather than a scale — the view then starts at
+    -- `panel_zoom_level` times fit-to-screen, so there is no second default level to pick
+    -- here. See `meguru/ui/panelzoom`.
+    free_zoom_scale   = false,
+
     -- Whether the one-time claim of `.cbz` by `meguru/association` has been made.
     -- A record rather than a preference: it says "the offer was made", not "the
     -- answer is yes", and it is what keeps turning the menu row off from being

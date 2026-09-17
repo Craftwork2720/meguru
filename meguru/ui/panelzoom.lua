@@ -579,6 +579,14 @@ function PanelViewer:onCloseWidget()
         UIManager:unschedule(self._meguru_warm)
         self._meguru_warm = nil
     end
+    -- **The free view's zoom is remembered here, once, rather than where it changes.**
+    -- `Settings.set` flushes — it is a write to the card — and this zoom changes on every
+    -- pinch and every drag, so remembering it where it moves would be a disk write per
+    -- gesture event. Closing is where the reader's answer is final, and it happens once
+    -- per viewer whether they close it, switch views, or let a page boundary take it.
+    if self.meguru_free then
+        Settings.set("free_zoom_scale", self.meguru_free.scale)
+    end
     -- Stock first: it may still touch the ImageWidget holding this panel's
     -- bytes, and the bytes are freed a line later.
     ImageViewer.onCloseWidget(self)
@@ -601,9 +609,9 @@ end
 
 -- The free view's presets, and Original *beside* them rather than among them: Original
 -- is scale 1, and a preset is a multiple of the fit, so one list holding both would hold
--- two units. The view works in scales for that reason, but nothing about the scale
--- outlives the viewer: **the zoom is not remembered** — each open starts at the level the
--- other views use, and a pinch lasts as long as the reader is in there.
+-- two units. The view works in scales for that reason, and the scale it ends on is
+-- remembered — written once at close, read once at open — so the next one starts where the
+-- reader left it. See `meguru/settings`.
 local FREE_LEVELS = { 1.5, 1.7, 2, 3 }
 
 -- The next preset above a scale, as a scale. A pinch leaves numbers that are not on the
@@ -654,6 +662,23 @@ function PanelViewer:meguruFreeWindow(scale, cx, cy)
     for key, value in pairs(step) do
         cur[key] = value
     end
+    -- **`self.image` is what the paint reads, and `update()` never re-resolves it** — it
+    -- only rebuilds the widget around whatever is in that field. A step change refreshes it
+    -- by resolving the new *entry*, which is why the other two views move; this view changes
+    -- the rectangle under one entry, so it has to resolve that entry again itself and put the
+    -- result where the paint will look. Without this the label moved and the picture did not,
+    -- which is exactly what a reader reported. A render that fails leaves the old buffer
+    -- alone: a stale picture is better than a blank one.
+    local entry = self._images_list and self._images_list[self._images_list_cur]
+    if type(entry) == "function" then
+        local image = entry()
+        if image then
+            self.image = image
+        end
+    end
+    -- The reader's own zoom is remembered — but **not here**: `Settings.set` flushes, and
+    -- this runs on every pinch and every drag. It is written once, in `onCloseWidget`, and
+    -- the label is what carries the live value until then.
     self:meguruFreeLabel()
     self:update()
     return true
@@ -1039,12 +1064,15 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         if not (dims and screen) then
             return false
         end
-        -- The zoom is *not* remembered — see `FREE_LEVELS` — so this starts where the
-        -- other views start: the reader's level times fit-to-screen. Original size is one
-        -- button press away and lasts as long as the viewer does.
+        -- **The zoom is remembered**, and this is where it is read back: a scale rather than
+        -- a level, because Original is scale 1 and a level is a magnification of the fit. With
+        -- nothing stored the view starts at the level the other views use, so there is no
+        -- second default to choose anywhere.
         local lo, hi = Viewport.scaleBounds(dims, screen)
-        local scale = math.max(lo, math.min(hi,
-            Viewport.fitScale(dims, screen) * (opts.level or 1)))
+        local stored = Settings.get("free_zoom_scale")
+        local scale = (type(stored) == "number" and stored > 0) and stored
+            or Viewport.fitScale(dims, screen) * (opts.level or 1)
+        scale = math.max(lo, math.min(hi, scale))
         local step = Viewport.windowAt(dims, screen, scale, opts.tap and opts.tap.x,
             opts.tap and opts.tap.y)
         if not step then

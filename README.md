@@ -62,7 +62,7 @@ time; and **Zoom only** drops the panels altogether — the page, with pinch and
 no page turning, for reading a page rather than following its panels. In the two window
 views a middle tap brings up a button row whose first button is the view and whose second
 is the zoom — tap it to step through 1.4×/1.7×/1.9× (or 1.5×/1.7×/2×/3×/Original in
-Zoom only), and the window views remember the level for the next page and the next book.
+Zoom only), and each view remembers its own zoom for the next page and the next book.
 
 ## Opening `.cbz` files
 
