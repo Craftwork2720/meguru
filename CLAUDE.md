@@ -2064,10 +2064,9 @@ not**, a reader reported exactly that, and the line above this one had said the 
 
 **The zoom is remembered, in a scale, and written once.** Each open starts at the scale the
 last one closed on; with nothing stored it starts at the *Panel zoom level* × fit, the number
-the other views use. The button cycles 1.5, 2 and 2.5 — levels, all three, because that
-is what a reader asked for and because a list mixing levels with Original would hold two units
-— and because a pinch leaves numbers on no list, the button walks *up* from wherever the reader
-is rather than
+the other views use. The button cycles 1.5, 2 and 2.5 and then ends on the file's own pixels, which
+it calls `1x` — three levels and a scale, because that is what a reader asked for, and because a
+pinch leaves numbers on no list the button walks *up* from wherever the reader is rather than
 looking the value up.
 
 **It is written at close, not where it changes**, and that is about the card rather than
@@ -2086,9 +2085,10 @@ range the window is the whole page letterboxed — the only scale whose request 
 screen's pixels, because the window had to shrink to the page.
 
 **Four ways to set the zoom, and they answer four different questions.** The value button
-*cycles*: 1.5, 2 and 2.5, wrapping back to 1.5 — levels, and the reason this view works in
-*scales* underneath while the other two work in levels is Original, which is one page pixel to
-one screen pixel and is not a level at all. `-` and `+` beside it nudge by **half a level inside 1x to 4x** — the
+*cycles*: 1.5, 2, 2.5 and then the file's own pixels, wrapping back to 1.5. The last of those is
+a *scale* and not a level — one page pixel to one screen pixel — which is why this view works in
+scales underneath while the other two work in levels, and why the button calls it `1x` while the
+levels beside it are multiples of the fit. `-` and `+` beside it nudge by **half a level inside 1x to 4x** — the
 bottom of that range is the whole page, so `-` reaches the fit without pinching —
 and they step from wherever the reader *is* rather than snapping to that list, so a pinch to
 2.4x answers `+` with 2.9x. A pinch changes the scale about the fingers. And a drag or a tap
@@ -2941,9 +2941,9 @@ Each step must pass before the next:
     and a swipe in any direction do **not** turn the page ✓, and the zoom is three buttons:
     `-` and `+` move by half a level, stop at 1x and 4x, and step from wherever the reader is
     (pinch to 2.4x, press `+`, get 2.9x ✓), while the value between them cycles
-    1.5 → 2 → 2.5 → 1.5 ✓, and a **pinch** down to the file's own pixels must make that button
-    read `1×` ✓ (on a page smaller than the screen: at its true size in the middle, not filled
-    out to the edges ✓).
+    1.5 → 2 → 2.5 → `1×` → 1.5 ✓, that last stop showing the file's own pixels ✓ (on a page
+    smaller than the screen: at its true size in the middle, not filled out to the edges ✓) — and
+    a **pinch** to that scale must make the button read `1×` too ✓.
     A pinch to something off the list — say 2.4× — must make the button **read 2.4×** ✓, the
     **picture must change with it** ✓ (a number that moves while the page stands still is the
     callback that forgot to re-resolve `self.image`, and it is the bug this view shipped

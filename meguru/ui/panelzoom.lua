@@ -644,9 +644,15 @@ local FREE_STEP = 0.5
 local FREE_MIN_LEVEL = 1
 local FREE_MAX_LEVEL = 4
 
--- The next level above a scale, wrapping back to the first. A pinch leaves numbers that are
--- not on the list, so this walks *up* from wherever the reader is rather than looking the value
--- up — and past the top the cycle starts again, which is what a cycle does.
+-- The file's own pixels: one page pixel to one screen pixel. **Not a level** — the levels are
+-- multiples of the fit — and the cycle ends on it, which is what `freeStepAfter` below returns
+-- past the last level. The button calls it `1x`, the word every other image viewer uses for this
+-- scale; the `x` beside the levels means a multiple of the fit and this one does not.
+local FREE_ORIGINAL_SCALE = 1
+
+-- The next stop above a scale: the next level, and past the last of them the file's own pixels.
+-- A pinch leaves numbers that are not on the list, so this walks *up* from wherever the reader is
+-- rather than looking the value up.
 local function freeStepAfter(scale, fit)
     local level = scale / fit
     for i = 1, #FREE_LEVELS do
@@ -654,7 +660,7 @@ local function freeStepAfter(scale, fit)
             return FREE_LEVELS[i] * fit
         end
     end
-    return FREE_LEVELS[1] * fit
+    return FREE_ORIGINAL_SCALE
 end
 
 -- What the zoom button says: `1x` for the file's own pixels, a multiple of the fit otherwise.
@@ -665,7 +671,7 @@ end
 -- viewer uses for that scale, and `1x` is it; the alternative, spelling out the ratio, was
 -- longer and still needed to be read.
 local function freeLabel(scale, fit)
-    if math.abs(scale - 1) < 0.001 then
+    if math.abs(scale - FREE_ORIGINAL_SCALE) < 0.001 then
         return "1×"
     end
     return string.format("%.1f×", scale / fit)
