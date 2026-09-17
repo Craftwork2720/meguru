@@ -819,7 +819,12 @@ function Open.bookLabel(subject)
     if subject.volume_label then
         return subject.volume_label
     end
-    local _, token = Naming.deriveSeries(subject.title or "")
+    -- **`select(2, ...)` and not `local _, token`.** `_` is this file's gettext, so a
+    -- `local` of that name shadows it for the rest of this function — and the rest of
+    -- this function is the next line, which translates "this book". It was a crash
+    -- waiting for the one book whose title, display title and volume label are all
+    -- empty; `check.py` says so now.
+    local token = select(2, Naming.deriveSeries(subject.title or ""))
     return token or subject.display_title or subject.title or _("this book")
 end
 

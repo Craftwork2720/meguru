@@ -480,12 +480,20 @@ function PanelViewer:meguruHandoff(direction)
             -- Meguru's own page-error painting says why it is empty. Same gate,
             -- and the same reasoning, as `analyseAhead` and the page warm.
             local panels, reason
+            -- **`accepted` needs a local of its own here, and that is not tidiness.**
+            -- This used to be `panels, _, reason = ...`, and `_` is this file's
+            -- gettext — a plain assignment with no `local` writes straight through to
+            -- it, so the next button label built in this file was a call on a boolean.
+            -- The line is older than the `_(...)` that found it out, which is why
+            -- nothing noticed until the window view's button row existed. Discarding a
+            -- value needs a name nothing else uses; `check.py` now says so.
+            local accepted
             if doc:hasConnection() then
                 -- `accepted` is not interesting here: a page the detector
                 -- refused opens the whole page as one panel, and a crossing is a
                 -- crossing either way. Only a page that would not decode has no
                 -- panels at all, and that is what the `else` log line says.
-                panels, _, reason = doc:getPanelsFromPage(page, mode)
+                panels, accepted, reason = doc:getPanelsFromPage(page, mode)
             else
                 reason = "no connection"
             end
@@ -739,7 +747,18 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         rotated = rotates[1] or false,
     }
     if window then
-        installWindowButtons(viewer)
+        -- **The row is cosmetic, so a failure to build it must cost the zoom button and
+        -- not the view.** This calls into stock's widget constructors, and a stock that
+        -- moves under it should not take the window down — which is the rule the crop
+        -- mask already follows on the render path ("costs the crop and not the panel").
+        -- It is also the difference between a reader seeing a viewer with the wrong
+        -- buttons and a reader seeing nothing at all: the viewer is built by now, and
+        -- an unshown one leaves a queued repaint behind that names a frame it never
+        -- finished — the second half of the crash this was found by.
+        local ok, err = pcall(installWindowButtons, viewer)
+        if not ok then
+            logger.warn("Meguru: the window view's button row was not built:", err)
+        end
     end
 
     -- `show` dispatches the `Show` event, which is where the pre-warm is armed;

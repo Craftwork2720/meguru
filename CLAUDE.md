@@ -1890,7 +1890,12 @@ buttons it expects by id, and does not check that they are there**, so a row wit
 is a nil call inside a paint: they are answered by seeding `button_by_id` — the map those
 lookups read — with buttons that are not in the row at all. None of stock's code is
 patched, and if the table is not where it was the row stays stock's and a `warn` says so
-once, the way the rotation angle does.
+once, the way the rotation angle does. **The whole rebuild is `pcall`ed**, because the
+row is cosmetic: a failure there must cost the reader the zoom button and not the view.
+That is the rule the crop mask already follows on the render path ("costs the crop and
+not the panel"), and it is also what bounds the blast radius of exactly the crash this
+was found by — a viewer built, then left unshown by a throw inside the row, with a
+repaint still queued on it naming a frame the close then took away.
 
 **The chain is a simulation of the forward gesture, not a list per panel.** Where the
 next step lands depends on what is *already on screen*, not only on which panel the
@@ -2410,7 +2415,7 @@ python tools/check.py       # structure of the Lua
 ```
 
 There is no Lua interpreter on the development machine, so `check.py` stands in for
-one. It runs nine passes:
+one. It runs ten passes:
 
 1. **Block balance** — `function`/`if`/`for`/`while`/`do` against `end`/`until`, over
    comment- and string-stripped source.
@@ -2479,6 +2484,29 @@ one. It runs nine passes:
    `_()` is *after* the loop, and was believed for a minute — which is the ordinary
    fate of this kind of check, and why it is worth saying that a body full of nested
    `function ... end` is the case that tells a real matcher from a rough one.
+10. **An assignment to `_`**, which is pass 9's collision seen from the other side. The
+   same two conventions — `_` is gettext, `_` is a discarded value — meet in
+   `panels, _, reason = doc:getPanelsFromPage(page, mode)`, and because that binding is
+   **not** a `local` it writes straight through to the file's translate function:
+   `_` became that call's second return, `accepted`, a boolean. **This one shipped too,
+   and it cost a device crash** — `attempt to call upvalue '_' (a boolean value)` — on
+   the page-boundary crossing of the window view, whose button row was the first
+   `_(...)` this file had ever needed. The offending line was years older than the
+   caller that found it out, which is why "nothing has ever gone wrong with it" is not
+   evidence of anything here.
+   The two shapes are reported differently because they reach differently. A plain
+   assignment reaches the *file*, so every `_(...)` that runs after it anywhere is
+   broken and it is always reported. A `local` shadows only to the end of its own
+   block, so it is reported only when something in that block translates afterwards —
+   five files here discard into `_` with no `_(...)` near them, and flagging those would
+   be noise that teaches a reader to skim the pass. **The first version of this pass
+   looked for the shape `_ =` and passed on the real bug**, because the assignment it
+   exists for is `x, _, y =`; it was found by injecting the line back and watching the
+   checker stay silent — the same self-test the paragraph below asks for, done late
+   rather than first.
+   The block extent comes from pass 9's matcher, extracted into `block_spans` so both
+   passes ask one implementation the same question. What it cannot see is an assignment
+   whose `=` sits on a later line than its targets; nothing here writes one.
 
 None of these is a parser. They are the failure modes that have actually bitten this
 codebase, and that a reader cannot reliably catch by eye: a name or member that is fine

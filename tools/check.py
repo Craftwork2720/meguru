@@ -828,11 +828,18 @@ def check_series_context(fields):
 LUA_KEYWORD = re.compile(r"\b(function|if|for|while|do|end|until|repeat)\b")
 FOR_HEADER = re.compile(r"\bfor\s+([^)]*?)\s+(?:in|=)")
 GETTEXT_CALL = re.compile(r"(?<![\w.])_\s*\(")
+# `_` in an assignment, but not `==`, not a field (`x._ =`), not a longer name.
+ASSIGN_TARGETS = re.compile(r"^\s*([^=<>~]*?)\s*=(?!=)")
 
 
-def check_gettext_shadow(path, text):
-    """Report a `_()` call inside a loop that binds `_` as its variable."""
-    spans = []          # (start_keyword_offset, end_offset) of every block
+def block_spans(text):
+    """(start, end) offsets of every block, `end` inclusive of its keyword.
+
+    Shared by the two `_` passes, which need the same thing: the extent of the
+    scope a name was bound in. Pass 9 asks it of a `for` header, the assignment
+    pass of a `local` -- both are asking "how far does this binding reach".
+    """
+    spans = []
     stack = []
     pending_do = 0
     for m in LUA_KEYWORD.finditer(text):
@@ -850,9 +857,22 @@ def check_gettext_shadow(path, text):
         elif word in ("end", "until"):
             if stack:
                 spans.append((stack.pop(), m.end()))
+    return spans
 
-    errors = []
+
+def enclosing_span(spans, offset):
+    """The innermost span containing `offset`, or None for the file itself."""
+    best = None
     for start, end in spans:
+        if start <= offset < end and (best is None or end - start < best[1] - best[0]):
+            best = (start, end)
+    return best
+
+
+def check_gettext_shadow(path, text):
+    """Report a `_()` call inside a loop that binds `_` as its variable."""
+    errors = []
+    for start, end in block_spans(text):
         header = FOR_HEADER.match(text, start)
         if not header:
             continue
@@ -867,6 +887,75 @@ def check_gettext_shadow(path, text):
                 f"{path}:{lineno}: `_()` here is inside a `for _` loop -- `_` is "
                 f"the loop counter, not gettext, so this calls a number"
             )
+    return errors
+
+def check_gettext_assign(path, text, raw):
+    """Report a binding of `_` that outlives its statement, other than gettext.
+
+    `_` is the translate function in every file here, and Lua's other use of the
+    name -- a discarded value -- writes through to it whenever the binding is
+    *not* a `local`: `panels, _, reason = doc:getPanelsFromPage(...)` replaced the
+    file's gettext with that function's second return, a boolean. It shipped, and
+    it cost a device crash: the line was years older than the `_(...)` in the same
+    file that finally called a boolean, so nothing had ever noticed.
+
+    The test looks at the assignment's **targets**, split on commas, and asks
+    whether one of them is `_` -- not at the shape `_ =`, which is what the first
+    version of this did and which misses every multiple assignment, the case it
+    exists for. Its first version also passed on the injected bug, which is the
+    whole reason each pass here is self-tested before it is trusted.
+
+    What is allowed: the gettext binding itself, and a `for` counter, which lives
+    only inside its loop (pass 9 is the other half of that one). The binding is
+    recognised in the *raw* line, because stripping has already collapsed
+    `require("gettext")` to `require( STR )`; both texts have the same line count,
+    which is what makes one line number mean the same thing in each.
+
+    The two shapes are not equally dangerous and the pass does not treat them as
+    such. A plain assignment reaches the *file's* binding, so every `_(...)` that
+    runs afterwards anywhere in the file is broken -- always reported. A `local`
+    shadows only for the rest of its own block, so it is reported only when
+    something in that block translates after it: five files here discard a value
+    into `_` with no `_(...)` anywhere near, and flagging those would be noise that
+    teaches a reader to ignore the pass.
+
+    What it cannot see: an assignment whose `=` sits on a later line than its
+    targets. Nothing here writes one, and this is a guard rather than a parser.
+    """
+    errors = []
+    raw_lines = raw.split("\n")
+    spans = block_spans(text)
+    offset = 0
+    for lineno, line in enumerate(text.split("\n"), start=1):
+        m = ASSIGN_TARGETS.match(line)
+        if m:
+            left = m.group(1).strip()
+            keyword = ""
+            for kw in ("local", "for"):
+                if left.startswith(kw + " ") or left == kw:
+                    keyword = kw
+                    left = left[len(kw):].strip()
+                    break
+            raw_line = raw_lines[lineno - 1] if lineno <= len(raw_lines) else ""
+            if ("_" in [name.strip() for name in left.split(",")]
+                    and keyword != "for" and "gettext" not in raw_line):
+                if keyword != "local":
+                    errors.append(
+                        f"{path}:{lineno}: this assigns to `_`, which is gettext in "
+                        f"every file here, so every `_(...)` that runs after it -- "
+                        f"anywhere in the file -- calls whatever was assigned"
+                    )
+                else:
+                    span = enclosing_span(spans, offset)
+                    call = GETTEXT_CALL.search(text, offset + m.end())
+                    if call and call.start() < (span[1] if span else len(text)):
+                        call_line = text.count("\n", 0, call.start()) + 1
+                        errors.append(
+                            f"{path}:{lineno}: `local ... , _ = ...` shadows gettext, "
+                            f"and line {call_line} in the same block calls `_(...)` -- "
+                            f"give the discarded value a name of its own"
+                        )
+        offset += len(line) + 1
     return errors
 
 def main():
@@ -884,6 +973,7 @@ def main():
         all_errors += check_value_uses(rel, text)
         all_errors += check_receiver_uses(rel, text)
         all_errors += check_gettext_shadow(rel, text)
+        all_errors += check_gettext_assign(rel, text, raw)
 
     all_errors += check_marker_fields(marker_fields())
     all_errors += check_series_context(series_context_fields())
