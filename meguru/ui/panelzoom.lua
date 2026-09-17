@@ -645,9 +645,16 @@ local function freeStepAfter(scale, fit)
 end
 
 -- What the zoom button says: the file's own pixels, or the magnification of the fit.
+--
+-- **`Original 1:1` rather than `Original`, and that is not a long label for its own sake.** The
+-- other stops are multiples of the fit, and `1.0x` among them *reads* like "original size" to
+-- anyone who has used another image viewer — a reader pressed to that stop, saw the page fitted
+-- to the screen, and reported that Original was wrong. It was not: the stop they wanted was the
+-- next one, whose scale is 1 and whose meaning a multiplication sign cannot express. So the
+-- label carries the ratio.
 local function freeLabel(scale, fit)
     if math.abs(scale - 1) < 0.001 then
-        return _("Original")
+        return _("Original 1:1")
     end
     return string.format("%.1f×", scale / fit)
 end

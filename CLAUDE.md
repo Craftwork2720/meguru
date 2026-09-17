@@ -2064,7 +2064,7 @@ not**, a reader reported exactly that, and the line above this one had said the 
 
 **The zoom is remembered, in a scale, and written once.** Each open starts at the scale the
 last one closed on; with nothing stored it starts at the *Panel zoom level* × fit, the number
-the other views use. The button cycles 1, 2 and then **Original** — one page pixel
+the other views use. The button cycles 1, 2 and then **Original 1:1** — one page pixel
 to one screen pixel, the one stop in that list that magnifies nothing — and because a pinch
 leaves numbers on no list, the button walks *up* from wherever the reader is rather than
 looking the value up.
@@ -2085,7 +2085,7 @@ range the window is the whole page letterboxed — the only scale whose request 
 screen's pixels, because the window had to shrink to the page.
 
 **Four ways to set the zoom, and they answer four different questions.** The value button
-*cycles*: 1, 2 and then **Original** — one page pixel to one screen pixel, the one
+*cycles*: 1, 2 and then **Original 1:1** — one page pixel to one screen pixel, the one
 stop in that list that magnifies nothing, and the reason this view works in scales while the
 other two work in levels. `-` and `+` beside it nudge by **half a level inside 1x to 4x** — the
 bottom of that range is the whole page, so `-` reaches the fit without pinching —
@@ -2093,6 +2093,16 @@ and they step from wherever the reader *is* rather than snapping to that list, s
 2.4x answers `+` with 2.9x. A pinch changes the scale about the fingers. And a drag or a tap
 moves the window. The two lists are separate on purpose: Original has no level, and a stepper
 that could reach it would have to have an opinion about what half a step below it means.
+
+**And its label carries the ratio, because a ×-number beside it does not say the same thing.**
+The stop reads `Original 1:1`, and that is a report rather than a preference: a reader pressed
+the stop labelled `1.0x`, saw the page fitted to the screen, and said "Original shows the size
+of the screen, and I wanted 1:1 for the original image". They were right about what they saw —
+the fit *is* the page scaled to the screen, and on a 1600x2400 page against a 1236x1648 screen
+the three stops are 1600, 900 and 1236 page pixels wide: `1x`, `2x`, and the file's own
+resolution, which sits *between* them at 1.46x the fit. What was wrong was the naming: `1.0x`
+means "original size" to anyone who has used another image viewer, so the one stop that really
+is the file's pixels had to say so.
 
 **The screen is not where the page is drawn, and only the *absolute* conversions care.** The
 button row takes a strip of the screen, so the tile is drawn in what is left of it and best
@@ -2924,7 +2934,7 @@ Each step must pass before the next:
     and a swipe in any direction do **not** turn the page ✓, and the zoom is three buttons:
     `-` and `+` move by half a level, stop at 1x and 4x, and step from wherever the reader is
     (pinch to 2.4x, press `+`, get 2.9x ✓), while the value between them cycles
-    1 → 2 → Original → 1 ✓ with `Original` showing the file 1:1 ✓ (on a page
+    1 → 2 → Original 1:1 → 1 ✓ with that stop showing the file 1:1 ✓ (on a page
     smaller than the screen: at its true size in the middle, not filled out to the edges ✓).
     A pinch to something off the list — say 2.4× — must make the button **read 2.4×** ✓, the
     **picture must change with it** ✓ (a number that moves while the page stands still is the
