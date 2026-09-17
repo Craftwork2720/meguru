@@ -421,40 +421,21 @@ function Menu.addReaderItems(plugin, menu_items)
         }
     end
 
-    -- **There is no row for whether a long-press zooms at all, and it was removed rather than
-    -- forgotten.** A Meguru book has a panel zoom unless *that book* says otherwise, and the
-    -- per-book answer is KOReader's own row — which is the one that has always been the
-    -- interesting one, since it is the reader looking at the page. A plugin-wide switch above it
-    -- only ever answered a question nobody asked twice.
+    -- **There is no row for any of the panel choices, and that is a decision rather than an
+    -- omission.** All three live in the viewer's own button row, where the reader can see what
+    -- they do while looking at the page they do it to: the switch at the front of it names and
+    -- changes the view, and the value button beside it the zoom. The two preferences are still
+    -- the store — `ui/reader` reads them and hands the numbers in, and `ui/panelzoom` writes them
+    -- back — so nothing here is needed to reach either.
     --
-    -- What stays here is the *view*: two ways of showing the same panels in the same order, and
-    -- the state lives in the text because that is what names it — a tick beside "Panel view"
-    -- would say neither which one is on nor what the other one is. `updateItems` is what redraws
-    -- it; without the call the row would keep the old wording until the menu was rebuilt.
-    settings[#settings + 1] = {
-        text_func = function()
-            return ({
-                crop = _("Panel view: Panel Cut"),
-                window = _("Panel view: Pan & Zoom"),
-                zoom = _("Panel view: Free View"),
-            })[Reader.panelViewMode()]
-        end,
-        help_text = _("Panel Cut shows each panel on its own. Pan & Zoom keeps the whole page and moves a window over it, one panel at a time. Free View drops the panels entirely: the page, with pinch and drag, and no page turning."),
-        keep_menu_open = true,
-        callback = function(touchmenu_instance)
-            Settings.set("panel_view", ({
-                crop = "window", window = "zoom", zoom = "crop",
-            })[Reader.panelViewMode()])
-            if touchmenu_instance
-                and type(touchmenu_instance.updateItems) == "function" then
-                touchmenu_instance:updateItems()
-            end
-        end,
-    }
-    -- No row for the zoom level, and that is a decision rather than an omission:
-    -- the choice lives in the viewer's own button row, where the reader can see
-    -- what it does while looking at the page it does it to. See
-    -- `PanelViewer:meguruCycleZoomLevel` — the preference is still the store.
+    -- The view row that used to sit here was also the one control on this surface that a reader
+    -- with another panel plugin installed could not use: that plugin answers the long-press, so
+    -- Meguru's viewer — and with it the only other way to change the view — never opens. A row
+    -- that reads one way while the panels behave another is the failure this file has removed a
+    -- row for twice already.
+    --
+    -- What is *not* reachable from the viewer is whether there is a panel zoom at all, and that
+    -- belongs to the per-book answer KOReader's own row gives — the reader looking at the page.
 
     settings[#settings + 1] = {
         text = _("Hide status bar"),

@@ -76,57 +76,48 @@ is forced off with it: nothing on a streamed page is text, and that fallback rea
 Nothing reads it, and nothing sweeps it — delete it by hand or ignore it, the way
 `meguru.sqlite3` and `cache/meguru/` are handled.
 
-**A long-press in a Meguru book is Meguru's, whatever else is installed.** It used to
-stand down whenever Panels+ had patched the highlight instance, reading that plugin's two
-private fields to decide. That is gone, and what replaced it reads **nothing** from code this
-plugin does not control:
+**Which plugin answers is decided by who patched the gesture last, and it is not this one.**
+`pluginloader` sorts plugin directories by path, so `meguru.koplugin` loads — and `Reader.install`
+wraps `hl.onPanelZoom` — *before* `panelsplus.koplugin` does. A plugin that wants this gesture
+patches the same field and saves whatever it found as its "original", so Panels+ ends up
+**outermost**, holding this plugin's wrapper as the handler it delegates to. That is the whole
+mechanism, and it is why the cases come out the way they do:
 
-- **"Is someone else on this gesture?"** is a question about *our* object: whether
-  `hl.onPanelZoom` is still the wrapper this plugin installed, held on the highlight as
-  `_meguru_panel_zoom_fn`. A field compared against the wrapper, not a flag — a flag stays true
-  through a foreign assignment, which is the lesson `curateConfigMenu` records. A rename or a
-  rewrite on the other side cannot make this wrong.
-- **The re-install** is `installPanelZoomTop`, from the same post-reader-ready callback that
-  repairs the config menu. `Reader.install` runs at plugin `init()` and so does the other
-  plugin's patch, so whichever directory sorts later is on top — between these two it is the
-  other one. `ReaderReady` is the first seam provably past all of them.
-- **The wrapper is one function used at both seams**, and it does not chain to what it
-  displaced: the rival is not consulted, and the fallback for a press this detector cannot serve
-  is **stock's** handler, read off the *class* rather than off the instance. The instance field
-  is the thing every one of these plugins overwrites, so whoever installed second would
-  otherwise capture the other's wrapper as its "original" and hand a refused page to a second
-  sequence — which engine ran would then depend on the page.
+| what is installed | who answers a long-press in a Meguru book |
+|---|---|
+| Panels+, **enabled** | **Panels+** — it is outermost and never calls down |
+| Panels+, **disabled** | **this plugin** — Panels+ delegates to its saved original, which is ours |
+| nothing else | this plugin |
 
-**What is still the reader's is whether there is a panel zoom at all**, and that is asked of
-this plugin's own cascade (`meguruPanelZoomWanted`) rather than read off `panel_zoom_enabled`.
-That field is stock's gate and `ReaderHighlight:onHold` reads it *before* any handler runs, so
-whichever engine answers the press has to have won it — and a plugin answering the same gesture
-wins it last, on every `ReadSettings`. A handler that trusted the field would be reading the
-other plugin's answer. The two `_meguru_panel_zoom_answer` / `_meguru_panel_zoom_pinned` fields
-are the file's own answer, kept because the live field it came from is not reliably ours by the
-time a press arrives.
+**And this plugin never steps aside, which is what fixed the third row.** The wrapper used to
+check whether Panels+ had patched the highlight and return to stock when it had — reading two of
+that plugin's private fields to decide. Those fields are set when Panels+ *patches* and cleared
+only when it *closes*, so they answer "has Panels+ taken this instance" rather than "will Panels+
+answer this press". With Panels+ installed and switched off, the handler it saved is **Meguru's
+wrapper**, and Meguru stood down on top of it: the reader got stock's single-region viewer, in
+every book, and the two Meguru panel rows were hidden from them at the same time.
 
-**The row is therefore drawn always, where it used to be hidden whenever Panels+ held the
-gesture.** That rule existed to avoid offering a switch that switched nothing — a rival forces
-`panel_zoom_enabled` on, so the row would have read one way while the panels behaved another.
-With the press decided by this plugin and the cascade asked of this plugin, the row now switches
-exactly what it names in every configuration.
+So the check is gone rather than corrected, and the wrapper does one thing: it handles the press.
+Whether it is reached at all is then decided by the plugin that is above it — enabled, or off and
+delegating — which is a fact about *their* state that they are the ones who can report.
 
-**The bug this replaced, measured on the way in.** The old test — "has Panels+ patched this
-instance" — answered a different question from "will Panels+ handle this press", because those
-fields are cleared when that plugin *closes*, not when it is switched off. Panels+ delegates to
-the handler it saved whenever its own setting is off, and in this load order the handler it saved
-is **Meguru's wrapper** — so a reader who installed Panels+ and disabled it was handed stock's
-single-panel viewer instead of the sequence, with both Meguru panel rows hidden from them at the
-same time. Deleting the stand-down is what fixed it, and the same deletion is what removed the
-last thing this plugin read out of another one.
+**It reads nothing at all from the other plugin** — no name, no field, no `isEnabled()` — so a
+rename or a rewrite on that side cannot make this wrong. What it *does* read off the class is
+stock's own `onPanelZoom`, as the fallback for a press this detector cannot serve: a refused page
+must land in stock's single-region viewer and never in a second sequence, or which engine ran
+would depend on the page.
 
-**The cost, named rather than discovered:** a reader with Panels+ enabled loses Panels+'s viewer
-*in Meguru books* and has no control to get it back — there is no row for who owns the gesture,
-by decision. And what cannot be settled here: everything above about how that plugin behaves
-was read from its source on 2026-09-17, so a version that patches the class instead of the
-instance would simply find this plugin's wrapper already in place and the press would still be
-ours — a quiet degradation rather than a broken one.
+**There is no row for who owns the gesture, and that is a decision with a reason: one gesture
+cannot have two owners.** Whoever wants Panels+ to answer says so by not having this engine open
+that book — the two cannot both be the hand for one press, and a switch inside this plugin would
+be a choice about code it does not own, drawn only while the rival is present, which is the shape
+of row this file has already removed twice. The reader who wants Meguru's viewer instead is
+uninstalling the other plugin, which is a change they can make and this one cannot.
+
+**For the reader with both installed, that means:** Panels+ answers, and its own settings decide
+how. Meguru's panel feature — through the ⋮ → Meguru rows and the file-manager surface — still
+applies to the *preference* side of the cascade below, which is per file and independent of who
+handles the press.
 
 ### The sequence
 
@@ -592,10 +583,12 @@ call may throw, or a viewer is left on the stack while the caller is told the op
 **A long-press opens one of two views, and the preference picks which.** Cropped — the
 panels cut out of the page, each its own image, quad-masked. Or *window*: the page
 stays whole and a rectangle moves over it at one fixed zoom, anchored to the panel's
-edges. `Panel view` is the row; `meguru/settings.lua`'s `panel_view` is the value. **The row
-names the three views `Panel Cut`, `Pan & Zoom` and `Free View`**; this document calls them the
-cropped view, the window view and the free view, and they are the same three — the label is what
-a reader reads and the prose is what the code is called, so neither is a rename of the other.
+edges. `meguru/settings.lua`'s `panel_view` is the value, and **the only control for it is the
+switch at the front of the viewer's own button row** — there is no menu row, which is argued
+below. The switch names the three views `Panel Cut`, `Pan & Zoom` and `Free View`; this document
+calls them the cropped view, the window view and the free view, and they are the same three — the
+label is what a reader reads and the prose is what the code is called, so neither is a rename of
+the other.
 **Window is the default** — a choice rather than a measurement: it shows the page as it
 is, so a panel the detector merged, or a border it read wrongly, still shows the artwork
 that is there, at the price of a strip of the neighbour at the window's edge, where the
@@ -752,7 +745,7 @@ holds `[Pan & Zoom] [-] [1.7x] [+] [Close]`; *Panel Cut* keeps stock's three and
 switch in front — `[Panel Cut] [Rotate] [Close]`. **The switch's
 label names the view the reader is in**, not the one the press leads to: it is the shape
 the zoom button beside it already has (that one shows the level it is on) and the shape
-the menu's *Panel view* row has, so the button, the row and the setting all name the same
+the menu row that used to carry it had, so the button and the setting name the same
 thing. The first version named the destination, which is defensible for a button and was
 not what a reader wanted — three controls saying different things about one state is the
 thing to avoid. The zoom button is

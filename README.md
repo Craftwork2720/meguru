@@ -56,8 +56,8 @@ Everything below applies whether the book came from your device or from a stream
 
 Panel zoom is Meguru's own, on for the books it opens: a long-press shows the page's panels in
 reading order, and a book you would rather it left alone is switched off with KOReader's own
-*⋮ → Panel zoom (manga/comic)* row. It comes in three views, one switch apart (*Settings* →
-*Panel view*): **Panel Cut** cuts each panel out of the page and shows it by itself; **Pan &
+*⋮ → Panel zoom (manga/comic)* row. It comes in three views, one switch apart — the first button of the
+viewer's own row: **Panel Cut** cuts each panel out of the page and shows it by itself; **Pan &
 Zoom** keeps the whole page and moves a window over it, one panel at a time; and **Free View**
 drops the panels altogether — the page, with pinch and drag and no page turning, for reading a
 page rather than following its panels. In the two window views a middle tap brings up a button

@@ -369,10 +369,10 @@ Each step must pass before the next:
     `[1.7x]` that turns into `[Original size]` is the `update()`-after-the-swap bug, not a
     preference going missing. The **view switch** sits at the front of the row in both
     views and names the view the reader is **in** — `Pan & Zoom` while in pan & zoom,
-    `Panel Cut` while cut — the same thing the menu's *Panel view* row says;
+    `Panel Cut` while cut — the same thing the setting behind it says;
     pressing it changes what the page is cut into, keeps the panel the reader is
-    on, leaves the row open, and must agree with the menu's *Panel view* row afterwards,
-    since both write the same preference. The *cropped* row is the one that carries
+    on, and leaves the row open. **It is the only way to change the view**: there is no menu row
+    for it, so this button and the `panel_view` preference it writes are the whole of the surface. The *cropped* row is the one that carries
     **Rotate**: pressing it there must still work — which is the check that it was forwarded
     rather than dropped — and there must be **no Scale / Original size button** beside it, in
     this row or the other two. That button is the one whose absence is load-bearing rather than
@@ -618,26 +618,26 @@ Each step must pass before the next:
     remove — what changed is only which of the two Meguru treats as the book.
 
 
-25. **Another plugin wants the same long-press.** This plugin now answers the panel zoom in its
-    own books whatever else is installed, and the test for "someone else took it" names no
-    plugin — it compares `hl.onPanelZoom` against the wrapper this plugin installed. **This has
-    to be run with the other plugin actually installed**: every mechanism here is aimed at code
-    that is absent otherwise, so a run without it exercises only the stock path and proves
-    nothing. The recorded lesson from the zen-os episode is exactly this.
+25. **Another plugin wants the same long-press.** Which plugin answers is settled by load order,
+    not by anything either plugin decides: `meguru.koplugin` sorts before `panelsplus.koplugin`, so
+    the other plugin patches `hl.onPanelZoom` **after** this one and ends up outermost, holding
+    this plugin's wrapper as the handler it delegates to. **This has to be run with the other
+    plugin actually installed** — every row below is about code that is absent otherwise, so a run
+    without it exercises only the stock path and proves nothing.
 
     | # | configuration | expected |
     |---|---|---|
-    | a | the other plugin **enabled** | the long-press opens **Meguru's** viewer; its sequence never appears |
-    | b | the other plugin **disabled** | Meguru's viewer — *not* stock's single-region one, which is what a reader got before this changed |
-    | c | the book's own stock ⋮ row switched **off**, other plugin enabled | **no** panel zoom at all: the file refused it, even though the other plugin pins `panel_zoom_enabled` true |
-    | d | the same book, its own stock ⋮ row switched back on | zoom works again, and the other plugin still never appears |
-    | e | the other plugin **uninstalled** | the new row absent, and everything byte for byte as it was |
-    | f | `.cbz` opened through Meguru | Meguru's viewer — the scope is the provider, not the extension |
-    | g | a splash page the detector refuses, other plugin enabled | **stock's** viewer opens, not the other plugin's sequence, and never two viewers |
-    | h | reading the log | one line when the gesture is taken back, none per press |
+    | a | the other plugin **enabled** | **its** sequence, not Meguru's |
+    | b | the other plugin **disabled** | **Meguru's** viewer — *not* stock's single-region one, which is what a reader got before the stand-down was deleted |
+    | c | b, with the book's own stock ⋮ row switched **off** | **no** panel zoom at all: the file refused it, and this plugin's cascade is what refuses |
+    | d | c, the row switched back on | zoom works again |
+    | e | the other plugin **uninstalled** | Meguru's viewer, and byte for byte what this plugin has always done |
+    | f | `.cbz` opened through Meguru | the same answers — the scope is the provider, not the extension |
+    | g | a splash page the detector refuses, with the other plugin **disabled** | **stock's** viewer, never the other plugin's sequence, and never two viewers |
+    | h | reading the log | none per press, and one per process when this plugin stands aside for a rival |
 
-    Then the one that reasoning cannot close: **force the other load order** by renaming the
-    other plugin's directory so it sorts *before* `meguru.koplugin`, and repeat (a) and (b). That
-    is the only arrangement in which this plugin's init-time wrapper captures a foreign wrapper
-    as its "original", and it is why the wrapper falls back to stock read off the *class* instead
-    of to anything it displaced. Nothing may hang and two viewers must never open.
+    Then the one that reasoning cannot close: **force the other load order**, by renaming the other
+    plugin's directory so it sorts *before* `meguru.koplugin`, and repeat (a) and (b). This plugin is
+    then outermost, so **it** answers even with the other plugin enabled — the one arrangement where
+    the order is reversed, and the only row here that cannot be argued from the source. Nothing may
+    hang and two viewers must never open.
