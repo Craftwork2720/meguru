@@ -313,7 +313,7 @@ Each step must pass before the next:
     of the store still shows a panel, softer, through the `Document:drawPagePart`
     fallback.
 
-    Then the same page in the **window view** (*Panel view: Pan & zoom*), which is the
+    Then the same page in the **window view** (*Panel view: Pan & Zoom*), which is the
     second half of this item because it is the same crop question asked the other way.
     Long-press a point in a large panel: **the panel opens at its own beginning**, not at
     the point under the finger — a panel taller than the window pressed in its lower half
@@ -368,8 +368,8 @@ Each step must pass before the next:
     still be *Meguru's* row** — the re-open paints the row it was built with, so a
     `[1.7x]` that turns into `[Original size]` is the `update()`-after-the-swap bug, not a
     preference going missing. The **view switch** sits at the front of the row in both
-    views and names the view the reader is **in** — `Pan & zoom` while in pan & zoom,
-    `Cropped panels` while cropped — the same thing the menu's *Panel view* row says;
+    views and names the view the reader is **in** — `Pan & Zoom` while in pan & zoom,
+    `Panel Cut` while cut — the same thing the menu's *Panel view* row says;
     pressing it changes what the page is cut into, keeps the panel the reader is
     on, leaves the row open, and must agree with the menu's *Panel view* row afterwards,
     since both write the same preference. The *cropped* row is the one place
@@ -394,7 +394,7 @@ Each step must pass before the next:
     it is the mechanism moving rather than the page is to set `PANEL_WINDOW_TOLERANCE` to
     **0** and re-read the same panel: the step count must go back to what it was.
 
-    Then the third view (*Panel view: Zoom only*, or the row's switch twice). Long-press a
+    Then the third view (*Panel view: Free View*, or the row's switch twice). Long-press a
     point: the page must open **centred on that point**, sharp at 2× and 3× — it is a render
     from the file, not a magnified tile — and then: pinch changes the scale ✓, drag moves the
     window ✓ **in every direction — down, and on the diagonal**, which is the one a drag is

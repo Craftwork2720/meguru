@@ -1128,7 +1128,7 @@ end
 
 -- The row, and it has two shapes: one per view, because what is worth a button differs.
 --
--- **Pan & zoom** holds the zoom and Close. Stock's *Scale / Original size* sets the
+-- **Pan & Zoom** holds the zoom and Close. Stock's *Scale / Original size* sets the
 -- *viewer's* scale factor — one image pixel to one screen pixel — and every step in this
 -- view is already a screen-sized render shown at best fit, so it changed nothing while
 -- its label promised something else; *Rotate* turns a picture, and nothing turns here,
@@ -1136,7 +1136,7 @@ end
 -- side. What a reader of this view actually wants to change is how close the window
 -- sits, so that is what the row holds.
 --
--- **Cropped panels keeps stock's three**, because there they mean what they say: the
+-- **Panel Cut keeps stock's three**, because there they mean what they say: the
 -- tile is the panel at its own size, so Original size is the panel's own pixels, and a
 -- wide panel is one a Rotate can turn. They are *forwarded* rather than re-implemented —
 -- `Button` calls `self.callback`, so the existing objects are read out of the table
@@ -1195,8 +1195,8 @@ local function installRow(viewer)
         -- shape the menu's *Panel view* row has, so the two controls and the row all
         -- name the same thing rather than one of them naming the destination. With three
         -- views it also has to cycle rather than toggle.
-        text = free and _("Zoom only")
-            or (window and _("Pan & zoom") or _("Cropped panels")),
+        text = free and _("Free View")
+            or (window and _("Pan & Zoom") or _("Panel Cut")),
         callback = function()
             viewer:meguruCycleView()
         end,

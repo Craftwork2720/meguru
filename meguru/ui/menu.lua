@@ -434,12 +434,12 @@ function Menu.addReaderItems(plugin, menu_items)
     settings[#settings + 1] = {
         text_func = function()
             return ({
-                crop = _("Panel view: Cropped panels"),
-                window = _("Panel view: Pan & zoom"),
-                zoom = _("Panel view: Zoom only"),
+                crop = _("Panel view: Panel Cut"),
+                window = _("Panel view: Pan & Zoom"),
+                zoom = _("Panel view: Free View"),
             })[Reader.panelViewMode()]
         end,
-        help_text = _("Cropped panels shows each panel on its own. Pan & zoom keeps the whole page and moves a window over it, one panel at a time. Zoom only drops the panels entirely: the page, with pinch and drag, and no page turning."),
+        help_text = _("Panel Cut shows each panel on its own. Pan & Zoom keeps the whole page and moves a window over it, one panel at a time. Free View drops the panels entirely: the page, with pinch and drag, and no page turning."),
         keep_menu_open = true,
         callback = function(touchmenu_instance)
             Settings.set("panel_view", ({

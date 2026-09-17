@@ -592,8 +592,11 @@ call may throw, or a viewer is left on the stack while the caller is told the op
 **A long-press opens one of two views, and the preference picks which.** Cropped — the
 panels cut out of the page, each its own image, quad-masked. Or *window*: the page
 stays whole and a rectangle moves over it at one fixed zoom, anchored to the panel's
-edges. `Panel view` is the row; `meguru/settings.lua`'s `panel_view` is the value, and
-**window is the default** — a choice rather than a measurement: it shows the page as it
+edges. `Panel view` is the row; `meguru/settings.lua`'s `panel_view` is the value. **The row
+names the three views `Panel Cut`, `Pan & Zoom` and `Free View`**; this document calls them the
+cropped view, the window view and the free view, and they are the same three — the label is what
+a reader reads and the prose is what the code is called, so neither is a rename of the other.
+**Window is the default** — a choice rather than a measurement: it shows the page as it
 is, so a panel the detector merged, or a border it read wrongly, still shows the artwork
 that is there, at the price of a strip of the neighbour at the window's edge, where the
 cropped view would have cut it away. A *refused* page ignores the preference, because a
@@ -744,9 +747,9 @@ The constant is a guess at where a reader stops noticing the shrink and starts w
 zoom, and it is the one number to move if that judgement is wrong. **Zero switches the whole
 mechanism off**, which is what to reach for first if a page ever looks wrong here.
 
-**The row has two shapes, one per view, and both carry the view switch.** *Pan & zoom*
-holds `[Pan & zoom] [-] [1.7x] [+] [Close]`; *cropped panels* keeps stock's three and gains
-the switch in front — `[Cropped panels] [Original size] [Rotate] [Close]`. **The switch's
+**The row has two shapes, one per view, and both carry the view switch.** *Pan & Zoom*
+holds `[Pan & Zoom] [-] [1.7x] [+] [Close]`; *Panel Cut* keeps stock's three and gains the
+switch in front — `[Panel Cut] [Original size] [Rotate] [Close]`. **The switch's
 label names the view the reader is in**, not the one the press leads to: it is the shape
 the zoom button beside it already has (that one shows the level it is on) and the shape
 the menu's *Panel view* row has, so the button, the row and the setting all name the same

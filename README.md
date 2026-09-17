@@ -54,15 +54,16 @@ Everything below applies whether the book came from your device or from a stream
 > Tap a setting to apply it to the book you're reading. Long-press it to make
 > it the default for every new book Meguru opens.
 
-Panel zoom is Meguru's own, on by default for the books it opens (*Settings* →
-*Panel zoom in Meguru books*). It comes in three views, one switch apart (*Settings*
-→ *Panel view*): **Cropped panels** cuts each panel out of the page and shows it by
-itself; **Pan & zoom** keeps the whole page and moves a window over it, one panel at a
-time; and **Zoom only** drops the panels altogether — the page, with pinch and drag and
-no page turning, for reading a page rather than following its panels. In the two window
-views a middle tap brings up a button row whose first button is the view and whose second
-is the zoom — tap it to step through 1.4×/1.7×/1.9× (or 1.5×/2×/2.5× in
-Zoom only), and each view remembers its own zoom for the next page and the next book.
+Panel zoom is Meguru's own, on for the books it opens: a long-press shows the page's panels in
+reading order, and a book you would rather it left alone is switched off with KOReader's own
+*⋮ → Panel zoom (manga/comic)* row. It comes in three views, one switch apart (*Settings* →
+*Panel view*): **Panel Cut** cuts each panel out of the page and shows it by itself; **Pan &
+Zoom** keeps the whole page and moves a window over it, one panel at a time; and **Free View**
+drops the panels altogether — the page, with pinch and drag and no page turning, for reading a
+page rather than following its panels. In the two window views a middle tap brings up a button
+row whose first button is the view and whose second is the zoom — tap it to step through
+1.4×/1.7×/1.9× (or 1.5×/2×/2.5× in Free View), and each view remembers its own zoom for
+the next page and the next book.
 
 ## Opening `.cbz` files
 
