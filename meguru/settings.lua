@@ -70,13 +70,14 @@ local DEFAULTS = {
     -- How close the window view sits: a magnification over fit-to-screen, so 1 is a
     -- whole page on the screen and 2 is half of one. It is what decides how many
     -- stops a panel takes — see `meguru/viewport` — and it is one number for
-    -- everything rather than a per-book answer, like the two rows above it.
+    -- everything rather than a per-book answer, like the two settings above it.
     --
-    -- 1.7 by default: the middle of the three the menu offers, and the one that
-    -- leaves a typical 1600x2400 scan rendering at about 1.16 screen pixels per page
-    -- pixel — a mild magnification of the file rather than the 1.30 of the 1.9 above
-    -- it. A reader who wants the file's own pixels exactly has *Original size* in the
-    -- viewer's button row, which is not a level and so is not one of these.
+    -- **Set from the viewer's own button row, not from a menu row**, so the reader
+    -- sees the page change as they change it. This is only the store: `ui/reader`
+    -- reads it and hands the number to the view, and `ui/panelzoom` writes it back
+    -- when the button cycles. 1.7 is the middle of the three levels, and the level
+    -- that leaves a typical 1600x2400 scan rendering at about 1.16 screen pixels per
+    -- page pixel — a mild magnification of the file rather than 1.9's 1.30.
     panel_zoom_level  = 1.7,
 
     -- Whether the one-time claim of `.cbz` by `meguru/association` has been made.

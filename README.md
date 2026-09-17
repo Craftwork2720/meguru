@@ -58,9 +58,9 @@ Panel zoom is Meguru's own, on by default for the books it opens (*Settings* →
 *Panel zoom in Meguru books*). It comes in two views, one switch apart (*Settings*
 → *Panel view*): **Cropped panels** cuts each panel out of the page and shows it by
 itself, and **Pan & zoom** keeps the whole page and moves a window over it, one
-panel at a time. How close that window sits is a choice too (*Panel zoom level*:
-1.4×, 1.7×, 1.9×), and inside the viewer *Original size* shows the file's own
-pixels — one page pixel to one screen pixel, nothing interpolated.
+panel at a time. In Pan & zoom a middle tap brings up a button row whose first
+button is that window's zoom — tap it to step through 1.4×, 1.7× and 1.9×, and the
+choice is remembered for the next page and the next book.
 
 ## Opening `.cbz` files
 

@@ -15,17 +15,12 @@ a requested pixel size.
 
 ## The zoom, and why it is anchored to the page
 
-The zoom is **screen pixels per page pixel**, and the caller passes it in. There are
-two ways to arrive at it and they are not the same kind of thing:
-
-* a **level** — 1.4, 1.7, 1.9 — is a magnification over *fit-to-screen*, so the scale
-  is `fitScale(dims, screen) * level`. One number for the whole mode rather than per
-  panel or per page, because a zoom that moved with the layout would make "one more
-  click" mean something different on every page;
-* **`FILE_SCALE`** is one page pixel to one screen pixel, which is what a reader means
-  by original size. It magnifies nothing, which is why it is a constant beside the fit
-  rather than a fourth level — and it is why the window under it is a screenful of the
-  page's own pixels, with no interpolation anywhere in the path.
+The zoom is **screen pixels per page pixel**, and the caller passes it in: a *level* —
+1.4, 1.7, 1.9 — is a magnification over fit-to-screen, so the scale is
+`fitScale(dims, screen) * level`. One number for the whole mode rather than per panel
+or per page, because a zoom that moved with the layout would make "one more click"
+mean something different each time. Which level is the reader's, and they say so from
+the button row inside the viewer; this module neither stores nor chooses it.
 
 What the scale decides is how many stops a panel takes. A panel never wider than
 the window is one stop, centred; one too wide for it is two, its two edges; one too
@@ -69,11 +64,6 @@ geometry never uses it.
 --]]
 
 local Viewport = {}
-
--- One page pixel to one screen pixel: what "original size" means, and the reason the
--- window becomes a screenful of the page rather than a fraction of it. Not a level —
--- the levels below are magnifications over the fit, and this magnifies nothing.
-Viewport.FILE_SCALE = 1
 
 -- The scale that fits a whole page onto this screen: the `1` of "1.7x fit".
 function Viewport.fitScale(dims, screen)

@@ -1854,39 +1854,43 @@ pixels: the key formats the rectangle with `%d`, so a fractional window would be
 under a key naming a rectangle it was not rendered from, and two windows a fraction
 apart would share a tile. Rounding is what makes the render-path log line truthful too.
 
-**The zoom is a scale, and two different things arrive at it.** Screen pixels per page
-pixel is the one number that expresses both a *level* — 1.4, 1.7, 1.9, a magnification
-over fit-to-screen and so `fitScale * level` — and **original size**, which is one page
-pixel to one screen pixel and magnifies nothing at all. That is why `Viewport` has no
-zoom constant of its own: the level comes from the reader (*Panel zoom level*), and 1:1
-from the button inside the viewer.
+**The zoom is a scale, and it is the one number that had to change shape.** `Viewport`
+used to hold a constant of its own; it now takes *screen pixels per page pixel* from its
+caller, because that is what a level is once it stops being hardcoded:
+`fitScale(dims, screen) * level`, with the level the reader's. Nothing in the geometry
+stores or chooses it, and there is no constant left to move by accident.
 
 What the scale decides is how many stops a panel takes — one for a panel the window
 covers, two for one too big in one axis, four for one too big in both — so the level is
 not cosmetic. Measured on a 1600x2400 page against a 1236x1648 screen: 1.4x covers
-1286x1714 page pixels, 1.7x 1059x1412, 1.9x 947x1263, and the tile is the screen's
-pixels at every one of them. The default is **1.7**, the middle of the three: a typical
-page then renders at about 1.16 screen pixels per page pixel, a mild magnification of
-the file rather than the 1.30 that 1.9 asks for.
+1286x1714 page pixels, 1.7x 1059x1412, 1.9x 947x1263, and the render is the screen's
+pixels at every one of them, to within a pixel or two — the window is rounded to whole
+page pixels (the tile key names it), and that rounding times the scale is the residual.
+It is under a pixel until the scale passes 1, which is a page smaller than the screen.
+The default is **1.7**, the middle of the three: a typical page then renders at about
+1.16 screen pixels per page pixel, a mild magnification of the file rather than the 1.30
+that 1.9 asks for.
 
-**Original size is a re-open rather than a viewer scale, and stock's button had to be
-taken over for it to mean anything.** Stock's Scale/Original-size callback sets the
-*viewer's* scale factor — one image pixel to one screen pixel — and in this view every
-step is already a screen-sized render shown at best fit, so the button changed nothing
-a reader could see while its label promised the file's own pixels. What it does now is
-put the *window* on the file's scale: the window becomes a screenful of page pixels
-(1236x1648 of them, on the page above) and the tile comes back 1:1, with no
-interpolation anywhere on the path. The switch is a close-and-reopen rather than
-surgery on the running viewer, because the reader's place is a *point* on the page —
-the middle of the view they are looking at — and `PanelZoom.open` already knows how to
-open at a point: centre on it and clamp it into the panel, which is the rule a
-long-press gets. Two consequences are worth knowing. A page *smaller* than the screen
-is the one case where the tile is smaller than the screen, and there the viewer is told
-`scale_factor = 1` so the tile is drawn as it is — best fit would magnify exactly the
-pixels the button exists to show. And because a window step is always at its natural
-size, `onSwipe`'s gate is open in this view whatever that factor says: leaving stock's
-test alone would make a horizontal swipe pan a picture that already fills the screen —
-which is to say, do nothing — and the steps after the first unreachable by swipe.
+**The zoom is chosen from the viewer's own button row, and stock's row had to be
+rebuilt to hold it.** Stock's row is Scale/Original size, Rotate, Close, and in this
+view two of the three mean nothing. *Scale* sets the *viewer's* scale factor, and every
+step here is already a screen-sized render shown at best fit, so it changed nothing
+while its label promised something else; *Rotate* turns a picture, and nothing turns in
+this view — a window is the screen's shape, and a panel too wide for it is walked side to
+side. So the row is rebuilt holding the zoom and Close, and what the reader gains is the
+level right where they can see what it does: tapping it cycles 1.4, 1.7, 1.9 and writes
+the preference, so the next page, the next book and the next start keep it. That is why
+there is no menu row for the level — the choice moved into the viewer, the store did not,
+and `ui/reader` still reads it and hands the number in.
+
+Two details of the rebuild are load-bearing. Stock builds the table inside `init` and has
+no way to take a button out of one, so the table and its container are replaced whole —
+both stock's own widgets, with stock's own shape. And **`update` re-letters the two
+buttons it expects by id, and does not check that they are there**, so a row without them
+is a nil call inside a paint: they are answered by seeding `button_by_id` — the map those
+lookups read — with buttons that are not in the row at all. None of stock's code is
+patched, and if the table is not where it was the row stays stock's and a `warn` says so
+once, the way the rotation angle does.
 
 **The chain is a simulation of the forward gesture, not a list per panel.** Where the
 next step lands depends on what is *already on screen*, not only on which panel the
@@ -2674,14 +2678,14 @@ Each step must pass before the next:
     *both* axes, where it must take **four** passes, one per corner, and the log's step
     count must say four. A panel **taller** than the window takes two passes and the
     next panel is not reached until its bottom edge has been shown, which is the half
-    of this that no screenshot will show if it goes missing. Then the level: *Panel zoom
-    level* on 1.4×, 1.7× and 1.9× must each change how much of the page the window
-    covers — narrower as the number rises — with the step count following it, and the
-    image staying sharp on all three. Then *Original size*, from the viewer's button row
-    (a middle tap reveals it): the view must show the **file's own pixels** — one page
-    pixel to one screen pixel, so no softness under a pinch, and on a page smaller than
-    the screen the picture must come back at its true size in the middle rather than
-    filled out to the edges. Pressing it again must return to the level. Then the skip:
+    of this that no screenshot will show if it goes missing. Then the level, which lives
+    in the viewer's button row rather than the menu (a middle tap reveals it): tapping the
+    `1.7x` button must cycle 1.4 / 1.7 / 1.9, change how much of the page the window
+    covers — narrower as the number rises — with the step count following it, and
+    **remember the choice**, so the next page, the next book and the next start are at the
+    level the reader landed on. The row must hold the zoom and *Close* and nothing else: a
+    **Scale** or **Rotate** button in the window view is the bug, since neither means
+    anything there. Then the skip:
     on a page
     with small panels beside a full-height one, position the window so they are all
     inside it and press forward — **one press must pass all of them** and land on the

@@ -50,10 +50,17 @@ turns, and a new viewer opens on panel 1 (or on the previous page's last panel,
 going back). See `meguruHandoff` for why the order inside that is what it is.
 --]]
 
+local _ = require("gettext")
+
+local Button = require("ui/widget/button")
+local ButtonTable = require("ui/widget/buttontable")
 local CanvasContext = require("document/canvascontext")
+local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local Event = require("ui/event")
+local Geom = require("ui/geometry")
 local ImageViewer = require("ui/widget/imageviewer")
+local Settings = require("meguru/settings")
 local UIManager = require("ui/uimanager")
 local Viewport = require("meguru/viewport")
 local logger = require("logger")
@@ -389,18 +396,11 @@ end
 -- Once the reader has pinched in, a horizontal drag is how they move around the panel
 -- they are looking at, and taking that away to change panels would make zooming
 -- useless. That is stock's own precedent for the swipe that closes the viewer, which
--- is gated on the same condition.
---
--- **In the window view the step is always at its natural size**, so the gate is open
--- there whatever `scale_factor` says: a step is the screen's worth of pixels, or the
--- file's own under Original size on a page smaller than the screen, and neither is a
--- magnification the reader asked for. Leaving stock's test alone would have made a
--- horizontal swipe pan a picture that exactly fills the screen — which is to say,
--- do nothing — and the steps after the first unreachable by swipe.
+-- is gated on the same condition — and it holds in the window view too: a pinch there
+-- magnifies the tile the reader is looking at, and panning it is what they asked for.
 function PanelViewer:onSwipe(arg, ges)
     local direction = ges.direction
-    local natural = self.scale_factor == 0 or (self.view and self.view.window)
-    if natural and (direction == "west" or direction == "east") then
+    if self.scale_factor == 0 and (direction == "west" or direction == "east") then
         local forward = (self.mode == "manga") and "east" or "west"
         if direction == forward then
             self:onShowNextImage()
@@ -460,12 +460,11 @@ function PanelViewer:meguruHandoff(direction)
     -- The view travels for the third time and for the same reason — and with one
     -- part dropped: the tap that opened *this* page says nothing about the next
     -- one, so a fresh page starts at its first panel's own arrival rather than
-    -- centred on a point of a page nobody is looking at. What a reader *did* choose
-    -- travels with it: the zoom level, and whether they are at the file's own pixels.
+    -- centred on a point of a page nobody is looking at. The level the reader chose
+    -- travels with it, so a page boundary does not quietly put the zoom back.
     local view = self.view and {
         window = self.view.window,
         level = self.view.level,
-        file = self.view.file,
     } or nil
     UIManager:tickAfterNext(function()
         local ok, err = pcall(function()
@@ -521,69 +520,127 @@ function PanelViewer:onCloseWidget()
     self:meguruRelease(self._images_list_cur)
 end
 
--- Put the file's own pixels on screen, or go back to the level the reader chose.
+-- The levels the button cycles, in the order it cycles them. Written here and read by
+-- nothing else: the preference stores whichever one the reader landed on, and the
+-- geometry is handed the scale that comes of it.
+local ZOOM_LEVELS = { 1.4, 1.7, 1.9 }
+
+local function levelAfter(level)
+    for i = 1, #ZOOM_LEVELS do
+        if ZOOM_LEVELS[i] == level then
+            return ZOOM_LEVELS[i % #ZOOM_LEVELS + 1]
+        end
+    end
+    return ZOOM_LEVELS[1]
+end
+
+-- Move the zoom on by one level, and remember it.
 --
--- **In the window view, stock's Scale/Original-size button does nothing, and its
--- label says otherwise.** Stock's callback sets the *viewer's* scale factor — one
--- image pixel per screen pixel — and every step here is already a screen-sized render
--- shown at best fit, so the button changes nothing a reader can see. What "original
--- size" should mean is the file's pixels, and that is not a viewer scale at all but a
--- *render* scale: the window becomes a screenful of page pixels and the tile comes
--- back 1:1, with no interpolation anywhere along the way.
+-- **The remembered part is the whole point.** The level is a preference, so a reader
+-- who likes 1.9 gets 1.9 on the next page, the next book and the next start — and
+-- setting it from here rather than from a menu row is what lets them see what it does
+-- while looking at the page it does it to. The value is written through
+-- `meguru/settings` directly because it is a plain preference with no cascade behind
+-- it; the *reading* side is still `ui/reader`'s, which passes the number in.
 --
--- So the switch is a re-open rather than surgery on the running viewer. The reader's
--- place is a point on the page — the middle of the view they are looking at — and
--- `PanelZoom.open` already knows how to open at a point: it centres on it and clamps
--- it into the panel, which is the rule a long-press gets. Re-opening also hands the
--- old steps' tiles back the way leaving a step does, and what it costs is a repaint
--- nobody minds, because they pressed a button.
-function PanelViewer:meguruToggleFileScale()
+-- The switch itself is a close-and-reopen, the same shape the rest of this file uses
+-- for anything that changes the step list: the reader's place is a *point* on the page
+-- — the middle of the view they are looking at — and `PanelZoom.open` already knows
+-- how to open at one.
+function PanelViewer:meguruCycleZoomLevel()
     local view = self.view
     local cur = self.steps and self.steps[self._images_list_cur]
-    -- Everything the new viewer needs, read before anything is closed: the viewer
-    -- this is called from is gone by the time the next line's work is done, which is
-    -- the same reason `meguruHandoff` reads `mode` and `rotate` outside its tick.
+    -- Read before anything is closed: the viewer this is called from is gone by the
+    -- time the next statement's work is done, which is the same reason `meguruHandoff`
+    -- reads `mode` and `rotate` outside its tick.
     local panels = self.panel_rects
     local ui, page = self.ui, self.page
     local mode, rotate = self.mode, self.rotate
     if not (view and view.window and cur and panels and ui) then
         return
     end
+    local level = levelAfter(view.level)
+    Settings.set("panel_zoom_level", level)
     UIManager:close(self)
     PanelZoom.open(ui, page, panels, cur.panel, mode, rotate, {
         window = true,
-        level = view.level,
-        file = not view.file,
+        level = level,
         tap = { x = cur.x + cur.w / 2, y = cur.y + cur.h / 2 },
     })
 end
 
--- Hand the viewer's Scale/Original-size button the job its label describes.
+-- The window view's own button row: the zoom, and Close.
 --
--- The button is built inside `ImageViewer:init` as a closure over the viewer, so
--- there is nothing to override — it has to be replaced once the widget exists. That
--- is the same kind of seam `_new_image_wg` uses for the rotation angle, and it wants
--- the same kind of restraint: a button that cannot be found leaves stock's callback
--- standing, so the button goes back to being a no-op. The warning is what makes that
--- checkable rather than silent, once per process, like the rotation one.
-local file_scale_warned = false
+-- **Stock's row is three buttons and two of them mean nothing here.** *Scale /
+-- Original size* sets the *viewer's* scale factor — one image pixel to one screen
+-- pixel — and every step in this view is already a screen-sized render shown at best
+-- fit, so it changed nothing while its label promised something else. *Rotate* turns a
+-- picture, and nothing turns here: a window is the screen's shape, and a panel too wide
+-- for it is walked side to side. What a reader of this view actually wants to change
+-- is how close the window sits, so that is what the row holds, and it holds it where
+-- they can see what it does.
+--
+-- Stock builds the table inside `init` and has no way to remove a button from one, so
+-- the table and its container are rebuilt — both stock's own widgets, with stock's own
+-- shape. The one thing that needs care is that **`update` re-letters the two buttons it
+-- expects by id, and does not check that they are there**: a row without them is a nil
+-- call inside a paint. They are answered with buttons that are not in the row at all —
+-- `button_by_id` is the map those lookups read, so seeding it is enough, and none of
+-- stock's code is patched. Guarded like the rest of this file: if the table is not
+-- where it was, the row stays stock's and the warning says so once.
+local buttons_warned = false
 
-local function installFileScaleButton(viewer)
-    local buttons = viewer.button_table
-    local button = buttons and type(buttons.getButtonById) == "function"
-        and buttons:getButtonById("scale")
-    if type(button) == "table" then
-        button.callback = function()
-            viewer:meguruToggleFileScale()
+local function installWindowButtons(viewer)
+    if type(viewer.button_table) ~= "table" then
+        if not buttons_warned then
+            buttons_warned = true
+            logger.warn("Meguru: the viewer's button table was not found; "
+                .. "the window view keeps stock's Scale and Rotate buttons")
         end
-        return true
+        return false
     end
-    if not file_scale_warned then
-        file_scale_warned = true
-        logger.warn("Meguru: the viewer's Scale/Original-size button was not found; "
-            .. "Original size does nothing in the window view")
-    end
-    return false
+    -- `or 1` for the same reason the scale's own arithmetic uses it: a caller that
+    -- hands no level means fit-to-screen, and the label should say what the view does.
+    local level = (viewer.view and viewer.view.level) or 1
+    local table_ = ButtonTable:new{
+        width = viewer.width - 2 * viewer.button_padding,
+        buttons = {
+            {
+                {
+                    id = "zoom_level",
+                    text = tostring(level) .. "×",
+                    callback = function()
+                        viewer:meguruCycleZoomLevel()
+                    end,
+                },
+                {
+                    id = "close",
+                    text = _("Close"),
+                    callback = function()
+                        viewer:onClose()
+                    end,
+                },
+            },
+        },
+        zero_sep = true,
+        show_parent = viewer,
+    }
+    local sink = Button:new{
+        text = "",
+        width = 0,
+        callback = function() end,
+    }
+    table_.button_by_id.scale = sink
+    table_.button_by_id.rotate = sink
+    viewer.button_table = table_
+    viewer.button_container = CenterContainer:new{
+        dimen = Geom:new{
+            w = viewer.width,
+            h = table_:getSize().h,
+        },
+        table_,
+    }
+    return true
 end
 
 -- Show the steps of one page, starting at `index`.
@@ -626,8 +683,7 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         -- one number that expresses both a level and 1:1.
         local dims
         dims, screen = doc:getPageDims(page), CanvasContext:getSize()
-        local scale = opts.file and Viewport.FILE_SCALE
-            or Viewport.fitScale(dims, screen) * (opts.level or 1)
+        local scale = Viewport.fitScale(dims, screen) * (opts.level or 1)
         steps, start = Viewport.steps(panels, dims, screen,
             index and { panel = index, x = opts.tap and opts.tap.x,
                         y = opts.tap and opts.tap.y },
@@ -681,24 +737,9 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         fullscreen = true,
         buttons_visible = false,
         rotated = rotates[1] or false,
-        -- Stock's label state for the Scale/Original-size button: "Original size"
-        -- while the view is fitted, "Scale" once it is at 1:1. That is stock's own
-        -- meaning of the field and what the button's text is drawn from, so it is
-        -- set here rather than left to be computed from a scale factor that the
-        -- window view never changes.
-        _scale_to_fit = not (window and opts.file),
-        -- **Best fit is only 1:1 when the tile happens to be the screen's size.** A
-        -- window under Original size is a screenful of the page's own pixels, so on
-        -- a page at least as big as the screen the two coincide and best fit is
-        -- exact. On a page *smaller* than the screen the tile is that page's pixels
-        -- and best fit would magnify them — which is the interpolation the button
-        -- exists to remove — so the viewer is told to draw the tile as it is. The
-        -- scale factor is stock's, and 1 is its other pre-defined value.
-        scale_factor = (window and opts.file and steps[1]
-            and (steps[1].out_w ~= screen.w or steps[1].out_h ~= screen.h)) and 1 or 0,
     }
     if window then
-        installFileScaleButton(viewer)
+        installWindowButtons(viewer)
     end
 
     -- `show` dispatches the `Show` event, which is where the pre-warm is armed;

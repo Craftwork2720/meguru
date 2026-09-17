@@ -729,10 +729,10 @@ local function installPanelZoom(ui)
             -- already the page point — `screenToPageTransform` above — so nothing
             -- is converted again here.
             tap = { x = pos.x, y = pos.y },
-            -- The magnification over fit-to-screen, resolved here because the view
-            -- has no business reading preferences: it is told the number, like the
-            -- direction and the mode. `false` for original size is the viewer's own
-            -- button and not a value of this.
+            -- The magnification over fit-to-screen, read here and written back by the
+            -- viewer's own button: the *store* is the preference, and the view is
+            -- handed the number rather than the preference's name, like the direction
+            -- and the mode beside it.
             level = Settings.get("panel_zoom_level"),
         }
         local ok_show, shown = pcall(PanelZoom.open, ui, pos.page, panels, start,
