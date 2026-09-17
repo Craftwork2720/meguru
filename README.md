@@ -48,7 +48,7 @@ Everything below applies whether the book came from your device or from a stream
 | Auto-rotate | Wide double-page spreads rotate the screen to fit |
 | Night mode | Keeps colours natural instead of a harsh negative |
 | Hidden status bar | Removes clutter while you read |
-| Panel zoom | Long-press to read panel by panel — panels cropped, a window over the whole page, or free pinch-and-drag |
+| Panel reading | Long-press for panel-by-panel: **Panel Cut**, **Pan & Zoom**, or **Free View** |
 
 > [!TIP]
 > Tap a setting to apply it to the book you're reading. Long-press it to make
