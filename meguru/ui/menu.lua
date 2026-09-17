@@ -466,6 +466,39 @@ function Menu.addReaderItems(plugin, menu_items)
                 end
             end,
         }
+        -- The zoom, and it belongs beside the view rather than in it: what it changes
+        -- is how much of the page the window covers, so it is the difference between
+        -- one stop and two on a panel too big for it. Three values, cycled on tap,
+        -- with the number in the text — the shape the rows above it use, and for the
+        -- same reason: a tick would name neither the value nor the other two.
+        --
+        -- Nothing here is *Original size*: that is 1:1 with the file rather than a
+        -- magnification of the fit, so it is not one of these values but the button
+        -- inside the viewer. See `PanelViewer:meguruToggleFileScale`.
+        settings[#settings + 1] = {
+            text_func = function()
+                return T(_("Panel zoom level: %1×"),
+                    tostring(Settings.get("panel_zoom_level")))
+            end,
+            help_text = _("How close the Pan & zoom window sits, and so how many steps a panel takes. Original size, in the viewer's button row, is one page pixel to one screen pixel."),
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                local levels = { 1.4, 1.7, 1.9 }
+                local current = Settings.get("panel_zoom_level")
+                local next_level = levels[1]
+                for i = 1, #levels do
+                    if levels[i] == current then
+                        next_level = levels[i % #levels + 1]
+                        break
+                    end
+                end
+                Settings.set("panel_zoom_level", next_level)
+                if touchmenu_instance
+                    and type(touchmenu_instance.updateItems) == "function" then
+                    touchmenu_instance:updateItems()
+                end
+            end,
+        }
     end
 
     settings[#settings + 1] = {

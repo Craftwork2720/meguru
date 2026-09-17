@@ -1854,14 +1854,39 @@ pixels: the key formats the rectangle with `%d`, so a fractional window would be
 under a key naming a rectangle it was not rendered from, and two windows a fraction
 apart would share a tile. Rounding is what makes the render-path log line truthful too.
 
-**The zoom is 1.85, anchored to the page, and the number decides how many stops a
-panel takes.** It is the magnification over fit-to-screen, so the window covers
-`1/1.85` of the fitted page — one number for the whole mode, identical on every page
-and in every panel, because a zoom that moved with the layout would make "one more
-click" mean something different each time. What it decides is the stop count below:
-a panel the window covers is one stop, a panel too big for it in **one** axis is two,
-and one too big in **both** is four. The last is the case to keep in mind before
-touching the constant, since it is the one that grows as the zoom goes up.
+**The zoom is a scale, and two different things arrive at it.** Screen pixels per page
+pixel is the one number that expresses both a *level* — 1.4, 1.7, 1.9, a magnification
+over fit-to-screen and so `fitScale * level` — and **original size**, which is one page
+pixel to one screen pixel and magnifies nothing at all. That is why `Viewport` has no
+zoom constant of its own: the level comes from the reader (*Panel zoom level*), and 1:1
+from the button inside the viewer.
+
+What the scale decides is how many stops a panel takes — one for a panel the window
+covers, two for one too big in one axis, four for one too big in both — so the level is
+not cosmetic. Measured on a 1600x2400 page against a 1236x1648 screen: 1.4x covers
+1286x1714 page pixels, 1.7x 1059x1412, 1.9x 947x1263, and the tile is the screen's
+pixels at every one of them. The default is **1.7**, the middle of the three: a typical
+page then renders at about 1.16 screen pixels per page pixel, a mild magnification of
+the file rather than the 1.30 that 1.9 asks for.
+
+**Original size is a re-open rather than a viewer scale, and stock's button had to be
+taken over for it to mean anything.** Stock's Scale/Original-size callback sets the
+*viewer's* scale factor — one image pixel to one screen pixel — and in this view every
+step is already a screen-sized render shown at best fit, so the button changed nothing
+a reader could see while its label promised the file's own pixels. What it does now is
+put the *window* on the file's scale: the window becomes a screenful of page pixels
+(1236x1648 of them, on the page above) and the tile comes back 1:1, with no
+interpolation anywhere on the path. The switch is a close-and-reopen rather than
+surgery on the running viewer, because the reader's place is a *point* on the page —
+the middle of the view they are looking at — and `PanelZoom.open` already knows how to
+open at a point: centre on it and clamp it into the panel, which is the rule a
+long-press gets. Two consequences are worth knowing. A page *smaller* than the screen
+is the one case where the tile is smaller than the screen, and there the viewer is told
+`scale_factor = 1` so the tile is drawn as it is — best fit would magnify exactly the
+pixels the button exists to show. And because a window step is always at its natural
+size, `onSwipe`'s gate is open in this view whatever that factor says: leaving stock's
+test alone would make a horizontal swipe pan a picture that already fills the screen —
+which is to say, do nothing — and the steps after the first unreachable by swipe.
 
 **The chain is a simulation of the forward gesture, not a list per panel.** Where the
 next step lands depends on what is *already on screen*, not only on which panel the
@@ -1876,10 +1901,10 @@ the reader will actually visit:
   edge at the window's edge, then — if it still does not fit — the panel's end edge
   there. A panel that fits in an axis is *centred* on that axis, since a window larger
   than the panel cannot be flushed to anything;
-- the entry is a long-press *point*: that panel's arrival view is **replaced** by a view
-  centred on the finger and clamped to the panel. Replaced rather than inserted, which
-  is what keeps the steps before the touched panel reachable — a tap in the middle of a
-  page must not cut off everything above it.
+- the entry is a long-press *point*: the view is centred on the finger and clamped to
+  the panel, and it *takes the place* of one of that panel's own views rather than being
+  inserted beside them — see the rule further down for which, and why the steps before
+  the touched panel survive it.
 
 **There is no stage to keep and no "read" flag to set.** A skipped panel is one the
 chain never stopped at; the reader's place is the step index. State that nothing reads
@@ -2649,7 +2674,15 @@ Each step must pass before the next:
     *both* axes, where it must take **four** passes, one per corner, and the log's step
     count must say four. A panel **taller** than the window takes two passes and the
     next panel is not reached until its bottom edge has been shown, which is the half
-    of this that no screenshot will show if it goes missing. Then the skip: on a page
+    of this that no screenshot will show if it goes missing. Then the level: *Panel zoom
+    level* on 1.4×, 1.7× and 1.9× must each change how much of the page the window
+    covers — narrower as the number rises — with the step count following it, and the
+    image staying sharp on all three. Then *Original size*, from the viewer's button row
+    (a middle tap reveals it): the view must show the **file's own pixels** — one page
+    pixel to one screen pixel, so no softness under a pinch, and on a page smaller than
+    the screen the picture must come back at its true size in the middle rather than
+    filled out to the edges. Pressing it again must return to the level. Then the skip:
+    on a page
     with small panels beside a full-height one, position the window so they are all
     inside it and press forward — **one press must pass all of them** and land on the
     next panel the window does not cover, with the `-d` line showing a step count

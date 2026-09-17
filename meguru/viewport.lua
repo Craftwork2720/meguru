@@ -15,17 +15,23 @@ a requested pixel size.
 
 ## The zoom, and why it is anchored to the page
 
-`ZOOM` is the magnification over fit-to-screen: at 1.85 the window covers
-`1/1.85` of the *fitted* page, so the reader is about 1.85 times closer than they
-were. One number for the whole mode — not per panel, not per page, not adjusted to
-the panel in front of them — because a zoom that moved with the layout would make
-"one more click" mean something different on every page.
+The zoom is **screen pixels per page pixel**, and the caller passes it in. There are
+two ways to arrive at it and they are not the same kind of thing:
 
-What the number decides is how many stops a panel takes. A panel never wider than
+* a **level** — 1.4, 1.7, 1.9 — is a magnification over *fit-to-screen*, so the scale
+  is `fitScale(dims, screen) * level`. One number for the whole mode rather than per
+  panel or per page, because a zoom that moved with the layout would make "one more
+  click" mean something different on every page;
+* **`FILE_SCALE`** is one page pixel to one screen pixel, which is what a reader means
+  by original size. It magnifies nothing, which is why it is a constant beside the fit
+  rather than a fourth level — and it is why the window under it is a screenful of the
+  page's own pixels, with no interpolation anywhere in the path.
+
+What the scale decides is how many stops a panel takes. A panel never wider than
 the window is one stop, centred; one too wide for it is two, its two edges; one too
 wide in *both* axes is four, its four corners — see `positions`. The last is the one
-to keep in mind when changing `ZOOM`: the closer in, the more stops a big panel
-costs, and 1.85 is what makes a page's worth of artwork arrive in two windows.
+to keep in mind when moving the scale: the closer in, the more stops a big panel
+costs.
 
 The window is shaped like the screen and clamped to the page, so on a page smaller
 than the window the request shrinks with it and the viewer letterboxes rather than
@@ -64,10 +70,15 @@ geometry never uses it.
 
 local Viewport = {}
 
--- The magnification over fit-to-screen. See the header: it is what decides how many
--- stops a panel too big for the window takes — two when it overflows one axis, four
--- when it overflows both — so moving it moves that count, and it is not a taste.
-Viewport.ZOOM = 1.85
+-- One page pixel to one screen pixel: what "original size" means, and the reason the
+-- window becomes a screenful of the page rather than a fraction of it. Not a level —
+-- the levels below are magnifications over the fit, and this magnifies nothing.
+Viewport.FILE_SCALE = 1
+
+-- The scale that fits a whole page onto this screen: the `1` of "1.7x fit".
+function Viewport.fitScale(dims, screen)
+    return math.min(screen.w / dims.w, screen.h / dims.h)
+end
 
 -- How far two window positions may differ and still count as the same place.
 -- Only positions are compared — a page's steps all share one size — and the
@@ -109,9 +120,7 @@ end
 -- than the one it was rendered from, and two windows a fraction apart would share
 -- a tile. Rounding here is also what makes the render-path log line truthful: it
 -- prints the region with `%d` too.
-local function windowFor(dims, screen)
-    local fit = math.min(screen.w / dims.w, screen.h / dims.h)
-    local scale = fit * Viewport.ZOOM
+local function windowFor(dims, screen, scale)
     return round(math.min(dims.w, screen.w / scale)),
         round(math.min(dims.h, screen.h / scale)), scale
 end
@@ -213,12 +222,12 @@ end
 -- larger than the panel — so the view stays centred where they touched, as asked.
 -- The page clamp still applies, because a touch near the page's edge would
 -- otherwise ask for a window that reaches past it.
-function Viewport.entryView(panels, dims, screen, index, x, y)
+function Viewport.entryView(panels, dims, screen, index, x, y, scale)
     local panel = panels and panels[index] and whole(panels[index])
-    if not (panel and dims and screen and x and y) then
+    if not (panel and dims and screen and x and y and scale) then
         return nil
     end
-    local w, h = windowFor(dims, screen)
+    local w, h = windowFor(dims, screen, scale)
     local view = centred(x, y, w, h, dims)
     if panel.w > w then
         view.x = clampAxis(view.x, w, panel.x, panel.x + panel.w)
@@ -238,19 +247,19 @@ end
 -- the middle of a page must not cut off everything above it — and it is why the
 -- entry is found by the panel it belongs to and not by position.
 --
--- `right_to_left` is the book's reading direction, and it is a parameter because
--- this is the one place in the plugin where direction is not already decided
--- upstream: the panel *order* comes out of the detector ordered, but which side of
--- a panel the window stops on first is this module's to know, and a manga reads
--- those the other way round. It orders the x positions and the corners of a row.
+-- `right_to_left` is the book's reading direction and `scale` is the zoom — screen
+-- pixels per page pixel, from `fitScale` times a level or from `FILE_SCALE`. Both
+-- arrive as arguments because this module decides neither: the direction is the
+-- book's and the zoom is the reader's, and nothing here has the standing to guess
+-- either.
 --
 -- Returns the step list and the index the viewer should open at, or nil when there
 -- is nothing to walk.
-function Viewport.steps(panels, dims, screen, entry, right_to_left)
-    if not (panels and #panels > 0 and dims and screen) then
+function Viewport.steps(panels, dims, screen, entry, right_to_left, scale)
+    if not (panels and #panels > 0 and dims and screen and scale) then
         return nil
     end
-    local w, h, scale = windowFor(dims, screen)
+    local w, h = windowFor(dims, screen, scale)
     local out_w = math.max(1, math.floor(w * scale + 0.5))
     local out_h = math.max(1, math.floor(h * scale + 0.5))
     local steps = {}
@@ -268,7 +277,7 @@ function Viewport.steps(panels, dims, screen, entry, right_to_left)
     for i = 1, #panels do
         local panel = whole(panels[i])
         local touched = entry and entry.panel == i
-            and Viewport.entryView(panels, dims, screen, i, entry.x, entry.y)
+            and Viewport.entryView(panels, dims, screen, i, entry.x, entry.y, scale)
         if touched then
             push(i, touched)
             cur = touched
