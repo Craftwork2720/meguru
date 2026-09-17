@@ -2095,13 +2095,13 @@ and they step from wherever the reader *is* rather than snapping to that list, s
 moves the window. The two lists are separate on purpose: Original has no level, and a stepper
 that could reach it would have to have an opinion about what half a step below it means.
 
-**And its label carries the ratio, because a x-number beside it does not say the same
-thing.** The cycle is levels, so `1.5x` and its neighbours are multiples of the fit — and
-`1.0x` among them *reads* like "original size" to anyone who has used another image viewer.
-A reader pressed to the fit, saw the page scaled to the screen, and reported that the 1:1
-stop was wrong, when what had happened was that one label was being read as the other. So
-the scale says what it is: a pinch that lands on the file's own pixels shows `Original 1:1`
-on that button, and the levels around it stay plain multiples.
+**And the scale a pinch reaches says `1x`.** The levels are multiples of the fit, so `1.5x`
+beside them means one and a half times the fitted page — while the file's own pixels are
+one page pixel to one screen pixel and cannot be written as a level at all. That is the
+scale every other image viewer calls 100%, and `1x` is the word for it; the first version
+spelled out `Original 1:1` instead, and a reader asked for the shorter one. So the row does
+hold two units, deliberately, and the reason the levels are not labelled as percentages is
+that a percentage of *what* would then need saying.
 
 **The screen is not where the page is drawn, and only the *absolute* conversions care.** The
 button row takes a strip of the screen, so the tile is drawn in what is left of it and best
@@ -2934,8 +2934,8 @@ Each step must pass before the next:
     `-` and `+` move by half a level, stop at 1x and 4x, and step from wherever the reader is
     (pinch to 2.4x, press `+`, get 2.9x ✓), while the value between them cycles
     1.5 → 2 → 2.5 → 1.5 ✓, and a **pinch** down to the file's own pixels must make that button
-    read `Original 1:1` ✓ (on a page smaller than the screen: at its true size in the middle, not
-    filled out to the edges ✓).
+    read `1×` ✓ (on a page smaller than the screen: at its true size in the middle, not filled
+    out to the edges ✓).
     A pinch to something off the list — say 2.4× — must make the button **read 2.4×** ✓, the
     **picture must change with it** ✓ (a number that moves while the page stands still is the
     callback that forgot to re-resolve `self.image`, and it is the bug this view shipped

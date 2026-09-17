@@ -643,17 +643,16 @@ local function freeStepAfter(scale, fit)
     return FREE_LEVELS[1] * fit
 end
 
--- What the zoom button says: the file's own pixels, or the magnification of the fit.
+-- What the zoom button says: `1x` for the file's own pixels, a multiple of the fit otherwise.
 --
--- **`Original 1:1` rather than `Original`, and that is not a long label for its own sake.** The
--- cycle is levels, so `1.5x` and its neighbours are multiples of the fit — and `1.0x` among them
--- *reads* like "original size" to anyone who has used another image viewer. A reader pressed to
--- the fit, saw the page scaled to the screen, and reported that the 1:1 stop was wrong, when
--- what had happened was that they were reading one label as the other. This label carries the
--- ratio, so the scale a pinch can reach says what it is.
+-- **The two are different units in one row, and that is deliberate.** The levels are levels —
+-- 1.5x is one and a half times the fitted page — while 1:1 is one page pixel to one screen
+-- pixel and cannot be written as a level at all. A reader asked for the word every other image
+-- viewer uses for that scale, and `1x` is it; the alternative, spelling out the ratio, was
+-- longer and still needed to be read.
 local function freeLabel(scale, fit)
     if math.abs(scale - 1) < 0.001 then
-        return _("Original 1:1")
+        return "1×"
     end
     return string.format("%.1f×", scale / fit)
 end
