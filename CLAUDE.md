@@ -1895,6 +1895,14 @@ the first version anchored such a panel to its start corner and then its end cor
 which covers the middle twice and leaves the other two corners **never shown at all**.
 A reader reported it, and the fix is the cross product rather than the pair.
 
+**Which axis it is changes nothing, and that is worth saying because it is the one
+asymmetry a reader would notice.** A panel **taller** than the window is walked from
+its top edge to its bottom edge, exactly as a **wider** one is walked from its left to
+its right, and the forward gesture takes both stops before the panel after it is
+reached: a panel is not left half read because it was tall rather than wide. The two
+differ in one place only — the horizontal pair swaps with the book's direction, and
+the vertical pair does not, since both kinds of book are read down the page.
+
 **The horizontal direction is a parameter, and it is the book's.** Which side of a
 panel the window stops on first, and so the order of a row's two corners, follows
 `mode` — left to right for a comic, right to left for a manga. The detector already
@@ -2639,11 +2647,14 @@ Each step must pass before the next:
     margin**, which is what anchoring to the page would show. Forward once: the panel's
     far edge arrives and the panel is done — unless it is bigger than the window in
     *both* axes, where it must take **four** passes, one per corner, and the log's step
-    count must say four. Then the skip: on a page with small panels beside a full-height
-    one, position the window so they are all inside it and press forward — **one press
-    must pass all of them** and land on the next panel the window does not cover, with
-    the `-d` line showing a step count smaller than the panel count. Back from there
-    must reach the panels *before* the one touched, not only the ones after it. Then the
+    count must say four. A panel **taller** than the window takes two passes and the
+    next panel is not reached until its bottom edge has been shown, which is the half
+    of this that no screenshot will show if it goes missing. Then the skip: on a page
+    with small panels beside a full-height one, position the window so they are all
+    inside it and press forward — **one press must pass all of them** and land on the
+    next panel the window does not cover, with the `-d` line showing a step count
+    smaller than the panel count. Back from there must reach the panels *before* the
+    one touched, not only the ones after it. Then the
     direction: in Manga mode a panel too wide for the window must be walked from its
     **right** edge to its left, and in Comic mode from left to right — the same thing
     `Manga mode` already does to the panel order. And a splash page the detector refuses
