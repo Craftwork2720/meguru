@@ -58,6 +58,15 @@ local DEFAULTS = {
     -- and was this plugin's for markers.
     panel_zoom        = true,
 
+    -- Which of the two views a long-press opens: the panels cut out of the page
+    -- and shown one at a time, or the page kept whole with a window moved over it.
+    -- `"crop"` | `"window"`, and it says nothing about *whether* there is a panel
+    -- view — that is `panel_zoom` above, and this is only reached when it is on.
+    --
+    -- Cropped by default, because it is what this plugin has always done and what
+    -- its panel geometry was measured for. See `meguru/viewport` for the other one.
+    panel_view        = "crop",
+
     -- Whether the one-time claim of `.cbz` by `meguru/association` has been made.
     -- A record rather than a preference: it says "the offer was made", not "the
     -- answer is yes", and it is what keeps turning the menu row off from being

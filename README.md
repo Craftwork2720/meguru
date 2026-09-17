@@ -48,14 +48,17 @@ Everything below applies whether the book came from your device or from a stream
 | Auto-rotate | Wide double-page spreads rotate the screen to fit |
 | Night mode | Keeps colours natural instead of a harsh negative |
 | Hidden status bar | Removes clutter while you read |
-| Panel zoom | Long-press a panel to zoom in, tap to move to the next one — read panel-by-panel |
+| Panel zoom | Long-press a panel to zoom in and read panel by panel — cropped, or with the page kept whole and a window moving over it |
 
 > [!TIP]
 > Tap a setting to apply it to the book you're reading. Long-press it to make
 > it the default for every new book Meguru opens.
 
-Panel zoom is a KOReader feature; Meguru just turns it on by default for the
-books it opens (*Settings* → *Panel zoom in Meguru books*).
+Panel zoom is Meguru's own, on by default for the books it opens (*Settings* →
+*Panel zoom in Meguru books*). It comes in two views, one switch apart (*Settings*
+→ *Panel view*): **Cropped panels** cuts each panel out of the page and shows it by
+itself, and **Pan & zoom** keeps the whole page and moves a window over it, one
+panel at a time.
 
 ## Opening `.cbz` files
 

@@ -444,6 +444,28 @@ function Menu.addReaderItems(plugin, menu_items)
                 Reader.setPanelZoom(plugin.ui, not Reader.panelZoomEnabled())
             end,
         }
+        -- The view, not whether there is one: two ways of showing the same panels
+        -- in the same order, and the state lives in the text because that is what
+        -- names it — a tick beside "Panel view" would say neither which one is on
+        -- nor what the other one is. `updateItems` is what redraws it; without the
+        -- call the row would keep the old wording until the menu was rebuilt.
+        settings[#settings + 1] = {
+            text_func = function()
+                return Reader.panelViewMode() == "window"
+                    and _("Panel view: Pan & zoom (no crop)")
+                    or _("Panel view: Cropped panels")
+            end,
+            help_text = _("Cropped panels shows each panel on its own. Pan & zoom keeps the whole page and moves a window over it, one panel at a time."),
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                Settings.set("panel_view",
+                    Reader.panelViewMode() == "window" and "crop" or "window")
+                if touchmenu_instance
+                    and type(touchmenu_instance.updateItems) == "function" then
+                    touchmenu_instance:updateItems()
+                end
+            end,
+        }
     end
 
     settings[#settings + 1] = {

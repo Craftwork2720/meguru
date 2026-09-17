@@ -69,6 +69,7 @@ meguru/
   feed.lua                reading a series feed: the rel=next walk, identity, order,
                           neighbour
   panel.lua               the panels on a page, and the order they are read in
+  viewport.lua            the window over a page, for the panel view that crops nothing
   hook.lua                runtime wraps on OPDSBrowser (sniff, "Meguru this series")
   updater.lua             GitHub releases: check for one, download it, install it
 
@@ -158,7 +159,8 @@ row's artwork has actually been found on disk.) `ui/panelzoom` requires no `megu
 as arguments, and with them the reading direction and the rotation direction, both
 as plain strings: the *domain* of those settings stays in `ui/reader` and the viewer
 is told the word. The edges that do exist between the panel modules are `ui/reader` ->
-`ui/panelzoom`, `doc/document` -> `panel`, and `panel` -> `doc/image`. `doc/document`
+`ui/panelzoom`, `doc/document` -> `panel`, `ui/panelzoom` -> `viewport`, and `panel` ->
+`doc/image`. `doc/document`
 and `ui/reader` both require `meguru/local` eagerly — it is a module of ours, it
 loads nothing expensive, and `ui/menu` reaches it through `ui/reader` rather than
 directly so the guard that answers "is this book a local one" exists once. The one
@@ -1823,7 +1825,84 @@ those need opposite fixes. `... no page (<reason>)` is the one case with nothing
 open. The stand-down is `info` — a decision, once per process. A detection or handoff
 that *throws* is `warn`, which is what `crash.log` is read for. There is deliberately
 **no** separate "panel warmed" line: the existing `panel zoom on page N, region ...
-rendered WxH` already fires once per panel render, including once per warm.
+rendered WxH` already fires once per panel render, including once per warm. The one
+line that names the *view* is the viewer's own open line — `... (mode) window view,
+step S of T` or `... (mode) cropped panels` — and the step count is deliberately not
+`K panels`: the two are the same detection and different walks, which is the whole
+point of the second view.
+
+### The other view: a window over the page
+
+**A long-press opens one of two views, and the preference picks which.** Cropped — the
+panels cut out of the page, each its own image, quad-masked. Or *window*: the page
+stays whole and a rectangle moves over it at one fixed zoom, anchored to the panel's
+edges. `Panel view` is the row; `meguru/settings.lua`'s `panel_view` is the value; a
+*refused* page ignores it, because a page the detector would not decompose is one
+whole-page rectangle and a window would cut it into a top and a bottom nobody asked to
+step through. Everything else — the detector, the reading order, `Panel.indexAt`,
+navigation, the pre-warm, the page boundary — is one implementation for both, which is
+what makes this a second view rather than a second feature.
+
+**A step is a rectangle of the page, and nothing is cut.** Where the cropped view asks
+`drawPagePart` for a panel at the region's own size, the window asks for a viewport at
+*screen* size: `tw`/`th` are two optional arguments the cropped path passes as `nil`, so
+its call is unchanged to the byte and `Panels+` — which calls `drawPagePart` directly —
+never sees them. The tile is filed under `panelTileKey` **plus its size**, because the
+same rectangle at another size is another picture and the size cannot be recovered from
+the rectangle. That is also why `meguru/viewport` rounds its windows to whole page
+pixels: the key formats the rectangle with `%d`, so a fractional window would be filed
+under a key naming a rectangle it was not rendered from, and two windows a fraction
+apart would share a tile. Rounding is what makes the render-path log line truthful too.
+
+**The zoom is 1.85, anchored to the page, and the number is a promise rather than a
+taste.** It is the magnification over fit-to-screen, so the window covers `1/1.85` of
+the fitted page — one number for the whole mode, identical on every page and in every
+panel, because a zoom that moved with the layout would make "one more click" mean
+something different each time. What it buys is arithmetic: a panel is never bigger than
+the page and two windows reach `2/1.85 = 1.08` of it in each axis, so **no panel ever
+needs a third step**. Nothing enforces that; it falls out of 1.85 < 2.
+
+**The chain is a simulation of the forward gesture, not a list per panel.** Where the
+next step lands depends on what is *already on screen*, not only on which panel the
+reader is in — so `Viewport.steps` walks the page's panels once and emits the rectangles
+the reader will actually visit:
+
+- a panel **wholly inside the window as it stands** gets **no step**. The chain does not
+  stop for it; the question moves to the panel after it, and one tap can pass several
+  small panels at once. This is the case the mode exists for on a page with a grid of
+  them beside a full-height one;
+- a panel that does not fit gets a step, anchored to **its own edge**: the panel's start
+  edge at the window's edge, then — if it still does not fit — the panel's end edge
+  there. A panel that fits in an axis is *centred* on that axis, since a window larger
+  than the panel cannot be flushed to anything;
+- the entry is a long-press *point*: that panel's arrival view is **replaced** by a view
+  centred on the finger and clamped to the panel. Replaced rather than inserted, which
+  is what keeps the steps before the touched panel reachable — a tap in the middle of a
+  page must not cut off everything above it.
+
+**There is no stage to keep and no "read" flag to set.** A skipped panel is one the
+chain never stopped at; the reader's place is the step index. State that nothing reads
+is state that drifts, and the two things the design was asked to store — which stage of
+a panel, which panels are read — are both already implied by the rectangle on screen.
+
+**Two things it does not do, both named rather than hidden.** A panel **bigger than the
+window in both axes is covered diagonally** — start corner, then end corner — so the
+middle is seen twice and the off-diagonal corners not at all. That is what "at most two
+steps" means once the zoom is fixed below 2, and it is the price of the mode; a panel
+that overflows in one axis only is covered completely. And the horizontal axis goes
+**left to right even in manga**, which is the one place in this plugin where the book's
+direction does not decide the direction of travel: a wide panel's two steps are ordered
+by the spec this was built to, and mirroring them for `mode == "manga"` is one condition
+in `Viewport`'s two anchors if a reader ever asks.
+
+**What it reuses, unchanged.** `ImageViewer` and its four overrides: with the image
+screen-sized and best fit still `scale_factor == 0`, `onSwipe`'s gate, `onTap`'s thirds,
+the hardware keys and the close contract all behave exactly as they do for a panel. The
+buffers are the document's tiles (`image_disposable = false`, released on the step just
+left), so the pre-warm is the same one call the viewer is about to make, and
+`images_keep_pan_and_zoom = false` gives "a pinch lasts one step" for free. The rotation
+machinery is not used at all — a window is the screen's shape, so there is no wide-versus-
+tall decision to make, and a panel too wide for it is walked in x instead.
 
 ## Reading options and the menus
 
@@ -1866,8 +1945,9 @@ Invariants when touching these rows:
   so both fields are usable in these rows. `text_func` renders on either, which is why
   the destination rows carry their state in the text rather than in a `mandatory` value
   slot.
-- **A `Settings` submenu on both surfaces** — the reader's holds seven rows (auto-open,
-  panel zoom, hide status bar, save folder, per-server subfolder, `Covers for folders`,
+- **A `Settings` submenu on both surfaces** — the reader's holds eight rows (auto-open,
+  panel zoom, panel view, hide status bar, save folder, per-server subfolder,
+  `Covers for folders`,
   default reader for `.cbz`), the FileManager's the four that are not about a book
   already open. The FileManager's depth is a deliberate cost, paid so the two menus
   read the same. No `sorting_hint` exists below the top-level `meguru` item — the
@@ -2529,6 +2609,19 @@ Each step must pass before the next:
     not a regression), and a long-press with the wifi off and the page's bytes aged out
     of the store still shows a panel, softer, through the `Document:drawPagePart`
     fallback.
+
+    Then the same page in the **window view** (*Panel view: Pan & zoom*), which is the
+    second half of this item because it is the same crop question asked the other way.
+    Long-press a point in a large panel: the view must be centred on that point, and the
+    panel's own edge must sit at the screen's edge — **never a strip of the page's
+    margin**, which is what anchoring to the page would show. Forward once: the panel's
+    far edge arrives and the panel is done; forward again leaves the panel. Then the
+    skip: on a page with small panels beside a full-height one, position the window so
+    they are all inside it and press forward — **one press must pass all of them** and
+    land on the next panel the window does not cover, with the `-d` line showing a step
+    count smaller than the panel count. Back from there must reach the panels *before*
+    the one touched, not only the ones after it. And a splash page the detector refuses
+    must open whole, cropped, whatever this preference says.
 19. **A book that cannot get its pages says why, once, and stops asking.** With the wifi
     off, open a marker: the page area holds *Can't load this page / You're offline right
     now. Connect to Wi-Fi and try again.* Check the two cases that must not be confused:
@@ -2761,6 +2854,23 @@ Each step must pass before the next:
   it can settle arithmetic and never semantics), MuPDF's render, and the
   decode-then-resample two-step. A divergence it cannot see is a divergence it cannot
   rule out.
+- **The window view's geometry is measured the same way, by a mirror and drawn
+  layouts.** `meguru/viewport.lua` is pure — panels, page size and screen size in, a
+  list of rectangles out — so a Python transcription of its `steps` runs the same walk
+  over layouts whose truth is known because they were drawn (six equal panels, a tall
+  one with a grid of small ones beside it, a panel that fits, one that overflows both
+  axes, one starting mid-page, an entry into the third of six). It is what settled that
+  a panel already on screen contributes **no** step, and that the window's left edge is
+  the *panel's* (300 in the drawn case) and not the page's (0). It is not in the
+  repository yet — the generator lives in the session's scratch directory with the
+  control pages — and what it cannot model is anything about rendering, which is what
+  the device item is for. **Unmeasured on a real page:** the 1.27 screen-pixels-per-page-
+  pixel that `1.85` comes to on a 1600x2400 scan against a 1236x1648 screen, and so how
+  soft the window looks on a page whose `fit` is near 1; whether the skip ever passes a
+  panel a reader wanted to stop at; and the whole thing on a page whose panels are
+  quadrilaterals rather than rectangles, where the cropped view's mask has no counterpart
+  and the window simply shows the neighbour at its edge — by design, and still unseen.
+
 - **A rule measured on one page is not a measured rule, and this cost a commit.** The
   leaf-containment rule was added, then removed on the evidence of a single page where it
   dropped nothing, then restored when the next page found needed exactly it. The honest

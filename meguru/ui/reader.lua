@@ -427,6 +427,19 @@ function Reader.setPanelZoom(ui, on)
     end
 end
 
+--- Which of the two panel views a long-press opens: `"crop"` or `"window"`.
+---
+--- One preference for everything Meguru opens, like the toggle above it and for the
+--- same reason — but this one is about the *view* and not about whether there is
+--- one. The two show the same panels in the same order; they differ in whether the
+--- page is cut up to do it. `meguru/viewport` is what the second one is.
+---
+--- There is no per-book answer and no stock row behind this one, which is why it is
+--- read straight from the preference every time rather than through a cascade.
+function Reader.panelViewMode()
+    return Settings.get("panel_view") == "window" and "window" or "crop"
+end
+
 --- The direction this book is read in, as `"manga"` or `"comic"`.
 ---
 --- The panel sequence orders a page's panels by this and picks its tap and swipe
@@ -703,8 +716,22 @@ local function installPanelZoom(ui)
             mode, nowMs() - t_start))
 
         local start = Panel.indexAt(panels, pos.x, pos.y) or 1
+        -- **A refused page is shown cropped whatever the preference says.** A page
+        -- the detector would not decompose comes back as one rectangle covering it,
+        -- and the window view would cut that rectangle into a top and a bottom —
+        -- two steps through a splash nobody asked to be stepped through. Cropping
+        -- a whole-page rectangle shows the whole page, which is what a refusal has
+        -- always meant here.
+        local opts = {
+            window = Reader.panelViewMode() == "window" and accepted == true,
+            -- In page coordinates, and the reason it travels: the window view opens
+            -- centred on the finger rather than at the panel's own edge. `pos` is
+            -- already the page point — `screenToPageTransform` above — so nothing
+            -- is converted again here.
+            tap = { x = pos.x, y = pos.y },
+        }
         local ok_show, shown = pcall(PanelZoom.open, ui, pos.page, panels, start,
-            mode, direction)
+            mode, direction, opts)
         if not ok_show or not shown then
             logger.warn("Meguru: panel zoom viewer failed:",
                 ok_show and "not shown" or tostring(shown))

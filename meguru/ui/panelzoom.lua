@@ -55,6 +55,7 @@ local Device = require("device")
 local Event = require("ui/event")
 local ImageViewer = require("ui/widget/imageviewer")
 local UIManager = require("ui/uimanager")
+local Viewport = require("meguru/viewport")
 local logger = require("logger")
 
 local Screen = Device.screen
@@ -79,14 +80,20 @@ local function nextIsRight(mode)
     return mode ~= "manga"
 end
 
--- The lazy entry `ImageViewer` wants for each image in its list.
+-- The lazy entry `ImageViewer` wants for each step.
 --
--- Lazy on purpose in both directions: panels the reader never reaches are never
+-- Lazy on purpose in both directions: steps the reader never reaches are never
 -- rendered, and each render goes through `drawPagePart`, whose own LRU decides
 -- whether this is a fresh render or the pre-warm landing.
-local function panelImage(doc, page, rect)
+--
+-- **One body for both views.** A cropped panel carries no size, so the document
+-- renders the region at its own size in the page's pixels; a window carries the
+-- pixels it has to arrive as, and gets them. The call with neither is byte for byte
+-- the one the cropped sequence has always made, and `Panels+` — which goes through
+-- `drawPagePart` directly — is untouched by either.
+local function stepImage(doc, page, rect)
     return function()
-        return doc:drawPagePart(page, rect, 0)
+        return doc:drawPagePart(page, rect, 0, rect.out_w, rect.out_h)
     end
 end
 
@@ -148,9 +155,18 @@ end
 
 local PanelViewer = ImageViewer:extend{
     ui = nil,             -- the ReaderUI; UIManager:show does not set it
-    page = nil,           -- the book page these panels were cut from
-    panels = nil,         -- the ordered rects, kept: the handoff needs them
+    page = nil,           -- the book page these steps came from
+    -- **The things this viewer walks, in order.** A cropped panel in the first
+    -- view; a window over the page in the second. The name says steps rather than
+    -- panels because that is the one thing true of both, and because the second
+    -- view's chain is not one entry per panel — a panel already on screen when the
+    -- chain reaches it contributes none.
+    steps = nil,
     mode = nil,           -- "manga" | "comic"
+    -- nil for the cropped sequence, or `{ window = true }` for the window view.
+    -- Read here and in `meguruHandoff`, which must pass it on: the same trap
+    -- `mode` and `rotate` carry a note about, and it fails only at a page boundary.
+    view = nil,
     -- "left" | "right" | nil — the book's `Rotate wide pages`, resolved by
     -- `ui/reader.lua` and handed in like `mode`. Not to be confused with the two
     -- rotation fields beside it: `rotated` (stock) is *whether*, and
@@ -163,19 +179,22 @@ local PanelViewer = ImageViewer:extend{
     _meguru_handoff_pending = nil,
 }
 
--- Hand a panel's tile back to the document.
+-- Hand a step's tile back to the document.
 --
--- Called for the panel just left and for the one on screen when the viewer
--- closes, which is what keeps the tile LRU at the two entries this design needs
--- (the panel shown and the panel warmed) rather than one per panel visited. See
+-- Called for the step just left and for the one on screen when the viewer closes,
+-- which is what keeps the tile LRU at the two entries this design needs (the step
+-- shown and the step warmed) rather than one per step visited. See
 -- `MeguruDocument:releasePanelTile` for the arithmetic.
+--
+-- The size travels with the rectangle, because a window tile is filed under both:
+-- releasing a window by its rectangle alone would free nothing.
 function PanelViewer:meguruRelease(index)
     local doc = self.ui and self.ui.document
-    local rect = self.panels and self.panels[index]
+    local rect = self.steps and self.steps[index]
     if not (doc and rect and type(doc.releasePanelTile) == "function") then
         return false
     end
-    return doc:releasePanelTile(self.page, rect)
+    return doc:releasePanelTile(self.page, rect, rect.out_w, rect.out_h)
 end
 
 -- Arm the pre-warm, replacing any warm still queued from the panel before.
@@ -209,14 +228,15 @@ function PanelViewer:meguruWarm()
         return -- dismissed, or handed off to another page's viewer
     end
     local doc = self.ui and self.ui.document
-    if not (doc and self.panels) then
+    if not (doc and self.steps) then
         return
     end
     local cur = self._images_list_cur
-    if cur < #self.panels then
+    if cur < #self.steps then
         if not doc.dead_pages[self.page] then
-            local ok, err = pcall(doc.drawPagePart, doc, self.page,
-                self.panels[cur + 1], 0)
+            local next_step = self.steps[cur + 1]
+            local ok, err = pcall(doc.drawPagePart, doc, self.page, next_step, 0,
+                next_step.out_w, next_step.out_h)
             if not ok then
                 logger.dbg("Meguru: panel prewarm failed:", err)
             end
@@ -305,12 +325,12 @@ function PanelViewer:_new_image_wg()
     end
 end
 
--- The bound is `#self.panels`, **not** `self._images_list_nb` — see the note on
+-- The bound is `#self.steps`, **not** `self._images_list_nb` — see the note on
 -- `images_list_nb = 1` in `PanelZoom.open`. Stock's field is the chrome switch and
 -- no longer counts anything, so bounding navigation by it would send every
 -- forward gesture to the page boundary.
 function PanelViewer:onShowNextImage()
-    if self._images_list_cur < #self.panels then
+    if self._images_list_cur < #self.steps then
         self:switchToImageNum(self._images_list_cur + 1)
         return true
     end
@@ -425,6 +445,11 @@ function PanelViewer:meguruHandoff(direction)
     -- stock's way — and only at a page boundary, which is the one place nobody
     -- looks.
     local rotate = self.rotate
+    -- The view travels for the third time and for the same reason — and with one
+    -- part dropped: the tap that opened *this* page says nothing about the next
+    -- one, so a fresh page starts at its first panel's own arrival rather than
+    -- centred on a point of a page nobody is looking at.
+    local view = self.view and { window = self.view.window } or nil
     UIManager:tickAfterNext(function()
         local ok, err = pcall(function()
             if not UIManager:isWidgetShown(this) then
@@ -452,7 +477,7 @@ function PanelViewer:meguruHandoff(direction)
             ui:handleEvent(Event:new("GotoPage", page))
             if panels then
                 local index = (direction == "next") and 1 or #panels
-                PanelZoom.open(ui, page, panels, index, mode, rotate)
+                PanelZoom.open(ui, page, panels, index, mode, rotate, view)
             else
                 -- Only reachable when the page would not decode: a page the
                 -- detector refused comes back as the whole page, so the
@@ -479,7 +504,7 @@ function PanelViewer:onCloseWidget()
     self:meguruRelease(self._images_list_cur)
 end
 
--- Show the panels of one page, starting at `index`.
+-- Show the steps of one page, starting at `index`.
 --
 -- `mode` and `rotate` are two adjacent strings of the same shape — the reading
 -- direction, and `"left"`/`"right"`/nil from the book's `Rotate wide pages` —
@@ -489,33 +514,59 @@ end
 -- A nil `rotate` means this viewer is exactly the one that existed before
 -- directions did: every rotation decision is stock's.
 --
+-- `opts` is the view: nil for the cropped sequence, or `{ window = true, tap = {
+-- x, y } }` — where the reader's finger landed, in page coordinates, so the window
+-- they asked for is the one they get. `index` is a *panel* either way; the window
+-- view turns it into a step through `Viewport`, which is also what decides how many
+-- steps the page has at all.
+--
 -- Returns false when there is nothing to show, which is what lets the caller
 -- fall back to the single-region viewer rather than opening an empty one.
-function PanelZoom.open(ui, page, panels, index, mode, rotate)
+function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
     local doc = ui and ui.document
     if not (doc and panels and #panels > 0) then
         return false
     end
+    local window = opts and opts.window
+    local steps, start = panels, index
+    if window then
+        -- The page's own size, in the space the panel rects are in. The bytes are
+        -- already in hand — `getPanelsFromPage` fetched and decoded them to find
+        -- the panels — so this is a lookup rather than a fetch, and a page with no
+        -- bytes at all is one that has already failed above.
+        steps, start = Viewport.steps(panels, doc:getPageDims(page),
+            CanvasContext:getSize(),
+            index and { panel = index, x = opts.tap and opts.tap.x,
+                        y = opts.tap and opts.tap.y })
+        if not steps then
+            return false
+        end
+    end
     local images = {}
-    for i, rect in ipairs(panels) do
-        images[i] = panelImage(doc, page, rect)
+    for i, rect in ipairs(steps) do
+        images[i] = stepImage(doc, page, rect)
     end
     -- The buffers belong to the document's tile LRU, so the viewer must never
     -- free one — `cacheTile` is what frees them, on eviction or on close, and a
     -- BlitBuffer is malloc'd outside the Lua heap, so a buffer freed here would
     -- be freed twice.
     images.image_disposable = false
-    local rotates = panelRotations(panels)
+    -- Nothing turns in the window view, and that is not a gap: a window is the
+    -- screen's shape, so there is no wide-versus-tall decision to make, and a panel
+    -- too wide for it is walked in x by its two anchors instead. Stock's own
+    -- `rotated` stays false throughout, which is what the overrides below expect.
+    local rotates = window and {} or panelRotations(panels)
 
     local viewer = PanelViewer:new{
         ui = ui,
         page = page,
-        panels = panels,
+        steps = steps,
         mode = mode,
         rotate = rotate,
+        view = opts,
         meguru_rotates = rotates,
         image = images,
-        -- **One, and deliberately not the panel count.** Stock builds, draws and
+        -- **One, and deliberately not the step count.** Stock builds, draws and
         -- frees its progress bar behind a single `_images_list_nb > 1` test, so
         -- this is the switch that turns the bar off — the last piece of chrome
         -- this window still drew, after the title bar and the button row. The
@@ -524,10 +575,10 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate)
         --
         -- It is not a count any more, and nothing here treats it as one —
         -- `onShowNextImage`, `onShowPrevImage` and `meguruWarm` all bound
-        -- themselves by `#self.panels`, which is the truth. Reading the count
-        -- back off this field is the one edit that would silently break panel
-        -- navigation: with it at 1, every forward gesture would fall through to
-        -- the page boundary and the second panel would be unreachable.
+        -- themselves by `#self.steps`, which is the truth. Reading the count
+        -- back off this field is the one edit that would silently break the
+        -- sequence: with it at 1, every forward gesture would fall through to
+        -- the page boundary and the second step would be unreachable.
         images_list_nb = 1,
         image_disposable = false,
         images_keep_pan_and_zoom = false,
@@ -540,17 +591,19 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate)
     -- `show` dispatches the `Show` event, which is where the pre-warm is armed;
     -- nothing is armed here.
     UIManager:show(viewer)
-    -- `init` has already rendered panel 1 to fill `self.image`; a long-press
+    -- `init` has already rendered the first step to fill `self.image`; a long-press
     -- that landed on panel 4 gets there through the same switch a swipe uses,
-    -- which also hands panel 1's tile back and re-arms the warm.
-    if index and index > 1 and index <= #panels then
-        viewer:switchToImageNum(index)
+    -- which also hands the first step's tile back and re-arms the warm.
+    if start and start > 1 and start <= #steps then
+        viewer:switchToImageNum(start)
     end
     -- The direction is named because this is the only place the resolved answer
     -- appears, and a panel turned the wrong way is otherwise indistinguishable
     -- in a log from a panel that was never meant to turn.
     logger.dbg("Meguru: panel zoom opened on page", page, "panel", index or 1,
         "of", #panels, "(" .. tostring(mode) .. ")",
+        window and ("window view, step " .. (start or 1) .. " of " .. #steps)
+            or "cropped panels",
         rotate and ("turned " .. rotate) or "no turn direction")
     return true
 end

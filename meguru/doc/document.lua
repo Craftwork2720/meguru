@@ -2156,9 +2156,20 @@ end
 -- they are enough to put back: given the box and each plane's `A`/`B`, every
 -- plane's `C` is pinned by the box edge it touches. Scaled to integers, so two
 -- crops a fraction of a degree apart cannot mint two keys for one tile.
-local function panelTileKey(pageno, rect)
+--
+-- **`tw`/`th` join the key when the caller chooses the output size, which is what
+-- the window view does.** There the same rectangle of the same page is a different
+-- picture at a different size, and the size is not recoverable from the rectangle.
+-- The cropped mode passes neither, so its keys are unchanged to the byte — which is
+-- what keeps the tiles a warm from the other mode still lands on. `Viewport` rounds
+-- its windows to whole page pixels for the `%d` here; a fractional one would be
+-- filed under a key naming a rectangle it was not rendered from.
+local function panelTileKey(pageno, rect, tw, th)
     local key = string.format("%d|panel|%d,%d+%dx%d",
         pageno, rect.x, rect.y, rect.w, rect.h)
+    if tw and th then
+        key = string.format("%s|%dx%d", key, tw, th)
+    end
     local planes = rect.planes
     if planes then
         for i = 1, #planes do
@@ -2305,12 +2316,15 @@ end
 -- bytes that are still in `self.page_bytes`, so still without the network.
 --
 -- The key is built by `panelTileKey` and not retyped, because a key that drifts
--- from `drawPagePart`'s would free nothing and fail silently.
-function MeguruDocument:releasePanelTile(pageno, rect)
+-- from `drawPagePart`'s would free nothing and fail silently. `tw`/`th` travel with
+-- it for the same reason the write passes them: a window tile is filed under its
+-- size, and a release that named only the rectangle would free the cropped tile
+-- with that box — or, more often, nothing at all.
+function MeguruDocument:releasePanelTile(pageno, rect, tw, th)
     if not rect then
         return false
     end
-    local key = panelTileKey(pageno, rect)
+    local key = panelTileKey(pageno, rect, tw, th)
     local tile = self.tiles[key]
     if not tile then
         return false
@@ -2659,7 +2673,13 @@ end
 -- and a BlitBuffer is malloc'd outside the Lua heap, so a buffer rendered outside
 -- the cache would simply be lost. `cacheTile` is also what frees it later, on
 -- eviction or on `clearCaches`.
-function MeguruDocument:drawPagePart(pageno, native_rect, rotation)
+--
+-- **`tw`/`th` are the window view's, and nil everywhere else.** The cropped panel
+-- wants the region at its own size in the page's pixels, so `renderRegionDirect`
+-- is asked with no size; a *window* is a rectangle of the page that has to arrive
+-- as the screen's worth of pixels, so it is asked with one. Passing neither is the
+-- call `Panels+` and the cropped sequence have always made, unchanged.
+function MeguruDocument:drawPagePart(pageno, native_rect, rotation, tw, th)
     if not native_rect then
         return nil, false
     end
@@ -2672,7 +2692,7 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation)
         rotate = (canvas.w > canvas.h) ~= (rect.w > rect.h)
     end
 
-    local key = panelTileKey(pageno, native_rect)
+    local key = panelTileKey(pageno, native_rect, tw, th)
     local cached = self.tiles[key]
     if cached and cached.bb_free ~= true then
         bump(self, key)
@@ -2681,7 +2701,7 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation)
     self.tiles[key] = nil
 
     local bb = self:renderRegionDirect(pageno, rect.x, rect.y, rect.w, rect.h,
-        nil, nil, native_rect.planes)
+        tw, th, native_rect.planes)
     if not bb then
         -- Nothing to render the region from — the page's bytes have aged out of
         -- the store, or MuPDF refused it. Stock's shape still has the saved
