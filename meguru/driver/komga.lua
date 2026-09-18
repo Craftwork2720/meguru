@@ -53,6 +53,16 @@ local SERIES_IN_PATH = "/series/([^/?]+)"
 --- The book id inside a stream template: `…/books/{bookId}/pages/{pageNumber}`.
 local BOOK_IN_TEMPLATE = "/books/([^/]+)/pages/"
 
+--- The REST prefix and the book id inside a stream template:
+--- `…/opds/v1.2/books/{bookId}/pages/{pageNumber}`.
+---
+--- Anchored on the literal segment rather than on position, like the two above,
+--- and it captures what *precedes* `/opds/` — which is the whole point: a Komga
+--- behind a reverse proxy keeps its path prefix on both of its surfaces, so the
+--- REST URL is that prefix with the OPDS path rewritten, never rebuilt from
+--- `scheme://host:port`. See `Komga.progressRequest` and `Komga.seriesCover`.
+local REST_IN_TEMPLATE = "^(.*)/opds/v1%.2/books/([^/]+)/pages/"
+
 --- Identify the series a browsed entry belongs to.
 ---
 --- **From the feed, because the entry cannot answer it.** Komga publishes no
@@ -180,6 +190,78 @@ function Komga.seriesCover(_feed, _entry, base_url)
         return nil
     end
     return string.format("%s/api/v1/series/%s/thumbnail", prefix, remote_id)
+end
+
+--- Where the reader is, described for `meguru/progress` to send.
+---
+--- **The REST surface, not the OPDS one.** `/api/v1/books/{id}/read-progress` is
+--- what fills `readProgress`, and `readProgress?.page` is what `OpdsController.kt`
+--- publishes as `pse:lastRead` on the feed — so this is the write end of the loop
+--- whose read end is `PSE.streamFromEntry`. Komga's OPDS **v2** feed carries a
+--- `progression` link that looks like a natural home for this and is not one: it
+--- is the Readium surface, aimed at EPUB readers, and Komga does not feed it back
+--- into `readProgress`. Writing there would move the open end, not close it.
+---
+--- **Two numbers, two bases, and neither is converted here.** The page in a
+--- stream URL is zero-based (`doc/document.lua` passes `pageno - 1`); the page
+--- this takes is one-based, which is what the reader pages with and what
+--- `readProgress.page` is. It goes out unchanged. A driver that "unified" the two
+--- would be off by one on one surface or the other, and only one of them is
+--- wrong to be off by one.
+---
+--- **The prefix is taken, not rebuilt** — the same call `Komga.seriesCover` makes
+--- above, and the regex is required to name `/opds/v1.2/` rather than matching
+--- any version: a loose pattern would widen the match for nothing, since a v2
+--- template cannot be in a marker at all (v2 publishes no PSE link).
+---
+--- The body is built by hand — one field, a number, nothing to escape, so nothing
+--- drags in an encoder.
+---
+--- **One field and not two, and that is a correction rather than a preference.**
+--- The first version sent `{"page":N,"completed":B}` with `B` computed from the
+--- marker's own `count`, on the reasoning that saying `false` for a book Komga has
+--- finished is the one value that can un-read it. The server's own schema is
+--- better than that reasoning: `ReadProgressUpdateDto` documents `completed` as
+--- optional and *derived* — "set accordingly depending on the page passed and the
+--- total number of pages in the book" — so Komga answers it from its own count,
+--- which is the only count that is authoritative. Ours is a snapshot in a marker,
+--- and a book replaced on the server since would have made it say `true` about a
+--- book that is not finished. `PATCH` is also the verb the endpoint accepts: a
+--- `PUT` here is answered **405** (Komga 1.27.0; its own OpenAPI lists `PATCH` and
+--- `DELETE`), which is what a first, derived-not-observed version of this cost.
+---
+--- Nil is the ordinary answer here for a marker that carries no usable template,
+--- no count, or a page below 1 — and for every future Komga marker the template
+--- is the same string the page fetches are built from, so the book being reported
+--- on and the book being paged cannot diverge.
+function Komga.progressRequest(desc, page)
+    if type(desc) ~= "table" then
+        return nil
+    end
+    local template = desc.template
+    local total = tonumber(desc.count)
+    local wanted = math.floor(tonumber(page) or 0)
+    if type(template) ~= "string" or template == "" then
+        return nil
+    end
+    if wanted < 1 or not total or total < 1 then
+        return nil
+    end
+    -- The count is required for this and nothing else, and clamping *down* is the
+    -- right direction: the last page is a position Komga accepts, where a page
+    -- past the end is `400 Page number does not exist`.
+    if wanted > total then
+        wanted = total
+    end
+    local prefix, book_id = template:match(REST_IN_TEMPLATE)
+    if not prefix or not book_id then
+        return nil
+    end
+    return {
+        url          = string.format("%s/api/v1/books/%s/read-progress", prefix, book_id),
+        content_type = "application/json",
+        body         = string.format('{"page":%d}', wanted),
+    }
 end
 
 --- The series name from the series feed's own `<title>`, which Komga writes as

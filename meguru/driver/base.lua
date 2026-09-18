@@ -348,12 +348,40 @@ end
 --   parseCatalogPage(feed, base_url, ctx) -> { item, ... }
 --   seriesName(feed, entry, ctx)          -> string
 --
--- Optional, and only one so far:
+-- Optional:
 --
 --   seriesCover(feed, entry, base_url)    -> url | string, or nil to defer
 --     For a server whose series artwork is not in the feed at all. Komga's is
 --     in REST, and without this the feed fallback would key the series to one
 --     volume's cover. Asked by `Base.coverFromFeed`, before the feed.
+--   progressRequest(desc, page)           -> { url, content_type, body }, or nil
+--     The *write* side of a reading position: where the reader is, sent back to
+--     the server the book came from. `meguru/progress` is what makes the
+--     request; a driver only describes one, exactly as `seriesCover` names a
+--     URL and fetches nothing. It is handed the marker's own descriptor — the
+--     table `Marker.new` writes and `Marker.load` returns — because that is
+--     where a book keeps the two things a write needs, its stream `template`
+--     and its `count`, and neither is an argument a caller would have to
+--     invent. `page` is 1-based, which is what the reader pages with and what
+--     Komga's own REST surface counts in. **The verb is not a field**: a driver
+--     describes a URL and a body, and the engine is what knows the method
+--     (`Net.patch`, and see it for why it is PATCH rather than PUT). A driver
+--     cannot choose a verb, which is the point.
+--
+--     Nil is the ordinary answer, and there is deliberately no default for it —
+--     unlike `resolveStream`, which `Base.register` does provide. "No hook" and
+--     "a hook that answered nil" both mean no report, but they are different
+--     facts, and a default would erase the difference between a driver that
+--     opted out and one that failed. Two of the three drivers answer nil, for
+--     reasons worth keeping straight: Suwayomi by design, since its own stream
+--     template carries `?updateProgress=true` and its server is already told by
+--     every page fetch, and Kavita because its write API wants a JWT from a
+--     login rather than the API key OPDS holds.
+--
+--     Note what this is *not*. `Base.item` says "a driver names no position",
+--     and that stays true: it is about a book's place in *reading order*, which
+--     a feed states and nothing may store. This is the reader's own place in one
+--     book, which no feed can derive and which nothing else in the plugin knows.
 --
 -- `ctx` carries `lang` — the translation the reader was browsing in, which only
 -- Suwayomi selects on — and `url`, the URL of the feed the entry was read out

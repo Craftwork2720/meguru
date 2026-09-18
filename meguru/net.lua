@@ -1,10 +1,22 @@
 --[[--
-HTTP: two synchronous GETs, and getting a parsed OPDS feed out of one of them.
+HTTP: two synchronous GETs, one synchronous PATCH, and getting a parsed OPDS feed
+out of one of them.
 
 `get` returns the body as a string and `getToFile` writes it to a path. The
 second is not a convenience: it is the only one of the two that can be bounded
 in wall-clock, because `socketutil` enforces its total timeout through its own
 sinks and `get` uses a plain `ltn12.sink.table`. See `Net.getToFile`.
+
+`patch` is the opposite direction and the only write in this plugin: a driver
+describes one request and `meguru/progress` makes it. It is a function of its own
+rather than a `method` option on `get`, for two reasons — its success test
+genuinely differs (see `Net.patch`), and a method parameter on a function whose
+contract is "200 or nothing" would hide the one caller that must not be read that
+way. **The verb belongs to the engine and is not a field a caller passes**, which
+is what keeps a driver from choosing one.
+
+A second verb should arrive as a second function, named for it, when something
+actually needs it. There is one write here.
 
 LuaSocket is synchronous and KOReader has no threads, so every call here blocks
 until it returns. Nothing in this module may be reached from a paint path, and
@@ -82,6 +94,13 @@ end
 Net.RESUME_BLOCK_TIMEOUT = 4
 Net.RESUME_TOTAL_TIMEOUT = 8
 
+-- The tightest tier here, and for the opposite reason to `resume`'s: a position
+-- report is fired *by a page turn*, so it has to lose to the reader's thumb. A
+-- server that has not answered in 2s has lost that race, and another report is
+-- coming at the next page anyway, so there is nothing worth waiting for.
+Net.PROGRESS_BLOCK_TIMEOUT = 2
+Net.PROGRESS_TOTAL_TIMEOUT = 4
+
 local TIMEOUTS = {
     feed = { Net.FEED_BLOCK_TIMEOUT, Net.FEED_TOTAL_TIMEOUT },
     page = { socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT },
@@ -91,6 +110,11 @@ local TIMEOUTS = {
     -- is enforced -- see `Net.getToFile` for why that is not a property of the
     -- numbers but of the sink.
     download = { socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT },
+    -- The block timeout is what actually bounds this one, for the same reason
+    -- `download`'s total is the only total that means anything: `patch` ends in a
+    -- `ltn12.sink.table` too, and `socketutil` honours its total only through
+    -- its own sinks. The number is here for symmetry with every other tier.
+    progress = { Net.PROGRESS_BLOCK_TIMEOUT, Net.PROGRESS_TOTAL_TIMEOUT },
 }
 
 --- Synchronous GET. Returns `code, headers, body`.
@@ -156,6 +180,92 @@ function Net.get(url_str, opts)
         return code, headers, nil
     end
     return 200, headers, table.concat(sink)
+end
+
+--- Synchronous PATCH. Returns `code, headers, body`.
+---
+--- **The verb is PATCH because the one endpoint this plugin writes to says so,
+--- and that was measured rather than assumed.** `PUT` on
+--- `/api/v1/books/{id}/read-progress` is answered **405 Method Not Allowed** by
+--- Komga 1.27.0, whose own OpenAPI lists exactly `PATCH` and `DELETE` there. The
+--- first version of this was a PUT, derived from the API's shape rather than from
+--- a request to a server, and a 405 on a device is what that costs.
+---
+--- **Success is 200 *or* 204, and this is the one place the contract deliberately
+--- departs from `get`'s.** A server that accepts a write and has nothing to say
+--- about it answers exactly 204 with an empty body; a client that only knew 200
+--- would read a completed write as a failure — and the one caller here reports
+--- what it reads as a failure and tries again. So an empty body means success in
+--- this function, where in `SeriesCover.save` it is the signature of a broken
+--- fetch, and the two must not be reasoned about together.
+---
+--- On a transport failure, an unsupported scheme or a timeout, returns
+--- `nil, nil, nil` after logging the reason, exactly as `get` does. On a non-2xx
+--- response it logs the code and returns `code, headers, nil`, so a caller can
+--- tell "the server refused" from "the network died" — `meguru/progress` reports
+--- those as `"http"` and `"network"`, and they are not the same problem.
+---
+--- **The body is the caller's, and this module has no encoder.** The one write
+--- this plugin makes is one field, and dragging in a JSON library for it would be
+--- machinery with one caller.
+---
+--- `opts`: { username, password, content_type, accept,
+---           timeout = "progress"|"feed"|"page"|"large"|"resume" }.
+function Net.patch(url_str, body, opts)
+    opts = opts or {}
+    body = type(body) == "string" and body or ""
+    local parsed = url.parse(url_str)
+    if not parsed or (parsed.scheme ~= "http" and parsed.scheme ~= "https") then
+        logger.warn("Meguru: unsupported protocol for", Net.redactUrl(url_str))
+        return nil
+    end
+
+    local sink = {}
+    local req = {
+        url = url_str,
+        method = "PATCH",
+        headers = {
+            ["Accept"] = opts.accept or "*/*",
+            -- Same reason as `get`'s: the sink is a plain byte table and nothing
+            -- here inflates anything.
+            ["Accept-Encoding"] = "identity",
+            ["Content-Type"] = opts.content_type or "application/json",
+            -- Stated rather than left to LuaSocket: a request carrying a body and no
+            -- length is answered 411 by some servers and proxies, and counting a
+            -- body this short twice costs nothing.
+            ["Content-Length"] = tostring(#body),
+        },
+        source = ltn12.source.string(body),
+        sink = ltn12.sink.table(sink),
+    }
+    if opts.username and opts.username ~= "" then
+        req.user = opts.username
+        -- As in `get`: LuaSocket concatenates user..":"..password, so a nil
+        -- password raises inside http.request.
+        req.password = opts.password or ""
+    end
+
+    local timeout = TIMEOUTS[opts.timeout or "progress"] or TIMEOUTS.progress
+    socketutil:set_timeout(timeout[1], timeout[2])
+    local ok, code, headers = pcall(function()
+        return socket.skip(1, http.request(req))
+    end)
+    socketutil:reset_timeout()
+
+    if not ok then
+        logger.warn("Meguru: HTTP error for", Net.redactUrl(url_str), ":", tostring(code))
+        return nil
+    end
+    if type(code) ~= "number" then
+        logger.warn("Meguru: HTTP request failed for", Net.redactUrl(url_str),
+            "(", tostring(code), ")")
+        return nil
+    end
+    if code < 200 or code > 299 then
+        logger.warn("Meguru: HTTP", code, "for", Net.redactUrl(url_str))
+        return code, headers, nil
+    end
+    return code, headers, table.concat(sink)
 end
 
 --- Synchronous GET written straight to `path`. Returns `true`, or `nil, reason`

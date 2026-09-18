@@ -71,7 +71,9 @@ Marker.VERSION = 2
 ---   item_key           authoritative identity of this item within its series
 ---   title              as shown to the reader
 ---   template, count    enough to open and read with no database
----   last_read          server-reported, cosmetic
+---   last_read          the page the server says the reader stopped on — and,
+---                      for `meguru/progress`, the floor below which this
+---                      installation will not report a position
 ---   lang               the translation Suwayomi serves (`?lang=`); nil means
 ---                      its default, exactly as a nil `ctx.lang` does today
 ---   cover_url          this book's own artwork, where its feed published one

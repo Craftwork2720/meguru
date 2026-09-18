@@ -50,6 +50,7 @@ local T = require("ffi/util").template
 
 local Association = require("meguru/association")
 local Base = require("meguru/driver/base")
+local Progress = require("meguru/progress")
 local SeriesCover = require("meguru/seriescover")
 local Marker = require("meguru/marker")
 local Open = require("meguru/ui/open")
@@ -219,6 +220,15 @@ local function updateRow()
     }
 end
 
+--- The name of a server, shown as it spells itself.
+---
+--- Not wrapped for translation: it is a proper noun, and a translated one would
+--- name a different product. Extracted when a second row grew a reason to say a
+--- server's name, so the rule exists once.
+local function kindLabel(kind)
+    return kind:sub(1, 1):upper() .. kind:sub(2)
+end
+
 --- One row: which servers get a `.cover.jpg` in their series folders.
 ---
 --- A submenu rather than one row per server, and it is the only place below
@@ -235,10 +245,7 @@ local function coverRow()
     for _, kind in ipairs(SeriesCover.KINDS) do
         local key = SeriesCover.settingFor(kind)
         rows[#rows + 1] = {
-            -- The name of a server, shown as it spells itself. Not wrapped for
-            -- translation: it is a proper noun, and a translated one would name
-            -- a different product.
-            text = kind:sub(1, 1):upper() .. kind:sub(2),
+            text = kindLabel(kind),
             keep_menu_open = true,
             checked_func = function() return Settings.get(key) end,
             callback = function() Settings.toggle(key) end,
@@ -249,6 +256,37 @@ local function coverRow()
         help_text = _("Leaves a .cover.jpg in a series folder, once, for programs other than KOReader — a file browser, a backup, another reader. KOReader itself does not draw folder covers. Turning a server off stops new files and leaves the ones already written."),
         sub_item_table = rows,
     }
+end
+
+--- One row per server the position may be sent back to.
+---
+--- **Flat, and the opposite call from `Covers for folders` above.** That one
+--- nests because three switches for one feature would cost three rows in a list
+--- about preferences in general; here there is one server that accepts a write,
+--- so a submenu would cost a tap to say less than the row says by itself. When a
+--- second driver gains a write path this becomes a submenu the same way, and that
+--- sentence is the whole of what has to be decided then.
+---
+--- The list is `Progress.KINDS`, for the same reason the cover rows come from
+--- `SeriesCover.KINDS`: the module that has to know the servers owns the list, and
+--- a driver added there needs no change here.
+---
+--- The loop is indexed rather than `ipairs`, because `_` is gettext in this file
+--- and a `for _, kind in ipairs(...)` would shadow it for the length of the body.
+local function progressRows()
+    local rows = {}
+    for i = 1, #Progress.KINDS do
+        local kind = Progress.KINDS[i]
+        local key = Progress.settingFor(kind)
+        rows[#rows + 1] = {
+            text = T(_("Report reading progress to %1"), kindLabel(kind)),
+            help_text = _("Sends the page you have reached to the server as you read, so that server's own app keeps your place. Only a page you have actually turned to is sent: re-reading an earlier page never moves the server backwards, and a book the server has finished is never marked unread."),
+            keep_menu_open = true,
+            checked_func = function() return Settings.get(key) end,
+            callback = function() Settings.toggle(key) end,
+        }
+    end
+    return rows
 end
 
 --- The `Settings` row both surfaces hang their preferences on.
@@ -436,6 +474,15 @@ function Menu.addReaderItems(plugin, menu_items)
     --
     -- What is *not* reachable from the viewer is whether there is a panel zoom at all, and that
     -- belongs to the per-book answer KOReader's own row gives — the reader looking at the page.
+
+    -- The position report is a reading behaviour, so it joins the group above the
+    -- separator rather than the rows below it that decide where a book lands —
+    -- which is also why the FileManager's Settings, which holds only those, does
+    -- not get it. The omission follows from what the row *is*, and not from a
+    -- second list that would have to be kept in step.
+    for _, row in ipairs(progressRows()) do
+        settings[#settings + 1] = row
+    end
 
     settings[#settings + 1] = {
         text = _("Hide status bar"),

@@ -40,7 +40,16 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   too.
 - **Credentials are read from `settings/opds.lua` and go nowhere else.** A marker with a
   `<redacted>` field resolves the credential at load so the book can be read at all;
-  nothing sends one except a page fetch.
+  nothing sends one except a page fetch and, on Komga, the position report.
+- **The position report is the one thing this plugin sends *to* a server.** A page number,
+  to the server the book came from, with the credential in the same Basic header a page
+  fetch already sends — so the write adds no new place a secret can appear.
+- **Nothing the server answers is logged, and that is deliberate.** Komga's refusal text
+  is genuinely useful (`400 Page number does not exist` is the sentence that catches a
+  numbering mistake), and it is still not printed: `crash.log` is a file routinely pasted
+  into a bug report, a response is text nobody here controls, and a misconfigured proxy
+  echoing the request it just proxied would put the Basic header into it. The status code
+  and the URL through `Net.redactUrl` place every failure this feature can have.
 - The derived `catalogURL` is never stored — it is built at call time from
   `settings/opds.lua` and kept in a local. Every URL that does reach a log line goes
   through `Net.redactUrl`.

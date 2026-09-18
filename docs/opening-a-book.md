@@ -6,12 +6,20 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
 
 ## Where an open starts
 
-**Reading progress is not mirrored anywhere.** It is read lazily, per book, from the
+**Local reading progress is not mirrored into a book, and the server's direction is
+a separate thing.** The reader's own place is read lazily, per book, from the
 sidecar beside the marker: `DocSettings:findSidecarFile` then `openSettingsFile`,
 reading `percent_finished`. That is the only place it lives, which is what makes a
 marker safe to rewrite — there is no reader state in it to lose.
 (`DocSettings:hasSidecarFile` is the cheaper, parse-free variant of the same test,
 used where nothing needs reading.)
+
+**But progress *is* written now, in the other direction.** `meguru/progress` sends
+the page the reader has reached back to the server the book came from — Komga only,
+on by default, one switch per server — so the server's own apps keep the place. It
+sends a page number and nothing else, it never writes anything back into the book
+or its sidecar, and it is why the server's position below exists at all. See
+`docs/reading-position.md`.
 
 **The server's own progress is a separate thing, and it seeds a first open.** A
 marker's `last_read` is the page the *server* says the reader stopped on. It is not

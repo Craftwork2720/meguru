@@ -45,6 +45,24 @@ local DEFAULTS = {
     folder_cover_kavita   = true,
     folder_cover_komga    = true,
 
+    -- Whether the position the reader has reached is sent back to the server, per
+    -- server. One key per kind, by the same rule as the three above: the module
+    -- that owns the list of kinds asks for these by name, so a new driver with a
+    -- write path adds a line here and one there.
+    --
+    -- **On by default, and that is a heavier call than it looks.** Sending the
+    -- position *is* the feature — off by default would ship a loop that stays open
+    -- — but this is also the only thing the plugin writes to a *server* rather
+    -- than to a disk, so for an installation that predates it, it is a behaviour
+    -- change nobody asked for. What buys that back is that the switch is read on
+    -- every report rather than when a book opens: a reader who objects stops it at
+    -- the next page, not at the next volume.
+    --
+    -- Only servers that accept a write are in `meguru/progress`'s list, and two
+    -- are not: Suwayomi is already told by its own page fetches, and Kavita's
+    -- write API wants a login this plugin does not make.
+    report_progress_komga = true,
+
     hide_status_bar   = true,
     auto_next_item    = true,
     manga_order       = true,

@@ -14,7 +14,7 @@ These are fixed and shape most of the design:
   the only place this code runs.
 - **No test framework and no linter.** Verification is manual, in a running
   KOReader. `tools/check.py` (see Development) is the automated guard, covering
-  eight failure modes.
+  eleven failure modes.
 - **Reuse KOReader's own machinery** rather than rebuilding it: `LuaSettings`,
   `DocSettings`, `DocumentRegistry`, and the built-in `plugins/opds.koplugin` for
   Atom parsing and the browser UI. That plugin is **read only** — wrapped at
@@ -38,7 +38,7 @@ meguru/
   settings.lua            plugin-wide preferences in G_reader_settings
   association.lua         Meguru's claim on .cbz: the file-type reader association
   sources.lua             read-only view on settings/opds.lua (catalogs + credentials)
-  net.lua                 HTTP GET, feed fetch + parse
+  net.lua                 HTTP: GET, the one PATCH, feed fetch + parse
   naming.lua              sanitizeComponent / deriveSeries / glyph / identity digest
   local.lua               the series a .cbz's folder and file name imply
   comicinfo.lua           the metadata a .cbz carries about itself
@@ -46,6 +46,7 @@ meguru/
   credential.lua          what a credential looks like in a URL: redact / restore
   seriescover.lua         the series' artwork, written once into its folder
   rowcover.lua            the "Meguru this series" row's own artwork, decoded once
+  progress.lua            the reader's position, sent back to the server
   pse.lua                 OPDS-PSE: link extraction, template -> URL, page fetch
   feed.lua                reading a series feed: the rel=next walk, identity, order,
                           neighbour
@@ -101,6 +102,16 @@ it. It is not a cache and nothing reads it back; KOReader will not display it
 either (`coverbrowser` draws a directory as a name and a count, and never looks
 for a file beside a document), and the plugin never removes it — turning a server
 off in the menu stops new files and leaves what is already written.
+
+**The counterpart is true of the network, and it is the one thing sent outward.**
+`meguru/progress` sends the reader's position back to the server the book came
+from — **Komga only**, one switch per server in ⋮ → Meguru → Settings, on by
+default. Suwayomi is already told by its own page fetches (its stream template
+carries `?updateProgress=true`) and Kavita's write API wants a login this plugin
+does not make, so neither is given a report. It is a position and not a book: a
+page number goes out, the credential rides in the Basic header a page
+fetch already sends, and nothing the server answers is written anywhere. See
+`docs/reading-position.md`.
 
 **The file's name is not its format, and the three servers disagree** — worth
 knowing before someone "fixes" the extension:
@@ -168,6 +179,8 @@ nor an agent has to load 3500 lines to find one answer. Read the one you need.
 - [docs/opening-a-book.md](docs/opening-a-book.md) — where an open starts: the resume
   dialog, the server's own position, the silent opens, and the marker planned before it is
   written.
+- [docs/reading-position.md](docs/reading-position.md) — the same position going the other
+  way: what is sent, when, and the one rule that keeps a server from being walked back.
 - [docs/local-cbz.md](docs/local-cbz.md) — a folder of `.cbz` treated as a series: the
   natural sort, and why the name grammar was removed.
 - [docs/panel-zoom.md](docs/panel-zoom.md) — the panel preference and its stock cascade,

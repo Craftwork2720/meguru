@@ -53,6 +53,7 @@ local Local = require("meguru/local")
 local Open = require("meguru/ui/open")
 local Panel = require("meguru/panel")
 local PanelZoom = require("meguru/ui/panelzoom")
+local Progress = require("meguru/progress")
 local Settings = require("meguru/settings")
 
 local Reader = {}
@@ -963,6 +964,184 @@ local function installPageErrorPage(plugin)
     return true
 end
 
+-- Reading progress -------------------------------------------------------------
+
+--- How long a burst of page turns collapses into one report.
+---
+--- **Not a save frequency — the window that collapses a burst.** A reader who
+--- flicks through ten pages has one position, not ten, and only the newest is
+--- worth sending: a queue would be a backlog of pages nobody is on any more.
+---
+--- **And a delay rather than `nextTick`, which is the load-bearing half.**
+--- `UIManager:nextTick` is `scheduleIn(0, …)`, and `handleInput` runs its due
+--- tasks *before* it repaints — so a task armed with no delay runs in the very
+--- iteration that is about to paint the page the reader just turned to, and the
+--- request would block that paint. A task armed at `now + 1.5` runs in an
+--- iteration that begins long after the page is on screen.
+local PROGRESS_DEBOUNCE_S = 1.5
+
+--- How many consecutive failures retire reporting for the rest of the book.
+---
+--- The request is synchronous, so a server that is up but refusing — or a route
+--- that black-holes it — would otherwise cost the reader the request's whole
+--- timeout *every page, for as long as they read*. Three is where "unlucky"
+--- stops being the better explanation. The count lives on the plugin instance,
+--- so it is per book: it costs nothing, it heals on the next one, and it dies
+--- with the UI it describes.
+local PROGRESS_MAX_FAILURES = 3
+
+--- Send whatever position is waiting, if there is one.
+---
+--- The whole of the failure policy is here, and it is one sentence: **nothing
+--- below may throw, and nothing below shows the reader anything.**
+local function reportPending(plugin, st)
+    if st.sending or not st.pending then
+        return
+    end
+    local page = st.pending
+    if not Progress.moved(st.floor, page) then
+        st.pending = nil
+        return
+    end
+    st.sending = true
+    -- pcall'd around the call rather than trusted: this runs from a UI task or
+    -- from an event handler, and a throw in either is a broken book, not a lost
+    -- page number.
+    local ok, sent, reason = pcall(Progress.report, st.file, st.desc, page, st.total)
+    st.sending = false
+    if not ok then
+        logger.warn("Meguru: could not report the position:", tostring(sent))
+        return
+    end
+    if sent then
+        -- The floor rises with the server, which is what makes the next turn
+        -- below it a no-op and a duplicate impossible.
+        st.floor, st.pending, st.failures = page, nil, 0
+        return
+    end
+    -- Refused. The position stays, so the closing flush can try it once more, and
+    -- nothing is re-armed here: the next page turn is what asks again.
+    --
+    -- `off`, `offline` and `behind` are not the server's fault and must not count
+    -- towards the breaker. An offline device is asked whether it is online once
+    -- per turn, which costs nothing, and the answer changing is how reporting
+    -- comes back. `behind` never arrives from here — both callers ask
+    -- `Progress.moved` before arming — and it is named anyway so that a caller
+    -- which one day forgets cannot retire the feature by asking for a page the
+    -- server is already past.
+    if reason ~= "off" and reason ~= "offline" and reason ~= "behind" then
+        st.failures = st.failures + 1
+    end
+end
+
+--- The per-book state of the position report, or nil when there is nothing to
+--- report from.
+---
+--- Kept on the plugin instance because a plugin instance belongs to one
+--- `ReaderUI`, which belongs to one book — the same reason the wide-page rotation
+--- state lives there. Nothing about it is written anywhere: `meguru/progress` has
+--- why the marker is not a place for it.
+---
+--- Declared after `reportPending` because `st.pump` closes over it; the reverse
+--- order would make the name resolve as a global and find nothing.
+local function progressState(plugin)
+    local st = plugin._meguru_progress
+    if st then
+        return st
+    end
+    local doc = plugin.ui and plugin.ui.document
+    if not (doc and doc.provider == "meguru" and type(doc.desc) == "table") then
+        return nil
+    end
+    local total = doc.getPageCount and doc:getPageCount() or doc.desc.count
+    total = tonumber(total)
+    if not total or total < 1 then
+        return nil
+    end
+    st = {
+        file     = doc.file,
+        desc     = doc.desc,
+        total    = total,
+        -- The server's own position as the floor, so the page the reader lands
+        -- on can never move it backwards. See `Progress.floorFor`.
+        floor    = Progress.floorFor(doc.desc, total),
+        pending  = nil,
+        -- The page the closing flush has already tried, so one exit does not pay
+        -- for the same request three times — see `flushProgress`.
+        flushed  = nil,
+        sending  = false,
+        failures = 0,
+    }
+    -- **One stable reference**, because `UIManager:unschedule` matches a task by
+    -- identity: a fresh closure per page turn would leave orphaned tasks behind
+    -- and report the same position twice.
+    st.pump = function()
+        reportPending(plugin, st)
+    end
+    plugin._meguru_progress = st
+    return st
+end
+
+--- A page turn: remember where the reader is and arm the debounce.
+local function notePageTurn(plugin, page)
+    local st = progressState(plugin)
+    if not st or st.failures >= PROGRESS_MAX_FAILURES then
+        return
+    end
+    page = math.floor(tonumber(page) or 0)
+    if page < 1 or page == st.pending then
+        return
+    end
+    -- At or below the server's own position: not a report, and not a task
+    -- either. This is the half that keeps a finished book finished.
+    if not Progress.moved(st.floor, page) then
+        return
+    end
+    st.pending = page
+    -- A page the reader has moved on to is one the closing flush has not tried,
+    -- whatever it tried before it.
+    st.flushed = nil
+    UIManager:unschedule(st.pump)
+    UIManager:scheduleIn(PROGRESS_DEBOUNCE_S, st.pump)
+end
+
+--- Send the page on screen now, because the book is ending.
+---
+--- The page is read from the UI rather than from `st.pending`, because the
+--- debounce may never have fired for it — and the last page of a session is the
+--- one most worth having.
+---
+--- **Deduplicated, because one exit reaches three of these.** Backing out of the
+--- reader sends `Close`, and that reaches `onClose`, `onCloseDocument` *and*
+--- `onFlushSettings` within a few lines of each other; on a server that is down,
+--- a flush without this check would spend three block timeouts on one page. The
+--- breaker is bypassed here on purpose — a closing book is the one moment where
+--- one blocked request is affordable — so `flushed` is what stands in its place.
+local function flushProgress(plugin)
+    local st = progressState(plugin)
+    if not st then
+        return
+    end
+    -- `plugin.ui` is guarded even though a close handler should always have one:
+    -- `currentPage` indexes it directly, and the one thing this path may never do
+    -- is throw — an exception here would come out of a close event, where the
+    -- reader's book is the thing being closed.
+    local ui = plugin.ui
+    local page = math.floor(tonumber(ui and currentPage(ui)) or 0)
+    if Progress.moved(st.floor, page) then
+        st.pending = page
+    end
+    if not st.pending or st.pending == st.flushed then
+        return
+    end
+    st.flushed = st.pending
+    -- Also the cleanup: a task armed 1.5s ago would otherwise outlive the book
+    -- and report a position for a document that is gone.
+    UIManager:unschedule(st.pump)
+    st.failures = 0
+    reportPending(plugin, st)
+end
+
 -- Curated ConfigDialog ---------------------------------------------------------
 
 --- One stock KOpt row by name, or nil.
@@ -1569,6 +1748,24 @@ function Reader.install(plugin)
     -- page and a reader looking at a gray rectangle with nothing to read.
     installPageErrorPage(plugin)
 
+    -- **Chained, not merged into the installer above**, which is where it would
+    -- otherwise belong: `installPageErrorPage` returns early for a document with
+    -- no `paintMissingPage`, and a page turn is not a painter's business —
+    -- hanging the position report on that guard would stop it silently on the
+    -- day the guard changes. Chaining is this file's own idiom (see
+    -- `installPanelZoom` and `curateConfigMenu`), and the captured handler is
+    -- whatever the field holds *now*, so the failed-page retry survives.
+    --
+    -- A turn that arrives without a page number falls back to the page on screen,
+    -- which is where the paging module keeps it.
+    local page_error_handler = plugin.onPageUpdate
+    plugin.onPageUpdate = function(self, page)
+        if type(page_error_handler) == "function" then
+            page_error_handler(self, page)
+        end
+        notePageTurn(self, page or (self.ui and currentPage(self.ui)))
+    end
+
     curateConfigMenu(plugin)
 
     -- And again once the reader is up, because a plugin can replace the method
@@ -1649,11 +1846,14 @@ function Reader.install(plugin)
         return true
     end
 
+    -- The rotation is restored first and the position reported last, so the
+    -- screen is the right way up before anything waits on a socket.
     plugin.onCloseDocument = function(self)
         if self._meguru_wide_rotate_installed then
             restoreWideRotate(self._meguru_rotate_state, self.ui)
             self._meguru_wide_rotate_installed = false
         end
+        flushProgress(self)
     end
 
     plugin.onClose = function(self)
@@ -1661,6 +1861,25 @@ function Reader.install(plugin)
             restoreWideRotate(self._meguru_rotate_state, self.ui)
             self._meguru_wide_rotate_installed = false
         end
+        flushProgress(self)
+    end
+
+    -- **The two seams that end a session without closing the book**, and both are
+    -- needed: closing the lid runs `UIManager:flushSettings()` and *then*
+    -- broadcasts `Suspend`, so both arrive a moment apart and the second finds
+    -- nothing left to send — which is what `flushed` is for. Backing out to the
+    -- FileManager reaches `onCloseDocument` and neither of these.
+    --
+    -- Assigned rather than chained because neither is assigned anywhere else in
+    -- this plugin; the four that were already assigned above are extended in
+    -- place for the opposite reason — a second assignment to any of them would
+    -- silently replace the first.
+    plugin.onFlushSettings = function(self)
+        flushProgress(self)
+    end
+
+    plugin.onSuspend = function(self)
+        flushProgress(self)
     end
 
     return true

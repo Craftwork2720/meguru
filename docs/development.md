@@ -641,3 +641,27 @@ Each step must pass before the next:
     then outermost, so **it** answers even with the other plugin enabled — the one arrangement where
     the order is reversed, and the only row here that cannot be argued from the source. Nothing may
     hang and two viewers must never open.
+
+26. **The position goes back to Komga, and the loop closes.** This needs a live Komga whose
+    OPDS catalogue is configured with **the account that does the reading** — the write lands on
+    whichever user the catalogue authenticates as, so on any other account the whole feature is
+    silent and looks broken for a reason that is not in the client at all. It is also the only
+    step here that needs the *server's* side read back, so keep Komga's own web UI open beside it.
+
+    | # | do | expected |
+    |---|---|---|
+    | a | read to a page, wait ~2s | one `reported page N of M to …` line in `crash.log`, and the book's page in Komga's web UI moves to N |
+    | b | re-read the series feed | `pse:lastRead` is the page that was sent — **one-based**, so page 12 reads back as `12`, not `11` |
+    | c | flick through ten pages quickly | **one** line, for the newest page. A line per page means the debounce is not collapsing the burst |
+    | d | turn *backwards*, then stop | **no** line. The floor refuses a page the server is already past, and a finished book is never un-finished |
+    | e | back out of the reader, then open the same book from History | no second report for a page already sent, and the reader's own place is untouched |
+    | f | close the lid mid-book | a report goes out on suspend — the last page of a session is the one most worth having |
+    | g | untick ⋮ → Meguru → Settings → *Report reading progress to Komga*, turn a page | no line, and it stops **at the next page** rather than at the next book |
+    | h | turn Wi-Fi off and read on | no line, no dialog, nothing on screen; turning Wi-Fi back on resumes reporting without reopening the book |
+    | i | point the catalogue at a Komga behind a path prefix | the logged URL keeps the prefix (`…/komga/api/v1/books/…/read-progress`) |
+    | j | read a **Suwayomi** book | no line at all — its own page fetches already tell its server, and it is deliberately not on the list |
+
+    Then the one that is easy to get wrong: **a book Komga has already marked read.** Open it, turn
+    to page 2, and check the server still says finished. If it does not, the floor was not seeded —
+    which happens when the marker was written without a `last_read`, and is the same hole
+    `docs/known-issues.md` records for `driverItemFor`.

@@ -45,20 +45,25 @@ Invariants when touching these rows:
   so both fields are usable in these rows. `text_func` renders on either, which is why
   the destination rows carry their state in the text rather than in a `mandatory` value
   slot.
-- **A `Settings` submenu on both surfaces** — the reader's holds eight rows (auto-open,
-  panel zoom, panel view, hide status bar, save folder, per-server subfolder,
-  `Covers for folders`,
-  default reader for `.cbz`), the FileManager's the four that are not about a book
-  already open. The FileManager's depth is a deliberate cost, paid so the two menus
-  read the same. No `sorting_hint` exists below the top-level `meguru` item — the
-  sorter only ever orders a page's own rows.
+- **A `Settings` submenu on both surfaces** — the reader's holds the rows that are about
+  a book being read (auto-open next in series, report reading progress, hide status bar,
+  save folder, subfolder per server, `Covers for folders`, default reader for `.cbz`,
+  check for updates), the FileManager's the ones that are not. **No panel row is among
+  them**, and that is a decision rather than an omission: all three panel choices live in
+  the viewer's own button row, where the reader can see what they do while looking at the
+  page they do it to — see `docs/panel-zoom.md`. The FileManager's depth is a deliberate
+  cost, paid so the two menus read the same. No `sorting_hint` exists below the top-level
+  `meguru` item — the sorter only ever orders a page's own rows.
 - **`Covers for folders` is the one thing below `Settings`, and it is an exception
   rather than a precedent.** Its three rows are switches for one feature, and as flat
   rows they would take `Settings` from six entries to nine while naming servers instead
   of the thing they belong to. The level is bought back by the row above them saying
   what the group *is* — which is the whole job `Settings` does one level up, and the
   reason "one level deep" existed. A second such submenu should have to make the same
-  argument.
+  argument. **The position report is the case that did not make it**: one server accepts
+  a write, so its row is flat — a submenu would cost a tap to say less than the row says
+  by itself. A second driver with a write path converts it into one, and that is the
+  argument it will have to make.
 - **The separator is *under* the row that carries it** (`touchmenu.lua:714`), and is
   dropped when that row is last on a page (`touchmenu.lua:713`) — so a separator is a
   hint about the list, never a guarantee about the screen. Two lines split `Settings`
