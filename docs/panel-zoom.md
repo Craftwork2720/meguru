@@ -801,21 +801,51 @@ frame around stock's.** `ImageViewer:init` builds `main_frame` and calls `update
 last statement, and `update()` is what puts `button_container` into the frame;
 `ImageViewer:onShow` does *not* rebuild it. So swapping the table and the container after
 `new{}` leaves the frame holding stock's, and a viewer that opens with the row already
-**visible** — which is every re-open this file does — paints stock's row. What hid that
-until a reader reported it is the middle tap: it calls `update()` itself, so a row
-summoned by hand was always the right one, and only the re-opens showed the wrong one. The
+**visible** — which is every re-open the reader asked for, since those carry the row's state —
+paints stock's row. What hid that until a reader reported it is the middle tap: it calls
+`update()` itself, so a row summoned by hand was always the right one, and only the re-opens
+showed the wrong one. The bottom-menu gesture summons the row through the same `update()`, so
+it lands on the same repair. The
 repair is one `viewer:update()` after the swap. The general shape is worth keeping: **a
 widget that replaces parts of itself after its constructor has to re-run whatever puts
 those parts into its layout**, and the failure is invisible in every path where something
 else happens to call it later.
 
+**The row is hidden until the reader asks for it, and they ask with the reader's own bottom-menu
+gesture.** A tap in the strip the bottom menu answers to, or a swipe north out of it, and the row
+appears. Both rectangles and the gate are read where `ReaderConfig` reads them — `DTAP_ZONE_CONFIG`
+and its taller, narrower `_EXT` from `G_defaults`, and `activate_menu`, which decides whether the
+tap or the swipe is the one that opens the menu — so a reader who has moved the zone, or turned one
+of the two gestures off in the reader, gets the same answer in here. See `bottomMenuTap` and
+`bottomMenuSwipe` in `meguru/ui/panelzoom.lua`.
+
+**Showing and not toggling**, because that is the shape of the gesture being copied: the bottom
+menu *opens*. It is also the only predictable answer here, since the row then occupies the very
+strip the gesture came from — a second press lands on a button, not on the zone.
+
+In the two panel views the strip is checked **before the thirds**, for the reason the reader's own
+zone overrides `tap_forward` and `tap_backward`: a tap down there means the menu, not the next
+panel. Stock's screenshot corner is checked before the strip, since that corner sits inside it —
+a deliberate gesture this file has kept out of everything else's way since the panel views existed.
+
+Two things this replaced, and the second is why it was worth doing:
+
+- **The free view's permanent row.** That view's reader could not summon buttons back — its tap
+  closes the view — so the row was simply always up. One gesture now works in all three views, and
+  the strip is taken only when it is wanted. The way out is untouched: a tap *outside* the strip
+  still closes the view. A tap *on* the row does nothing, rather than closing the view out from
+  under a reader aiming at `+`, which is the one guard the new arrangement needed.
+- **The middle tap as the only way in.** It is still stock's toggle, and still how the row is
+  hidden in the two panel views; it is no longer the only way to reach a control that the reader's
+  own reader puts in that strip.
+
 **The row stays open across the re-opens, and that is what makes the button usable.**
 Changing the level is a close-and-reopen, and the new viewer would start with its chrome
-hidden — so a reader comparing two levels had to middle-tap to bring the buttons back
-between every pair, and the button can only be pressed while the row is up. Its state
-travels with the re-open, on the call rather than on the carried view, exactly as
-`at_end` does; the page boundary carries it too, since a crossing is not a reason to take
-the buttons out from under a finger that was using them. Both are read *before* the close
+hidden — so a reader comparing two levels had to summon the row again between every pair,
+and the button can only be pressed while the row is up. Its state travels with the re-open,
+on the call rather than on the carried view, exactly as `at_end` does; the page boundary
+carries it too, and so does the view switch, since none of them is a reason to take the
+buttons out from under a finger that was using them. All are read *before* the close
 that precedes the reopen, which is the rule the handoff already follows for `mode` and
 `rotate` — and one of them was first written reading `self.buttons_visible` inside the
 tick, which is after the close, and would have worked by luck rather than by design.
@@ -931,11 +961,11 @@ tall decision to make, and a panel too wide for it is walked in x instead.
 
 **The free view walks no steps and asks no detector.** A long-press opens the whole page with
 pinch and drag, centred on the finger; there are no panels, no stops and no page turning, and
-the button row is permanent — under it the reader is simply *looking at the page*, which is
-what the other two views are alternatives to. The gesture asks `getPageDims` and not
-`getPanelsFromPage` for exactly that reason, and it costs nothing: `getPageDims` **is** the
-fetch and the decode, so the bytes the render wants are in hand either way, and a page the
-detector would have refused opens in this view like any other.
+the button row starts hidden like the other two views' — under it the reader is simply *looking
+at the page*, which is what the other two views are alternatives to. The gesture asks
+`getPageDims` and not `getPanelsFromPage` for exactly that reason, and it costs nothing:
+`getPageDims` **is** the fetch and the decode, so the bytes the render wants are in hand either
+way, and a page the detector would have refused opens in this view like any other.
 
 **Every gesture ends in one of three stock seams, each read in the source rather than
 assumed:**
@@ -1033,9 +1063,9 @@ button row takes a strip of the screen, and a tile shaped like the screen does n
 `_scaled_image_func` (`imageviewer.lua:160`) and builds the widget around it with
 `scale_factor = 1` (`:451`), so the tile is drawn 1:1 and what overflows is painted *under* the
 button row.** `stepImage` therefore clamps its output to the size stock hands the image to fit
-into, which is the picture area. In the free view — where the row is always up — a screen-sized
-tile is a tile whose top and bottom the reader never sees, and that is what a reader reported as
-the zoom not working at all.
+into, which is the picture area. In the free view the row was permanently up when a reader
+reported this, and a screen-sized tile is then a tile whose top and bottom they never see — which
+is what "the zoom not working at all" was.
 
 `meguruFreeMapping` is the other half: one page pixel is `scale x shrink` screen pixels, where
 that clamp is `shrink`, and the origin is where the fitted tile sits inside the area. It was
@@ -1045,11 +1075,16 @@ picture sits while an *origin* is not. The two conversions that need an origin a
 spread's about-point; the pan needs the factor as well, which it takes from the same place. The
 tap no longer needs any of it — see below — but the spread does.
 
-**A tap closes this view.** The row is permanent here and there are no steps for the thirds to
-walk, so the gesture a reader reaches for first was doing nothing; closing is what stock's own
-viewer does with a tap outside its frame, and it is the way out that needs no aim. Moving the
-centre to the point tapped was tried first and was the wrong shape: it reads as a jump, and it
-needs the mapping above to be right before it can be trusted at all.
+**A tap outside the bottom strip closes this view.** There are no steps for the thirds to walk,
+so the gesture a reader reaches for first was doing nothing; closing is what stock's own viewer
+does with a tap outside its frame, and it is the way out that needs no aim. The strip is the one
+exception, and it is the reader's own: a tap down there summons the row, the way it opens the
+bottom menu everywhere else. **And the row then stays until the view goes** — a tap anywhere else
+closes the view rather than putting the row away, so a reader who wants the strip back leaves and
+opens again. That is the arrangement the report asked for: the aim-free exit was worth more than a
+second way to hide chrome. Moving the centre to the point tapped was tried first and was the wrong
+shape: it reads as a jump, and it needs the mapping above to be right before it can be trusted at
+all.
 
 **Panning carries the page with the finger, and that is a decision about stock's convention
 rather than about signs.** `ImageViewer:panBy(x, y)` moves the *image* by `(x, y)`, and every
@@ -1065,10 +1100,10 @@ second-guessed.
 
 **Three things are off here, each for a reason rather than by omission.** Page turning,
 because the reader asked for a page and not a book — the step methods are inert, and the
-hardware keys bound to them with it. The middle-tap toggle, because the row is meant to be
-permanent, and this is the only view whose reader cannot summon the buttons back themselves;
-**a tap closes the view instead**, which is the way out that needs no aim. And the pre-warm,
-because
+hardware keys bound to them with it. The middle-tap toggle, because **a tap closes the view
+instead** — the way out that needs no aim, which is worth more in this view than a toggle
+nobody asked for; the row is summoned by the bottom-menu strip like every other view's, and it
+is put away by leaving. And the pre-warm, because
 there is no next step and its page branch would fetch the next page's dims *and panels* to
 prepare a turn that cannot happen.
 

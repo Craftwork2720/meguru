@@ -326,7 +326,8 @@ Each step must pass before the next:
     count must say four. A panel **taller** than the window takes two passes and the
     next panel is not reached until its bottom edge has been shown, which is the half
     of this that no screenshot will show if it goes missing. Then the level, which lives
-    in the viewer's button row rather than the menu (a middle tap reveals it): tapping the
+    in the viewer's button row rather than the menu (the reader's own bottom-menu strip
+    summons it — a tap in the bottom eighth, or a swipe north out of it): tapping the
     `1.7x` button must cycle 1.4 / 1.7 / 1.9, change how much of the page the window
     covers — narrower as the number rises — with the step count following it, and
     **remember the choice**, so the next page, the next book and the next start are at the
@@ -398,6 +399,24 @@ Each step must pass before the next:
     it is the mechanism moving rather than the page is to set `PANEL_WINDOW_TOLERANCE` to
     **0** and re-read the same panel: the step count must go back to what it was.
 
+    **Then the row itself, because it is one gesture in all three views now and not three
+    behaviours.** Every long-press must open the viewer with the row **hidden** — the free view
+    included. A tap in the **bottom eighth** of the screen must summon it ✓, and so must a swipe
+    **north** out of that strip ✓ — while a swipe north *outside* it still walks the panels (and
+    still pans the page, in the free view) ✓. The strip must win over the left and right thirds:
+    a tap in the bottom-left eighth moves to the **row**, not to the previous panel ✓, which is
+    what the reader's own `DTAP_ZONE_CONFIG` already does to `tap_forward`. On a device
+    **without** multitouch the bottom-left tenth must still save a screenshot ✓ — it is checked
+    first, and only while the row is hidden. Then KOReader's own *Activate menu* rows, under
+    taps and gestures: untick **With a swipe** (that is `activate_menu = "tap"`) and the swipe
+    must stop summoning; untick **With a tap** (`"swipe"`) and the tap must ✓ — the same two
+    gates the reader applies, which is the whole point of reading them instead of hard-coding
+    the strip. In the two panel views a **middle tap** must still hide and show the row ✓, and
+    the row must stay up across a level change, a view switch and a page boundary ✓. And the
+    picture: with the row up the artwork must **re-fit** the smaller area, with nothing painted
+    under the buttons ✓, and in the free view a tap and a spread must still land where they
+    should ✓ — that mapping reads the picture area, which the row is what changes.
+
     Then the third view (*Panel view: Free View*, or the row's switch twice). Long-press a
     point: the page must open **centred on that point**, sharp at 2× and 3× — it is a render
     from the file, not a magnified tile — and then: pinch changes the scale ✓, drag moves the
@@ -405,8 +424,11 @@ Each step must pass before the next:
     most often made at and the one the four-direction swipe names cannot express (which must *not* close the viewer ✓),
     and the page must move **with the finger** — dragging right carries the artwork right, the
     way a map does, not against it ✓ —
-    a **tap closes the view** ✓ — the way out that needs no aim —
-    the row is up from the first paint and a middle tap does **not** hide it ✓, PgFwd/PgBack
+    a **tap closes the view** ✓ — the way out that needs no aim — except in the bottom strip,
+    which summons the row here as it does in the other two views; a tap *on* the row must
+    **not** close the view ✓, and a tap elsewhere closes it **whether the row is up or not** ✓
+    (the row is put away by leaving, which is the arrangement this view asked for),
+    the row is **hidden from the first paint** like the other two views' ✓ and PgFwd/PgBack
     and a swipe in any direction do **not** turn the page ✓, and the zoom is three buttons:
     `-` and `+` move by a **quarter** of a level, stop at 1x and 4x, and step from wherever the reader is
     (pinch to 2.4x, press `+`, get 2.65x ✓), while the value between them cycles

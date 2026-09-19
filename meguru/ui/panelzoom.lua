@@ -86,6 +86,79 @@ local function nextIsRight(mode)
     return mode ~= "manga"
 end
 
+-- The strip the reader's own bottom menu answers to, and whether a gesture there summons it.
+--
+-- **"Like the bottom menu" is a claim about a zone, so the zone is read from where KOReader
+-- reads it rather than guessed at.** `ReaderConfig` registers its `ShowConfigMenu` — the
+-- event a reader knows as the bottom menu, and the dispatcher's own title for it — over two
+-- rectangles in `G_defaults`: `DTAP_ZONE_CONFIG`, the bottom eighth of the screen across its
+-- whole width, and `DTAP_ZONE_CONFIG_EXT`, a taller and narrower one above it. It also gates
+-- the gesture on `activate_menu`: a tap opens the menu unless that says `"swipe"`, and a
+-- swipe *north* unless it says `"tap"`. Mirroring both rectangles and the gate is what makes
+-- this the same gesture rather than a similar one — a reader who has moved the zone, or
+-- turned one of the two gestures off in the reader, gets the same answer in here.
+--
+-- The reader's own strip already **overrides** `tap_forward` and `tap_backward`, so taking it
+-- in the viewer takes nothing a reader was using for anything else: the thirds below are
+-- those same two gestures by another name.
+--
+-- Read from the globals KOReader makes, with the stock figures written down beside them,
+-- because this runs inside a touch event: a build without either setting must cost the
+-- reader nothing at all.
+local BOTTOM_ZONE = { x = 0, y = 7 / 8, w = 1, h = 1 / 8 }
+local BOTTOM_ZONE_EXT = { x = 1 / 4, y = 4 / 5, w = 2 / 4, h = 1 / 5 }
+
+-- Read the way `meguru/settings` reads its own store: these are globals KOReader makes at
+-- startup, this runs inside a touch event, and a build or a moment without them must cost
+-- the reader nothing. The stock figures above are the fallback, so a missing setting costs
+-- the reader the same gesture the reader itself would have had.
+local function readGlobals(name)
+    local store = rawget(_G, name)
+    if store and type(store.readSetting) == "function" then
+        return store
+    end
+    return nil
+end
+
+local function bottomZoneSetting(name, fallback)
+    local defaults = readGlobals("G_defaults")
+    local zone = defaults and defaults:readSetting(name)
+    if type(zone) == "table" and type(zone.x) == "number" then
+        return zone
+    end
+    return fallback
+end
+
+-- Which gestures open the bottom menu: `"swipe_tap"` unless the reader chose otherwise, which
+-- is the same default `ReaderConfig` falls back to.
+local function activationMenu()
+    local settings = readGlobals("G_reader_settings")
+    return (settings and settings:readSetting("activate_menu")) or "swipe_tap"
+end
+
+local function inZone(zone, x, y)
+    return x >= zone.x and x <= zone.x + zone.w
+        and y >= zone.y and y <= zone.y + zone.h
+end
+
+-- Is this point inside either rectangle? Fractions of the screen, as a touch zone is.
+local function inBottomMenuZone(pos)
+    if not (pos and pos.x and pos.y) then
+        return false
+    end
+    local x, y = pos.x / Screen:getWidth(), pos.y / Screen:getHeight()
+    return inZone(bottomZoneSetting("DTAP_ZONE_CONFIG", BOTTOM_ZONE), x, y)
+        or inZone(bottomZoneSetting("DTAP_ZONE_CONFIG_EXT", BOTTOM_ZONE_EXT), x, y)
+end
+
+local function bottomMenuTap(pos)
+    return activationMenu() ~= "swipe" and inBottomMenuZone(pos)
+end
+
+local function bottomMenuSwipe(pos, direction)
+    return activationMenu() ~= "tap" and direction == "north" and inBottomMenuZone(pos)
+end
+
 -- The lazy entry `ImageViewer` wants for each step.
 --
 -- Lazy on purpose in both directions: steps the reader never reaches are never
@@ -392,6 +465,41 @@ function PanelViewer:onShow()
     return ImageViewer.onShow(self)
 end
 
+-- Show the button row, the way the reader's bottom menu is summoned.
+--
+-- **Showing, and not toggling, because that is the shape of the gesture being copied**: the
+-- bottom menu *opens*. It is also the only predictable answer here, since the row then
+-- occupies the very strip the gesture came from — a second press lands on a button, not on
+-- the zone, so a toggle would depend on where in the row the reader happened to aim. Hiding
+-- it is the middle tap in the two panel views, as it always was.
+function PanelViewer:meguruShowButtons()
+    if not self.buttons_visible then
+        self.buttons_visible = true
+        -- The pair stock's own `onTap` uses: the field, then the rebuild that puts
+        -- `button_container` into the frame and gives the picture the smaller area.
+        self:update()
+    end
+    return true
+end
+
+-- Is this point on the button row rather than on the page?
+--
+-- **Measured from the bottom of the screen, and not from `button_container.dimen`.** A
+-- container's `dimen` is the rectangle it was *asked* to occupy; KOReader hands the real origin
+-- down at paint time and does not write it back — `CenterContainer:paintTo` passes `x`/`y` to
+-- its child and leaves its own alone (`centercontainer.lua:9-32`) — so testing against it would
+-- answer "yes" for a tap at the *top* of the screen. The row is the last element of the frame
+-- and the frame's group fills the height exactly, so its bottom edge is the screen's and its
+-- own height is the whole of the strip.
+function PanelViewer:meguruOnButtons(pos)
+    local row = self.buttons_visible and self.button_container
+    if not (row and pos and type(row.getSize) == "function") then
+        return false
+    end
+    local height = row:getSize().h or 0
+    return height > 0 and pos.y >= Screen:getHeight() - height
+end
+
 -- The left and right thirds move through the panels; every other tap is stock.
 --
 -- Stock already does thirds, but it picks the sides from `BD.mirroredUILayout`
@@ -399,25 +507,47 @@ end
 -- the frame closes the viewer, a middle tap toggles the button row, and on a
 -- device without multitouch the bottom-left corner saves a screenshot — a
 -- deliberate gesture this must not quietly take over.
+--
+-- **What is not left to it is the reader's bottom-menu strip**, which the viewer now answers
+-- to in all three views — see the zone above. It is checked before the thirds for the reason
+-- the reader's own zone overrides `tap_forward`: a tap down there means the menu, not the
+-- next panel. The screenshot corner is checked before *it*, because that corner sits inside
+-- the strip and is a deliberate gesture this file has kept out of the way of everything else.
 function PanelViewer:onTap(arg, ges)
     if self.meguru_free then
-        -- **A tap closes this view.** It has no thirds to walk and its row is permanent, so
-        -- the gesture a reader reaches for first was doing nothing at all; closing is what
-        -- stock's own viewer does with a tap outside its frame, and it is the way out that
-        -- needs no aim. Moving the centre to the point tapped was tried first and was the
-        -- wrong shape: it reads as a jump, and it needs the absolute mapping below to be
-        -- right before it can be trusted at all.
+        -- **The bottom menu's strip is the one gesture this view shares with the other two**,
+        -- and it is asked first so that a tap down there summons the row rather than closing
+        -- the view the reader is trying to keep.
+        if bottomMenuTap(ges.pos) then
+            return self:meguruShowButtons()
+        end
+        -- **A tap on the row is not a tap on the page.** The buttons eat the taps that land on
+        -- them, but the strip around them belongs to their container, and letting one through
+        -- would close the view out from under a reader aiming at `+`. Nothing is the right
+        -- answer there rather than navigation: this view has nothing to navigate.
+        if self:meguruOnButtons(ges.pos) then
+            return true
+        end
+        -- **A tap closes this view.** It has no thirds to walk, so the gesture a reader
+        -- reaches for first was doing nothing at all; closing is what stock's own viewer does
+        -- with a tap outside its frame, and it is the way out that needs no aim. Moving the
+        -- centre to the point tapped was tried first and was the wrong shape: it reads as a
+        -- jump, and it needs the absolute mapping below to be right before it can be trusted
+        -- at all.
         self:onClose()
         return true
     end
     if self._images_list and ges.pos:intersectWith(self.main_frame.dimen) then
         local screen_w = Screen:getWidth()
-        if ges.pos.x < screen_w/3 or ges.pos.x > screen_w*2/3 then
-            local screenshot_corner = not Device:hasMultitouch()
-                and not self.buttons_visible
-                and ges.pos.x < screen_w/10
-                and ges.pos.y > Screen:getHeight()*9/10
-            if not screenshot_corner then
+        local screenshot_corner = not Device:hasMultitouch()
+            and not self.buttons_visible
+            and ges.pos.x < screen_w/10
+            and ges.pos.y > Screen:getHeight()*9/10
+        if not screenshot_corner then
+            if bottomMenuTap(ges.pos) then
+                return self:meguruShowButtons()
+            end
+            if ges.pos.x < screen_w/3 or ges.pos.x > screen_w*2/3 then
                 local tapped_right = ges.pos.x > screen_w*2/3
                 if tapped_right == nextIsRight(self.mode) then
                     self:onShowNextImage()
@@ -441,6 +571,17 @@ end
 -- magnifies the tile the reader is looking at, and panning it is what they asked for.
 function PanelViewer:onSwipe(arg, ges)
     local direction = ges.direction
+    -- **The bottom menu answers to a swipe north as well as to a tap**, when the reader has
+    -- left that half of `activate_menu` on. The zone is tested at the *start* of the gesture,
+    -- which is where the reader's own zone manager tests it — `ges.pos` is the beginning and
+    -- `ges.end_pos` the end, the pair the free view's branch below already reads for its pan.
+    --
+    -- It comes before both the free view's pan and the chain below, so the strip no longer
+    -- pans or walks. That is the cost of sharing the gesture with the reader, and it is the
+    -- reader's own arrangement: down there, the strip does not turn the page either.
+    if bottomMenuSwipe(ges.pos, direction) then
+        return self:meguruShowButtons()
+    end
     if self.meguru_free then
         -- **The finger's own path, not the direction it was classified as**, and that is the
         -- difference between a drag that works and one that does not. The detector names a
@@ -1077,6 +1218,11 @@ function PanelViewer:meguruCycleView()
     local ui, page = self.ui, self.page
     local doc = ui and ui.document
     local mode, rotate = self.mode, self.rotate
+    -- Read before the close, like the zoom button and the handoff. The switch can only be
+    -- pressed while the row is up, so this is `true` whenever the reader is the one who
+    -- pressed it — but it is read rather than assumed, because "the row is up" is the row's
+    -- state and not this button's, and the next view must not invent one either way.
+    local show_buttons = self.buttons_visible
     if not (view and cur and ui and doc) then
         return
     end
@@ -1113,7 +1259,7 @@ function PanelViewer:meguruCycleView()
         window = kind == "window",
         free = kind == "zoom",
         level = view.level,
-        buttons_visible = true,
+        buttons_visible = show_buttons,
         -- Both window-shaped views are told where the reader already was, and each reads the
         -- half it needs: the free one opens *centred* on the point, the window one opens at
         -- the stop nearest the corner. The cropped view has no place of its own — its step
@@ -1154,9 +1300,11 @@ end
 --   * **`update` has to run afterwards.** `init` builds `main_frame` and calls
 --     `update()` itself, before any of this, so the frame it built holds *stock's*
 --     container; `ImageViewer:onShow` does not rebuild it, so a viewer that opens with
---     the row already visible — which is every re-open — would paint stock's row. The
---     reader's middle tap is what hid that until now: it calls `update()` after the
---     swap, so a row summoned by hand was always the right one.
+--     the row already visible — every re-open the reader asked for, since those carry the
+--     row's state — would paint stock's row. What hid that until a reader reported it is
+--     the middle tap: it calls `update()` after the swap, so a row summoned by hand was
+--     always the right one. The bottom-menu gesture summons the row the same way, through
+--     `meguruShowButtons`, so it lands on the same repair.
 --   * **`update` also re-letters `scale` and `rotate` by id without checking that they
 --     are there**, so a row without them is a nil call inside a paint. They are answered
 --     by seeding `button_by_id` — the map those lookups read — with a plain table that
@@ -1533,12 +1681,17 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         images_keep_pan_and_zoom = false,
         with_title_bar = false,
         fullscreen = true,
-        -- Chrome is the reader's to summon and their state to keep: a re-open that the
-        -- reader asked for — the zoom button, a page boundary — must not hide the row
-        -- they were just using. See `meguruCycleZoomLevel` and `meguruHandoff`. The free
-        -- view is the one that *asks* for its row to be permanent, since it is the only
-        -- view whose reader cannot summon it back with a middle tap.
-        buttons_visible = (opts and opts.buttons_visible == true) or free == true,
+        -- **The row starts hidden in every view, and the reader summons it with the reader's
+        -- own bottom-menu gesture** — a tap in that strip, or a swipe north out of it. See
+        -- `bottomMenuTap` for what that strip is and why it is read rather than guessed at.
+        -- Two things this replaced: the free view's permanent row, which was permanent only
+        -- because that view's reader had no way to summon one back (its tap closes the view),
+        -- and, in the two panel views, a middle tap that was the only way in.
+        --
+        -- Chrome is still the reader's to summon and their state to keep: a re-open that the
+        -- reader asked for — the zoom button, the view switch, a page boundary — must not
+        -- hide the row they were just using. See `meguruReopenAtLevel` and `meguruHandoff`.
+        buttons_visible = (opts and opts.buttons_visible == true) or false,
         rotated = rotates[1] or false,
     }
     -- **The row is cosmetic, so a failure to build it must cost the buttons and not the
