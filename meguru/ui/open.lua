@@ -569,25 +569,42 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
         lang             = ctx and ctx.lang,
     }
 
+    -- Whether the feed the browser holds cannot answer where the reader is in
+    -- this series, so that `openAsBook` asks `currentResumeTarget` instead.
+    --
+    -- **A server that flags chapters read** is the case: the page on screen
+    -- cannot answer it, because browsing with `filter=unread` removes exactly the
+    -- chapters the question is about, and with `filter=all` the flag is still not
+    -- in the entries. Left unanswered and fetched by `openAsBook`, which sits
+    -- below `currentResumeTarget` and can call it — a call from here would
+    -- resolve as a global, the failure `tools/check.py`'s fourth pass exists to
+    -- catch.
+    local server_target = driver.unreadFilter and true or nil
+
+    -- Where the reader actually is in this series, asked of the feed the browser
+    -- just fetched rather than of the catalog, which only knows what the last
+    -- sync saw. Nil when nothing in that feed has been read, or when no entry of
+    -- it belongs to this series — `offerResume` then falls back to the catalog,
+    -- which is the honest answer for a series never read.
+    --
+    -- **Asked only when the feed can answer, and that is what these lines are
+    -- about.** This used to be `driver.unreadFilter and nil or
+    -- freshResumeTarget(...)`, and in Lua `a and nil or b` is always `b`: a truthy
+    -- `a` makes the middle `nil` and the `or` takes `b`, and a falsy one makes the
+    -- whole left side falsy so the `or` takes `b` too. The sentence above was the
+    -- intent and the code was its opposite — `freshResumeTarget` ran on exactly
+    -- the servers it says it must not, and its answer, taken from the page on
+    -- screen, was the one `openAsBook` then used.
+    local resume
+    if not server_target then
+        resume = freshResumeTarget(driver, feed, feed_url, ctx, series)
+    end
+
     local registered = {
         context = series,
         item    = item,
-        -- Where the reader actually is in this series, asked of the feed the
-        -- browser just fetched rather than of the catalog, which only knows what
-        -- the last sync saw. Nil when nothing in that feed has been read, or when
-        -- no entry of it belongs to this series — `offerResume` then falls back
-        -- to the catalog, which is the honest answer for a series never read.
-        --
-        -- **Not asked at all on a server that flags chapters read.** The page on
-        -- screen cannot answer it: browsing with `filter=unread` removes exactly
-        -- the chapters the question is about, and with `filter=all` the flag is
-        -- still not in the entries. Left unanswered and fetched by `openAsBook`,
-        -- which sits below `currentResumeTarget` and can call it — a call from
-        -- here would resolve as a global, the failure `tools/check.py`'s fourth
-        -- pass exists to catch.
-        resume        = driver.unreadFilter and nil
-            or freshResumeTarget(driver, feed, feed_url, ctx, series),
-        server_target = driver.unreadFilter and true or nil,
+        resume        = resume,
+        server_target = server_target,
     }
     -- Said out loud because every way this can fail says so, and the success was
     -- the only silent outcome — which makes "is it catalogued?" unanswerable from
