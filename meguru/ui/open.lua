@@ -665,6 +665,10 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
         item    = item,
         resume        = resume,
         server_target = server_target,
+        -- The book's own title, when the server had to be asked for it. Not part
+        -- of `context`: that is `Marker.seriesContext`'s shape and holds the same
+        -- eight fields a marker does, and a title is not one of them.
+        title         = found.title,
     }
     -- Said out loud because every way this can fail says so, and the success was
     -- the only silent outcome — which makes "is it catalogued?" unanswerable from
@@ -2259,7 +2263,13 @@ function Open.openAsBook(browser, item, stream)
         series_name      = ctx.series_name,
         server_kind      = ctx.server_kind or kind,
         item_key         = registered and registered.item.item_key or nil,
-        title            = Naming.stripAliasPrefix(item.title or item.text),
+        -- **The server's title when it had to be asked for the series**, because an
+        -- aggregate titles a book differently from its series feed: it writes
+        -- `"<seriesTitle> <n>: <book title>"`, so this volume opened through
+        -- `keep-reading` and through `/series/{id}` would otherwise be two marker
+        -- files with two names for one book, and two History entries to match.
+        title            = Naming.stripAliasPrefix(
+            (registered and registered.title) or item.title or item.text),
         template         = stream.href,
         count            = tonumber(stream.count) or 0,
         last_read        = tonumber(stream.last_read) or nil,

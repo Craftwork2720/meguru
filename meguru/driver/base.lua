@@ -380,9 +380,13 @@ end
 --     status or the decode failed. So a driver still reads no bytes and needs no
 --     decoder, and stays a pure function over data it was handed.
 --
---     The answer is a **series identity**, so it is `discover`'s shape and not a
---     third one: `series_remote_id`, `discovered_from`, and optionally
---     `series_name` for a server whose own answer carries the name beside the id.
+--     The answer is **what the feed failed to say about this book**, so it is
+--     `discover`'s shape and not a third one: `series_remote_id`,
+--     `discovered_from`, and optionally `series_name` and `title` for a server
+--     whose own answer carries them. `title` is the book's own, and it is here
+--     because an aggregate titles a book *differently* from its series feed — so
+--     a marker written from one route and a marker written from the other would
+--     be two files for one book, and `Marker.dirFor` would make the folder twice.
 --     A name that arrives here **outranks `seriesName`'s derivation** from the
 --     book's title, and that precedence is not a convenience: the derivation
 --     peels trailing parentheticals and volume tokens off a *book*, so a server

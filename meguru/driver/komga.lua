@@ -335,6 +335,15 @@ end
 --- It is normalised here, as the feed's title is above, so both paths land on one
 --- spelling.
 ---
+--- **And the book's own title, for the same reason one step over.** An aggregate
+--- does not title a book the way its series feed does: it writes
+--- `"<seriesTitle> <n>: <book title>"`, so the same volume opened through
+--- `keep-reading` and through `/series/{id}` would be named `Marker.dirFor`'s way
+--- into two different files — two markers, two History entries, one book. The
+--- `BookDto` this request already carries holds `name`, which is exactly the
+--- string the series feed puts in `<title>`, so answering with it makes the two
+--- routes agree by construction rather than by comparing strings.
+---
 --- **Nil is the ordinary answer**, and it costs this book nothing it does not
 --- already lack: no template to read an id out of, a book the server will not
 --- serve, a REST surface closed by a deployment — each ends at the same flat
@@ -359,9 +368,14 @@ function Komga.resolveSeries(entry, stream, ctx, fetch_json)
     else
         name = Naming.stripSeriesLabel(name)
     end
+    local title = type(book.name) == "string" and book.name or ""
+    if title == "" then
+        title = nil
+    end
     return {
         series_remote_id = series_id,
         series_name      = name,
+        title            = title,
         -- The entry was read out of an aggregate, which is where the question
         -- came from even though the answer did not.
         discovered_from  = "aggregate",

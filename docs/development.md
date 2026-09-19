@@ -682,6 +682,7 @@ Each step must pass before the next:
     | g | read a **Kavita** or **Suwayomi** book from any feed | unchanged: both recover their series from the stream, and neither has the hook |
     | h | point the catalogue at a Komga behind a path prefix | the logged URL keeps the prefix (`…/komga/api/v1/books/…`) |
     | i | stop Komga, then tap from an aggregate | **no** folder and **no** dialog — the book still opens, as a flat one. A failed request must never cost a book |
+    | j | open the same volume from `/series/{id}` afterwards | the **same** file, in the same folder, with the same name. An aggregate titles a book `"<seriesTitle> <n>: <book title>"` where the series feed writes only the book's own title, so this is the row that catches a marker named by the feed instead of by the server — two names would be two markers and two History entries for one book |
 
     Then the two that need the *server* rather than the client: that `/api/v1/books/{id}` accepts
     the same HTTP Basic credentials as the OPDS surface, and that `BookDto` carries `seriesId` and
