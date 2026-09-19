@@ -520,10 +520,11 @@ local function makeJsonFetch(conn)
             return nil
         end
         -- Lazily, like the OPDS parser: a build without it costs this one hook
-        -- rather than the whole module.
-        local ok_json, json = pcall(require, "json")
-        if not ok_json or type(json) ~= "table" or type(json.decode) ~= "function" then
-            logger.warn("Meguru: no JSON decoder available for", Net.redactUrl(url_str))
+        -- rather than the whole module. `Net.jsonDecoder` is where the names are
+        -- known — one of them answered nothing on a device, which is why there is
+        -- more than one.
+        local json = Net.jsonDecoder()
+        if not json then
             return nil
         end
         local ok_decode, decoded = pcall(json.decode, body)

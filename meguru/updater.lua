@@ -145,8 +145,8 @@ local function readCache()
     end
     local raw = handle:read("*a")
     handle:close()
-    local ok_json, json = pcall(require, "json")
-    if not ok_json then
+    local json = Net.jsonDecoder()
+    if not json then
         return nil
     end
     local ok_decode, data = pcall(json.decode, raw)
@@ -157,8 +157,8 @@ local function readCache()
 end
 
 local function writeCache(data)
-    local ok_json, json = pcall(require, "json")
-    if not ok_json then
+    local json = Net.jsonDecoder()
+    if not json then
         return
     end
     local ok_encode, encoded = pcall(json.encode, data)
@@ -320,8 +320,8 @@ end
 -- ---------------------------------------------------------------------------
 
 local function parseRelease(body)
-    local ok_json, json = pcall(require, "json")
-    if not ok_json then
+    local json = Net.jsonDecoder()
+    if not json then
         return nil, "unreadable"
     end
     local ok_decode, data = pcall(json.decode, body)

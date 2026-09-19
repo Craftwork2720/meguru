@@ -360,6 +360,47 @@ function Net.feedFrom(root)
     return root
 end
 
+--- The JSON decoder this build ships, or nil.
+---
+--- **More than one name, because KOReader promises neither.** Its own code asks for
+--- `json` (`frontend/ui/wikipedia.lua`, `frontend/apps/reader/modules/readerdictionary.lua`)
+--- and for `rapidjson` (`plugins/exporter.koplugin`, `plugins/calibre.koplugin`), and a
+--- build can have one and not the other. That is measured rather than imagined:
+--- `require("json")` answered nothing on a ZenOS Kindle where the same plugin's own
+--- request to `/api/v1/books/{id}` came back 200 and could not be read — which is why
+--- this function exists and why the lookup is not a single `require`.
+---
+--- **Asked once per process and remembered**, unlike anything that answers a question
+--- about a book: what a build can decode does not change under it, and the lookup is
+--- three `pcall(require)`s that would otherwise run on every open. The name that
+--- answered is logged once, at debug, for whoever has to work out why a decode failed
+--- on a device — and the absence is a `warn`, once, because a silent nil here is a
+--- feature that quietly does nothing.
+---
+--- Both functions are required, not just `decode`: `meguru/updater` needs `encode` to
+--- cache a release, and a module that could only decode would move the failure rather
+--- than fix it.
+local json_decoder, json_looked
+function Net.jsonDecoder()
+    if json_looked then
+        return json_decoder
+    end
+    json_looked = true
+    for _, name in ipairs({ "rapidjson", "json", "cjson" }) do
+        local ok, mod = pcall(require, name)
+        if ok and type(mod) == "table"
+            and type(mod.decode) == "function" and type(mod.encode) == "function" then
+            json_decoder = mod
+            logger.dbg("Meguru: JSON through", name)
+            return json_decoder
+        end
+    end
+    logger.warn("Meguru: this build has no JSON decoder"
+        .. " (tried rapidjson, json, cjson) - anything that reads a server's JSON"
+        .. " answer will do nothing")
+    return nil
+end
+
 --- Parse an Atom feed body into the flat table shape the built-in OPDS parser
 --- produces: `feed.entry` is an array, `entry.link` is an array of
 --- `{ rel, href, type, ... }`, and OPDS-PSE attributes sit on the link keyed by
