@@ -723,6 +723,13 @@ function Feed.resolveSeries(entry, stream, server, ctx)
         or found.series_remote_id == "" then
         return nil
     end
+    -- Said out loud, because it is the one thing that tells this path apart from
+    -- `discover` having answered. Without it a book that still ends up flat says
+    -- nothing about *why*, and "the request was never made", "the request failed"
+    -- and "the answer was rejected" are three different repairs.
+    logger.info("Meguru: resolved the series for", tostring(entry and entry.title),
+        "-", tostring(found.series_remote_id),
+        found.series_name and ("(" .. tostring(found.series_name) .. ")") or "")
     return found
 end
 
