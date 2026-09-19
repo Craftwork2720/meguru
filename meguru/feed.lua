@@ -484,6 +484,58 @@ local function makeFetch(conn)
     end
 end
 
+--- A `fetch_json(url) -> table` closure bound to one server's credentials, for
+--- the driver hook that has to read a JSON answer — today only
+--- `resolveSeries`.
+---
+--- **Beside `makeFetch` on purpose**, so the two credential paths cannot drift
+--- apart: both take the server's username and password from the one `conn` and
+--- neither logs the URL verbatim. What differs is what they ask for and how long
+--- they will wait, and both differences are deliberate rather than copied:
+---
+---   * the media type is the API's own, not a feed's, and the body is **decoded
+---     here** so that no driver needs a decoder or a policy for its absence;
+---   * the timeout is `"resume"` (4s/8s) where `makeFetch` passes none and so
+---     gets `"feed"` (10s/30s) inside `Net.fetchFeed`. That is not an oversight
+---     to be "fixed" into agreement: `resolveStream` is reached from an open that
+---     has already accepted a wait, where this one is asked while the reader is
+---     waiting for the resume dialog to appear — the same class of wait
+---     `currentResumeTarget` sizes its own fetches for.
+---
+--- Every refusal is one logged line and a nil; a reader never sees any of them.
+local function makeJsonFetch(conn)
+    return function(url_str)
+        if type(url_str) ~= "string" or url_str == "" then
+            return nil
+        end
+        local code, _, body = Net.get(url_str, {
+            username = conn.username,
+            password = conn.password,
+            accept   = "application/json",
+            timeout  = "resume",
+        })
+        if code ~= 200 or type(body) ~= "string" or body == "" then
+            logger.dbg("Meguru: no JSON answer from", Net.redactUrl(url_str),
+                "(", tostring(code), ")")
+            return nil
+        end
+        -- Lazily, like the OPDS parser: a build without it costs this one hook
+        -- rather than the whole module.
+        local ok_json, json = pcall(require, "json")
+        if not ok_json or type(json) ~= "table" or type(json.decode) ~= "function" then
+            logger.warn("Meguru: no JSON decoder available for", Net.redactUrl(url_str))
+            return nil
+        end
+        local ok_decode, decoded = pcall(json.decode, body)
+        if not ok_decode or type(decoded) ~= "table" then
+            logger.dbg("Meguru: could not decode the answer from",
+                Net.redactUrl(url_str), "-", tostring(decoded))
+            return nil
+        end
+        return decoded
+    end
+end
+
 --- Everything a walk needs before it can start: which driver, whose credentials,
 --- the canonical feed URL, and the driver's context.
 ---
@@ -622,6 +674,56 @@ function Feed.resolveStream(item, server, opts)
     -- Could not refresh: fall back to the stored template rather than failing to
     -- open a book that can still be read.
     return item.template, item.page_count
+end
+
+--- The series of an entry whose feed did not name one, asked of the server.
+---
+--- **The I/O counterpart of `discover`, and asked at the one moment it is
+--- affordable.** `discover` is pure because it runs per entry over a whole feed
+--- and over every registered driver; this runs once, for one book, from the
+--- caller that is opening it. A driver that does not implement the hook answers
+--- nothing and costs nothing — Kavita and Suwayomi both recover the series from
+--- the stream itself and have no use for it.
+---
+--- The two lookups this makes are the same two `Feed.plan` makes before it will
+--- walk anything: the driver from `server.kind`, and the credential from
+--- `Sources.connection`. Both failing silently is the ordinary case for a device
+--- with no catalogue configured, and both are logged, because a nil here is
+--- indistinguishable from "the server had nothing to say" downstream.
+---
+--- **Pcall'd, which `resolveStream` is not.** Under this call there is a socket
+--- and a JSON decode, and the caller is `registerBook`, running inside a UI
+--- callback: a throw here would cost the reader the open itself, where the whole
+--- point of the fallback is that a book survives a server that will not answer.
+--- `Base.kindFor` pcalls `discover` for the same reason.
+---
+--- Nil is ordinary and every caller must read it as "this series could not be
+--- identified", which is the state the open path already carries. Note what is
+--- *not* here: no cache. The request is made per open, and the marker is what
+--- makes a later open from History free — a marker cannot be the cache for this,
+--- because its own path is a function of the answer being looked up.
+function Feed.resolveSeries(entry, stream, server, ctx)
+    local driver = server and Base.forKind(server.kind)
+    if not (driver and type(driver.resolveSeries) == "function") then
+        return nil
+    end
+    local conn = Sources.connection(server.name)
+    if not conn then
+        logger.warn("Meguru: no configured catalog named",
+            tostring(server and server.name), "in settings/opds.lua")
+        return nil
+    end
+    local ok, found = pcall(driver.resolveSeries, entry, stream, ctx, makeJsonFetch(conn))
+    if not ok then
+        logger.warn("Meguru: could not resolve the series for",
+            tostring(server and server.name), "-", tostring(found))
+        return nil
+    end
+    if type(found) ~= "table" or type(found.series_remote_id) ~= "string"
+        or found.series_remote_id == "" then
+        return nil
+    end
+    return found
 end
 
 return Feed

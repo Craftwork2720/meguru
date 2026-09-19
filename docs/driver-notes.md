@@ -37,9 +37,12 @@ The rules that make a walk safe, each of which has a reason:
   `"feed"` (10s/30s) a background job could afford. There are no background jobs any
   more, so this is always the short one in practice, and it is still a parameter
   because `Feed` does not decide who is waiting.
-- **A driver never opens a socket.** Suwayomi's lazy per-chapter metadata fetch
-  arrives as an injected `fetch` callback, so credentials, timeouts and log
-  redaction stay in one place.
+- **A driver never opens a socket.** Two hooks take an injected callback rather
+  than a socket: Suwayomi's lazy per-chapter metadata fetch arrives as
+  `resolveStream`'s `fetch`, which answers with a **parsed feed**, and Komga's
+  `resolveSeries` takes a `fetch_json` that answers with a **decoded body**.
+  Credentials, timeouts and log redaction stay in one place either way, and a
+  driver reads no bytes in both.
 - **An empty feed is a feed, not a parse failure.** `Net.fetchFeed` returns
   `nil, "empty"` for a document that parsed but listed no entries, which is its own
   state and can be handled as one; `"http"` is for a real HTTP-level failure.
@@ -143,9 +146,12 @@ seriesName(feed, entry, ctx)
 resolveStream(item, fetch, ctx)       -> template, count
 
 seriesCover(feed, entry, base_url)    -> url, or nil to defer   [optional]
+resolveSeries(entry, stream, ctx, fetch_json)
+                                      -> { series_remote_id, series_name?,
+                                           discovered_from }, or nil   [optional]
 ```
 
-`seriesCover` is the one optional hook, and it exists because one server
+`seriesCover` was the first optional hook, and it exists because one server
 publishes its series artwork somewhere the feed cannot reach: **Komga's series
 feed carries no image at any level**, so the generic fallback would key a
 series' artwork to whichever of its volumes happened to be opened first. A
@@ -167,13 +173,19 @@ every site that calls `discover` — `registerBook`, `feedSeries`, `currentResum
 — has to put a feed URL in the context it hands over. It is not a convenience: without
 it a Komga entry is unidentifiable, and refusing is the right answer, because guessing
 a series from a title syncs a library against a feed that describes something else.
-That refusal is also why **an aggregate is not openable on Komga** — `books/latest`,
-`ondeck` and `keep-reading` list books across every series and carry no series id at
-all — while browsing `/series` → volume works in full.
+That refusal is also why a Komga **aggregate** cannot be resolved *from the feed* —
+`books/latest`, `ondeck` and `keep-reading` list books across every series and carry
+no series id at all. It is no longer the end of the story: `resolveSeries` asks the
+server about the one book being opened, which is one request for one open and not one
+per entry, and that is the whole reason it is a second hook rather than a request
+inside `discover`. Browsing `/series` → volume is untouched and pays nothing extra.
+Without the hook a book still opens — it simply has no series, and so no folder and
+no neighbours, which is what an aggregate gave before this existed.
 
-`discovered_from` distinguishes a series feed from an aggregate one. An entry
-reached from an aggregate may not carry a recoverable series id, and an aggregate is
-not a series. **Never silently sync the wrong series.**
+`discovered_from` records where an identity came from: a series feed, the entry's own
+stream, or an aggregate whose series had to be asked for. An aggregate is not a series,
+and an entry reached from one may carry no recoverable series id at all — the case
+`resolveSeries` exists for. **Never silently sync the wrong series.**
 
 Driver selection is by a **kind**, and a kind arrives one of four ways: the session's
 author sniff, the book's own `server_kind` field, `Base.kindFor` — which asks each

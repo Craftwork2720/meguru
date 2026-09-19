@@ -665,3 +665,25 @@ Each step must pass before the next:
     to page 2, and check the server still says finished. If it does not, the floor was not seeded —
     which happens when the marker was written without a `last_read`, and is the same hole
     `docs/known-issues.md` records for `driverItemFor`.
+
+27. **A book opened from an aggregate gets its series.** Komga's `keep-reading`, `ondeck` and
+    `books/latest` name no series anywhere, so before this the book landed in a **flat** marker:
+    no series folder, no neighbours, no resume. The fix asks the server once, for the one book
+    being opened.
+
+    | # | do | expected |
+    |---|---|---|
+    | a | tap a book in `keep-reading`, then open it | it lands in its **series folder**, and `crash.log` has one `Kavita: resolved …`-style line — one, not one per entry in the feed |
+    | b | look at the folder | `.cover.jpg` is the **series** thumbnail (Komga's is 211x300), not a volume's 844x1200 — the volume cover is what the generic fallback writes when the driver declines |
+    | c | the resume dialog for that open | the `▶` server position is offered, walked from the series' own feed. The aggregate could not have answered it |
+    | d | open the same book from History afterwards | no request at all — the marker now carries the series, so this is the ordinary path |
+    | e | tap the same book from the aggregate a second time | one more request, and **one** line for that open. Nothing caches this; a per-open request is the price of not having a series index |
+    | f | open a book from `/series/{id}` | byte for byte what it did before, and **no** resolve line — `discover` answered and the hook was never reached |
+    | g | read a **Kavita** or **Suwayomi** book from any feed | unchanged: both recover their series from the stream, and neither has the hook |
+    | h | point the catalogue at a Komga behind a path prefix | the logged URL keeps the prefix (`…/komga/api/v1/books/…`) |
+    | i | stop Komga, then tap from an aggregate | **no** folder and **no** dialog — the book still opens, as a flat one. A failed request must never cost a book |
+
+    Then the two that need the *server* rather than the client: that `/api/v1/books/{id}` accepts
+    the same HTTP Basic credentials as the OPDS surface, and that `BookDto` carries `seriesId` and
+    `seriesTitle` at the top level. If a deployment closes `/api`, every row above degrades to
+    `i`, which is the status quo ante rather than a fault.

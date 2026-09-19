@@ -503,6 +503,13 @@ end
 --- The `conn` check stays and is not about writing: it is what tells "this
 --- catalog title exists in `settings/opds.lua`" from "the title was mistyped",
 --- and the difference is the whole message a reader would need.
+--- The `{ name, kind }` pair `Feed.resolveStream` and `Feed.resolveSeries` take,
+--- built in one place because it is the same pair for both and both callers would
+--- otherwise spell it twice.
+local function serverShim(name, kind)
+    return { name = name, kind = kind }
+end
+
 local function registerBook(browser, server_name, kind, kind_source, raw_entry, stream, ctx)
     local conn = Sources.connection(server_name)
     if not conn then
@@ -531,18 +538,47 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
     local feed, feed_url = record and record.feed, record and record.url
     ctx = { lang = ctx and ctx.lang, url = feed_url }
 
-    local found = driver.discover(raw_entry, stream.href, ctx)
-    if not found or not found.series_remote_id then
-        return why("driver could not identify the series",
-            tostring(raw_entry and raw_entry.title))
-    end
-
+    -- Asked before `discover` rather than after it, so that a book with no
+    -- retained feed never reaches the one step below that can spend a request.
+    -- Both failures are real and this only decides which is named, and this one
+    -- is the more actionable of the two.
     if type(feed) ~= "table" then
         return why("no feed retained for this catalog",
             "nothing was parsed since the hook was installed")
     end
 
-    local series_name = driver.seriesName(feed, raw_entry, ctx)
+    local found = driver.discover(raw_entry, stream.href, ctx)
+
+    -- **A feed that names no series is not the end of it.** An aggregate —
+    -- Komga's `books/latest`, `ondeck`, `keep-reading` — lists books across every
+    -- series and carries no series id anywhere, so `discover` answers nil for
+    -- each of its entries. The id is still on the server, and asking for it costs
+    -- one request *for one book* rather than one per entry — which is why it is a
+    -- second hook and not I/O inside the first. A driver without the hook answers
+    -- nil here, and the bail below is exactly what it was.
+    local resolved_remotely
+    if not found or not found.series_remote_id then
+        found = Feed.resolveSeries(raw_entry, stream.href,
+            serverShim(server_name, kind), ctx)
+        resolved_remotely = found ~= nil
+    end
+    if not found or not found.series_remote_id then
+        return why("driver could not identify the series",
+            tostring(raw_entry and raw_entry.title))
+    end
+
+    -- **A name that arrived with the identity outranks the derivation**, and it
+    -- is not a preference. `seriesName` derives from the *book's* title, peeling
+    -- trailing parentheticals and volume tokens as it goes, so a series called
+    -- `Foo` whose volume is called `Foo (An Anthology) v01` would name a folder
+    -- `Foo (An Anthology)` — and `Marker.dirFor` keys the folder on this name
+    -- alone, so two names are two folders for one series. The server's own title
+    -- is the one answer that cannot disagree with the series feed about what the
+    -- series is called.
+    local series_name = found.series_name
+    if type(series_name) ~= "string" or series_name == "" then
+        series_name = driver.seriesName(feed, raw_entry, ctx)
+    end
     if type(series_name) ~= "string" or series_name == "" then
         return why("driver could not name the series",
             tostring(raw_entry and raw_entry.title))
@@ -554,6 +590,26 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
             tostring(#(feed.entry or {})) .. " entry(ies) in it")
     end
 
+    -- **What `seriesCover` is handed, which is not always the feed we browsed.**
+    -- On the ordinary path the browsed feed *is* the series feed, and its URL is
+    -- where the driver reads the series id out of. An aggregate's URL names no
+    -- series at all, so the driver's own `seriesCover` would decline and the
+    -- cover would fall back to a *volume's* artwork — written into the series
+    -- folder as its `.cover.jpg`, and never rewritten. When the series had to be
+    -- resolved remotely, the canonical feed URL is built instead and the same
+    -- hook answers unchanged; `conn.url` goes in raw because `catalogURL` does
+    -- its own trimming. A mistake here is a no-op rather than a regression —
+    -- `Base.coverFromFeed` still falls through to the feed and then to the entry.
+    --
+    -- The *name* deliberately gets no such treatment: `seriesName` is handed the
+    -- browsed feed below, and reads its `<title>` the moment `ctx.url` looks like
+    -- a series feed — which for an aggregate would be "Latest books".
+    local cover_base = feed_url or stream.href
+    if resolved_remotely then
+        cover_base = driver.catalogURL(conn.url, found.series_remote_id, ctx)
+            or cover_base
+    end
+
     -- The context a marker would give, for a book that has no marker yet. Field
     -- for field the same names, so everything downstream takes one shape.
     local series = {
@@ -563,8 +619,7 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
         series_name      = series_name,
         -- Handed the driver so a server whose series artwork is not in the feed
         -- at all can supply it — see `driver.seriesCover`. Komga is that server.
-        series_cover_url = Base.coverFromFeed(feed, raw_entry,
-            feed_url or stream.href, driver),
+        series_cover_url = Base.coverFromFeed(feed, raw_entry, cover_base, driver),
         item_key         = item.item_key,
         lang             = ctx and ctx.lang,
     }
@@ -572,14 +627,19 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
     -- Whether the feed the browser holds cannot answer where the reader is in
     -- this series, so that `openAsBook` asks `currentResumeTarget` instead.
     --
-    -- **A server that flags chapters read** is the case: the page on screen
-    -- cannot answer it, because browsing with `filter=unread` removes exactly the
-    -- chapters the question is about, and with `filter=all` the flag is still not
-    -- in the entries. Left unanswered and fetched by `openAsBook`, which sits
-    -- below `currentResumeTarget` and can call it — a call from here would
-    -- resolve as a global, the failure `tools/check.py`'s fourth pass exists to
-    -- catch.
-    local server_target = driver.unreadFilter and true or nil
+    -- **A server that flags chapters read** is the first case: the page on
+    -- screen cannot answer it, because browsing with `filter=unread` removes
+    -- exactly the chapters the question is about, and with `filter=all` the flag
+    -- is still not in the entries.
+    --
+    -- **A series resolved from the server is the second**, and for the same
+    -- reason one step over: an aggregate's entries are unplaceable by `discover`,
+    -- so `freshResumeTarget` would filter the browsed feed down to nothing and
+    -- its nil would say "this feed has no answer" about a series whose own feed
+    -- has one. Left unanswered and fetched by `openAsBook`, which sits below
+    -- `currentResumeTarget` and can call it — a call from here would resolve as a
+    -- global, the failure `tools/check.py`'s fourth pass exists to catch.
+    local server_target = (driver.unreadFilter or resolved_remotely) and true or nil
 
     -- Where the reader actually is in this series, asked of the feed the browser
     -- just fetched rather than of the catalog, which only knows what the last
@@ -1275,6 +1335,15 @@ end
 --- function is built around a book that was tapped, and there is no book here.
 --- The two must agree on how a series is found and named, so if the resolution
 --- below is ever changed, `registerBook` is where to change it too.
+---
+--- **One step of `registerBook`'s is deliberately absent here**, and it is the
+--- one that costs a request: resolving a series the feed did not name. This
+--- function is only reached when `feedSeries` has already proved the feed lists
+--- exactly one series — a row offering "this series" over a feed that holds
+--- several would be a lie about which — so there is never anything to resolve,
+--- and the list this runs from is a *paint* path, where no request may be made
+--- at all. See `Open.seriesRow`.
+---
 --- The resolution of the *resume point* is the other half of that agreement, and
 --- it is not mirrored but shared: both end at `offerResume`, and both have to
 --- arrive with the fresh answer in hand.
@@ -1668,9 +1737,9 @@ local function planMarker(context, item)
     end
 
     -- `Feed.resolveStream` wants the server by name and kind, which is exactly
-    -- the pair a marker carries; the shim is here rather than at the call sites
-    -- so there is one of it.
-    local server = { name = context.server_name, kind = context.server_kind }
+    -- the pair a marker carries; the shim is the one `serverShim` builds, so a
+    -- second caller of it cannot spell the pair differently.
+    local server = serverShim(context.server_name, context.server_kind)
     local template, count = Feed.resolveStream(item, server)
     if type(template) ~= "string" or template == "" then
         logger.warn("Meguru: no page stream for", item.title)

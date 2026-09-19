@@ -244,6 +244,22 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   it says. A repair aimed at a foreign plugin has to be verified where that plugin is
   installed, and this is what it costs when it is not.
 
+- **A book opened from a Komga aggregate before this was fixed has a *flat* marker, and the
+  fix relocates it rather than moving it.** `books/latest`, `ondeck` and `keep-reading` name no
+  series, so those books were written at `<base>/<title>.meguru` with a `flat:` `item_key`; now
+  the same book is written at `<base>/<series>/<title>.meguru`. `Marker.pathFor` derives the
+  path from the descriptor, so the plugin never looks for the old one: the previous file stays
+  in the marker folder and shows in History as a second entry for the same book, for good —
+  nothing in this plugin deletes a marker anywhere. **The reader's place survives it**: a book
+  is in `keep-reading` *because* it has progress, Komga publishes `pse:lastRead` on the
+  aggregate entry too, and the new marker is written with it, so the reopened book lands on the
+  page they were on. The repair is to delete the old flat marker by hand, as with a marker
+  mis-filed under a mis-sniffed server (see `docs/driver-notes.md`).
+  **What would settle it** is a decision rather than a measurement: whether the plugin should
+  sweep for a flat marker whose book now has a series, which means walking the marker folder on
+  an open — the one thing the design has refused to do everywhere else. Until then this is a
+  documented cost of the fix, not a defect in it.
+
 - **A marker written from a tapped "Continue From" row carries no `last_read`.**
   `driverItemFor` matches one stream and answers with the entry the reader tapped,
   which for Kavita's alias is the copy without the page — so the marker is written

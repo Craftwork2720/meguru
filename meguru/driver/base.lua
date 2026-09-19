@@ -354,6 +354,48 @@ end
 --     For a server whose series artwork is not in the feed at all. Komga's is
 --     in REST, and without this the feed fallback would key the series to one
 --     volume's cover. Asked by `Base.coverFromFeed`, before the feed.
+--   resolveSeries(entry, stream, ctx, fetch_json)
+--                                         -> { series_remote_id,
+--                                              series_name?,
+--                                              discovered_from }, or nil
+--     For a server that knows a book's series at a URL the *feed* does not
+--     publish. Komga is why it exists: its entries name no series anywhere, so
+--     `discover` recovers the id from `ctx.url` — and an aggregate, Komga's
+--     `books/latest` / `ondeck` / `keep-reading`, names no series either, so
+--     there `discover` answers nil and this is the only thing left that can.
+--     Without it such a book gets a marker with no series: no folder, no
+--     neighbours, no resume.
+--
+--     **Asked once per open, and only after `discover` has failed**, which is
+--     the reason it is a second hook rather than I/O inside the first. `discover`
+--     runs in a loop over a whole feed (`freshResumeTarget`, `feedSeries`) and
+--     over every registered driver (`Base.kindFor`), so a request there would
+--     turn one tap into a walk of the network. A caller that already has an
+--     answer from `discover` must not ask this one; the loop callers must stay
+--     as they are.
+--
+--     `fetch_json(url)` is the engine's, exactly as `resolveStream`'s `fetch` is:
+--     it carries the credential, the timeout and the log redaction, and it
+--     answers with the **decoded** body as a table, or nil when the request, the
+--     status or the decode failed. So a driver still reads no bytes and needs no
+--     decoder, and stays a pure function over data it was handed.
+--
+--     The answer is a **series identity**, so it is `discover`'s shape and not a
+--     third one: `series_remote_id`, `discovered_from`, and optionally
+--     `series_name` for a server whose own answer carries the name beside the id.
+--     A name that arrives here **outranks `seriesName`'s derivation** from the
+--     book's title, and that precedence is not a convenience: the derivation
+--     peels trailing parentheticals and volume tokens off a *book*, so a server
+--     that just told us the series' own title is the one source that cannot
+--     disagree with the series feed about what the series is called — and
+--     `Marker.dirFor` keys the folder on that name alone, so two names are two
+--     folders for one series.
+--
+--     Nil is the ordinary answer, and what follows it is the bail that was
+--     already there: no series, no folder, no neighbours — and a book that opens
+--     and reads exactly as it did. No driver is obliged to have this hook; the
+--     engine asks for it only of one that does, and stands ready for nil from
+--     every one of them.
 --   progressRequest(desc, page)           -> { url, content_type, body }, or nil
 --     The *write* side of a reading position: where the reader is, sent back to
 --     the server the book came from. `meguru/progress` is what makes the
@@ -387,6 +429,8 @@ end
 -- Suwayomi selects on — and `url`, the URL of the feed the entry was read out
 -- of. The URL is there for Komga and is not a convenience: Komga publishes no
 -- series handle on a book entry, so a feed's own URL is the only place a
--- browsed entry's series id exists. A driver that does not need it ignores it.
+-- browsed entry's series id exists. A driver that does not need it ignores it —
+-- `resolveSeries` takes `ctx` for the positional convention rather than because
+-- it reads anything out of it, and Komga's answer comes off the stream instead.
 
 return Base

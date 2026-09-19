@@ -12,7 +12,8 @@ apply here.
 `pages/{pageNumber}` stream. Whatever a Kavita entry gets for free — `seriesId`
 riding along in its own stream query — Komga simply does not publish, so the
 series identity has to come from **the feed the entry was read out of**, and
-that is `ctx.url`. See `Komga.discover`.
+that is `ctx.url`. See `Komga.discover` — and, for the feeds that name no series
+either, `Komga.resolveSeries`.
 
 The page number is **zero based**, and that is worth writing down because it
 looks like an off-by-one and is not: `OpdsController.kt` handles
@@ -74,15 +75,24 @@ local REST_IN_TEMPLATE = "^(.*)/opds/v1%.2/books/([^/]+)/pages/"
 --- Returns nil with no `ctx.url`, and that refusal is the feature. A caller with
 --- no browsing context cannot know which series an entry belongs to, and
 --- guessing from a title would sync a library against a feed that describes
---- something else. The cost is that an aggregate — Komga's `books/latest`,
---- `ondeck`, `keep-reading` — is not openable: those list books across every
---- series and carry no series id anywhere at all. Adding one would mean a REST
---- request per entry, which `discover` is in no position to make; it is called
---- in a loop over a whole feed (`freshResumeTarget`, `feedSeries`) and by
---- `kindFor` for every unknown server.
+--- something else.
+---
+--- **An aggregate refuses here too, and the refusal is still right.** Komga's
+--- `books/latest`, `ondeck` and `keep-reading` list books across every series and
+--- carry no series id anywhere at all, so this answers nil for each of their
+--- entries. What is *not* right, and what `resolveSeries` below exists for, is
+--- leaving the book unreachable: the id is one REST request away, and the
+--- question is only who may spend it. Not this function — it is called in a loop
+--- over a whole feed (`freshResumeTarget`, `feedSeries`) and over every
+--- registered driver (`kindFor` for any server whose `<author>` matched nothing),
+--- so a request here would turn one tap into a walk of the network instead of a
+--- walk of the feed. The caller that may spend it is one that has a **book**,
+--- which is one request for one open.
 ---
 --- `kindFor` is unaffected: it is the fallback for a server whose `<author>`
---- matched nothing, and Komga's author always matches.
+--- matched nothing, and Komga's author always matches — and it must stay
+--- unaffected, which is the whole reason the request lives in a second hook
+--- rather than behind this one.
 function Komga.discover(entry, _stream, ctx)
     local feed_url = type(ctx) == "table" and ctx.url
     if type(feed_url) ~= "string" or feed_url == "" then
@@ -291,6 +301,71 @@ function Komga.seriesName(feed, entry, ctx)
         return derived
     end
     return nil
+end
+
+--- The series of a book whose feed named none, asked of the server.
+---
+--- **What this is for.** `Komga.discover` recovers the series id from the feed a
+--- book was read out of, and an aggregate — `books/latest`, `ondeck`,
+--- `keep-reading` — is a feed that names no series at all. Without this, such a
+--- book gets a marker with no series: no series folder, no neighbours, no resume.
+--- With it, one request answers what the feed could not, and the book is
+--- indistinguishable from one opened out of its series feed.
+---
+--- **One request for one open, which is the whole reason it is a hook of its own
+--- and not code inside `discover`.** That one is called per *entry* over a whole
+--- feed and over every driver; this is called once, by a caller holding a book.
+--- See `discover` above for the rest of that argument.
+---
+--- **The id comes out of the stream template, and the prefix is taken rather than
+--- rebuilt** — the same call `Komga.seriesCover` and `Komga.progressRequest` make
+--- and for the same reason: a Komga behind a reverse proxy keeps its path prefix
+--- on both of its surfaces, so `…/komga/api/v1/books/{id}` is the OPDS path
+--- rewritten, never `scheme://host:port` re-derived. `entry.id` cannot serve
+--- here: it is a bare id with no prefix on it.
+---
+--- **The name comes back too, and that is not a convenience.** `seriesName` would
+--- otherwise derive it from the *book's* title, peeling trailing parentheticals
+--- and volume tokens as it goes — so a series called `Foo` with a volume called
+--- `Foo (An Anthology) v01` would name a folder `Foo (An Anthology)`, and
+--- `Marker.dirFor` keys the folder on the name alone. Two names are two folders
+--- for one series, decided by which feed the reader came through. `seriesTitle`
+--- is the same string the series feed's own `<title>` carries, so answering with
+--- it makes the two entry points agree by construction rather than by derivation.
+--- It is normalised here, as the feed's title is above, so both paths land on one
+--- spelling.
+---
+--- **Nil is the ordinary answer**, and it costs this book nothing it does not
+--- already lack: no template to read an id out of, a book the server will not
+--- serve, a REST surface closed by a deployment — each ends at the same flat
+--- marker the reader gets today.
+function Komga.resolveSeries(entry, stream, ctx, fetch_json)
+    local template = type(stream) == "string" and stream or nil
+    if not template or type(fetch_json) ~= "function" then
+        return nil
+    end
+    local prefix, book_id = template:match(REST_IN_TEMPLATE)
+    if not prefix or not book_id then
+        return nil
+    end
+    local book = fetch_json(string.format("%s/api/v1/books/%s", prefix, book_id))
+    local series_id = type(book) == "table" and book.seriesId or nil
+    if type(series_id) ~= "string" or series_id == "" then
+        return nil
+    end
+    local name = type(book.seriesTitle) == "string" and book.seriesTitle or ""
+    if name == "" then
+        name = nil
+    else
+        name = Naming.stripSeriesLabel(name)
+    end
+    return {
+        series_remote_id = series_id,
+        series_name      = name,
+        -- The entry was read out of an aggregate, which is where the question
+        -- came from even though the answer did not.
+        discovered_from  = "aggregate",
+    }
 end
 
 -- `resolveStream` is left to the default in base.lua: the stream arrives with

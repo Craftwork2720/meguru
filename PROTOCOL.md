@@ -521,12 +521,21 @@ along in the stream URL's query — so `Komga.discover` reads the series id out 
 the **feed's own URL** instead (`/series/([^/?]+)`), which the engine passes as
 `ctx.url`.
 
-The consequence is that an aggregate cannot be opened from. `books/latest`,
-`ondeck` and `keep-reading` list books from every series and carry no series id
-in any entry, so there is nothing to identify the series by and `discover`
-refuses rather than guessing — the same refusal that keeps a browse of
-`recently-added` from syncing the wrong series on Kavita. Browsing `/series` and
-opening a volume works in full.
+The consequence used to be that an aggregate could not be opened from.
+`books/latest`, `ondeck` and `keep-reading` list books from every series and
+carry no series id in any entry, so there was nothing in the feed to identify the
+series by, and `discover` refuses rather than guessing — the same refusal that
+keeps a browse of `recently-added` from syncing the wrong series on Kavita.
+
+**The id is one request away, and that is where it is now asked for.** The book
+id rides in the entry's own stream template (`/books/{id}/pages/{pageNumber}`),
+and `GET {prefix}/api/v1/books/{bookId}` answers with Komga's `BookDto`, which
+carries `seriesId` and `seriesTitle`. `Komga.resolveSeries` makes that request
+once per *book*, which is the only place it is affordable: `discover` is called
+in a loop over a whole feed, so a request there would turn a tap into a walk of
+the network rather than of the feed. The browse that does work is unchanged and
+pays nothing — `/series` is a feed that names its series, so `discover` answers
+and the hook is never reached.
 
 ### Series name
 
