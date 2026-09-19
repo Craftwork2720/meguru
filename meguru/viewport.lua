@@ -44,23 +44,27 @@ than the window the request shrinks with it and the viewer letterboxes rather th
 stretching — which is why a step carries its own `out_w`/`out_h` rather than
 assuming the screen's size.
 
-## The chain, and the skip
+## Every panel gets its stops
 
-Steps are not "each panel, one or two views of it". They are a **simulation of the
-forward gesture**, run once over the page, because where the next step lands
-depends on what is *already visible* and not only on which panel the reader is in:
+Steps are "each panel, and the one, two or four views of it", in reading order. A
+panel contributes no step in exactly one case: **the step would be the window already
+on screen** — a single view, identical to the one before it. That is a press which
+changes nothing, and it is the only thing the walk drops.
 
-> before moving to the next panel in reading order, ask whether that panel is
-> already wholly inside the window as it stands. If it is, do not move at all —
-> that panel is read, and the question moves on to the one after it. One tap can
-> therefore pass several small panels at once, which is what happens on a page with
-> a grid of them beside a full-height one.
+This replaced a rule that dropped any panel **wholly inside the window as it
+stands**. That rule was written to save taps on a page with a grid of small panels
+beside a full-height one, and what it cost was every panel it happened to *cover*:
+the window is a screenful and panels are often smaller than one, so a panel merely
+visible inside a neighbour's window got no stop of its own and was never centred —
+and it was never centred for a reader who had asked to look at it. The report that
+removed it is **two long panels**: both are eased to a single stop (see
+`PANEL_WINDOW_TOLERANCE`), so the first one's window is *larger* than the reader's
+own, and the second panel fell entirely inside it. The reader's words were that the
+window "views it and never stops on it again".
 
-So a panel that fits beside the current view gets **no step**, and the number of
-taps on a page is not `#panels` times anything. That also means there is no
-"stage" to keep and no "read" flag to set: a skipped panel is simply one the chain
-never stopped at, and the reader's place is the step index. State that nothing
-reads is state that drifts; this has none.
+So the number of taps on a page is the number of panels plus the extra stops of the
+ones that overflow the window, and there is no "stage" to keep and no "read" flag to
+set: the reader's place is the step index.
 
 ## What is a step
 
@@ -243,16 +247,16 @@ local function positions(panel, w, h, dims, right_to_left)
     return views
 end
 
--- Is the whole of `rect` inside `view`?
+-- Is this view the window as it already stands?
 --
--- This is the test the skip rests on: a panel that is *entirely* visible is one
--- the reader has already seen, so the chain does not stop for it. Its sibling
--- `not contains(...)` is the other half — a panel the window does **not** cover
--- in full still has a part unseen, and that part is what the next step shows.
-local function contains(view, rect)
-    return view.x <= rect.x and view.y <= rect.y
-        and view.x + view.w >= rect.x + rect.w
-        and view.y + view.h >= rect.y + rect.h
+-- This is the test that drops a step: extracting a panel's own rectangle and then finding
+-- it is the rectangle the reader is already looking at buys them nothing, and a press that
+-- changes nothing on screen is a dead tap rather than a stop. **It is not "is the panel
+-- visible"**, which is what the rule here used to ask — a panel merely covered by the
+-- current window gets its own stop and its own centring, however small it is.
+local function sameView(view, other)
+    return view.x == other.x and view.y == other.y
+        and view.w == other.w and view.h == other.h
 end
 
 -- One scale's window: its size in page pixels, and the pixels to render it to.
@@ -383,6 +387,11 @@ end
 
 -- The page's steps, in the order the forward gesture reaches them.
 --
+-- **Every panel is a step**, in reading order, with the views `positions` gives it. The one
+-- exception is a panel whose whole walk is the window as it already stands, which is a press
+-- that would change nothing on screen; nothing is passed because the window happens to cover
+-- it. The header carries the rule this replaced.
+--
 -- `entry` is nil for a plain start, or `{ panel = i }` for a caller that wants the walk to
 -- **open at a named panel**. Which panel is the only thing it decides: the reader then walks
 -- that panel the way it has always been walked, from its own first view, so a long-press
@@ -427,7 +436,7 @@ function Viewport.steps(panels, dims, screen, entry, right_to_left, scale)
     for i = 1, #panels do
         local panel = whole(panels[i])
         local frame = frameForPanel(panel, dims, screen, scale)
-        local w, h = frame.w, frame.h
+        local views = positions(panel, frame.w, frame.h, dims, right_to_left)
         -- The panel the caller named, if any. It decides only *which* panel the viewer
         -- opens at: the walk below is one walk for every panel, so a named one is shown
         -- from its own beginning exactly as it would be if the reader had arrived by
@@ -435,14 +444,14 @@ function Viewport.steps(panels, dims, screen, entry, right_to_left, scale)
         -- that let the finger's position replace the panel's first view — which meant a
         -- long-press on the lower half of a tall panel never showed the reader its top.
         local wanted = entry and entry.panel == i
-        if not wanted and cur and contains(cur, panel) then
-            -- Wholly visible already: read, and not a step. This is the skip.
-        else
-            -- **A panel the caller named always gets its stops**, and the skip does not get
-            -- to drop it: the caller asked for it by name, and crossing *back* a page names
-            -- the previous page's last panel — which the skip would otherwise swallow on a
-            -- page whose window happens to cover it.
-            local views = positions(panel, w, h, dims, right_to_left)
+        -- **The one case a panel is not a step**: its whole walk is the window as it already
+        -- stands, so pressing forward would change nothing on screen. A panel that is merely
+        -- *covered* by the window is a step like any other — see the header for the rule this
+        -- replaced and the two long panels that removed it.
+        if wanted or not (cur and #views == 1 and sameView(cur, views[1])) then
+            -- **A panel the caller named is a step even then**, because the viewer has to
+            -- *open* at it: crossing back a page names the previous page's last panel, and a
+            -- walk with no step for it would leave `open_at` at the first one.
             for _, view in ipairs(views) do
                 push(i, view, frame)
                 cur = view

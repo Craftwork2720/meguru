@@ -419,11 +419,17 @@ Each step must pass before the next:
     first), and closing and re-opening must come back **at 2.4×** ✓ — this zoom is remembered,
     written once at close. Then the switch out: from the free view it must land in
     *both* other views ✓, keeping the reader's place, and land back ✓.
-    Then the skip: on a page
-    with small panels beside a full-height one, position the window so they are all
-    inside it and press forward — **one press must pass all of them** and land on the
-    next panel the window does not cover, with the `-d` line showing a step count
-    smaller than the panel count. Back from there must reach the panels *before* the
+    Then the stops: on a page
+    with small panels beside a full-height one, press forward through it — **every panel
+    must get its own stop and be centred**, including one the window already covers, so the
+    `-d` line's step count is **at least** the panel count and no panel is missing from the
+    walk. A panel wholly inside the window used to contribute no step at all, and the report
+    that removed that is a reader with **two long panels**: the window stopped on the first
+    and never on the second, because both are eased to a single stop, so the first one's
+    window is the larger of the two and the second fell inside it. The one press that must
+    *not* be a step is a press that would change nothing — two panels whose centred windows
+    are the same rectangle, which is what small panels clamped to a page edge do. Back from a
+    panel must reach the panels *before* the
     one touched, not only the ones after it. **And the boundary in both directions**:
     swiping forward off the last panel opens the next page's **first** panel at its
     start, and swiping back off the first opens the previous page's **last** panel at

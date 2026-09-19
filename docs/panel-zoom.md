@@ -834,15 +834,14 @@ not the panel"), and it is also what bounds the blast radius of exactly the cras
 was found by — a viewer built, then left unshown by a throw inside the row, with a
 repaint still queued on it naming a frame the close then took away.
 
-**The chain is a simulation of the forward gesture, not a list per panel.** Where the
-next step lands depends on what is *already on screen*, not only on which panel the
-reader is in — so `Viewport.steps` walks the page's panels once and emits the rectangles
-the reader will actually visit:
+**Every panel is a step, and the walk is a list per panel.** `Viewport.steps` walks the
+page's panels once, in reading order, and emits the rectangles the reader will visit:
 
-- a panel **wholly inside the window as it stands** gets **no step**. The chain does not
-  stop for it; the question moves to the panel after it, and one tap can pass several
-  small panels at once. This is the case the mode exists for on a page with a grid of
-  them beside a full-height one;
+- a panel gets the views `positions` gives it, and is *centred* on an axis it fits. The one
+  thing that is not a step is a panel whose whole walk is **the window as it already
+  stands** — a single view identical to the one before it, which is a press that would
+  change nothing on screen. Nothing else is dropped: a panel the window merely *covers*
+  gets its own stop however small it is;
 - a panel that does not fit gets a step, anchored to **its own edge**: the panel's start
   edge at the window's edge, then — if it still does not fit — the panel's end edge
   there. A panel that fits in an axis is *centred* on that axis, since a window larger
@@ -858,10 +857,25 @@ the reader will actually visit:
   the first version of this opened at the first stop of the named panel and made the
   reader press forward to reach the bottom of a page they had just come *down* from.
 
-**There is no stage to keep and no "read" flag to set.** A skipped panel is one the
-chain never stopped at; the reader's place is the step index. State that nothing reads
-is state that drifts, and the two things the design was asked to store — which stage of
-a panel, which panels are read — are both already implied by the rectangle on screen.
+**A rule that dropped every panel wholly inside the window as it stood is gone, and the
+report that removed it is worth keeping.** It was written to save taps on a page with a
+grid of small panels beside a full-height one: one press could pass several of them,
+because a panel already on screen was taken to be a panel already read. A reader
+disagreed with the word *read*, about **two long panels** — the window stopped on the
+first and "viewed the second and never stopped on it again". Both were long enough for
+the easing to fit each in **one** stop, so the first one's window was *larger* than the
+reader's own scale would have made it, and the second panel fell entirely inside it: no
+stop, no centring, and no gesture that could ask for one. That is the failure the rule
+was blind to — the window is a screenful, panels are often smaller than one, and *visible
+inside a neighbour's window* is not *shown to the reader*. What it cost was a smaller
+step count; what it cost the reader was a panel they could not look at, so the count
+lost. `docs/known-issues.md` asked whether the skip ever passed a panel a reader wanted;
+this is that question answered.
+
+**There is no stage to keep and no "read" flag to set.** The reader's place is the step
+index, and which panels are read *is* the walk — every panel is one, in order, less the
+press that would have changed nothing. State that nothing reads is state that drifts;
+this has none.
 
 **The stops inside a panel are its corners, and a panel too big in both axes gets
 four of them.** One rule per axis — centred on an axis the panel fits, anchored to

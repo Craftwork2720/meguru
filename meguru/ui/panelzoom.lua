@@ -178,13 +178,13 @@ local PanelViewer = ImageViewer:extend{
     page = nil,           -- the book page these steps came from
     -- **The things this viewer walks, in order.** A cropped panel in the first
     -- view; a window over the page in the second. The name says steps rather than
-    -- panels because that is the one thing true of both, and because the second
-    -- view's chain is not one entry per panel — a panel already on screen when the
-    -- chain reaches it contributes none.
+    -- panels because that is the one thing true of both: a panel too big for the
+    -- window is two steps, four when it is too big in both axes, and a press that
+    -- would change nothing is none.
     steps = nil,
     -- The detector's panel rects for this page, kept only so that the button below
     -- can re-open the viewer on the same page: `steps` cannot be walked back to
-    -- panels, since a window is not a panel and some panels contribute no step.
+    -- panels, since a window is not a panel and one panel may be several steps.
     panel_rects = nil,
     mode = nil,           -- "manga" | "comic"
     -- nil for the cropped sequence, or `{ window = true }` for the window view.

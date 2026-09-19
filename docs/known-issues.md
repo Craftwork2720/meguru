@@ -59,7 +59,7 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   over layouts whose truth is known because they were drawn (six equal panels, a tall
   one with a grid of small ones beside it, a panel that fits, one that overflows both
   axes, one starting mid-page, an entry into the third of six). It is what settled that
-  a panel already on screen contributes **no** step, that the window's left edge is the
+  the window's left edge is the
   *panel's* (300 in the drawn case) and not the page's (0), that a panel too big in
   both axes is four corners and not a diagonal pair, and that the same wide panel's two
   stops swap sides with the direction. It is not in the
@@ -67,10 +67,22 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   control pages — and what it cannot model is anything about rendering, which is what
   the device item is for. **Unmeasured on a real page:** the 1.30 screen-pixels-per-page-
   pixel that the top level, `1.9`, comes to on a 1600x2400 scan against a 1236x1648 screen,
-  and so how soft the window looks on a page whose `fit` is near 1; whether the skip ever passes a
-  panel a reader wanted to stop at; and the whole thing on a page whose panels are
+  and so how soft the window looks on a page whose `fit` is near 1; and the whole thing on a page whose panels are
   quadrilaterals rather than rectangles, where the cropped view's mask has no counterpart
   and the window simply shows the neighbour at its edge — by design, and still unseen.
+
+  **The mirror also settled something a reader has since overturned, and that is the
+  useful part of this entry.** It settled that a panel already on screen contributes
+  **no** step — and it was right about the walk and wrong about what the walk was for.
+  A panel that a neighbour's window happens to cover was being treated as read, and
+  *which of these rectangles does a reader want* is not a question geometry can be
+  asked. The answer came from a reader instead, and it was **two long panels**: the
+  window stopped on the first and, of the second, "viewed it and never stopped on it
+  again". The rule is removed — see `docs/panel-zoom.md` and the header of
+  `meguru/viewport.lua` — and what replaces it is narrower and needs no judgement: a
+  panel is a step unless the step **is** the window already on screen. The mirror is the
+  thing to update first if it is ever brought into the repository: its `contains` case is
+  the one drawn layout whose expectation this changed.
 
   **The easing tolerance is measured the same way and settled the same way.** The mirror
   was extended for it: the same layouts, sized relative to the reader's own window, run at
