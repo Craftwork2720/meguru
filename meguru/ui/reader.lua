@@ -1252,6 +1252,53 @@ local CONTRAST_ROW = {
     help_text = _([[Page tone, applied by the renderer: above 1.0 darkens and hardens the page, below it lifts and flattens it. It applies to panels as well. Long-press this row to set what new Meguru books start at.]]),
 }
 
+--- Whether the page is dithered as it is written to the screen.
+---
+--- Stock's row, stock's name and stock's event, for the reason the Contrast row
+--- above gives: `ConfigChange` is what writes `configurable.sw_dithering`, and
+--- `SWDitheringUpdate` is what `ReaderView:onSWDitheringUpdate` already listens
+--- for — it assigns `document.sw_dithering` and shows the notification. That is
+--- the very field this document's blit reads (`drawPage` picks `ditherblitFrom`
+--- or `blitFrom` from it), so this row needs no handler here either.
+---
+--- **`args` are booleans where the row's own `values` are 0/1, and that is
+--- load-bearing rather than stylistic.** The event's payload goes straight into
+--- `document.sw_dithering`, and `0` is truthy in Lua: passing the stored domain
+--- through would leave the page dithered at "off". Stock's row carries booleans
+--- in `args` for exactly this reason, while the value the configurable and the
+--- sidecar keep stays 0/1.
+---
+--- Not `advanced = true`, unlike stock's: `advanced` rows are hidden until the
+--- reader turns advanced options on, and this menu is curated rather than
+--- layered — a row offered here is a row meant to be seen.
+local DITHERING_ROW = {
+    name = "sw_dithering",
+    name_text = _("Dithering"),
+    toggle = { C_("Dithering", "off"), C_("Dithering", "on") },
+    values = { 0, 1 },
+    default_value = 0,
+    event = "SWDitheringUpdate",
+    args = { false, true },
+    help_text = _([[Dithers the page into sixteen grey levels as it is written to the screen, which is how a scanned page has been shown here so far. Off writes each pixel flat instead — smoother on a screen whose controller dithers an 8-bit framebuffer itself, banded on one that does not. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+}
+
+--- Whether the Dithering row is worth offering at all.
+---
+--- `BB_dither_blit_to` honours the dither for a **BB8 destination and is a plain
+--- blit for every other one** (`base/blitbuffer.c`), so on a colour screen the
+--- switch would change nothing at all — and a row that sets a value with no
+--- visible effect is what this curated menu exists to keep out. `fb_bpp == 8` is
+--- the same test `Image.colorEnabled` uses, read live: the framebuffer depth
+--- KOReader read from the kernel, and the one description of "the destination is
+--- the 8-bit one".
+---
+--- Read when the dialog is built rather than at module load, because it is a
+--- property of the session's screen and every other live question in this file is
+--- asked the same way.
+local function ditheringOffered()
+    return Screen ~= nil and Screen.fb_bpp == 8
+end
+
 --- The option set the bottom menu opens with for a streamed book.
 ---
 --- Rows are pulled *live* from the global `KoptOptions` table rather than from a
@@ -1362,6 +1409,15 @@ local function buildCuratedOptions(ui)
         help_text = _([[Right-to-left page turning, so the book reads like Japanese manga. Remembered for this book; new Meguru books start with it on — long-press this row to change that default.]]),
     }
 
+    -- The tone tab: what the page looks like, where the three above are about the
+    -- shape of what is shown. Dithering is not an opinion about the page the way
+    -- contrast is — it is how the page is written to *this* screen — so it is
+    -- offered only where the screen can honour it at all (`ditheringOffered`).
+    local tone_options = { CONTRAST_ROW }
+    if ditheringOffered() then
+        tone_options[#tone_options + 1] = DITHERING_ROW
+    end
+
     return {
         prefix = "kopt",
         { icon = rotation_tab.icon, options = rotation_options },
@@ -1376,7 +1432,7 @@ local function buildCuratedOptions(ui)
         -- about the picture rather than its frame.
         {
             icon = (contrast_tab and contrast_tab.icon) or "appbar.contrast",
-            options = { CONTRAST_ROW },
+            options = tone_options,
         },
     }
 end

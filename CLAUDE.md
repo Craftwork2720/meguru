@@ -173,8 +173,8 @@ nor an agent has to load 3500 lines to find one answer. Read the one you need.
 - [docs/series-state-and-markers.md](docs/series-state-and-markers.md) — the marker's
   fields, the identity rules behind `item_key`, and what a marker does and does not store.
 - [docs/render-path.md](docs/render-path.md) — how a page is decoded, painted and cached;
-  how the contrast row's value reaches the pixels; the four log lines; and what a page that
-  could not be loaded says.
+  how the tone rows (contrast, dithering) reach the pixels; the four log lines; and what a
+  page that could not be loaded says.
 - [docs/driver-notes.md](docs/driver-notes.md) — reading a series feed (the `rel=next`
   walk, ordering, neighbours) and what Kavita, Suwayomi and Komga each do differently.
 - [docs/opening-a-book.md](docs/opening-a-book.md) — where an open starts: the resume

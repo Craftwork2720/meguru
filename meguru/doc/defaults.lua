@@ -61,6 +61,7 @@ Defaults.PREFERENCE_FOR = {
     opdsbook_manga        = "manga_order",
     rotation_mode         = "rotation_mode",
     contrast              = "contrast",
+    sw_dithering          = "dither",
 }
 local PREFERENCE_FOR = Defaults.PREFERENCE_FOR
 
@@ -133,6 +134,60 @@ function Defaults.seedContrast(ui, configurable)
     local value = seedRowValue(ui.doc_settings, "contrast")
     if value ~= nil then
         configurable.contrast = value
+    end
+end
+
+--- Whether the page is dithered, and the one seed here that may decide nothing.
+---
+--- **Three answers, not two, and the third is the point.** The document settles
+--- this for itself when it opens — forced on for a grayscale framebuffer, the
+--- screen's own answer otherwise (`document.lua`'s init) — and KOReader settles it
+--- again a moment later from `configurable.sw_dithering`
+--- (`ReaderView:onDitheringUpdate`, fired by `ReaderKoptListener` during
+--- ReadSettings). Both run before this does, which is the one place the ordering
+--- is load-bearing rather than merely convenient: it means the value read back
+--- here is the one the page is *actually* being drawn with, not the one the
+--- document first computed. The row is seeded from that, so the switch shows the
+--- truth on a device where the two disagree.
+---
+--- The plugin preference behind it is unset by default (`Settings.UNSET`), so a
+--- book with no choice of its own — which is every book until the reader taps the
+--- row — keeps exactly the answer it had before the row existed, whatever this
+--- device's answer is. Only a tap (which writes the sidecar) or a long-press
+--- (which writes the preference) turns that into a stored decision.
+function Defaults.seedDither(ui, configurable)
+    local ds = ui.doc_settings
+    local doc = ui.document
+    local value = ds and ds:readSetting("kopt_sw_dithering")
+    if value == nil then
+        value = Settings.get("dither")
+        if value ~= nil and ds then
+            ds:saveSetting("kopt_sw_dithering", value)
+        end
+    end
+    if value ~= nil then
+        -- The row's domain is 0/1: that is what the dialog matches its `values`
+        -- against and what the sidecar holds. Normalised here rather than with
+        -- `value and 1 or 0`, which reads a stored 0 — truthy in Lua — as "on"
+        -- (the trap `seedRowValue` above documents at length). The left side of
+        -- this one is a comparison, so it cannot be a truthy 0 itself.
+        value = (value == 1 or value == true) and 1 or 0
+    end
+    if value == nil then
+        -- Nothing chosen anywhere: the screen's answer stands, untouched — and
+        -- the row is shown it rather than the 0 that `Configurable:loadDefaults`
+        -- put in the configurable from the global `kopt_sw_dithering` or the
+        -- row's own default. Without this line the switch would read "off" on a
+        -- device that is dithering every page.
+        configurable.sw_dithering = (doc and doc.sw_dithering) and 1 or 0
+        return
+    end
+    -- The row's domain is 0/1 (that is what the dialog matches and what the
+    -- sidecar holds); the document's field is a boolean (that is what its blit
+    -- tests). The two are converted here and nowhere else.
+    configurable.sw_dithering = value
+    if doc then
+        doc.sw_dithering = value == 1
     end
 end
 
@@ -237,6 +292,7 @@ function Defaults.apply(ui, doc)
     Defaults.seedLayout(ui, configurable)
     Defaults.seedGeometry(ui, configurable)
     Defaults.seedContrast(ui, configurable)
+    Defaults.seedDither(ui, configurable)
     Defaults.seedScrollMode(ui, configurable)
     Defaults.seedRotation(ui, configurable)
     Defaults.seedNightMode(ui, configurable)

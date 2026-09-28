@@ -177,6 +177,20 @@ local DEFAULTS = {
     -- never reaches a Meguru book (`doc/defaults`).
     contrast          = 1.0,
 
+    -- Whether a page is dithered as it is written to the screen, for books that
+    -- have no value of their own.
+    --
+    -- **Deliberately unset, and for a stronger version of the rotation
+    -- argument.** There is no one right answer to it: this screen may be one
+    -- whose controller dithers an 8-bit framebuffer itself — where a software
+    -- dither costs tone rather than adding it — or one that relies on KOReader
+    -- to do it. So the plugin does not decide: with nothing stored, the answer
+    -- the *document* worked out for this device at open stands (`doc/defaults`
+    -- seeds the row from it so the switch shows what the page is really doing),
+    -- and the reader's tap is what turns it into a preference. `Settings.get`
+    -- returns nil for this.
+    dither            = UNSET,
+
     -- Deliberately unset: a book with no stored rotation keeps KOReader's own
     -- behaviour until the reader actually chooses a rotation, so the plugin
     -- never imposes one nobody asked for. `Settings.get` returns nil for this.

@@ -11,13 +11,21 @@ is **curated** rather than replaced: rows the engine does not implement (page ma
 auto-straighten, the reflow and zoom-matrix family) are dropped, because each would set
 a value with no visible effect. Four tabs come back: stock's **rotation** and **crop**
 tabs with this engine's rows in them, a **page-view** tab (fit, page scroll, manga), and
-a fourth tab for **Contrast** — placed on its own because the first three are about the
-*shape* of what is shown and contrast is the only one about the picture. That row is the
-one curated row written here for its *values* rather than its wiring: it is stock's
-contrast row with the presets stopped at 3.0, where stock's run to 50 for a badly scanned
-text page. Its wiring is stock's untouched — `name` and `event` are what
-`ReaderKoptListener` and `ReaderView` already listen for, so the row has no handler in
-this plugin at all (see `docs/render-path.md` for what the value does).
+a fourth **tone** tab — placed on its own because the first three are about the *shape*
+of what is shown and this is the only one about the picture. It holds two rows, and both
+are stock's own wiring with `name` and `event` left alone, so neither has a handler in
+this plugin at all: `ReaderKoptListener` writes the row's value into the configurable and
+`ReaderView` is what acts on the event (see `docs/render-path.md` for what each does).
+
+- **Contrast** is stock's contrast row with the presets stopped at 3.0, where stock's run
+  to 50 for a badly scanned text page — the one curated row written here for its *values*
+  rather than its wiring.
+- **Dithering** is stock's `sw_dithering` row unchanged, and it is **offered only where a
+  dither can be honoured** — `Screen.fb_bpp == 8`, the same test `Image.colorEnabled`
+  uses — because `BB_dither_blit_to` dithers an 8-bit destination and is a plain blit for
+  every other one. Its default is neither on nor off but "whatever this device decided"
+  (`Settings.dither` is deliberately unset), which is why the row reads back the value the
+  page is actually drawn with rather than a stored one.
 
 The one thing that must not be missed: KOReader's stock "set as default" writes a
 **global** `G_reader_settings["kopt_<name>"]`, which would leak a choice made while

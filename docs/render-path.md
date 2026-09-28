@@ -69,9 +69,41 @@ answer — would be the more defensible arrangement *there*, and it is **not** w
 this does: `init` sets `self.sw_dithering = true` on that branch by decision. The
 dithered look is what these pages have always had here. On a device whose
 controller dithers properly, this re-quantises a page the hardware was about to
-dither correctly. `Screen.sw_dithering` is the answer it would take back. The
-`if self.sw_dithering` branch in `drawPage`/`drawPageInverted` must stay: it is the
-whole switch, and the colour branch reaches it as `false`.
+dither correctly — and that cost is what the bottom menu's **Dithering** switch is
+for. The `if self.sw_dithering` branch in `drawPage`/`drawPageInverted` must stay:
+it is the whole switch, and the colour branch reaches it as `false`.
+
+**The Dithering row is stock's own, and it is the only row whose default is "what
+this device decided".** It carries stock's name and event (`sw_dithering`,
+`SWDitheringUpdate`), so `ReaderView:onSWDitheringUpdate` sets the very field the
+blit reads — no handler of this plugin's is involved, exactly as with Contrast. Its
+`args` are the one subtlety: they are booleans where the row's `values` are 0/1,
+because the payload lands in `document.sw_dithering` and `0` is truthy in Lua — the
+stored domain would leave the page dithered at "off". It appears only where a dither
+is honoured at all: `BB_dither_blit_to` dithers a **BB8 destination and is a plain
+blit for every other one** (`base/blitbuffer.c`), so on a colour screen the switch
+would do nothing.
+
+**And its default is a third answer, not a boolean.** Three things settle the value
+before a reader touches it, in this order: `init`'s decision above, then
+`ReaderView:onDitheringUpdate` — which KOReader fires during ReadSettings, and which
+on a device that *cannot* hardware-dither sets `document.sw_dithering` from
+`configurable.sw_dithering`, i.e. to `false`, undoing `init` — and then this plugin's
+`seedDither`, which runs last (plugins are registered after the stock modules and
+ReadSettings is dispatched after both). So the seed reads back the value the page is
+*actually* being drawn with and shows it in the row, and a book with no stored
+choice keeps exactly that: the plugin preference behind it is deliberately unset
+(`Settings.UNSET`), because there is no one right answer — on a device whose
+controller dithers an 8-bit framebuffer the switch **removes** a quantisation, and on
+one that relies on KOReader it **adds** the dithering. Which of the two a given
+device is, is what the row now displays.
+
+**A panel is not governed by that row, and does not go through this blit at all.**
+The viewer's images are drawn by stock's `ImageWidget`, which dithers from
+`Screen.sw_dithering` — the device's own answer — so the panel views follow the
+device and the page follows the row. That is KOReader's split, not this plugin's:
+`kopt_sw_dithering` is a per-document MuPDF setting and `Screen.sw_dithering` is a
+device one, which stock's own file manager exposes as "software dithering"."
 
 **On the colour branch the flag is `Screen.sw_dithering`, and the argument above
 does not apply** — it is about a same-format grayscale copy, and there the tiles

@@ -410,6 +410,15 @@ the tone the book was opened at. The corollary is that a tone change also drops 
 detected panel lists — they were detected on a differently-toned picture — which is
 what `syncContrast` is; see `docs/render-path.md`.
 
+**Dithering is the one tone-ish setting this does *not* follow, and the reason is
+stock's.** A panel tile is blitted to the screen by `ImageWidget`, which dithers from
+`Screen.sw_dithering` — the device's own answer, the same one every other image in
+KOReader gets — while the page is dithered from `document.sw_dithering`, which is what
+the bottom menu's row writes. So a reader who turns the page's dithering off is looking
+at undithered pages and device-answer panels; that split is KOReader's (one setting is
+per-document and one is per-device), and it is recorded here so it is not read as this
+plugin contradicting itself.
+
 **The viewer draws no chrome, and the last piece to go was stock's progress bar.** It
 is turned off with `images_list_nb = 1` in `PanelZoom.open`, which is *not* a count:
 stock builds, draws and frees the bar behind one `_images_list_nb > 1` test, so the
