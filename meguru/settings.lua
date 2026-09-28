@@ -177,6 +177,13 @@ local DEFAULTS = {
     -- never reaches a Meguru book (`doc/defaults`).
     contrast          = 1.0,
 
+    -- Colour intensity, the other MuPDF tone value: 1.0 is the file's own colour,
+    -- below it drains towards grey, above it pushes the channels apart. Meaningless
+    -- on a screen that is not decoding colour at all, which is why the document
+    -- answers 1.0 there and the row is not offered (`doc/document`'s
+    -- `saturation()`, `ui/reader`).
+    saturation        = 1.0,
+
     -- Whether a page is dithered as it is written to the screen, for books that
     -- have no value of their own.
     --

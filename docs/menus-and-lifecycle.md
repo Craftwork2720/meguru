@@ -12,14 +12,19 @@ auto-straighten, the reflow and zoom-matrix family) are dropped, because each wo
 a value with no visible effect. Four tabs come back: stock's **rotation** and **crop**
 tabs with this engine's rows in them, a **page-view** tab (fit, page scroll, manga), and
 a fourth **tone** tab — placed on its own because the first three are about the *shape*
-of what is shown and this is the only one about the picture. It holds two rows, and both
-are stock's own wiring with `name` and `event` left alone, so neither has a handler in
+of what is shown and this is the only one about the picture. It holds three rows, and all
+three are stock's own wiring with `name` and `event` left alone, so none has a handler in
 this plugin at all: `ReaderKoptListener` writes the row's value into the configurable and
 `ReaderView` is what acts on the event (see `docs/render-path.md` for what each does).
 
 - **Contrast** is stock's contrast row with the presets stopped at 3.0, where stock's run
   to 50 for a badly scanned text page — the one curated row written here for its *values*
   rather than its wiring.
+- **Saturation** is stock's `saturation` row unchanged, presets and all: `0.2` to `2.0`
+  already describes what a reader would do to a comic page. It is offered only where the
+  pages are decoded in colour — the one predicate `Image.colorEnabled()`, which is what
+  the decode itself asks — because a saturation on a grayscale tile is a no-op
+  (`adjustSaturation` returns early for the gray types).
 - **Dithering** is stock's `sw_dithering` row unchanged, and it is **offered only where a
   dither can be honoured** — `Screen.fb_bpp == 8`, the same test `Image.colorEnabled`
   uses — because `BB_dither_blit_to` dithers an 8-bit destination and is a plain blit for

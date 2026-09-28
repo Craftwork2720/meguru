@@ -400,15 +400,17 @@ belong to the document's tile LRU, and `cacheTile` is what frees them.
 opens at best fit instead of inheriting the previous panel's pinch.
 
 **A panel is toned like the page it came from, and this file has nothing to do with
-it.** Contrast is applied by MuPDF while rendering (`docs/render-path.md`), and the
+it.** Contrast and saturation are applied by MuPDF while rendering
+(`docs/render-path.md`), and the
 one render every panel goes through — `drawPagePart` → `renderRegionDirect` →
 `Image.renderRegion` — is a render, so the panel arrives already carrying the
-reader's setting. That is also why the tone is read off the *document's*
-`configurable` rather than off `ReaderView.state.gamma`: this viewer never passes
-through the reader view, so a value only the reader knew would leave every panel at
+reader's settings, colour included. That is also why the tone is read off the *document's*
+`configurable` rather than off `ReaderView.state.gamma`/`state.saturation`: this viewer
+never passes
+through the reader view, so values only the reader knew would leave every panel at
 the tone the book was opened at. The corollary is that a tone change also drops the
 detected panel lists — they were detected on a differently-toned picture — which is
-what `syncContrast` is; see `docs/render-path.md`.
+what `syncTone` is; see `docs/render-path.md`.
 
 **Dithering is the one tone-ish setting this does *not* follow, and the reason is
 stock's.** A panel tile is blitted to the screen by `ImageWidget`, which dithers from

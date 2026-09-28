@@ -49,6 +49,7 @@ local T = ffiutil.template
 
 local Feed = require("meguru/feed")
 local Defaults = require("meguru/doc/defaults")
+local Image = require("meguru/doc/image")
 local Local = require("meguru/local")
 local Open = require("meguru/ui/open")
 local Panel = require("meguru/panel")
@@ -1282,6 +1283,43 @@ local DITHERING_ROW = {
     help_text = _([[Dithers the page into sixteen grey levels as it is written to the screen, which is how a scanned page has been shown here so far. Off writes each pixel flat instead — smoother on a screen whose controller dithers an 8-bit framebuffer itself, banded on one that does not. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
 }
 
+--- Colour intensity, for the screens that can show it.
+---
+--- Stock's row again, and its own preset list kept as it is — where the Contrast
+--- row's had to be narrowed for artwork, stock's saturation presets (`0.2` to
+--- `2.0`) already describe what a reader would want to do to a comic page, so
+--- there is nothing to correct. `event = "SaturationUpdate"` is stock's, and
+--- `ReaderView:onSaturationUpdate` is what answers it: the notification, and
+--- `state.saturation` for the reader view's own copy. The document reads its
+--- `configurable` instead (see its `saturation()`), for the reason Contrast
+--- documents — a panel never passes through `ReaderView`.
+---
+--- **Offered only where the pages are decoded in colour**, which is one predicate
+--- and not two: `Image.colorEnabled()` is the answer the decode itself asks for
+--- (the reader's colour setting *and* a framebuffer that can hold it), so on a
+--- grayscale screen this row would set a value that `adjustSaturation` returns
+--- early on — a switch that does nothing, which is what this curated menu exists
+--- to keep out. Stock gates the same row on `hasColorScreen()` and
+--- `isColorEnabled()`, which is the same pair of questions asked in two places.
+local SATURATION_ROW = {
+    name = "saturation",
+    name_text = _("Saturation"),
+    buttonprogress = true,
+    values = { 0.2, 0.5, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0 },
+    args = { 0.2, 0.5, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0 },
+    labels = { 0.2, 0.5, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0 },
+    default_pos = 3,
+    default_value = 1.0,
+    event = "SaturationUpdate",
+    more_options = true,
+    more_options_param = {
+        value_step = 0.1, value_hold_step = 0.2,
+        value_min = 0.2, value_max = 2.0,
+        precision = "%.1f",
+    },
+    help_text = _([[Colour intensity of the page: below 1.0 the colours are drained towards grey, above it they are pushed further apart, and 1.0 is the file's own colour. It applies to panels as well. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+}
+
 --- Whether the Dithering row is worth offering at all.
 ---
 --- `BB_dither_blit_to` honours the dither for a **BB8 destination and is a plain
@@ -1410,10 +1448,17 @@ local function buildCuratedOptions(ui)
     }
 
     -- The tone tab: what the page looks like, where the three above are about the
-    -- shape of what is shown. Dithering is not an opinion about the page the way
-    -- contrast is — it is how the page is written to *this* screen — so it is
-    -- offered only where the screen can honour it at all (`ditheringOffered`).
+    -- shape of what is shown. Contrast is the one row that is always here; the
+    -- other two are each about *this screen* rather than about the page —
+    -- saturation is a colour operation, and a dither is how the page is written to
+    -- an 8-bit framebuffer — so each appears only where the screen can honour it.
+    -- The order within the tab is stock's own (`appbar.contrast` lists them
+    -- Contrast, Saturation, ... Dithering), so a reader who knows a PDF's tone tab
+    -- finds the same things in the same places.
     local tone_options = { CONTRAST_ROW }
+    if Image.colorEnabled() then
+        tone_options[#tone_options + 1] = SATURATION_ROW
+    end
     if ditheringOffered() then
         tone_options[#tone_options + 1] = DITHERING_ROW
     end

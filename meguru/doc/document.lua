@@ -1028,7 +1028,7 @@ end
 --
 -- A BlitBuffer is malloc'd outside the Lua heap, so dropping the table alone
 -- leaks it. This is the half of "empty a cache" the GC cannot do, and the reason
--- `clearCaches` and `syncContrast` below share it rather than each walking the
+-- `clearCaches` and `syncTone` below share it rather than each walking the
 -- tables themselves.
 local function freeCacheEntries(cache)
     for _, item in pairs(cache or {}) do
@@ -1075,21 +1075,51 @@ function MeguruDocument:contrast()
     return 1.0
 end
 
+--- The colour intensity pages are rendered at — 1.0 being the file's own.
+---
+--- The same source as `contrast()` and for the same reason, with one extra
+--- answer: **1.0 wherever the pages are not being decoded in colour at all.**
+--- Saturation is a colour operation, and every tile on a grayscale screen is
+--- 8-bit gray — `BlitBuffer:adjustSaturation` returns early for those types, so a
+--- value would cost a comparison per tile and change nothing. The menu hides the
+--- row on those screens for the same reason; this is the guard for the *other*
+--- way a value gets here, which is a global `kopt_saturation` set on a PDF and
+--- pulled into `configurable` by `Configurable:loadDefaults` before this
+--- document's seed ever looks at it.
+---
+--- Asked live, like the decode's own colour question: a reader who turns colour
+--- off mid-book drops to grayscale on the next page, and this has to say 1.0 from
+--- that moment on — which it does, and which the tone stamp then treats as the
+--- tone change it is.
+function MeguruDocument:saturation()
+    local value = self.configurable and self.configurable.saturation
+    if type(value) ~= "number" or value <= 0 then
+        return 1.0
+    end
+    if not Image.colorEnabled() then
+        return 1.0
+    end
+    return value
+end
+
 --- Drop everything a *tone* change invalidates, on the change itself.
 ---
---- Contrast is applied by MuPDF while rendering (see `meguru/doc/image`), so the
---- working decode in `native` has the tone of the moment it was made baked into
---- its pixels — and so does every tile cut from it, every content box and panel
---- list derived from it, and the page-number/blank memos that scan it. Left
+--- **The tone is two values, not one**: contrast and saturation, both of which are
+--- applied by MuPDF while rendering (see `meguru/doc/image`). Either of them moving
+--- is the same event here, and this is the one place that decides what it costs.
+---
+--- The working decode in `native` has the tone of the moment it was made baked
+--- into its pixels — and so does every tile cut from it, every content box and
+--- panel list derived from it, and the page-number/blank memos that scan it. Left
 --- alone, all of that would be served, correct-looking and wrong, until the LRUs
---- happened to turn over: a reader who moves the Contrast row would watch the
+--- happened to turn over: a reader who moves a tone row would watch the
 --- page they are on keep its old tone for another eight tile renders.
 ---
 --- So this one setting is not like the others here. Crop, blank and panel
 --- toggles only flip an `active` flag over a memo that stays valid (the analysis
---- section below says why), while contrast changes the pixels those memos were
+--- section below says why), while a tone change alters the pixels those memos were
 --- *computed from* and so drops them. What survives is what a tone cannot move:
---- `dims` (a gamma maps pixel values, never page dimensions) and `page_bytes`
+--- `dims` (a tone maps pixel values, never page dimensions) and `page_bytes`
 --- (the raw source bytes, kept precisely so the re-decode here costs a decode and
 --- not a fetch).
 ---
@@ -1101,17 +1131,17 @@ end
 --- LRU turns it over, rather than be freed under a blit that is still using it.
 ---
 --- Called at the top of every entry point that reads one of these tables, and
---- idempotent: one table read and a comparison while nothing has moved.
-function MeguruDocument:syncContrast()
-    local value = self:contrast()
-    if value == self._contrast_applied then
-        return value
+--- idempotent: two reads and two comparisons while nothing has moved.
+function MeguruDocument:syncTone()
+    local contrast, saturation = self:contrast(), self:saturation()
+    if contrast == self._tone_contrast and saturation == self._tone_saturation then
+        return contrast, saturation
     end
     -- The first call is the book's opening tone rather than a change, and it is
     -- provably the first: every path that fills a cache below runs this at its
     -- top, so there is nothing to drop yet and nothing to say about it.
-    local first = self._contrast_applied == nil
-    self._contrast_applied = value
+    local first = self._tone_contrast == nil
+    self._tone_contrast, self._tone_saturation = contrast, saturation
     freeCacheEntries(self.native)
     self.native = {}
     -- The memos are created lazily on first use, so a book that never turned
@@ -1123,9 +1153,11 @@ function MeguruDocument:syncContrast()
     self._meguru_pagenum_blank_cache = nil
     self._meguru_pagenum_history = nil
     if not first then
-        logger.dbg("Meguru: contrast is now", value, "- decode, crops and panels dropped")
+        logger.dbg(string.format(
+            "Meguru: tone is now contrast %s, saturation %s - decode, crops and panels dropped",
+            tostring(contrast), tostring(saturation)))
     end
-    return value
+    return contrast, saturation
 end
 
 -- ---------------------------------------------------------------------------
@@ -1167,8 +1199,8 @@ end
 --- The cached tile for `key`, if it is still the tile that key means.
 ---
 --- **A tile is rendered *at a tone*, and the tone is a stamp rather than part of
---- the key.** A contrast change does not free the tiles it invalidated (`see
---- syncContrast`), and this comparison is what keeps the stale ones from being
+--- the key.** A tone change does not free the tiles it invalidated (see
+--- `syncTone`), and this comparison is what keeps the stale ones from being
 --- served: they stay in the LRU, unservable, until the LRU turns over or
 --- `cacheTile` renders that key again — which is also when they are freed.
 ---
@@ -1180,7 +1212,9 @@ end
 --- memory that no longer belongs to us.
 local function tileAtTone(self, key)
     local tile = self.tiles[key]
-    if tile and tile.bb_free ~= true and tile.contrast == self._contrast_applied then
+    if tile and tile.bb_free ~= true
+            and tile.contrast == self._tone_contrast
+            and tile.saturation == self._tone_saturation then
         return tile
     end
     -- Only an already-freed entry is dropped here; a live one the tone has
@@ -1197,8 +1231,10 @@ function MeguruDocument:cacheTile(key, tile)
         self.tiles[key].bb:free()
     end
     tile.bb_free = false
-    -- The tone this tile was rendered at, for `tileAtTone` above.
-    tile.contrast = self._contrast_applied
+    -- The tone this tile was rendered at — both halves of it — for `tileAtTone`
+    -- above.
+    tile.contrast = self._tone_contrast
+    tile.saturation = self._tone_saturation
     self.tiles[key] = tile
     bump(self, key)
     evictOldest(self, self.tiles, self.max_cached_tiles)
@@ -1738,7 +1774,7 @@ end
 function MeguruDocument:getPageBBox(pageno)
     -- The content box and the page-number/blank memos are computed from the
     -- rendered page, so a tone change invalidates them before they are read.
-    self:syncContrast()
+    self:syncTone()
     -- pagenumbercrop owns this seam: it replaced getPageBBox and stamped
     -- doc._pagenum_cache before doing so, so this body runs as its `orig`
     -- only to yield the base box. Never run the built-in crop/blank below
@@ -2397,7 +2433,7 @@ end
 function MeguruDocument:getPanelsFromPage(pageno, manga)
     -- Panels are detected on the rendered page, so a tone change means the
     -- cached lists were detected on a different picture: drop them first.
-    self:syncContrast()
+    self:syncTone()
     local key = panelCacheKey(pageno, manga)
     local hit = readCachedPanels(self, key)
     if hit then
@@ -2509,8 +2545,8 @@ end
 
 function MeguruDocument:getPageDims(pageno)
     -- Before anything reads a render: a tone change invalidates the decode this
-    -- is about to make (and the `dims` it keeps survive it — see syncContrast).
-    self:syncContrast()
+    -- is about to make (and the `dims` it keeps survive it — see syncTone).
+    self:syncTone()
     local cached = self.dims[pageno]
     if cached then
         return cached
@@ -2567,7 +2603,7 @@ function MeguruDocument:getPageDims(pageno)
     -- Contrast, if the reader set any: MuPDF applies it while rendering, so the
     -- working decode — and everything later cut out of it — carries the tone.
     -- See `contrast()` and `meguru/doc/image`.
-    local res = Image.decode(data, self:contrast())
+    local res = Image.decode(data, self:contrast(), self:saturation())
     local decode_ms = nowMs() - t0
     if res == nil or res == Image.DECODE_TOO_LARGE then
         if res == Image.DECODE_TOO_LARGE then
@@ -2651,9 +2687,10 @@ function MeguruDocument:ensureNativeBB(pageno, data)
         -- never comes back here: a huge PNG-in-cbz page keeps its transient
         -- full-res decode inside MuPDF, exactly like the stock DocumentMuPDF
         -- path for the same file (see renderMuPDFPage).
-        res = Image.renderMupdfPage(self.mupdf_doc, pageno, nil, self:contrast())
+        res = Image.renderMupdfPage(self.mupdf_doc, pageno, nil,
+            self:contrast(), self:saturation())
     else
-        res = Image.decode(data, self:contrast())
+        res = Image.decode(data, self:contrast(), self:saturation())
     end
     if res == nil or res == Image.DECODE_TOO_LARGE then
         -- A page that failed to decode once with these bytes will fail again
@@ -2749,7 +2786,7 @@ function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th, plane
     -- panel tile comes out of, so it is what makes a panel follow a setting the
     -- panel viewer knows nothing about.
     local ok, bb = pcall(Image.renderRegion, doc, doc_pageno, cx, cy, cw, ch, tw, th, planes,
-        self:contrast())
+        self:contrast(), self:saturation())
     if owned then
         pcall(doc.close, doc)
     end
@@ -2806,7 +2843,7 @@ end
 function MeguruDocument:drawPagePart(pageno, native_rect, rotation, tw, th)
     -- Panel zoom is the one consumer that never passes through `renderPage`, so
     -- the tone is refreshed here rather than relied on from a paint.
-    self:syncContrast()
+    self:syncTone()
     if not native_rect then
         return nil, false
     end
@@ -2976,12 +3013,12 @@ end
 function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturation, hinting)
     -- The tone, refreshed before a cached tile is read: a contrast change
     -- invalidates the LRU's tiles by stamp rather than by key (see
-    -- `syncContrast` and `tileAtTone`).
-    self:syncContrast()
+    -- `syncTone` and `tileAtTone`).
+    self:syncTone()
     -- `gamma` and `saturation` are accepted for API compatibility and read as
-    -- nothing: they are `ReaderView`'s copy of the settings, while the contrast
-    -- this document renders at comes from its own `configurable` (see
-    -- `contrast()`). That is not a loss — the bottom menu's row sets the
+    -- nothing: they are `ReaderView`'s copy of the settings, while the tone this
+    -- document renders at comes from its own `configurable` (see `contrast()` and
+    -- `saturation()`). That is not a loss — the bottom menu's rows set the
     -- configurable as well as those, and the configurable is the one value the
     -- panel views can read, which never come through here at all.
     -- KOReader's per-page document rotation parameter is never set nowadays

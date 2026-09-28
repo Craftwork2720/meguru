@@ -4,14 +4,21 @@ Turning page bytes into a BlitBuffer, with a ceiling on how much of it is kept.
 Every page this plugin renders at *native* resolution comes through `decode`
 here — for geometry, for the pan/zoom crops and for the content-box scan.
 
-The reader's **contrast** is applied here as well, in the two functions that
-draw a page or a region out of its bytes (`renderMuPDFPage` and `renderRegion`),
-and nowhere else. It is not a transform this plugin performs: it is a value on
-the MuPDF draw context, so MuPDF's own `fz_gamma_pixmap` does the work, exactly
-as it does for a stock PDF's `kopt_contrast`. Both draw sites carry it because
-between them they produce every pixel the reader and the panel viewer see — and
-a panel is *only* ever produced by the second of them, which is what lets a
-panel follow a setting the panel viewer itself knows nothing about.
+The reader's **contrast and saturation** are applied here as well, in the two
+functions that draw a page or a region out of its bytes (`renderMuPDFPage` and
+`renderRegion`), and nowhere else. Neither is a transform this plugin performs:
+both are values on the MuPDF draw context, so MuPDF's own `fz_gamma_pixmap` and
+`BlitBuffer:adjustSaturation` do the work, exactly as they do for a stock PDF's
+`kopt_contrast` and `kopt_saturation`. Both draw sites carry them because between
+them they produce every pixel the reader and the panel viewer see — and a panel is
+*only* ever produced by the second of them, which is what lets a panel follow a
+setting the panel viewer itself knows nothing about.
+
+The two differ in one way worth knowing here: a gamma applies to any tile, while
+saturation is a colour operation — `adjustSaturation` returns early for every gray
+buffer type, so on a grayscale screen it is a no-op that costs a comparison. The
+document is what keeps a value from arriving where it means nothing (see its
+`saturation()`); this module simply applies what it is handed.
 
 MuPDF goes first because it renders through its *page* pipeline (`page:draw_new`
 on a document opened from the raw bytes) and decimates an oversized JPEG while
@@ -277,9 +284,14 @@ end
 -- paint's crop-and-scale reads, and only an upscaling paint asks for a region
 -- render instead.
 --
+-- **`saturation` is the other half of the same story and takes the same route.**
+-- It is a draw-context value too, and `draw_new` runs `BlitBuffer:adjustSaturation`
+-- for it — after the gamma, so a page's contrast is settled before its colour is
+-- scaled. Nil or exactly 1.0 leaves the context's own `1.0` and costs nothing.
+--
 -- Returns a BlitBuffer, nil on failure, or DECODE_TOO_LARGE when
 -- `refuse_oversize` refused the page.
-local function renderMuPDFPage(doc, pageno, refuse_oversize, gamma)
+local function renderMuPDFPage(doc, pageno, refuse_oversize, gamma, saturation)
     local budget = Settings.get("max_native_pixels")
     local ok_page, page = pcall(doc.openPage, doc, pageno)
     local bb
@@ -309,6 +321,9 @@ local function renderMuPDFPage(doc, pageno, refuse_oversize, gamma)
             -- tone. See the note above on the argument.
             if gamma and gamma ~= 1.0 then
                 dc:setGamma(gamma)
+            end
+            if saturation and saturation ~= 1.0 then
+                dc:setSaturation(saturation)
             end
             local ok_draw, rendered = pcall(page.draw_new, page, dc, cw, ch, 0, 0)
             if ok_draw and rendered then
@@ -352,7 +367,7 @@ end
 -- The night-mode "Invert Document" path in `document.lua` inverts the
 -- destination region rather than calling invertblitFrom on the tile. That is
 -- correct for a tile of any format; it is no longer *required* by this one.
-local function decodeNativeMupdf(data, gamma)
+local function decodeNativeMupdf(data, gamma, saturation)
     if not Mupdf then
         return nil
     end
@@ -382,7 +397,7 @@ local function decodeNativeMupdf(data, gamma)
     -- applies the decision. A huge JPEG is always exempt (subsampled in-stream).
     local res = renderMuPDFPage(doc, 1, function(fw, fh)
         return not isJpegBytes(data) and fw * fh > MAX_LOSSLESS_NATIVE_PIXELS
-    end, gamma)
+    end, gamma, saturation)
     doc:close()
     return res
 end
@@ -432,14 +447,15 @@ end
 -- RenderImage fallback is skipped for it: it would only repeat the same doomed
 -- full-resolution decode).
 --
--- `gamma` is the reader's contrast, and it reaches the MuPDF branch only. The
--- RenderImage fallback has no draw context to carry it, so the bytes MuPDF
--- cannot open (and the builds without the binding) decode without contrast —
--- one more way that path already differs from the main one, and the honest
--- limit of what this module can promise about a page it did not render.
-local function decodeNative(data, gamma)
+-- `gamma` and `saturation` are the reader's tone values, and they reach the MuPDF
+-- branch only. The RenderImage fallback has no draw context to carry them, so the
+-- bytes MuPDF cannot open (and the builds without the binding) decode without
+-- contrast or saturation — one more way that path already differs from the main
+-- one, and the honest limit of what this module can promise about a page it did
+-- not render.
+local function decodeNative(data, gamma, saturation)
     if Mupdf then
-        local res = decodeNativeMupdf(data, gamma)
+        local res = decodeNativeMupdf(data, gamma, saturation)
         if res == DECODE_TOO_LARGE then
             return DECODE_TOO_LARGE
         end
@@ -604,11 +620,14 @@ end
 -- context and MuPDF applies it (`fz_gamma_pixmap`, see `renderMuPDFPage`); nil
 -- or exactly 1.0 leaves the context at its `-1.0` default and costs nothing.
 -- The mask is painted after the draw and is white either way, so a panel's
--- cropped edges do not shift with the tone.
+-- cropped edges do not shift with the tone. `saturation` rides beside it for the
+-- same reason and by the same route (see `renderMuPDFPage`), so a panel is a crop
+-- of the page as the reader has *set* it up — tone, colour and all — and not of
+-- the page as the file holds it.
 --
 -- Returns a BlitBuffer, or nil on any failure (the caller then falls back to the
 -- saved working-resolution decode, which is always correct, just softer).
-function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes, gamma)
+function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes, gamma, saturation)
     if not Mupdf or not doc then
         return nil
     end
@@ -645,6 +664,9 @@ function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes, gamma)
                 dc:setZoom(zoom)
                 if gamma and gamma ~= 1.0 then
                     dc:setGamma(gamma)
+                end
+                if saturation and saturation ~= 1.0 then
+                    dc:setSaturation(saturation)
                 end
                 local ox = math.floor(zoom * nx * f + 0.5)
                 local oy = math.floor(zoom * ny * f + 0.5)
