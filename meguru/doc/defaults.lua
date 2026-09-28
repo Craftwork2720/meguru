@@ -60,6 +60,7 @@ Defaults.PREFERENCE_FOR = {
     opdsbook_fit          = "fit",
     opdsbook_manga        = "manga_order",
     rotation_mode         = "rotation_mode",
+    contrast              = "contrast",
 }
 local PREFERENCE_FOR = Defaults.PREFERENCE_FOR
 
@@ -116,6 +117,22 @@ function Defaults.seedGeometry(ui, configurable)
         if value ~= nil then
             configurable[name] = value
         end
+    end
+end
+
+--- Page tone, shaped like the geometry seeds and for one more reason besides.
+---
+--- `contrast` is a stock `kopt_*` row, and `Configurable:loadDefaults` fills it
+--- from the *global* settings table before this runs — so a contrast set on a PDF
+--- earlier in the same session would otherwise be the starting tone of every
+--- Meguru book opened afterwards. Seeding it from the plugin's own preference
+--- (which always has a value: `Settings.DEFAULTS.contrast`) overwrites whatever
+--- the global put there and writes the book's own, which is the same rule the
+--- rows above follow.
+function Defaults.seedContrast(ui, configurable)
+    local value = seedRowValue(ui.doc_settings, "contrast")
+    if value ~= nil then
+        configurable.contrast = value
     end
 end
 
@@ -219,6 +236,7 @@ function Defaults.apply(ui, doc)
     local configurable = doc.configurable
     Defaults.seedLayout(ui, configurable)
     Defaults.seedGeometry(ui, configurable)
+    Defaults.seedContrast(ui, configurable)
     Defaults.seedScrollMode(ui, configurable)
     Defaults.seedRotation(ui, configurable)
     Defaults.seedNightMode(ui, configurable)

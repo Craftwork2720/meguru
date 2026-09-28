@@ -9,7 +9,15 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
 Meguru books share KOReader's per-book `kopt_*` settings, so the bottom `ConfigDialog`
 is **curated** rather than replaced: rows the engine does not implement (page margins,
 auto-straighten, the reflow and zoom-matrix family) are dropped, because each would set
-a value with no visible effect.
+a value with no visible effect. Four tabs come back: stock's **rotation** and **crop**
+tabs with this engine's rows in them, a **page-view** tab (fit, page scroll, manga), and
+a fourth tab for **Contrast** — placed on its own because the first three are about the
+*shape* of what is shown and contrast is the only one about the picture. That row is the
+one curated row written here for its *values* rather than its wiring: it is stock's
+contrast row with the presets stopped at 3.0, where stock's run to 50 for a badly scanned
+text page. Its wiring is stock's untouched — `name` and `event` are what
+`ReaderKoptListener` and `ReaderView` already listen for, so the row has no handler in
+this plugin at all (see `docs/render-path.md` for what the value does).
 
 The one thing that must not be missed: KOReader's stock "set as default" writes a
 **global** `G_reader_settings["kopt_<name>"]`, which would leak a choice made while

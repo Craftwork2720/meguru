@@ -169,6 +169,14 @@ local DEFAULTS = {
     rotate_wide       = 1,            -- 0 = off, 1 = right, 2 = left
     night_mode        = true,         -- pre-invert pages instead of a stark negative
 
+    -- Page tone, as MuPDF's contrast: 1.0 is the page as it arrived, above it
+    -- darkens and hardens, below it lifts and flattens. The row's own presets
+    -- live in `ui/reader` (0.8 to 3.0); this is only the value a book with none
+    -- of its own starts at, and it is why a global `kopt_contrast` — which
+    -- `Configurable:loadDefaults` would otherwise inherit from a stock PDF —
+    -- never reaches a Meguru book (`doc/defaults`).
+    contrast          = 1.0,
+
     -- Deliberately unset: a book with no stored rotation keeps KOReader's own
     -- behaviour until the reader actually chooses a rotation, so the plugin
     -- never imposes one nobody asked for. `Settings.get` returns nil for this.

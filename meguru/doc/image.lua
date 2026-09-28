@@ -4,6 +4,15 @@ Turning page bytes into a BlitBuffer, with a ceiling on how much of it is kept.
 Every page this plugin renders at *native* resolution comes through `decode`
 here — for geometry, for the pan/zoom crops and for the content-box scan.
 
+The reader's **contrast** is applied here as well, in the two functions that
+draw a page or a region out of its bytes (`renderMuPDFPage` and `renderRegion`),
+and nowhere else. It is not a transform this plugin performs: it is a value on
+the MuPDF draw context, so MuPDF's own `fz_gamma_pixmap` does the work, exactly
+as it does for a stock PDF's `kopt_contrast`. Both draw sites carry it because
+between them they produce every pixel the reader and the panel viewer see — and
+a panel is *only* ever produced by the second of them, which is what lets a
+panel follow a setting the panel viewer itself knows nothing about.
+
 MuPDF goes first because it renders through its *page* pipeline (`page:draw_new`
 on a document opened from the raw bytes) and decimates an oversized JPEG while
 decoding. The full-resolution buffer KOReader's RenderImage/TurboJPEG path would
@@ -254,9 +263,23 @@ end
 -- full-res decode inside MuPDF, then the retained native is capped and RAM
 -- returns to baseline — exactly the stock DocumentMuPDF profile for the same
 -- file (the one place local rendering is less guarded than the streamed path).
+-- **`gamma` is the reader's contrast, and it is applied by MuPDF itself.** The
+-- draw context carries it into `page:draw_new`, which runs `fz_gamma_pixmap`
+-- over the pixmap it just rendered (`base/ffi/mupdf.lua`) — the same call, from
+-- the same field, that stock's `Document:renderPage` reaches for a PDF's
+-- `kopt_contrast`. Nothing here transforms pixels; leaving `gamma` out (nil, or
+-- exactly 1.0) leaves the draw context at its own `-1.0` default and MuPDF
+-- skips the pass entirely, so a book that never touched the Contrast row renders
+-- through exactly the code it did before the row existed.
+--
+-- It has to be applied *here* as well as in `renderRegion` below, because the
+-- two split the work: this one produces the whole-page working decode that a
+-- paint's crop-and-scale reads, and only an upscaling paint asks for a region
+-- render instead.
+--
 -- Returns a BlitBuffer, nil on failure, or DECODE_TOO_LARGE when
 -- `refuse_oversize` refused the page.
-local function renderMuPDFPage(doc, pageno, refuse_oversize)
+local function renderMuPDFPage(doc, pageno, refuse_oversize, gamma)
     local budget = Settings.get("max_native_pixels")
     local ok_page, page = pcall(doc.openPage, doc, pageno)
     local bb
@@ -280,6 +303,13 @@ local function renderMuPDFPage(doc, pageno, refuse_oversize)
             -- as far as ~this target resolution requires.
             local dc = DrawContext.new()
             dc:setZoom(cw / fw)
+            -- Contrast, when the reader has asked for any: `draw_new` applies
+            -- it to the pixmap it renders, so the working decode — and every
+            -- crop, scale and analysis strip cut out of it — carries the same
+            -- tone. See the note above on the argument.
+            if gamma and gamma ~= 1.0 then
+                dc:setGamma(gamma)
+            end
             local ok_draw, rendered = pcall(page.draw_new, page, dc, cw, ch, 0, 0)
             if ok_draw and rendered then
                 bb = rendered
@@ -322,7 +352,7 @@ end
 -- The night-mode "Invert Document" path in `document.lua` inverts the
 -- destination region rather than calling invertblitFrom on the tile. That is
 -- correct for a tile of any format; it is no longer *required* by this one.
-local function decodeNativeMupdf(data)
+local function decodeNativeMupdf(data, gamma)
     if not Mupdf then
         return nil
     end
@@ -352,7 +382,7 @@ local function decodeNativeMupdf(data)
     -- applies the decision. A huge JPEG is always exempt (subsampled in-stream).
     local res = renderMuPDFPage(doc, 1, function(fw, fh)
         return not isJpegBytes(data) and fw * fh > MAX_LOSSLESS_NATIVE_PIXELS
-    end)
+    end, gamma)
     doc:close()
     return res
 end
@@ -401,9 +431,15 @@ end
 -- for an oversized lossless page that must not be decoded on this device (the
 -- RenderImage fallback is skipped for it: it would only repeat the same doomed
 -- full-resolution decode).
-local function decodeNative(data)
+--
+-- `gamma` is the reader's contrast, and it reaches the MuPDF branch only. The
+-- RenderImage fallback has no draw context to carry it, so the bytes MuPDF
+-- cannot open (and the builds without the binding) decode without contrast —
+-- one more way that path already differs from the main one, and the honest
+-- limit of what this module can promise about a page it did not render.
+local function decodeNative(data, gamma)
     if Mupdf then
-        local res = decodeNativeMupdf(data)
+        local res = decodeNativeMupdf(data, gamma)
         if res == DECODE_TOO_LARGE then
             return DECODE_TOO_LARGE
         end
@@ -560,9 +596,19 @@ end
 -- which is every caller that is not panel zoom — nothing is masked and the
 -- region means exactly what it always did.
 --
+-- **`gamma` is the reader's contrast, and it is the reason a panel carries the
+-- same tone as the page it was taken from.** Every panel tile — the cropped
+-- sequence, the window and the free view alike — comes through here, and none
+-- of them passes through the reader view, so this is the only place the panel
+-- views could be told about a tone setting at all. It goes into the draw
+-- context and MuPDF applies it (`fz_gamma_pixmap`, see `renderMuPDFPage`); nil
+-- or exactly 1.0 leaves the context at its `-1.0` default and costs nothing.
+-- The mask is painted after the draw and is white either way, so a panel's
+-- cropped edges do not shift with the tone.
+--
 -- Returns a BlitBuffer, or nil on any failure (the caller then falls back to the
 -- saved working-resolution decode, which is always correct, just softer).
-function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes)
+function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes, gamma)
     if not Mupdf or not doc then
         return nil
     end
@@ -597,6 +643,9 @@ function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes)
             if zoom > 0 then
                 local dc = DrawContext.new()
                 dc:setZoom(zoom)
+                if gamma and gamma ~= 1.0 then
+                    dc:setGamma(gamma)
+                end
                 local ox = math.floor(zoom * nx * f + 0.5)
                 local oy = math.floor(zoom * ny * f + 0.5)
                 local ok_draw, rendered = pcall(page.draw_new, page, dc, out_w, out_h, ox, oy)

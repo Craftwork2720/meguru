@@ -173,7 +173,8 @@ nor an agent has to load 3500 lines to find one answer. Read the one you need.
 - [docs/series-state-and-markers.md](docs/series-state-and-markers.md) — the marker's
   fields, the identity rules behind `item_key`, and what a marker does and does not store.
 - [docs/render-path.md](docs/render-path.md) — how a page is decoded, painted and cached;
-  the four log lines; and what a page that could not be loaded says.
+  how the contrast row's value reaches the pixels; the four log lines; and what a page that
+  could not be loaded says.
 - [docs/driver-notes.md](docs/driver-notes.md) — reading a series feed (the `rel=next`
   walk, ordering, neighbours) and what Kavita, Suwayomi and Komga each do differently.
 - [docs/opening-a-book.md](docs/opening-a-book.md) — where an open starts: the resume
@@ -184,9 +185,11 @@ nor an agent has to load 3500 lines to find one answer. Read the one you need.
 - [docs/local-cbz.md](docs/local-cbz.md) — a folder of `.cbz` treated as a series: the
   natural sort, and why the name grammar was removed.
 - [docs/panel-zoom.md](docs/panel-zoom.md) — the panel preference and its stock cascade,
-  the detector, and the three views a long-press can open.
+  the detector, the three views a long-press can open, and why a panel is toned like the
+  page it came from without this file knowing about it.
 - [docs/menus-and-lifecycle.md](docs/menus-and-lifecycle.md) — the menu rows, the curated
-  config dialog, the plugin lifecycle facts, and the plugins that replace our wraps.
+  config dialog and its four tabs, the plugin lifecycle facts, and the plugins that replace
+  our wraps.
 - [docs/updating.md](docs/updating.md) — the GitHub release updater: the one artifact both
   ends name, the install transaction, and what is remembered between checks.
 - [docs/development.md](docs/development.md) — `tools/check.py`'s eleven passes, and the

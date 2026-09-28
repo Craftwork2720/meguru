@@ -399,6 +399,17 @@ belong to the document's tile LRU, and `cacheTile` is what frees them.
 `images_keep_pan_and_zoom = false` is what makes the navigation *classic*: a panel
 opens at best fit instead of inheriting the previous panel's pinch.
 
+**A panel is toned like the page it came from, and this file has nothing to do with
+it.** Contrast is applied by MuPDF while rendering (`docs/render-path.md`), and the
+one render every panel goes through — `drawPagePart` → `renderRegionDirect` →
+`Image.renderRegion` — is a render, so the panel arrives already carrying the
+reader's setting. That is also why the tone is read off the *document's*
+`configurable` rather than off `ReaderView.state.gamma`: this viewer never passes
+through the reader view, so a value only the reader knew would leave every panel at
+the tone the book was opened at. The corollary is that a tone change also drops the
+detected panel lists — they were detected on a differently-toned picture — which is
+what `syncContrast` is; see `docs/render-path.md`.
+
 **The viewer draws no chrome, and the last piece to go was stock's progress bar.** It
 is turned off with `images_list_nb = 1` in `PanelZoom.open`, which is *not* a count:
 stock builds, draws and frees the bar behind one `_images_list_nb > 1` test, so the

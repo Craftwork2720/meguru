@@ -1208,6 +1208,50 @@ local ROTATE_WIDE_ROW = {
     help_text = _([[Automatically rotates the whole view by 90° when the current page is wider than tall (e.g. a double-page spread stored as one big horizontal image), and back when a normal page is shown again.]]),
 }
 
+--- Page tone. A row written here rather than lifted from the stock table — which
+--- on this menu is not unusual (`Fit`, `Invert read` and the crop row are ours
+--- too), but this is the only one whose *values* are the reason: stock's presets
+--- are the wrong shape for a streamed page.
+---
+--- Its presets stop at 3.0 where stock's run to 50: those are aimed at a badly
+--- scanned text page, where crushing everything to black and white is the point,
+--- and on artwork they simply burn the picture. Everything else about the row is
+--- stock's on purpose, down to the `name` and the `event`, because those two are
+--- what stock's own plumbing already listens for:
+---
+---  * the value goes to `document.configurable.contrast` through `ConfigChange`
+---    (`ReaderKoptListener:onConfigChange`, which repaints on it), and *that* is
+---    the value the document renders at — in the reader view and in every panel
+---    view alike, since a panel never passes through the reader (`document.lua`'s
+---    `contrast()`);
+---  * the `event` fires `GammaUpdate`, which updates `ReaderView.state.gamma`
+---    (which is what invalidates the reader's own page buffer) and shows the
+---    stock "Contrast set to: %1." notification.
+---
+--- So this row carries no handler of its own in this plugin. Nothing it does
+--- needs one: the two things it triggers are already handled, by stock.
+local CONTRAST_ROW = {
+    name = "contrast",
+    name_text = _("Contrast"),
+    buttonprogress = true,
+    values = { 0.8, 1.0, 1.2, 1.5, 1.8, 2.2, 3.0 },
+    args = { 0.8, 1.0, 1.2, 1.5, 1.8, 2.2, 3.0 },
+    labels = { 0.8, 1.0, 1.2, 1.5, 1.8, 2.2, 3.0 },
+    default_pos = 2,
+    default_value = 1.0,
+    event = "GammaUpdate",
+    -- The fine-tune spinner, which is how a reader reaches a value the presets
+    -- do not name. Its own bounds match the presets rather than stock's 0.8-50,
+    -- for the reason above.
+    more_options = true,
+    more_options_param = {
+        value_step = 0.1, value_hold_step = 0.5,
+        value_min = 0.8, value_max = 3.0,
+        precision = "%.1f",
+    },
+    help_text = _([[Page tone, applied by the renderer: above 1.0 darkens and hardens the page, below it lifts and flattens it. It applies to panels as well. Long-press this row to set what new Meguru books start at.]]),
+}
+
 --- The option set the bottom menu opens with for a streamed book.
 ---
 --- Rows are pulled *live* from the global `KoptOptions` table rather than from a
@@ -1220,7 +1264,7 @@ local ROTATE_WIDE_ROW = {
 --- zoom-matrix family) would each set a value with no visible effect, which is
 --- worse than not offering them.
 local function buildCuratedOptions(ui)
-    local rotation_tab, crop_tab, pageview_tab
+    local rotation_tab, crop_tab, pageview_tab, contrast_tab
     for _, tab in ipairs(KoptOptions) do
         if tab.icon == "appbar.rotation" and not rotation_tab then
             rotation_tab = tab
@@ -1228,6 +1272,10 @@ local function buildCuratedOptions(ui)
             crop_tab = tab
         elseif tab.icon == "appbar.pageview" and not pageview_tab then
             pageview_tab = tab
+        elseif tab.icon == "appbar.contrast" and not contrast_tab then
+            -- Read for its icon and nothing else: the tab is stock's, the row
+            -- that goes in it is ours (see CONTRAST_ROW for why).
+            contrast_tab = tab
         end
     end
     -- If the stock layout is ever not what we expect, show everything rather
@@ -1321,6 +1369,14 @@ local function buildCuratedOptions(ui)
         {
             icon = (pageview_tab and pageview_tab.icon) or "appbar.pageview",
             options = reading_options,
+        },
+        -- Its own tab, which is where stock puts a page's tone as well: the three
+        -- above are about the *shape* of what is shown — how it is turned, what
+        -- is cut off it, how it is fitted — and this is the only one that is
+        -- about the picture rather than its frame.
+        {
+            icon = (contrast_tab and contrast_tab.icon) or "appbar.contrast",
+            options = { CONTRAST_ROW },
         },
     }
 end

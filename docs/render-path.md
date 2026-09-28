@@ -253,6 +253,60 @@ to a slower path is survivable and invisible at the same time; the two must not 
 be true, so the reason travels (`[direct failed: no bytes cached]`) rather than
 being logged at a level nobody is reading.
 
+### Contrast
+
+**The bottom menu's Contrast row is stock KOReader's contrast, applied the way stock
+applies it: by MuPDF.** The value reaches `dc:setGamma` on the draw context, and
+`page:draw_new` runs `fz_gamma_pixmap` over the pixmap it just rendered
+(`base/ffi/mupdf.lua`) — the same call from the same field that a stock PDF's
+`kopt_contrast` reaches. Nothing in this plugin transforms a pixel for it, which is
+the only reason it is affordable: there is no `BlitBuffer` gamma primitive in KOReader
+(`adjustSaturation`, `invert` and `paintRect` are what exists), and a Lua loop over a
+screen-sized tile is not a thing a page turn can pay for.
+
+**It is applied at both draw sites, and it has to be.** `renderMuPDFPage` produces the
+whole-page working decode that a paint's crop-and-scale slices, and
+`Image.renderRegion` produces a region in one pass — which is what an *upscaling* paint
+asks for, and what **every panel tile** asks for. A tone applied at only one of them
+would show on part of the reader's pages and on none of the panels.
+
+**Contrast therefore rides the native decode, and that is what makes it the one
+setting here that invalidates rather than keys.** The tone is baked into the pixels of
+`self.native` when it is decoded, so after a change every tile cut from it, every
+content box, every panel list and every page-number/blank memo describes a picture the
+reader is no longer looking at. `syncContrast` (called at the top of each entry point
+that reads one of those tables) drops them and lets them be recomputed; `dims` and
+`page_bytes` survive, because a gamma moves pixel values and never page dimensions,
+and because keeping the bytes is what makes the re-decode cost a decode and not a
+fetch.
+
+**Tiles are the exception: the change *stamps* them instead of dropping them.** A
+native is held by nothing but the document — every consumer is handed a copy — so
+freeing one at the change is safe. A tile can be on screen: the panel viewer holds one
+across paints (`image_disposable = false`), and the one statement in this plugin that
+may free a tile something is still painting is `releasePanelTile`, the viewer saying it
+has moved on. A tone change is not that statement. So `cacheTile` stamps each tile with
+the tone it was rendered at and `tileAtTone` refuses a tile whose stamp is not the
+current one, leaving it for the LRU to free when it turns over or when that key is
+rendered again. That is also why the tile keys say nothing about tone: the cache stays
+keyed by what it stores (the crop), and the tone is a comparison at the lookup.
+
+**The alternative was measured and rejected**: a second, tone-free native decode for
+the analysis to read would keep the tone out of the crops and panels, at the price of
+two decodes per page turn whenever contrast is not 1.0 — on the one path (a page turn)
+where this plugin is most careful about latency. So the analysis sees the page as
+shown, which is also the direction `docs/panel-zoom.md` already leans.
+
+**Two limits, stated rather than discovered.** The `RenderImage` fallback has no draw
+context to carry a tone, so bytes MuPDF cannot open (and builds without the binding)
+render without contrast — a path that already differs from the main one in other ways.
+And the fine-tune spinner's own "Set as default" button writes a **global**
+`kopt_contrast` that `redirectDefaults` cannot intercept (it wraps `onMakeDefault`, not
+`onConfigMoreChoose`): Meguru books are immune, because the plugin's own preference
+always has a value and `seedContrast` therefore always overwrites what the global put
+in the configurable — but a stock PDF opened afterwards inherits that global, exactly
+as it would from stock's own button.
+
 ### Log lines
 
 Four lines make the render path decidable from a device log. **All four are at
