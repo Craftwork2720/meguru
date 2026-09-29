@@ -29,6 +29,7 @@ plugin *instance*, so a PDF opened in the same session never sees them at all.
 hang it on — which is why it is guarded by a module flag.
 --]]
 
+local Blitbuffer = require("ffi/blitbuffer")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
@@ -1865,6 +1866,42 @@ end
 
 -- Installation -----------------------------------------------------------------
 
+--- Paint the screen around the page in the colour of the margin the crop just
+--- took off it, so the trim reads as the page continuing to the screen edge
+--- rather than as a frame drawn around the artwork.
+---
+--- The two fields are KOReader's own (`ReaderView.outer_page_color`, painted by
+--- `drawPageSurround`, and `page_bgcolor`, its continuous-mode twin) and stock
+--- keeps them grey — `DOUTER_PAGE_COLOR` is a 0..15 grey — so a margin is
+--- matched by its luminance and nothing here invents a colour model.
+--- `Blitbuffer.gray` is *blackness*, where `cropMarginGray` answers brightness,
+--- hence the inversion.
+---
+--- Inert wherever the crop is not: with "Page Crop" off, or on a page the scan
+--- refused or found no margin on, the reader's own surround colour is restored.
+--- That is also what keeps this from arguing with `meguru/doc/image`, whose
+--- panel mask is white by a written decision — the colour here is only trusted
+--- on a page the crop actually trimmed.
+local function applyCropMarginColor(plugin, ui, page)
+    local view = ui and ui.view
+    local stock = plugin._meguru_view_color
+    if not (view and stock and stock.outer) then
+        return
+    end
+    local document = ui.document
+    local configurable = document and document.configurable
+    local color
+    if configurable and configurable.trim_page == 1 and type(page) == "number"
+        and type(document.cropMarginGray) == "function" then
+        local gray = document:cropMarginGray(page)
+        if gray then
+            color = Blitbuffer.gray(1 - gray)
+        end
+    end
+    view.outer_page_color = color or stock.outer
+    view.page_bgcolor = color or stock.page
+end
+
 --- Graft everything reader-side onto `plugin` for the document it has open.
 --- A no-op for any other document, so a PDF in the same session never grows a
 --- Meguru row or a wrapped seam.
@@ -1873,6 +1910,16 @@ function Reader.install(plugin)
     local doc = ui and ui.document
     if not (doc and doc.provider == "meguru") then
         return false
+    end
+
+    -- What the surround was before this plugin touched it. Captured once per
+    -- reader, before anything here writes the fields, which is the idiom stock's
+    -- own cropping module uses for the same two fields (`readercropping`).
+    if ui.view and not plugin._meguru_view_color then
+        plugin._meguru_view_color = {
+            outer = ui.view.outer_page_color,
+            page = ui.view.page_bgcolor,
+        }
     end
 
     local rotate_state = {}
@@ -1920,8 +1967,13 @@ function Reader.install(plugin)
         if type(page_error_handler) == "function" then
             page_error_handler(self, page)
         end
-        notePageTurn(self, page or (self.ui and currentPage(self.ui)))
+        local turned = page or (self.ui and currentPage(self.ui))
+        notePageTurn(self, turned)
+        applyCropMarginColor(plugin, self.ui or ui, turned)
     end
+
+    -- And the page the book opens on, which no page turn announces.
+    applyCropMarginColor(plugin, ui, currentPage(ui))
 
     curateConfigMenu(plugin)
 

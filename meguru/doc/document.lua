@@ -486,7 +486,7 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
         if (x1 - x0) * (y1 - y0) < AUTOCROP_MIN_KEEP_FRAC * full_w * full_h then
             return nil
         end
-        return { x0 = x0, y0 = y0, x1 = x1, y1 = y1 }
+        return { x0 = x0, y0 = y0, x1 = x1, y1 = y1, bg = bg }
     end)
     if not ok then
         logger.warn("Meguru: auto-crop scan failed:", box)
@@ -1918,6 +1918,31 @@ function MeguruDocument:autoContentBox(pageno)
     -- and not re-derived on every getPageBBox / panel-zoom call.
     self.crops[pageno] = box or false
     return box
+end
+
+-- The luminance of the margin this page's crop trimmed off, 0..1, or nil when
+-- nothing was trimmed. The reader view paints the screen around the page in it,
+-- so the trim reads as the page continuing rather than as a frame around it.
+--
+-- A cold cache is filled here rather than left to the paint that follows: this
+-- is asked on a page turn, and the decode it costs is the one that paint is
+-- about to do anyway — doing it first is what makes the surround right on the
+-- *first* paint of the page rather than one repaint later. `false` in the cache
+-- is the "scanned, nothing trimmed" mark, so a full-bleed page and a page the
+-- scan refused both answer nil and leave the reader's own colour alone.
+--
+-- `bg` is the reference the scan measured content against (see
+-- scanContentBounds), which is exactly the margin's colour when the crop
+-- succeeded, and it rides out of computeContentBox on the box table.
+function MeguruDocument:cropMarginGray(pageno)
+    if self.crops[pageno] == nil then
+        self:autoContentBox(pageno)
+    end
+    local box = self.crops[pageno]
+    if type(box) ~= "table" or not box.bg then
+        return nil
+    end
+    return box.bg / 255
 end
 
 -- ---------------------------------------------------------------------------

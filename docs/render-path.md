@@ -285,6 +285,25 @@ to a slower path is survivable and invisible at the same time; the two must not 
 be true, so the reason travels (`[direct failed: no bytes cached]`) rather than
 being logged at a level nobody is reading.
 
+**The screen around a cropped page is painted in the colour of the margin the crop
+took off.** `ReaderView` already has the field — `outer_page_color`, which
+`drawPageSurround` paints, and `page_bgcolor`, its continuous-mode twin — and stock
+keeps both grey (`DOUTER_PAGE_COLOR` is a 0..15 grey), so the margin is matched by
+its **luminance**: the crop's own reference background, `scanContentBounds`' `bg`,
+carried out of `computeContentBox` on the box table and read back per page by
+`MeguruDocument:cropMarginGray`. `Blitbuffer.gray` takes blackness and that value is
+brightness, so the call inverts it.
+
+Two boundaries keep it honest rather than clever. It is only trusted where the crop
+**actually trimmed** — a page whose box came back whole, and a page the scan
+refused, both answer nil and the reader's own surround colour comes back; that is
+the difference between this value and the `backgroundFor` estimate
+`meguru/doc/image` refuses by name for the panel mask. And it is screen-level only:
+the panel viewer's frame and the panel mask keep their white, by that same written
+decision. One interaction is worth knowing: stock's own Page Crop dialog reads these
+fields when it opens and restores them when it closes, so a reader who crops by hand
+mid-book gets their own colour back until the next page turn re-applies this.
+
 ### Contrast and saturation
 
 **The bottom menu's Contrast and Saturation rows are stock KOReader's, applied the way
