@@ -104,7 +104,13 @@ end
 -- _pagenum_cache gate in getPageBBox) — so the two never double-crop.
 
 local AUTOCROP_SCAN_TARGET = 128 -- max dimension of the scanned downscale
-local AUTOCROP_MIN_BG_LUMA = 170 -- only treat a light border as a margin
+-- The two ends of the border band. At or above the light bar a border is a
+-- paper margin; at or below the dark bar it is a printed or rendered black
+-- margin. Between the two it is neither, and the crop refuses exactly as it did
+-- before dark borders were supported: a mid-grey scan edge is not a margin on
+-- either side, and refusing is the direction that cannot cut artwork.
+local AUTOCROP_MIN_BG_LUMA = 170
+local AUTOCROP_MAX_DARK_BG_LUMA = 85
 local AUTOCROP_LUMA_DELTA = 26   -- how much a pixel may differ from the border
 -- Degenerate-crop floor: whatever the options say, never let a scan shrink a
 -- page below this fraction of its area (guards against a pathological scan).
@@ -212,6 +218,16 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
     -- percentile tracks the light border as long as the border makes up even a
     -- minority of the ring samples, which is exactly the "has a white margin"
     -- case.
+    --
+    -- **This is asked first, and on its own it is the whole rule the crop has
+    -- always had.** A page with a light margin is measured by this expression
+    -- and cropped exactly as it was before dark borders were supported, whatever
+    -- else shares its ring. Deciding the border's side from the ring's
+    -- *majority* instead would break pages this reads correctly: a white caption
+    -- band above artwork bleeding off three edges has a dark majority **and** a
+    -- light margin, and this rule is right about it because its light samples
+    -- are well over the 15% a high percentile needs. The dark branch below is
+    -- reached only where this one refuses.
     local samples = {}
     for x = 0, w - 1 do
         samples[#samples + 1] = lumaAt(0, x)
@@ -225,12 +241,40 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
     local bg = samples[math.max(1, math.floor(#samples * 0.85))]
 
     if bg < AUTOCROP_MIN_BG_LUMA then
-        -- Even the lightest-typical ring sample is dark: the page truly has no
-        -- light border to anchor on (full-bleed dark page / dark frame). The
-        -- crop refuses so it never crops *into* artwork.
-        cropSkipLog(pageno, "border not light enough (bg=",
-            math.floor(bg), ") — page kept as-is")
-        return nil -- dark border / full-bleed dark page: keep it untouched
+        -- No light border to anchor on. Before refusing, ask the same question
+        -- about the other side of the midpoint: the 15th percentile is the
+        -- *darkest typical* ring sample exactly as the 85th is the lightest,
+        -- and it is the border's own colour when that border is printed or
+        -- rendered black — so the same rule crops a dark margin as a light one,
+        -- with nothing between them but which end of the band it sits at.
+        -- Refusing here instead is what left a black-framed page untouched and
+        -- its printed number in the crop.
+        local dark_bg = samples[math.max(1, math.floor(#samples * 0.15))]
+        if dark_bg > AUTOCROP_MAX_DARK_BG_LUMA then
+            cropSkipLog(pageno, "border neither light nor dark enough (bg=",
+                math.floor(bg), ", dark=", math.floor(dark_bg), ") — page kept as-is")
+            return nil
+        end
+        -- BB8A: lumaAt takes min(gray, alpha), so a transparent texel reads as
+        -- black — but a transparent frame is not a black margin, and this
+        -- document never cropped one (the light percentile of such a ring is
+        -- that same transparent black, so the refusal above used to catch it).
+        -- Only an opaque dark border is a margin.
+        if bpp == 2 then
+            for x = 0, w - 1 do
+                if data:byte(x * bpp + 2) < 255
+                    or data:byte((h - 1) * stride + x * bpp + 2) < 255 then
+                    return nil
+                end
+            end
+            for y = 1, h - 2 do
+                if data:byte(y * stride + 2) < 255
+                    or data:byte(y * stride + (w - 1) * bpp + 2) < 255 then
+                    return nil
+                end
+            end
+        end
+        bg = dark_bg
     end
 
     -- Project content pixels onto rows and columns.
@@ -1896,14 +1940,47 @@ end
 local MEGURU_BLANK_RENDER_MAX_PX = 256
 local MEGURU_BLANK_MAX_CONTENT_AREA = 0.10
 
--- Analyze a bottom-strip render for a page-number band. Ported verbatim from
--- pagenumbercrop's PageNumberCrop.analyzeStrip. `bb` is the downscaled strip;
--- `y_start_override` (0 here) pins the scan to the strip's own bottom. Returns
--- (crop_y, detail[, suspicious]): crop_y is the band's top in *strip-image*
--- pixels (0 = no page number), detail a human log, and the third value flags
--- "only noise bands" so the caller retries at fallback zoom. Heuristics: the
--- band must be short and narrow-ish, sit above a clean gutter, leave content
--- above it, and never touch the page edges like real artwork would.
+-- Which side of the midpoint a page's own margin sits on: false = a light
+-- margin (a printed number reads as dark ink on it), true = a dark one (the
+-- number is light). Read from the bottom band of a buffer whose bottom edge *is*
+-- the page's bottom edge — a whole-page preview, or the bottom strip — because
+-- that band is margin on every page that has a margin. Three columns across it
+-- and the median of their samples: a printed number covers a handful of them at
+-- most, and one of the three columns can be a corner number without moving the
+-- median.
+--
+-- The `false` fallback is the point of the shape: a buffer too small to sample
+-- leaves both callers on the test this document has always used — ink is dark,
+-- content is dark — and never on the flipped one.
+local function meguruMarginIsDark(bb, w, h, mid)
+    if not w or not h or w < 16 or h < 4 then
+        return false
+    end
+    local samples = {}
+    for y = h - 1, math.max(0, h - 1 - math.floor(h * 0.08)), -1 do
+        samples[#samples + 1] = bb:getPixel(0, y):getColor8().a
+        samples[#samples + 1] = bb:getPixel(8, y):getColor8().a
+        samples[#samples + 1] = bb:getPixel(w - 1, y):getColor8().a
+    end
+    table.sort(samples)
+    return samples[math.max(1, math.floor(#samples * 0.5))] < mid
+end
+
+-- Analyze a bottom-strip render for a page-number band. Ported from
+-- pagenumbercrop's PageNumberCrop.analyzeStrip, with one deliberate deviation:
+-- the port inherited that plugin's "dark is ink" as a constant, which is the
+-- white-margin page only — on a page whose margin is black it read the margin
+-- itself as one full-width band and answered "panel reaches the bottom" on
+-- every page of a black-bordered book. Ink is now read in the margin's own
+-- polarity (see meguruMarginIsDark above), so a printed number is removed from
+-- a dark margin by the same rule that removes it from a light one. `bb` is the
+-- downscaled strip; `y_start_override` (0 here) pins the scan to the strip's own
+-- bottom. Returns (crop_y, detail[, suspicious]): crop_y is the band's top in
+-- *strip-image* pixels (0 = no page number), detail a human log, and the third
+-- value flags "only noise bands" so the caller retries at fallback zoom.
+-- Heuristics: the band must be short and narrow-ish, sit above a clean gutter,
+-- leave content above it, and never touch the page edges like real artwork
+-- would.
 local function meguruAnalyzeStrip(bb, y_start_override)
     local w, h = bb:getWidth(), bb:getHeight()
     if not w or not h or w < 20 or h < 40 then
@@ -1917,8 +1994,14 @@ local function meguruAnalyzeStrip(bb, y_start_override)
     local dark_threshold = 128
     local x_step = 2
 
-    local function isDark(color)
-        return color:getColor8().a < dark_threshold
+    local ink_is_dark = not meguruMarginIsDark(bb, w, h, dark_threshold)
+
+    local function isInk(color)
+        local a = color:getColor8().a
+        if ink_is_dark then
+            return a < dark_threshold
+        end
+        return a >= dark_threshold
     end
 
     local ink = {}
@@ -1928,7 +2011,7 @@ local function meguruAnalyzeStrip(bb, y_start_override)
         local count = 0
         local xmin, xmax = w, -1
         for x = 0, w - 1, x_step do
-            if isDark(bb:getPixel(x, y)) then
+            if isInk(bb:getPixel(x, y)) then
                 count = count + 1
                 if x < xmin then xmin = x end
                 if x > xmax then xmax = x end
@@ -2057,9 +2140,14 @@ local function meguruAnalyzeStrip(bb, y_start_override)
     return crop_y, log_detail
 end
 
--- Mostly-blank check on a full-page downscale: true when the dark content
--- spans less than ~10% of the page area (a chapter divider, a title page).
--- Ported verbatim from pagenumbercrop's PageNumberCrop.pageMostlyBlank.
+-- Mostly-blank check on a full-page downscale: true when the content spans less
+-- than ~10% of the page area (a chapter divider, a title page). Ported from
+-- pagenumbercrop's PageNumberCrop.pageMostlyBlank, with the same one deviation
+-- its sibling meguruAnalyzeStrip carries: content is what departs from the
+-- page's own margin, and on a page framed in black that is the *light* pixels.
+-- Without it the rule cannot see a black-framed divider as blank at all (the
+-- frame alone is more than 10% of the page), so the crop would trim the frame
+-- and zoom into the small title the row exists to protect.
 local function meguruPageMostlyBlank(bb)
     local w, h = bb:getWidth(), bb:getHeight()
     if not w or not h or w < 20 or h < 20 then
@@ -2067,6 +2155,7 @@ local function meguruPageMostlyBlank(bb)
     end
 
     local dark_threshold = 128
+    local margin_is_dark = meguruMarginIsDark(bb, w, h, dark_threshold)
     local x_step, y_step = 2, 2
     local total_area = w * h
     local max_blank_area = MEGURU_BLANK_MAX_CONTENT_AREA * total_area
@@ -2075,7 +2164,9 @@ local function meguruPageMostlyBlank(bb)
     local xmin, ymin, xmax, ymax = w, h, -1, -1
     for y = 0, h - 1, y_step do
         for x = 0, w - 1, x_step do
-            if bb:getPixel(x, y):getColor8().a < dark_threshold then
+            local a = bb:getPixel(x, y):getColor8().a
+            if (margin_is_dark and a >= dark_threshold)
+                or (not margin_is_dark and a < dark_threshold) then
                 found = true
                 if x < xmin then xmin = x end
                 if x > xmax then xmax = x end
