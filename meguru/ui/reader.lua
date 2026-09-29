@@ -1882,6 +1882,16 @@ end
 --- That is also what keeps this from arguing with `meguru/doc/image`, whose
 --- panel mask is white by a written decision — the colour here is only trusted
 --- on a page the crop actually trimmed.
+---
+--- **Night mode inverts what is painted, so the level is pre-inverted here.** The
+--- display inversion is what `MeguruDocument:drawPage` cancels for the page
+--- itself by inverting the region it just drew; a surround painted straight
+--- through `paintRect` gets inverted like any other fill, and a black-bordered
+--- book would come out with a white band around it. The test is drawPage's own
+--- (`nightmode_document` and `Screen.night_mode`, in that order), so the surround
+--- follows whatever happens to the page on a given device rather than a theory of
+--- how that device inverts: where the page comes out compensated, so does the
+--- margin.
 local function applyCropMarginColor(plugin, ui, page)
     local view = ui and ui.view
     local stock = plugin._meguru_view_color
@@ -1895,7 +1905,9 @@ local function applyCropMarginColor(plugin, ui, page)
         and type(document.cropMarginGray) == "function" then
         local gray = document:cropMarginGray(page)
         if gray then
-            color = Blitbuffer.gray(1 - gray)
+            local inverted = configurable.nightmode_document == 1
+                and Screen.night_mode
+            color = Blitbuffer.gray(inverted and gray or (1 - gray))
         end
     end
     view.outer_page_color = color or stock.outer

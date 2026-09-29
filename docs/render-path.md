@@ -294,6 +294,14 @@ carried out of `computeContentBox` on the box table and read back per page by
 `MeguruDocument:cropMarginGray`. `Blitbuffer.gray` takes blackness and that value is
 brightness, so the call inverts it.
 
+**And night mode gets that level pre-inverted, because the display inverts fills.**
+Night mode inverts the whole display — that is the inversion `drawPage` cancels for
+the page by inverting the region it has just drawn — so a surround painted straight
+through `paintRect` comes out as the margin's negative: a white band around a
+black-bordered page. The test is `drawPage`'s own (`nightmode_document == 1` and
+`Screen.night_mode`), which keeps the two in step on whatever a device actually
+does: where the page reads compensated, so does the margin beside it.
+
 Two boundaries keep it honest rather than clever. It is only trusted where the crop
 **actually trimmed** — a page whose box came back whole, and a page the scan
 refused, both answer nil and the reader's own surround colour comes back; that is
