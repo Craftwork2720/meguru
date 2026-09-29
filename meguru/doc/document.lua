@@ -253,8 +253,8 @@ end
 
 -- Scan a small BlitBuffer for the content bounding box. Returns
 -- { left, top, right, bottom } (inclusive pixel indices, small-image
--- coordinates) or nil when the page is blank / unsupported / has no light
--- uniform margin.
+-- coordinates) or nil when the page is blank / unsupported / has no
+-- detectable uniform margin.
 -- `page_w`/`page_h` are the PAGE's dimensions, which are not the same thing as
 -- `bb`'s: the caller scans a downscale (AUTOCROP_SCAN_TARGET), so the buffer is
 -- smaller than the page and the message below has to say which is which. It
@@ -452,7 +452,7 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
                 edge_bottom ~= stable_bottom and "attached" or true
         end
     end
-    -- Suspicious case worth flagging: a *light* border (bg above) yet the
+    -- Suspicious case worth flagging: a detected border (bg above) yet the
     -- detected content still spans the entire small image edge-to-edge. When
     -- this box comes back whole, computeContentBox has nothing left to trim and
     -- the page is kept as-is — i.e. the exact "whole frame stays" symptom.
