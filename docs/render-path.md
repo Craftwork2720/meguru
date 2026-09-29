@@ -294,13 +294,18 @@ carried out of `computeContentBox` on the box table and read back per page by
 `MeguruDocument:cropMarginGray`. `Blitbuffer.gray` takes blackness and that value is
 brightness, so the call inverts it.
 
-**And night mode gets that level pre-inverted, because the display inverts fills.**
-Night mode inverts the whole display — that is the inversion `drawPage` cancels for
-the page by inverting the region it has just drawn — so a surround painted straight
-through `paintRect` comes out as the margin's negative: a white band around a
-black-bordered page. The test is `drawPage`'s own (`nightmode_document == 1` and
-`Screen.night_mode`), which keeps the two in step on whatever a device actually
-does: where the page reads compensated, so does the margin beside it.
+**And night mode asks for the darker of the margin's colour and its inverse,
+re-derived on every paint rather than on a page turn.** Night mode inverts the whole
+display — the inversion `drawPage` cancels for the page by inverting the region it
+has just drawn — so the level has to be pre-inverted, and the *question* has to be
+asked where the page asks it: `DeviceListener:onToggleNightMode` flips the screen and
+dirties the whole view with no page turn anywhere in it, so a level decided on the
+turn would be one inversion out of date, and a black-bordered page would show a
+*white* band around it. Darker-of-the-two is what a letterboxed page wants in the
+dark: a black margin stays black, so the trim still reads as continuous, a white one
+takes its own inverse and comes out the black the reader's screen already is, and a
+grey border merely darkens a little. The test is `drawPage`'s own
+(`nightmode_document == 1` and `Screen.night_mode`).
 
 Two boundaries keep it honest rather than clever. It is only trusted where the crop
 **actually trimmed** — a page whose box came back whole, and a page the scan

@@ -1882,10 +1882,20 @@ end
 --- The fields are KOReader's own (`ReaderView.outer_page_color`, painted by
 --- `drawPageSurround`, and `page_bgcolor`, its continuous-mode twin) and stock
 --- keeps them grey — `DOUTER_PAGE_COLOR` is a 0..15 grey — so a margin is matched
---- by its luminance and nothing here invents a colour model. `Blitbuffer.gray`
---- is *blackness* where `cropMarginGray` answers brightness, hence the `1 -`
---- — and that level is pre-inverted under night mode, because the display inverts
---- every fill and the page's own margin is compensated the same way.
+--- by its luminance and nothing here invents a colour model.
+---
+--- **`Blitbuffer.gray` takes blackness, and the display inverts fills under night
+--- mode, so the level is inverted in both directions at once**: day mode paints
+--- `1 - gray` (brightness), night mode paints the *screen* brightness straight
+--- through, since the display will invert it back.
+---
+--- **Night mode asks for the darker of the two, and that is the whole rule there.**
+--- A margin is matched so the trim reads as the page continuing, but on a page
+--- being read in the dark the letterbox must not become a light band: a black
+--- margin stays black (nothing changes, which is what a letterboxed page wants),
+--- and a white one takes its own inverse and comes out the black the reader's
+--- screen already is. A mid-grey takes whichever of the two is darker, so a scan
+--- whose border is grey darkens a little rather than flipping.
 local function setCropMarginColor(plugin, ui, gray)
     local view = ui and ui.view
     local stock = plugin._meguru_view_color
@@ -1894,8 +1904,11 @@ local function setCropMarginColor(plugin, ui, gray)
     end
     local color
     if gray then
-        local inverted = pageIsInverted(ui.document)
-        color = Blitbuffer.gray(inverted and gray or (1 - gray))
+        if pageIsInverted(ui.document) then
+            color = Blitbuffer.gray(math.min(gray, 1 - gray))
+        else
+            color = Blitbuffer.gray(1 - gray)
+        end
     end
     view.outer_page_color = color or stock.outer
     view.page_bgcolor = color or stock.page
