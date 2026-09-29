@@ -66,11 +66,11 @@ local function nowMs()
 end
 
 -- ---------------------------------------------------------------------------
--- Auto page crop (white-margin detection)
+-- Auto page crop (light and dark margin detection)
 -- ---------------------------------------------------------------------------
 --
--- OPDS-PSE servers (and some scanners) deliver pages with a uniform white /
--- cream border around the actual artwork. Cropping such a page is done like a
+-- OPDS-PSE servers (and some scanners) deliver pages with a uniform light or
+-- dark border around the artwork. Cropping such a page is done like a
 -- KOpt-engine document would: the page size stays the *full* (capped) native
 -- page and the crop lives only in the document's bounding box. `getPageBBox`
 -- (below) returns the trimmed content box when the "Page Crop" ConfigDialog
@@ -82,15 +82,13 @@ end
 -- Detection is two-stage. A cheap pass reads raw pixels of a small downscaled
 -- copy of the decoded page (Blitbuffer.tostring gives us the raw bytes, the
 -- same route TileCacheItem uses to serialize tiles), finds the first/last row &
--- column that differ from the uniform light border, and maps that back onto
--- native coordinates — this also decides which pages to leave alone (blank,
--- dark full-bleed art, a drawn dark frame). The top/bottom are trimmed
+-- column that differ from the uniform border, and maps that back onto
+-- native coordinates. Short detached marks are checked against sustained
+-- content before an edge is moved inward. The top/bottom are trimmed
 -- maximally, flush with the detected content edge; the left/right margins are
 -- trimmed just as maximally (see computeContentBox). A second, native-resolution
--- pass (refineAutoCrop) then pins each edge to the *exact* outermost content
--- pixel, so the crop ends flush with the panel/artwork and leaves no white
--- frame — even on a page whose only boundary is a thin printed frame line the
--- downscale would have blurred away.
+-- pass (refineAutoCrop) pins the edges to native pixels. Edges moved past
+-- detached marks are refined inward so those marks do not reopen the margin.
 --
 -- The two finer crops a KOReader CBZ user gets from the pagenumbercrop plugin
 -- — removing a printed page number from the bottom gutter, and "no crop on
@@ -104,7 +102,8 @@ end
 -- _pagenum_cache gate in getPageBBox) — so the two never double-crop.
 
 local AUTOCROP_SCAN_TARGET = 128 -- max dimension of the scanned downscale
-local AUTOCROP_MIN_BG_LUMA = 170 -- only treat a light border as a margin
+local AUTOCROP_MIN_BG_LUMA = 170
+local AUTOCROP_MAX_DARK_BG_LUMA = 85
 local AUTOCROP_LUMA_DELTA = 26   -- how much a pixel may differ from the border
 -- Degenerate-crop floor: whatever the options say, never let a scan shrink a
 -- page below this fraction of its area (guards against a pathological scan).
@@ -134,6 +133,122 @@ local function cropSkipLog(pageno, ...)
     else
         logger.dbg("Meguru: crop skip:", ...)
     end
+end
+
+-- Find the long, well-supported run on an axis. Short detached runs can be
+-- stamps in a margin, but a thin balloon or sound effect needs a second check.
+local function sustainedSpan(counts, length, minimum)
+    local peak, total = 0, 0
+    for i = 0, length - 1 do
+        local n = counts[i] or 0
+        peak = math.max(peak, n)
+        total = total + n
+    end
+    local bar = math.max(minimum, math.floor(peak * 0.12 + 0.5))
+    local runs, longest, first, mass = {}, 0
+    for i = 0, length do
+        local n = i < length and (counts[i] or 0) or 0
+        if n >= bar then
+            first = first or i
+            mass = (mass or 0) + n
+        elseif first then
+            runs[#runs + 1] = { first = first, last = i - 1, mass = mass }
+            longest = math.max(longest, i - first)
+            first, mass = nil, nil
+        end
+    end
+    local low, high
+    for _, run in ipairs(runs) do
+        if run.mass >= total * 0.08 or run.last - run.first + 1 >= longest * 0.20 then
+            low = low and math.min(low, run.first) or run.first
+            high = high and math.max(high, run.last) or run.last
+        end
+    end
+    return low, high
+end
+
+-- Keep a sparse protrusion if it spans enough of the other axis. For the top
+-- and bottom, corner stamps are excluded from the middle-width check.
+local function hasInteriorExcursion(lumaAt, counts, first, last, length, span,
+    along_rows, background)
+    if first > last then
+        return false
+    end
+    local support, found = {}, 0
+    local required = math.max(3, math.ceil(span * (along_rows and 0.08 or 0.11)))
+    local middle_first = along_rows and math.floor(span * 0.20) or 0
+    local middle_last = along_rows and math.ceil(span * 0.80) - 1 or span - 1
+    for i = first, last do
+        if (i ~= 0 and i ~= length - 1) or (counts[i] or 0) < span * 0.95 then
+            for j = middle_first, middle_last do
+                local lum = along_rows and lumaAt(i, j) or lumaAt(j, i)
+                if not support[j] and math.abs(lum - background) > AUTOCROP_LUMA_DELTA then
+                    support[j] = true
+                    found = found + 1
+                    if found >= required then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- On a dark page, follow a tip connected to the panel before rejecting a
+-- detached corner mark. Stop at the first empty or disconnected scan line.
+local function attachedBoundary(lumaAt, counts, edge, step, length, span,
+    along_rows, background, support_first, support_last)
+    local function ink(i, j)
+        local lum = along_rows and lumaAt(i, j) or lumaAt(j, i)
+        return math.abs(lum - background) > AUTOCROP_LUMA_DELTA
+    end
+    local boundary = edge
+    for _ = 1, 3 do
+        local next_edge = boundary + step
+        if next_edge < 0 or next_edge >= length or (counts[next_edge] or 0) < 2 then
+            break
+        end
+        local touches = 0
+        for j = support_first, support_last do
+            if ink(next_edge, j) then
+                for k = math.max(0, j - 1), math.min(span - 1, j + 1) do
+                    if ink(boundary, k) then
+                        touches = touches + 1
+                        break
+                    end
+                end
+            end
+            if touches >= 2 then
+                break
+            end
+        end
+        if touches < 2 then
+            break
+        end
+        boundary = next_edge
+    end
+    return boundary
+end
+
+local function detachedBorderMark(counts, outer, stable, step)
+    local distance = math.abs(stable - outer)
+    if distance < 4 or distance > 12 then
+        return false
+    end
+    local i = outer
+    while (counts[i] or 0) >= 2 and math.abs(i - outer) < 4 do
+        i = i + step
+    end
+    if math.abs(i - outer) > 3 then
+        return false
+    end
+    local blank = 0
+    while i ~= stable and (counts[i] or 0) < 2 do
+        blank = blank + 1
+        i = i + step
+    end
+    return blank >= 2
 end
 
 -- Scan a small BlitBuffer for the content bounding box. Returns
@@ -203,61 +318,51 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         return lum
     end
 
-    -- Reference background = the *lightest typical* luminance of the outer
-    -- ring (85th percentile), not its mean. A mean is easily dragged down by
-    -- dark content bleeding onto one edge/corner or by a scan vignette; when
-    -- it drops far enough below the true white margin, |margin − bg| exceeds
-    -- the delta below and the white margins themselves get classified as
-    -- "content" (the whole page then looks edge-to-edge full). A high
-    -- percentile tracks the light border as long as the border makes up even a
-    -- minority of the ring samples, which is exactly the "has a white margin"
-    -- case.
+    -- Sample just inside the physical edge, which may carry a thin scan line.
+    -- Use the light or dark percentile according to the typical border color.
     local samples = {}
-    for x = 0, w - 1 do
-        samples[#samples + 1] = lumaAt(0, x)
-        samples[#samples + 1] = lumaAt(h - 1, x)
+    for x = 1, w - 2 do
+        samples[#samples + 1] = lumaAt(1, x)
+        samples[#samples + 1] = lumaAt(h - 2, x)
     end
-    for y = 1, h - 2 do
-        samples[#samples + 1] = lumaAt(y, 0)
-        samples[#samples + 1] = lumaAt(y, w - 1)
+    for y = 2, h - 3 do
+        samples[#samples + 1] = lumaAt(y, 1)
+        samples[#samples + 1] = lumaAt(y, w - 2)
     end
     table.sort(samples)
-    local bg = samples[math.max(1, math.floor(#samples * 0.85))]
+    local dark_border = samples[math.max(1, math.floor(#samples * 0.5))]
+        <= AUTOCROP_MAX_DARK_BG_LUMA
+    local bg = samples[math.max(1,
+        math.floor(#samples * (dark_border and 0.15 or 0.85)))]
 
-    if bg < AUTOCROP_MIN_BG_LUMA then
-        -- Even the lightest-typical ring sample is dark: the page truly has no
-        -- light border to anchor on (full-bleed dark page / dark frame). The
-        -- crop refuses so it never crops *into* artwork.
-        cropSkipLog(pageno, "border not light enough (bg=",
+    if not dark_border and bg < AUTOCROP_MIN_BG_LUMA then
+        cropSkipLog(pageno, "border neither light nor dark enough (bg=",
             math.floor(bg), ") — page kept as-is")
-        return nil -- dark border / full-bleed dark page: keep it untouched
+        return nil
+    end
+    -- Transparent BB8A texels look black to lumaAt, but are not a black margin.
+    if dark_border and bpp == 2 then
+        for x = 0, w - 1 do
+            if data:byte(x * bpp + 2) < 255
+                or data:byte((h - 1) * stride + x * bpp + 2) < 255 then
+                return nil
+            end
+        end
+        for y = 1, h - 2 do
+            if data:byte(y * stride + 2) < 255
+                or data:byte(y * stride + (w - 1) * bpp + 2) < 255 then
+                return nil
+            end
+        end
     end
 
     -- Project content pixels onto rows and columns.
     local row_cnt = {}
     local col_cnt = {}
     for y = 0, h - 1 do
-        local base = y * stride
         local rcount = 0
         for x = 0, w - 1 do
-            local off = base + x * bpp
-            local lum
-            if bpp == 1 then
-                lum = data:byte(off + 1)
-            elseif bpp == 2 then
-                local a = data:byte(off + 1)
-                local b = data:byte(off + 2)
-                lum = a < b and a or b
-            else
-                -- Rec.601 luminance; see `lumaAt` above for why not the mean.
-                local r = data:byte(off + 1)
-                local g = data:byte(off + 2)
-                local b = data:byte(off + 3)
-                lum = math.floor((4898 * r + 9618 * g + 1869 * b) / 16384)
-            end
-            if inverse then
-                lum = 255 - lum
-            end
+            local lum = lumaAt(y, x)
             if math.abs(lum - bg) > AUTOCROP_LUMA_DELTA then
                 rcount = rcount + 1
                 col_cnt[x] = (col_cnt[x] or 0) + 1
@@ -303,6 +408,50 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         cropSkipLog(pageno, "no content found anywhere (page blank?)")
         return nil -- blank page
     end
+    local stable_left, stable_right = sustainedSpan(col_cnt, w, col_min)
+    local stable_top, stable_bottom = sustainedSpan(row_cnt, h, row_min)
+    local outliers = {}
+    if stable_left and stable_right and stable_top and stable_bottom
+        and stable_left < stable_right and stable_top < stable_bottom then
+        local edge_left, edge_right = stable_left, stable_right
+        local edge_top, edge_bottom = stable_top, stable_bottom
+        local marked_border = dark_border
+            and (detachedBorderMark(row_cnt, top, stable_top, 1)
+                or detachedBorderMark(row_cnt, bottom, stable_bottom, -1))
+        if marked_border then
+            edge_left = attachedBoundary(lumaAt, col_cnt, stable_left, -1,
+                w, h, false, bg, stable_top, stable_bottom)
+            edge_right = attachedBoundary(lumaAt, col_cnt, stable_right, 1,
+                w, h, false, bg, stable_top, stable_bottom)
+            edge_top = attachedBoundary(lumaAt, row_cnt, stable_top, -1,
+                h, w, true, bg, stable_left, stable_right)
+            edge_bottom = attachedBoundary(lumaAt, row_cnt, stable_bottom, 1,
+                h, w, true, bg, stable_left, stable_right)
+        end
+        if edge_left > left and not hasInteriorExcursion(lumaAt, col_cnt,
+            left, edge_left - 1, w, h, false, bg) then
+            left, outliers.left = edge_left,
+                edge_left ~= stable_left and "attached" or true
+        end
+        if edge_right < right and not hasInteriorExcursion(lumaAt, col_cnt,
+            edge_right + 1, right, w, h, false, bg) then
+            right, outliers.right = edge_right,
+                edge_right ~= stable_right and "attached" or true
+        end
+        -- On light pages the first thin heading may be real content. The
+        -- original top scan keeps it. On dark pages follow connected tips.
+        if dark_border and edge_top - top > 1
+            and not hasInteriorExcursion(lumaAt, row_cnt,
+                top, edge_top - 1, h, w, true, bg) then
+            top, outliers.top = edge_top,
+                edge_top ~= stable_top and "attached" or true
+        end
+        if edge_bottom < bottom and not hasInteriorExcursion(lumaAt, row_cnt,
+            edge_bottom + 1, bottom, h, w, true, bg) then
+            bottom, outliers.bottom = edge_bottom,
+                edge_bottom ~= stable_bottom and "attached" or true
+        end
+    end
     -- Suspicious case worth flagging: a *light* border (bg above) yet the
     -- detected content still spans the entire small image edge-to-edge. When
     -- this box comes back whole, computeContentBox has nothing left to trim and
@@ -319,7 +468,7 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
     end
     -- `bg` (the reference border luminance) rides along so the native fine pass
     -- in refineAutoCrop reuses the exact same content predicate as this scan.
-    return { left, top, right, bottom, bg = bg }
+    return { left, top, right, bottom, bg = bg, outliers = outliers }
 end
 
 -- Native fine pass; assigned below (it needs `computeContentBox` above it), see
@@ -328,20 +477,19 @@ local refineAutoCrop
 
 -- Compute the native auto content box of a decoded (working-resolution) page.
 -- Returns { x0, y0, x1, y1 } in native pixels, or nil when the page should be
--- left as-is (no detectable light margin, blank, or any scan hiccup — a crop
+-- left as-is (no detectable margin, blank, or any scan hiccup — a crop
 -- must never be worse than no crop). This is the *plain margin* crop only;
 -- the finer page-number / blank-page refinements used to be layered on top
 -- here but now live in the pagenumbercrop plugin, which wraps getPageBBox.
 --
 -- Maximal on every side: top, bottom, left and right are each trimmed right
--- up to the detected white margin, whatever lies between the content and the
+-- up to the detected margin, whatever lies between the content and the
 -- page edge is cut. The left and right margins are detected independently, so
 -- an asymmetric frame is trimmed asymmetrically (never centered): the result
 -- is the smallest box that contains the artwork on all four sides. The scan is
 -- two-stage: a cheap ~128px projection (scanContentBounds) finds the box and
 -- decides blank/dark/full-bleed pages, then a native-resolution fine pass
--- (refineAutoCrop) pins each edge to the exact outermost content pixel, so a
--- page comes out of the crop flush with its artwork — no white frame left.
+-- (refineAutoCrop) pins each edge to the selected content pixel.
 --
 -- The result feeds getPageBBox (the bbox ReaderZooming/ReaderView crop
 -- through), cached per page in self.crops. It is never baked into the page
@@ -398,8 +546,8 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
         local sc_y = full_h / sh
         -- Coarse content extent in native coordinates. Maximal on every side:
         -- top, bottom, left and right are each trimmed right up to the detected
-        -- white margin, independently (scanContentBounds), so an asymmetric
-        -- frame is trimmed asymmetrically; nothing but white margin is removed.
+        -- margin, independently (scanContentBounds), so an asymmetric frame
+        -- is trimmed asymmetrically.
         local x0 = math.max(0, math.floor(left * sc_x))
         local y0 = math.max(0, math.floor(top * sc_y))
         local x1 = math.min(full_w, math.ceil((right + 1) * sc_x))
@@ -408,7 +556,7 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
         if x0 == 0 and y0 == 0 and x1 == full_w and y1 == full_h then
             return nil
         end
-        -- Pin each edge to the *exact* outermost content pixel. The coarse scan
+        -- Pin each edge to the selected content pixel. The coarse scan
         -- above ran on a ~128px downscale, so its box is only flush to a scan
         -- pixel and, worse, the downscale blurs thin boundary features away (a
         -- 1-2px printed frame line right where the panel art starts averages to
@@ -418,7 +566,7 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
         -- trimmed side ends flush with the real content — no margin is left.
         x0, y0, x1, y1 = refineAutoCrop(native_bb, x0, y0, x1, y1, bg,
             math.max(8, math.ceil(sc_x * 3)),
-            math.max(8, math.ceil(sc_y * 3)))
+            math.max(8, math.ceil(sc_y * 3)), bounds.outliers)
         if x0 == 0 and y0 == 0 and x1 == full_w and y1 == full_h then
             return nil
         end
@@ -501,7 +649,7 @@ end
 -- flush with the real content, with no margin left on any side that has one.
 -- Falls back to the coarse box on any hiccup (a crop must never be worse than
 -- the coarse one). Returns four tightened numbers in native coordinates.
-refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
+refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y, outliers)
     if not (native_bb and native_bb.getWidth) then
         return x0, y0, x1, y1
     end
@@ -526,6 +674,16 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     -- looks where the coarse scan already proved content is nearby.
     local row_bar = math.max(2, math.floor(w * 0.002))
     local col_bar = math.max(2, math.floor(h * 0.002))
+    local strong_row_bar = math.max(row_bar, math.floor(w * 0.05))
+    local strong_col_bar = math.max(col_bar, math.floor(h * 0.05))
+    local top_bar = outliers.top and outliers.top ~= "attached"
+        and strong_row_bar or row_bar
+    local bottom_bar = outliers.bottom and outliers.bottom ~= "attached"
+        and strong_row_bar or row_bar
+    local left_bar = outliers.left and outliers.left ~= "attached"
+        and strong_col_bar or col_bar
+    local right_bar = outliers.right and outliers.right ~= "attached"
+        and strong_col_bar or col_bar
 
     local function isContent(y, x)
         return math.abs(luma(y, x) - bg) > delta
@@ -534,17 +692,18 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     -- Top: walk rows from the outward band edge downward; margin rows are
     -- blank, so the first row that clears the bar is the true topmost content.
     local top = y0
-    for y = math.max(0, y0 - pad_y), math.min(h - 1, y0 + pad_y) do
+    for y = math.max(0, y0 - (outliers.top and 0 or pad_y)),
+        math.min(h - 1, y0 + pad_y) do
         local cnt = 0
         for x = 0, w - 1 do
             if isContent(y, x) then
                 cnt = cnt + 1
-                if cnt >= row_bar then
+                if cnt >= top_bar then
                     break
                 end
             end
         end
-        if cnt >= row_bar then
+        if cnt >= top_bar then
             top = y
             break
         end
@@ -552,56 +711,86 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
 
     -- Bottom: the mirror walk, from below the coarse bottom edge upward.
     local bottom = y1 - 1
-    for y = math.min(h - 1, y1 - 1 + pad_y), math.max(0, y1 - 1 - pad_y), -1 do
+    for y = math.min(h - 1, y1 - 1 + (outliers.bottom and 0 or pad_y)),
+        math.max(0, y1 - 1 - pad_y), -1 do
         local cnt = 0
         for x = 0, w - 1 do
             if isContent(y, x) then
                 cnt = cnt + 1
-                if cnt >= row_bar then
+                if cnt >= bottom_bar then
                     break
                 end
             end
         end
-        if cnt >= row_bar then
+        if cnt >= bottom_bar then
             bottom = y
             break
         end
     end
 
-    -- Left: a column counts only when content runs down enough of its height.
-    local left = x0
-    for x = math.max(0, x0 - pad_x), math.min(w - 1, x0 + pad_x) do
+    -- A rule across the physical top or bottom is not a side boundary.
+    local excluded_side_rows = {}
+    local edge_band = math.max(1, math.ceil(h * 0.02))
+    for y = 0, h - 1 do
+        if y < edge_band or y >= h - edge_band then
+            local cnt = 0
+            for x = 0, w - 1 do
+                if isContent(y, x) then
+                    cnt = cnt + 1
+                    if cnt > w * 0.50 then
+                        excluded_side_rows[y] = true
+                        break
+                    end
+                end
+            end
+        end
+    end
+    local side_support_bar = math.max(col_bar, math.floor(h * 0.01))
+    local function sideInk(x, required)
         local cnt = 0
+        local target = math.max(side_support_bar, required)
         for y = 0, h - 1 do
-            if isContent(y, x) then
+            if not excluded_side_rows[y] and isContent(y, x) then
                 cnt = cnt + 1
-                if cnt >= col_bar then
+                if cnt >= target then
                     break
                 end
             end
         end
-        if cnt >= col_bar then
+        return cnt
+    end
+
+    -- Left: a column counts only when content runs down enough of its height.
+    local left = x0
+    local left_sparse = false
+    for x = math.max(0, x0 - (outliers.left and 0 or pad_x)),
+        math.min(w - 1, x0 + pad_x) do
+        local cnt = sideInk(x, left_bar)
+        if cnt >= left_bar then
             left = x
+            left_sparse = cnt < side_support_bar
             break
         end
     end
 
     -- Right: the mirror column walk, from the far side inward.
     local right = x1 - 1
-    for x = math.min(w - 1, x1 - 1 + pad_x), math.max(0, x1 - 1 - pad_x), -1 do
-        local cnt = 0
-        for y = 0, h - 1 do
-            if isContent(y, x) then
-                cnt = cnt + 1
-                if cnt >= col_bar then
-                    break
-                end
-            end
-        end
-        if cnt >= col_bar then
+    local right_sparse = false
+    for x = math.min(w - 1, x1 - 1 + (outliers.right and 0 or pad_x)),
+        math.max(0, x1 - 1 - pad_x), -1 do
+        local cnt = sideInk(x, right_bar)
+        if cnt >= right_bar then
             right = x
+            right_sparse = cnt < side_support_bar
             break
         end
+    end
+    local side_guard = math.max(3, math.ceil(w * 0.002))
+    if left_sparse and not outliers.left then
+        left = math.max(0, left - side_guard)
+    end
+    if right_sparse and not outliers.right then
+        right = math.min(w - 1, right + side_guard)
     end
 
     local nx0, ny0 = math.max(0, left), math.max(0, top)
