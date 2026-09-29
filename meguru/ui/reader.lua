@@ -1866,54 +1866,92 @@ end
 
 -- Installation -----------------------------------------------------------------
 
---- Paint the screen around the page in the colour of the margin the crop just
---- took off it, so the trim reads as the page continuing to the screen edge
---- rather than as a frame drawn around the artwork.
+--- Whether the page being drawn is inverted for night mode — the question
+--- `MeguruDocument:drawPage` asks itself before it cancels the inversion over the
+--- region it drew. The surround has to answer it the same way the page does, or
+--- one of the two reads as the other's negative.
+local function pageIsInverted(document)
+    local configurable = document and document.configurable
+    return configurable ~= nil and configurable.nightmode_document == 1
+        and Screen.night_mode == true
+end
+
+--- Set the reader's two surround fields from a margin brightness (0..1), or back
+--- to what the reader had when there is no margin to match.
 ---
---- The two fields are KOReader's own (`ReaderView.outer_page_color`, painted by
+--- The fields are KOReader's own (`ReaderView.outer_page_color`, painted by
 --- `drawPageSurround`, and `page_bgcolor`, its continuous-mode twin) and stock
---- keeps them grey — `DOUTER_PAGE_COLOR` is a 0..15 grey — so a margin is
---- matched by its luminance and nothing here invents a colour model.
---- `Blitbuffer.gray` is *blackness*, where `cropMarginGray` answers brightness,
---- hence the inversion.
----
---- Inert wherever the crop is not: with "Page Crop" off, or on a page the scan
---- refused or found no margin on, the reader's own surround colour is restored.
---- That is also what keeps this from arguing with `meguru/doc/image`, whose
---- panel mask is white by a written decision — the colour here is only trusted
---- on a page the crop actually trimmed.
----
---- **Night mode inverts what is painted, so the level is pre-inverted here.** The
---- display inversion is what `MeguruDocument:drawPage` cancels for the page
---- itself by inverting the region it just drew; a surround painted straight
---- through `paintRect` gets inverted like any other fill, and a black-bordered
---- book would come out with a white band around it. The test is drawPage's own
---- (`nightmode_document` and `Screen.night_mode`, in that order), so the surround
---- follows whatever happens to the page on a given device rather than a theory of
---- how that device inverts: where the page comes out compensated, so does the
---- margin.
-local function applyCropMarginColor(plugin, ui, page)
+--- keeps them grey — `DOUTER_PAGE_COLOR` is a 0..15 grey — so a margin is matched
+--- by its luminance and nothing here invents a colour model. `Blitbuffer.gray`
+--- is *blackness* where `cropMarginGray` answers brightness, hence the `1 -`
+--- — and that level is pre-inverted under night mode, because the display inverts
+--- every fill and the page's own margin is compensated the same way.
+local function setCropMarginColor(plugin, ui, gray)
     local view = ui and ui.view
     local stock = plugin._meguru_view_color
     if not (view and stock and stock.outer) then
         return
     end
-    local document = ui.document
-    local configurable = document and document.configurable
     local color
-    if configurable and configurable.trim_page == 1 and type(page) == "number"
-        and type(document.cropMarginGray) == "function" then
-        local gray = document:cropMarginGray(page)
-        if gray then
-            local inverted = configurable.nightmode_document == 1
-                and Screen.night_mode
-            color = Blitbuffer.gray(inverted and gray or (1 - gray))
-            logger.dbg("Meguru: page surround from crop margin bg",
-                math.floor(gray * 255), inverted and "(night-mode level)" or "")
-        end
+    if gray then
+        local inverted = pageIsInverted(ui.document)
+        color = Blitbuffer.gray(inverted and gray or (1 - gray))
     end
     view.outer_page_color = color or stock.outer
     view.page_bgcolor = color or stock.page
+end
+
+--- Ask the document for the margin this page's crop took off, remember it, and
+--- paint the surround with it. Called on a page turn and once at install.
+---
+--- Inert wherever the crop is not: with "Page Crop" off, or on a page the scan
+--- refused or found no margin on, `cropMarginGray` answers nil and the reader's
+--- own surround colour is restored. That is also what keeps this from arguing
+--- with `meguru/doc/image`, whose panel mask is white by a written decision — the
+--- colour here is only trusted on a page the crop actually trimmed.
+---
+--- The *asking* happens here, on a turn, and deliberately not in the paint that
+--- follows: a cold crop means a decode, and a decode inside a paint is the one
+--- thing this document's render path exists to avoid. The remembered value is
+--- what the paint then re-derives from.
+local function applyCropMarginColor(plugin, ui, page)
+    local document = ui and ui.document
+    local configurable = document and document.configurable
+    local gray
+    if configurable and configurable.trim_page == 1 and type(page) == "number"
+        and type(document.cropMarginGray) == "function" then
+        gray = document:cropMarginGray(page)
+    end
+    plugin._meguru_margin_gray = gray
+    if gray then
+        logger.dbg("Meguru: page surround from crop margin bg",
+            math.floor(gray * 255), pageIsInverted(document) and "(night)" or "")
+    end
+    setCropMarginColor(plugin, ui, gray)
+end
+
+--- Re-derive the surround on every paint, from the margin a turn remembered.
+---
+--- **This is the seam that makes night mode come out right, and it cannot be the
+--- page turn.** Night mode is toggled between turns — the reader's own
+--- `DeviceListener` flips the screen and then dirties the whole view
+--- (`Screen:toggleNightMode` then `UIManager:setDirty("all", "full")`), with no
+--- turn anywhere in it — so a level decided on the turn is one inversion out of
+--- date by the time that repaint runs, and a black-bordered book shows a *white*
+--- band around the page. The page itself has no such gap because `drawPage` asks
+--- its question while drawing; this asks `pageIsInverted` in the same place, one
+--- call above the surround's own paint. Nothing is computed from the page here —
+--- the remembered margin is a number, and the rest is two field writes.
+local function installCropMarginColor(plugin, ui)
+    local view = ui and ui.view
+    if not (view and type(view.paintTo) == "function") then
+        return
+    end
+    local orig_paint_to = view.paintTo
+    view.paintTo = function(self, ...)
+        setCropMarginColor(plugin, ui, plugin._meguru_margin_gray)
+        return orig_paint_to(self, ...)
+    end
 end
 
 --- Graft everything reader-side onto `plugin` for the document it has open.
@@ -1935,6 +1973,7 @@ function Reader.install(plugin)
             page = ui.view.page_bgcolor,
         }
     end
+    installCropMarginColor(plugin, ui)
 
     local rotate_state = {}
     plugin._meguru_rotate_state = rotate_state
