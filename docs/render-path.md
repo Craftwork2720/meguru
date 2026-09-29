@@ -440,10 +440,9 @@ it is usually the only trace of it.
 The one that was argued the other way and lost is `crop skip`. It was `warn` on the
 grounds that the symptom is reader-visible so the line should be too, which is a
 good argument about *importance* and a bad one about *frequency*: a book whose pages
-are full-bleed — or whose border is a mid-grey that is neither a paper margin nor a
-black one, the band the crop refuses on both sides — has nothing to find on any of
-them, so it fires once per page for the whole book and buries the warnings that are
-rare. Frequency wins.
+are full-bleed — or whose border has content in it, which is every edge the crop
+refuses — has nothing to find on any of them, so it fires once per page for the whole
+book and buries the warnings that are rare. Frequency wins.
 
 ### A page that could not be loaded
 

@@ -41,3 +41,22 @@ the light side refuses. The strip carries the same polarity, which is what makes
 black margin at all. Its known over-eagerness travels with it: a short band above a clean gutter is
 cut whether or not it is a page number (a printed title line under a panel goes the same way on a
 white page), and that is unchanged from before — it now applies to dark margins too.
+
+**A border is a margin when it is *uniform*, not when it is light or dark.** The crop read a
+border's luminance and accepted it at either end of the scale — paper above 170, a printed or
+rendered black edge below 85 — and refused everything between. That left a *coloured* frame
+uncropped, because a mid-tone frame is neither: the page came back with its frame on, which is the
+complaint that prompted this. What actually separates a margin from artwork is that the ring holds
+nothing but border, so the test is now the span of the ring's own samples, against the same
+26-level delta the content predicate uses; a uniform border is then a margin whatever colour it is,
+and the reference is the middle of that ring. The band survives for borders that are *not* uniform,
+which is exactly where refusing is the direction that cannot cut artwork.
+
+The change is additive by construction and was measured as such: over 74 pages of the two chapters
+plus four synthetic coloured frames (steel-blue, sepia, teal and warm-grey, luminances 93 to 132 —
+all refused today), **the pages that move are exactly the pages refused today whose rings are
+uniform** — the four frames and three flat grey divider pages — and **no page the crop already
+cropped moves at all**. A ring whose span is under one delta cannot disagree with either percentile
+about what content is, which is why the branch is safe rather than merely tested. The one thing it
+does not do is see a border by *hue*: `lumaAt` is luminance, so a frame whose colour differs from
+the artwork in hue alone, at the same luminance, is still invisible to the crop.

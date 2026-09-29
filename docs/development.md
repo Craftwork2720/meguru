@@ -393,10 +393,13 @@ Each step must pass before the next:
     the same place, to the pixel, is the property this change is built on. **A full-bleed dark
     page must survive**: a night scene reaching all four edges is content-lit everywhere, so the
     box comes back whole and nothing is trimmed; if one is ever cut, the crop has read a dark
-    uniform area as a margin and that is the case to report. A border in between — a mid-grey
-    scan edge, 85..170 — must still be **refused**, frame and all, as it always was; with `-d`
-    the `crop skip` line must name both numbers on such a page, and must appear **on no page**
-    of the black-framed book.
+    uniform area as a margin and that is the case to report. **A border with content in it must
+    still be refused**: a scan edge made of artwork — one whose ring is *not* uniform, whatever
+    its brightness — keeps its frame and all, as it always did, and with `-d` the `crop skip`
+    line must name both numbers on such a page and must appear **on no page** of the black-framed
+    book. **And a *uniformly* coloured border must be cropped**: a flat coloured frame, or a grey
+    one — uniformity is what makes a border a margin, not its brightness, so a coloured volume
+    comes back trimmed where it used to come back with its frame on.
 
     Then the **easing** (*A panel the window nearly holds is eased, not stepped*, above),
     which is the part of this view a log can confirm and a screenshot cannot. On a page

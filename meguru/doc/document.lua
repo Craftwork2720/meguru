@@ -117,9 +117,10 @@ end
 local AUTOCROP_SCAN_TARGET = 128 -- max dimension of the scanned downscale
 -- The two ends of the border band. At or above the light bar a border is a
 -- paper margin; at or below the dark bar it is a printed or rendered black
--- margin. Between the two it is neither, and the crop refuses exactly as it did
--- before dark borders were supported: a mid-grey scan edge is not a margin on
--- either side, and refusing is the direction that cannot cut artwork.
+-- margin; and a border whose ring is *uniform* is a margin whatever its
+-- luminance says, which is what a coloured frame is (see scanContentBounds).
+-- Between the two bars and *not* uniform is content at the edge, and the crop
+-- refuses — the direction that cannot cut artwork.
 local AUTOCROP_MIN_BG_LUMA = 170
 local AUTOCROP_MAX_DARK_BG_LUMA = 85
 local AUTOCROP_LUMA_DELTA = 26   -- how much a pixel may differ from the border
@@ -139,8 +140,8 @@ local AUTOCROP_MIN_KEEP_FRAC = 0.02
 -- **dbg, and it used to be warn on the argument that the symptom is
 -- reader-visible so the line should be too.** The argument is good and the level
 -- was still wrong, because of how *often* it fires: a book whose pages are
--- full-bleed — or whose border is a mid-grey that is neither a paper margin nor
--- a black one — has nothing to find on any of them, so this is one warning
+-- full-bleed — or whose border has content in it, the edges the crop refuses on
+-- both sides — has nothing to find on any of them, so this is one warning
 -- per page for the whole book -- which buries the warnings that are rare and
 -- that matter. A reader chasing a frame that stayed reads this with `-d`.
 --
@@ -250,43 +251,57 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         samples[#samples + 1] = lumaAt(y, w - 1)
     end
     table.sort(samples)
-    local bg = samples[math.max(1, math.floor(#samples * 0.85))]
+    local light_bg = samples[math.max(1, math.floor(#samples * 0.85))]
+    local dark_bg = samples[math.max(1, math.floor(#samples * 0.15))]
 
-    if bg < AUTOCROP_MIN_BG_LUMA then
-        -- No light border to anchor on. Before refusing, ask the same question
-        -- about the other side of the midpoint: the 15th percentile is the
-        -- *darkest typical* ring sample exactly as the 85th is the lightest,
-        -- and it is the border's own colour when that border is printed or
-        -- rendered black — so the same rule crops a dark margin as a light one,
-        -- with nothing between them but which end of the band it sits at.
-        -- Refusing here instead is what left a black-framed page untouched and
-        -- its printed number in the crop.
-        local dark_bg = samples[math.max(1, math.floor(#samples * 0.15))]
-        if dark_bg > AUTOCROP_MAX_DARK_BG_LUMA then
-            cropSkipLog(pageno, "border neither light nor dark enough (bg=",
-                math.floor(bg), ", dark=", math.floor(dark_bg), ") — page kept as-is")
-            return nil
-        end
+    -- **A border whose ring is uniform is a margin whatever its colour** — paper,
+    -- a printed black edge, or a coloured frame. Luma alone cannot tell a
+    -- coloured margin from artwork: a mid-tone frame sits in the band between the
+    -- two bars below and used to be refused for its colour alone, which is a page
+    -- left with its frame on. Uniformity can tell, and it is the stronger
+    -- statement anyway: the ring holds no content that could be mistaken for a
+    -- border. The reference is then the middle of that ring, and because the
+    -- whole span of it is within one delta, *which* end it is taken from cannot
+    -- matter — measured over both corpora, this branch changes no page either
+    -- luma test already crops, and it crops exactly the ones that were refused.
+    local bg
+    if light_bg - dark_bg <= AUTOCROP_LUMA_DELTA then
+        bg = samples[math.max(1, math.floor(#samples * 0.5))]
+    elseif light_bg >= AUTOCROP_MIN_BG_LUMA then
+        -- The light rule, unchanged.
+        bg = light_bg
+    elseif dark_bg > AUTOCROP_MAX_DARK_BG_LUMA then
+        -- Neither a light margin, nor a dark one, nor a uniform border: an edge
+        -- with content in it. A mid-grey scan edge is not a margin on either
+        -- side, and refusing is the direction that cannot cut artwork.
+        cropSkipLog(pageno, "border neither light nor dark enough (bg=",
+            math.floor(light_bg), ", dark=", math.floor(dark_bg), ") — page kept as-is")
+        return nil
+    else
+        -- The dark rule, unchanged: the 15th percentile is the *darkest typical*
+        -- ring sample exactly as the 85th is the lightest, and it is the border's
+        -- own colour when that border is printed or rendered black.
+        bg = dark_bg
+    end
+
+    if bg <= AUTOCROP_MAX_DARK_BG_LUMA and bpp == 2 then
         -- BB8A: lumaAt takes min(gray, alpha), so a transparent texel reads as
         -- black — but a transparent frame is not a black margin, and this
         -- document never cropped one (the light percentile of such a ring is
-        -- that same transparent black, so the refusal above used to catch it).
-        -- Only an opaque dark border is a margin.
-        if bpp == 2 then
-            for x = 0, w - 1 do
-                if data:byte(x * bpp + 2) < 255
-                    or data:byte((h - 1) * stride + x * bpp + 2) < 255 then
-                    return nil
-                end
-            end
-            for y = 1, h - 2 do
-                if data:byte(y * stride + 2) < 255
-                    or data:byte(y * stride + (w - 1) * bpp + 2) < 255 then
-                    return nil
-                end
+        -- that same transparent black, so it used to be refused by that route
+        -- instead). Only an opaque dark border is a margin.
+        for x = 0, w - 1 do
+            if data:byte(x * bpp + 2) < 255
+                or data:byte((h - 1) * stride + x * bpp + 2) < 255 then
+                return nil
             end
         end
-        bg = dark_bg
+        for y = 1, h - 2 do
+            if data:byte(y * stride + 2) < 255
+                or data:byte(y * stride + (w - 1) * bpp + 2) < 255 then
+                return nil
+            end
+        end
     end
 
     -- Project content pixels onto rows and columns.
