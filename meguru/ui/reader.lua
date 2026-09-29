@@ -1882,6 +1882,28 @@ local function lumaOf(r, g, b)
     return math.floor((4898 * r + 9618 * g + 1869 * b) / 16384)
 end
 
+--- Whether a margin reads as *paper* rather than as a colour: light on every
+--- channel and near-neutral. The night rule below takes paper to the black the
+--- screen already is, and must leave a coloured margin alone — the inverse of a
+--- yellow frame is blue, which is not a darker version of it but a different
+--- colour, and a reader with a yellow-bordered volume did not ask for a blue one.
+---
+--- The two bounds are a definition, and both sides are chosen deliberately. A
+--- colour is *excluded* by one channel being dark (a yellow frame's blue is 0) or
+--- by a spread no paper has; everything light and neutral is *included*, cream
+--- paper among it. That is the safe direction: what this rule does to a paper
+--- margin is make it dark, which is what a margin wants on a dark screen, while
+--- the cost of including an off-white *tint* is only that it darkens too — a
+--- pale-blue paper margin goes dark rather than glowing, which is not the
+--- surprise that turning a yellow border blue would be.
+local PAPER_MIN_CHANNEL = 200
+local PAPER_MAX_SPREAD = 48
+local function isPaper(r, g, b)
+    local lo = math.min(r, math.min(g, b))
+    local hi = math.max(r, math.max(g, b))
+    return lo >= PAPER_MIN_CHANNEL and hi - lo <= PAPER_MAX_SPREAD
+end
+
 --- Set the reader's two surround fields from a margin colour (`{r, g, b}`), or
 --- back to what the reader had when there is no margin to match.
 ---
@@ -1915,9 +1937,17 @@ local function setCropMarginColor(plugin, ui, margin)
         -- needs is the honest value, not a coarser one.
         local r, g, b = margin.r, margin.g, margin.b
         if pageIsInverted(ui.document) then
-            if lumaOf(r, g, b) > 127 then
+            if isPaper(r, g, b) then
+                -- Paper goes to the black the screen already is, so a
+                -- white-margined page stops being a band brighter than everything
+                -- around it.
                 r, g, b = 255 - r, 255 - g, 255 - b
             end
+            -- A colour is left where it is: the reader sees the margin they have,
+            -- in the dark as in the light. What follows is the display's own
+            -- inversion of every fill under night mode, which the page cancels for
+            -- itself by inverting the region it drew — so this hands over the
+            -- colour that will *come out* as the one chosen above.
             r, g, b = 255 - r, 255 - g, 255 - b
         end
         -- What the two stock fields get is a *grey* of the same brightness, for

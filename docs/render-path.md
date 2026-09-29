@@ -317,20 +317,26 @@ scanned margin's paper does drift a few levels page to page; that drift is the
 margin's real colour, and smoothing it away would need one colour held for the whole
 book, which is a different behaviour rather than a smaller number.
 
-**And night mode asks for the darker of that colour and its inverse, re-derived on
-every paint rather than on a page turn.** Night mode inverts the whole display — the
-inversion `drawPage` cancels for the page by inverting the region it has just drawn —
-so what is painted has to be inverted too, and the *question* has to be asked where
-the page asks it: `DeviceListener:onToggleNightMode` flips the screen and dirties the
-whole view with no page turn anywhere in it, so a colour decided on the turn would be
-one inversion out of date, and a black-bordered page would show a *white* band around
-it. Darker-of-the-two is what a letterboxed page wants in the dark: a black margin
-stays black, so the trim still reads as continuous, a white one takes its own inverse
-and comes out the black the reader's screen already is, and a mid-tone one darkens a
-little rather than flipping. The comparison is by luminance and the inversion is per
-channel, so a coloured margin keeps its hue where it stays on the dark side of that
-line. The test is `drawPage`'s own (`nightmode_document == 1` and
-`Screen.night_mode`).
+**And night mode acts on paper alone, re-derived on every paint rather than on a page
+turn.** Night mode inverts the whole display — the inversion `drawPage` cancels for
+the page by inverting the region it has just drawn — so what is painted has to be
+inverted too, and the *question* has to be asked where the page asks it:
+`DeviceListener:onToggleNightMode` flips the screen and dirties the whole view with no
+page turn anywhere in it, so a colour decided on the turn would be one inversion out
+of date, and a black-bordered page would show a *white* band around it.
+
+What night mode is *for* is one thing only: a paper margin must not stay a band
+brighter than everything around it, so paper goes to the black the screen already is.
+A **colour is left alone** — the reader sees the margin they have, in the dark as in
+the light. Taking the darker of a colour and its inverse was tried and is wrong for
+exactly the case that found it: the inverse of a yellow frame is blue, which is a
+different colour rather than a darker one. "Paper" is light on every channel and
+near-neutral (`isPaper`, and both bounds are a definition with a deliberate lean):
+everything light and neutral is in, cream paper among it, and the cost of that lean is
+only that an off-white *tint* darkens too — the safe direction — while a colour is out
+by one dark channel (a yellow frame's blue is 0) or by a spread no paper has. A dark
+margin was never touched either way. The test is `drawPage`'s own
+(`nightmode_document == 1` and `Screen.night_mode`).
 
 Two boundaries keep it honest rather than clever. It is only trusted where the crop
 **actually trimmed** — a page whose box came back whole, and a page the scan
