@@ -66,11 +66,12 @@ local function nowMs()
 end
 
 -- ---------------------------------------------------------------------------
--- Auto page crop (white-margin detection)
+-- Auto page crop (light and dark margin detection)
 -- ---------------------------------------------------------------------------
 --
--- OPDS-PSE servers (and some scanners) deliver pages with a uniform white /
--- cream border around the actual artwork. Cropping such a page is done like a
+-- OPDS-PSE servers (and some scanners) deliver pages with a uniform border
+-- around the actual artwork — paper (white or cream) on most of them, a printed
+-- or rendered black edge on some. Cropping such a page is done like a
 -- KOpt-engine document would: the page size stays the *full* (capped) native
 -- page and the crop lives only in the document's bounding box. `getPageBBox`
 -- (below) returns the trimmed content box when the "Page Crop" ConfigDialog
@@ -82,13 +83,23 @@ end
 -- Detection is two-stage. A cheap pass reads raw pixels of a small downscaled
 -- copy of the decoded page (Blitbuffer.tostring gives us the raw bytes, the
 -- same route TileCacheItem uses to serialize tiles), finds the first/last row &
--- column that differ from the uniform light border, and maps that back onto
--- native coordinates — this also decides which pages to leave alone (blank,
--- dark full-bleed art, a drawn dark frame). The top/bottom are trimmed
+-- column that differ from the uniform border, and maps that back onto native
+-- coordinates — this also decides which pages to leave alone (a blank one, or
+-- one whose box comes back whole because content reaches every edge) and which
+-- end of the border band the crop is anchored to: the light margin, or, where
+-- there is no light one, the dark border.
+--
+-- **The dark side is the same rule reached where the light one refuses, and
+-- nothing more.** The mark-skipping heuristics a later attempt added — moving an
+-- edge inwards past a short detached mark near the edge — are deliberately not
+-- here: that mark is a speech bubble, a bubble's tail or a small drawn element
+-- standing in a white margin, and cutting it costs the reader something they can
+-- see, where leaving the strip of margin around it costs them a strip of blank.
+-- The top/bottom are trimmed
 -- maximally, flush with the detected content edge; the left/right margins are
 -- trimmed just as maximally (see computeContentBox). A second, native-resolution
 -- pass (refineAutoCrop) then pins each edge to the *exact* outermost content
--- pixel, so the crop ends flush with the panel/artwork and leaves no white
+-- pixel, so the crop ends flush with the panel/artwork and leaves no
 -- frame — even on a page whose only boundary is a thin printed frame line the
 -- downscale would have blurred away.
 --
@@ -122,15 +133,16 @@ local AUTOCROP_MIN_KEEP_FRAC = 0.02
 -- with an alpha channel). Anything else (BB4, exotic) makes us bail out.
 
 -- Diagnostic: a page is being kept as-is although the crop refused (visible
--- as "the white frame stays"). `pageno` (when known) makes the line matchable
+-- as "the frame stays"). `pageno` (when known) makes the line matchable
 -- to that page's own turn in the log.
 --
 -- **dbg, and it used to be warn on the argument that the symptom is
 -- reader-visible so the line should be too.** The argument is good and the level
 -- was still wrong, because of how *often* it fires: a book whose pages are
--- full-bleed has no light border to find on any of them, so this is one warning
+-- full-bleed — or whose border is a mid-grey that is neither a paper margin nor
+-- a black one — has nothing to find on any of them, so this is one warning
 -- per page for the whole book -- which buries the warnings that are rare and
--- that matter. A reader chasing a white frame reads this with `-d`.
+-- that matter. A reader chasing a frame that stayed reads this with `-d`.
 --
 -- The old argument, kept because it is the reason to hesitate:
 --     Logged at warn level (not dbg) so it shows up in crash.log without -d.
@@ -341,8 +353,8 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         end
     end
     if not (left and top and right and bottom) then
-        -- A light border but no row/column clears the content bar anywhere: the
-        -- whole page reads as uniform background (or the content bar is too
+        -- A uniform border but no row/column clears the content bar anywhere:
+        -- the whole page reads as uniform background (or the content bar is too
         -- low — see row_min/col_min). This is the "blank page" case.
         cropSkipLog(pageno, "no content found anywhere (page blank?)")
         return nil -- blank page
@@ -372,20 +384,21 @@ local refineAutoCrop
 
 -- Compute the native auto content box of a decoded (working-resolution) page.
 -- Returns { x0, y0, x1, y1 } in native pixels, or nil when the page should be
--- left as-is (no detectable light margin, blank, or any scan hiccup — a crop
+-- left as-is (no detectable margin, blank, or any scan hiccup — a crop
 -- must never be worse than no crop). This is the *plain margin* crop only;
 -- the finer page-number / blank-page refinements used to be layered on top
 -- here but now live in the pagenumbercrop plugin, which wraps getPageBBox.
 --
 -- Maximal on every side: top, bottom, left and right are each trimmed right
--- up to the detected white margin, whatever lies between the content and the
+-- up to the detected margin, whatever lies between the content and the
 -- page edge is cut. The left and right margins are detected independently, so
 -- an asymmetric frame is trimmed asymmetrically (never centered): the result
 -- is the smallest box that contains the artwork on all four sides. The scan is
 -- two-stage: a cheap ~128px projection (scanContentBounds) finds the box and
--- decides blank/dark/full-bleed pages, then a native-resolution fine pass
--- (refineAutoCrop) pins each edge to the exact outermost content pixel, so a
--- page comes out of the crop flush with its artwork — no white frame left.
+-- decides blank and full-bleed pages — and the border's own colour, light or
+-- dark, is what "content" is measured against — then a native-resolution fine
+-- pass (refineAutoCrop) pins each edge to the exact outermost content pixel, so
+-- a page comes out of the crop flush with its artwork — no frame left.
 --
 -- The result feeds getPageBBox (the bbox ReaderZooming/ReaderView crop
 -- through), cached per page in self.crops. It is never baked into the page
@@ -442,8 +455,8 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
         local sc_y = full_h / sh
         -- Coarse content extent in native coordinates. Maximal on every side:
         -- top, bottom, left and right are each trimmed right up to the detected
-        -- white margin, independently (scanContentBounds), so an asymmetric
-        -- frame is trimmed asymmetrically; nothing but white margin is removed.
+        -- margin, independently (scanContentBounds), so an asymmetric
+        -- frame is trimmed asymmetrically; nothing but margin is removed.
         local x0 = math.max(0, math.floor(left * sc_x))
         local y0 = math.max(0, math.floor(top * sc_y))
         local x1 = math.min(full_w, math.ceil((right + 1) * sc_x))
@@ -456,7 +469,7 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
         -- above ran on a ~128px downscale, so its box is only flush to a scan
         -- pixel and, worse, the downscale blurs thin boundary features away (a
         -- 1-2px printed frame line right where the panel art starts averages to
-        -- near-background and is missed), which leaves a visible white frame
+        -- near-background and is missed), which leaves a visible frame
         -- around the panel. The fine pass re-scans a narrow native-resolution
         -- band around each coarse edge with a hair-trigger threshold, so every
         -- trimmed side ends flush with the real content — no margin is left.
@@ -537,7 +550,7 @@ end
 -- downscale *blurs away* thin boundary features — a 1-2px printed frame line
 -- right where the panel art starts averages to near-background in a 128px cell
 -- and is missed entirely, so the coarse box can sit a few scan pixels INSIDE
--- the true art and a visible white frame stays around the panel. This pass
+-- the true art and a visible frame stays around the panel. This pass
 -- re-scans a narrow native-resolution band around each coarse edge with a
 -- hair-trigger threshold and pins the edge to the first pixel that is actually
 -- content. Printed frame lines are full-width features, so the moment the scan

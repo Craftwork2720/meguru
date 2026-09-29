@@ -381,6 +381,23 @@ Each step must pass before the next:
     field reached through `self`, so a row that dropped it without seeding the sink would crash
     inside a paint and nothing automated would say so.
 
+    **A dark border is cropped by the same rule, and the pair to walk is a black-margined
+    book.** On a page printed with a black frame — the letterboxed manga this crop exists for —
+    *Page Crop* at `auto` must trim that frame on **all four** screen edges, flush with the
+    artwork, and an asymmetric frame must come out trimmed asymmetrically rather than centred.
+    Turn *Page Number Crop* on and the white number printed in the black margin must go with it,
+    leaving the panel at the edge; turn it off and the number must come back — that pair is the
+    whole of the claim, because the number is *content* against a black margin and the margin
+    crop alone stops on it. **What must not move is every page that used to be cropped**: turn
+    six pages of a white-margined book and compare against the build from before dark support —
+    the same place, to the pixel, is the property this change is built on. **A full-bleed dark
+    page must survive**: a night scene reaching all four edges is content-lit everywhere, so the
+    box comes back whole and nothing is trimmed; if one is ever cut, the crop has read a dark
+    uniform area as a margin and that is the case to report. A border in between — a mid-grey
+    scan edge, 85..170 — must still be **refused**, frame and all, as it always was; with `-d`
+    the `crop skip` line must name both numbers on such a page, and must appear **on no page**
+    of the black-framed book.
+
     Then the **easing** (*A panel the window nearly holds is eased, not stepped*, above),
     which is the part of this view a log can confirm and a screenshot cannot. On a page
     with a panel the window very nearly holds — a full-width panel a little wider than the

@@ -367,3 +367,17 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   `panel_zoom_enabled` gate, which is the case `meguruPanelZoomWanted` exists for. Verifying
   either needs a device with that plugin actually installed — the lesson recorded for zen-os
   applies, and a run without it proves nothing.
+
+- **A page whose dark border is not uniform can be cropped into its artwork, and no page in the
+  two measured corpora is one.** The dark side of the crop reads the border's own colour as the
+  reference and calls everything that departs from it content — the rule that has always cropped a
+  paper margin. On a *uniform* black edge that is provably safe: content lights up every row, the
+  box comes back whole, nothing is trimmed, and the blank-page rule keeps a dark page whose only
+  light content is small (measured on a synthetic one: mostly blank, whole page kept). The shape
+  that is not safe is a dark border that is *not* uniform — artwork bleeding off two or three
+  edges with a non-dark region elsewhere — where that region becomes "the content" and the box
+  lands on it. What would settle it is a device pass over a book with such pages (a night scene
+  drawn to the trim, a cover, a spread with a white gutter), and what a wrong answer costs is a
+  silently cut page on exactly those, since nothing in the log tells them from a correct crop. The
+  synthetic control is the gate: a dark page with a small light element must come back whole, and
+  it does.

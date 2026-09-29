@@ -27,3 +27,17 @@ old plugin's fallback *row* carries `default_value = 0`, which looks like a conf
 that value only applies when the pagenumbercrop plugin is absent — the book itself is
 seeded by `perBookGeometryDefaults`, whose classic default is right-turning. The new
 plugin seeds 1, which matches what a fresh book actually got.
+
+**The crop does not skip marks near the edge, and that was settled by measurement.** An earlier
+attempt at dark-border support (the `fix/autocrop` branch) came with four heuristics whose job was
+to move a crop edge inwards past a short mark standing alone near the edge, so a page number in
+the margin would fall outside the box. On the two books to hand the guards were never what did
+that work — a number in a white margin is *content*, the page-number strip below removes it — and
+what they did instead was cut speech bubbles, bubble tails and small drawn elements standing in a
+white margin: something a reader can see, traded for a strip of blank they cannot. What is here
+instead is the border's own colour as the reference, light or dark, with the edge at the outermost
+content pixel — the rule the crop has always had, asked about the other side of the midpoint where
+the light side refuses. The strip carries the same polarity, which is what makes it work on a
+black margin at all. Its known over-eagerness travels with it: a short band above a clean gutter is
+cut whether or not it is a page number (a printed title line under a panel goes the same way on a
+white page), and that is unchanged from before — it now applies to dark margins too.
