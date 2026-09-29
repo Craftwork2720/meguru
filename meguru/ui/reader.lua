@@ -1908,6 +1908,8 @@ local function applyCropMarginColor(plugin, ui, page)
             local inverted = configurable.nightmode_document == 1
                 and Screen.night_mode
             color = Blitbuffer.gray(inverted and gray or (1 - gray))
+            logger.dbg("Meguru: page surround from crop margin bg",
+                math.floor(gray * 255), inverted and "(night-mode level)" or "")
         end
     end
     view.outer_page_color = color or stock.outer
