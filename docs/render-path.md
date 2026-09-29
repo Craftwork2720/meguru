@@ -286,20 +286,27 @@ be true, so the reason travels (`[direct failed: no bytes cached]`) rather than
 being logged at a level nobody is reading.
 
 **The screen around a cropped page is painted in the colour of the margin the crop
-took off.** `ReaderView` already has the field — `outer_page_color`, which
-`drawPageSurround` paints, and `page_bgcolor`, its continuous-mode twin — and any
-Blitbuffer colour is legal in it. **The colour is the ring sample the scan itself
-picked as the border**, carried out on the box table and read per page by
-`MeguruDocument:cropMarginColor`. Not the page's physical edge, which was tried and
-is artwork on every page that bleeds to it — the surround then changed colour page to
-page and was wrong on all of them; the ring is where the border was *looked for*, and
-a percentile of it is a margin pixel even when art shares the ring. That is not the
-scan's `bg` either: the scan answers in *luminance*, which is what classifies content,
-and a colour screen needs the channels — matching a coloured margin with a grey of the
-same brightness is the one way this looks wrong on a device that can show the colour.
-Every buffer type answers `getColorRGB32` (a grayscale decode as a grey, a colour one
-as itself), so a grayscale device gets what it always got, by the same Rec.601 weights
-`lumaAt` measures with.
+took off.** `ReaderView` has the field for the letterbox — `outer_page_color`, which
+`drawPageSurround` paints, and `page_bgcolor`, its continuous-mode twin — **but the
+colour cannot travel in it**: that field is filled with `bb:paintRect`, whose value
+goes through a Color8 first, so it paints a grey whatever colour it is handed and a
+yellow margin came out light grey. So the colour is painted separately, with
+`paintRectRGB32`, over the whole view rectangle just after stock's own fills and just
+before the page is drawn over itself (`ReaderView:paintTo`'s order does that work);
+the two fields still carry a grey of the same brightness, which is what continuous
+mode shows, since it paints `page_bgcolor` through `drawPageBackground` and never
+comes through `drawPageSurround` at all.
+
+**The colour itself is the ring sample the scan picked as the border**, carried out on
+the box table and read per page by `MeguruDocument:cropMarginColor`. Not the page's
+physical edge, which was tried and is artwork on every page that bleeds to it — the
+surround then changed colour page to page and was wrong on all of them; the ring is
+where the border was *looked for*, and a percentile of it is a margin pixel even when
+art shares the ring. That is not the scan's `bg` either: the scan answers in
+*luminance*, which is what classifies content, and the colour screen needs the channels
+back. `paintRectRGB32` converts for a grayscale target (`ffi.fill` with the value's
+luminance) and honours the target's inverse flag exactly as `paintRect` does, so a
+grayscale device and night mode both behave as they did.
 
 **Per page, and unrounded.** Each page takes its own margin, so a colour insert or a
 cover keeps its own colour rather than inheriting the book's — and the value is not

@@ -1906,9 +1906,10 @@ local function setCropMarginColor(plugin, ui, margin)
         return
     end
     local color
+    plugin._meguru_surround = nil
     if margin then
-        -- The page's own margin colour, per page and unrounded. Rounding it to the
-        -- grid the page is dithered on was tried and is *worse*: a margin drifting
+        -- The margin's own colour, per page and unrounded. Rounding it to the grid
+        -- the page is dithered on was tried and is *worse*: a margin drifting
         -- between 247 and 248 lands on two different levels of that grid, so the
         -- letterbox jumps a whole step instead of moving a level. What the drift
         -- needs is the honest value, not a coarser one.
@@ -1919,7 +1920,11 @@ local function setCropMarginColor(plugin, ui, margin)
             end
             r, g, b = 255 - r, 255 - g, 255 - b
         end
-        color = Blitbuffer.ColorRGB32(r, g, b, 0xFF)
+        -- What the two stock fields get is a *grey* of the same brightness, for
+        -- the one path that still paints them (continuous mode). The colour
+        -- itself goes through `_meguru_surround`, painted below.
+        color = Blitbuffer.gray(1 - lumaOf(r, g, b) / 255)
+        plugin._meguru_surround = { r = r, g = g, b = b }
     end
     view.outer_page_color = color or stock.outer
     view.page_bgcolor = color or stock.page
@@ -1980,6 +1985,36 @@ local function installCropMarginColor(plugin, ui)
     end
 end
 
+--- Paint the letterbox in the margin's colour, after stock has painted it grey.
+---
+--- **The colour cannot travel in `outer_page_color`.** Stock's `drawPageSurround`
+--- fills with `bb:paintRect`, whose value goes through a Color8 first — a grey
+--- whatever colour it is handed — so a yellow margin came out light grey, which is
+--- the bug this fixes. `paintRectRGB32` is the fill that carries channels, and it
+--- honours the target's inverse flag exactly as the plain one does, so the
+--- night-mode colour computed above is still the one to hand it.
+---
+--- The whole view rectangle is filled and stock's own fills are left underneath
+--- it: `ReaderView:paintTo` draws the page immediately after this, so the page
+--- covers itself and what is left showing is the letterbox. Continuous mode does
+--- not come through here at all — it paints `page_bgcolor` from
+--- `drawPageBackground` — so there the grey in that field is what shows.
+local function installCropMarginPaint(plugin, ui)
+    local view = ui and ui.view
+    if not (view and type(view.drawPageSurround) == "function") then
+        return
+    end
+    local orig_draw_surround = view.drawPageSurround
+    view.drawPageSurround = function(self, bb, x, y)
+        orig_draw_surround(self, bb, x, y)
+        local c = plugin._meguru_surround
+        if c then
+            bb:paintRectRGB32(x, y, self.dimen.w, self.dimen.h,
+                Blitbuffer.ColorRGB32(c.r, c.g, c.b, 0xFF))
+        end
+    end
+end
+
 --- Graft everything reader-side onto `plugin` for the document it has open.
 --- A no-op for any other document, so a PDF in the same session never grows a
 --- Meguru row or a wrapped seam.
@@ -2000,6 +2035,7 @@ function Reader.install(plugin)
         }
     end
     installCropMarginColor(plugin, ui)
+    installCropMarginPaint(plugin, ui)
 
     local rotate_state = {}
     plugin._meguru_rotate_state = rotate_state
