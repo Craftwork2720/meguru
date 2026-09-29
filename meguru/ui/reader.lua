@@ -1907,6 +1907,11 @@ local function setCropMarginColor(plugin, ui, margin)
     end
     local color
     if margin then
+        -- The page's own margin colour, per page and unrounded. Rounding it to the
+        -- grid the page is dithered on was tried and is *worse*: a margin drifting
+        -- between 247 and 248 lands on two different levels of that grid, so the
+        -- letterbox jumps a whole step instead of moving a level. What the drift
+        -- needs is the honest value, not a coarser one.
         local r, g, b = margin.r, margin.g, margin.b
         if pageIsInverted(ui.document) then
             if lumaOf(r, g, b) > 127 then

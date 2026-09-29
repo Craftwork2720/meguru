@@ -288,16 +288,27 @@ being logged at a level nobody is reading.
 **The screen around a cropped page is painted in the colour of the margin the crop
 took off.** `ReaderView` already has the field — `outer_page_color`, which
 `drawPageSurround` paints, and `page_bgcolor`, its continuous-mode twin — and any
-Blitbuffer colour is legal in it. **The colour is sampled from the decoded page's own
-edges**, a little way in from the corners and averaged (`borderColor`, beside
-`computeContentBox`, which is where the decode is in hand), carried out on the box
-table and read back per page by `MeguruDocument:cropMarginColor`. That is not the
-scan's `bg`: the scan answers in *luminance*, which is what classifies content, and a
-colour screen needs the channels — matching a coloured margin with a grey of the same
-brightness is the one way this looks wrong on a device that can show the colour.
+Blitbuffer colour is legal in it. **The colour is the ring sample the scan itself
+picked as the border**, carried out on the box table and read per page by
+`MeguruDocument:cropMarginColor`. Not the page's physical edge, which was tried and
+is artwork on every page that bleeds to it — the surround then changed colour page to
+page and was wrong on all of them; the ring is where the border was *looked for*, and
+a percentile of it is a margin pixel even when art shares the ring. That is not the
+scan's `bg` either: the scan answers in *luminance*, which is what classifies content,
+and a colour screen needs the channels — matching a coloured margin with a grey of the
+same brightness is the one way this looks wrong on a device that can show the colour.
 Every buffer type answers `getColorRGB32` (a grayscale decode as a grey, a colour one
-as itself), so a grayscale device gets what it always got, by the same Rec.601
-weights `lumaAt` measures with.
+as itself), so a grayscale device gets what it always got, by the same Rec.601 weights
+`lumaAt` measures with.
+
+**Per page, and unrounded.** Each page takes its own margin, so a colour insert or a
+cover keeps its own colour rather than inheriting the book's — and the value is not
+snapped to the sixteen-level grid the page is dithered on, which was tried and is
+*worse*: a margin drifting between 247 and 248 lands on two different levels of that
+grid, so the letterbox jumps a whole step where the honest value moves a level. A
+scanned margin's paper does drift a few levels page to page; that drift is the
+margin's real colour, and smoothing it away would need one colour held for the whole
+book, which is a different behaviour rather than a smaller number.
 
 **And night mode asks for the darker of that colour and its inverse, re-derived on
 every paint rather than on a page turn.** Night mode inverts the whole display — the

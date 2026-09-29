@@ -241,18 +241,38 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
     -- light margin, and this rule is right about it because its light samples
     -- are well over the 15% a high percentile needs. The dark branch below is
     -- reached only where this one refuses.
+    -- Each ring sample carries its colour as well as its luminance. The scan
+    -- decides *which* sample the border is, by luma; the reader view's surround
+    -- wants that pixel's colour, and the ring is where the border was looked for.
+    -- The page's own physical edge is not: on any page whose artwork bleeds to it,
+    -- that edge is artwork, and a surround painted from it changes colour page to
+    -- page and is wrong on every bleeding one.
     local samples = {}
+    local function addSample(y, x)
+        local off = y * stride + x * bpp
+        local l = lumaAt(y, x)
+        local r, g, b = l, l, l
+        if bpp == 3 or bpp == 4 then
+            r, g, b = data:byte(off + 1), data:byte(off + 2), data:byte(off + 3)
+            if inverse then
+                r, g, b = 255 - r, 255 - g, 255 - b
+            end
+        end
+        samples[#samples + 1] = { l = l, r = r, g = g, b = b }
+    end
     for x = 0, w - 1 do
-        samples[#samples + 1] = lumaAt(0, x)
-        samples[#samples + 1] = lumaAt(h - 1, x)
+        addSample(0, x)
+        addSample(h - 1, x)
     end
     for y = 1, h - 2 do
-        samples[#samples + 1] = lumaAt(y, 0)
-        samples[#samples + 1] = lumaAt(y, w - 1)
+        addSample(y, 0)
+        addSample(y, w - 1)
     end
-    table.sort(samples)
-    local light_bg = samples[math.max(1, math.floor(#samples * 0.85))]
-    local dark_bg = samples[math.max(1, math.floor(#samples * 0.15))]
+    table.sort(samples, function(a, b) return a.l < b.l end)
+    local n = #samples
+    local light = samples[math.max(1, math.floor(n * 0.85))]
+    local dark = samples[math.max(1, math.floor(n * 0.15))]
+    local light_bg, dark_bg = light.l, dark.l
 
     -- **A border whose ring is uniform is a margin whatever its colour** — paper,
     -- a printed black edge, or a coloured frame. Luma alone cannot tell a
@@ -264,12 +284,12 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
     -- whole span of it is within one delta, *which* end it is taken from cannot
     -- matter — measured over both corpora, this branch changes no page either
     -- luma test already crops, and it crops exactly the ones that were refused.
-    local bg
+    local border
     if light_bg - dark_bg <= AUTOCROP_LUMA_DELTA then
-        bg = samples[math.max(1, math.floor(#samples * 0.5))]
+        border = samples[math.max(1, math.floor(n * 0.5))]
     elseif light_bg >= AUTOCROP_MIN_BG_LUMA then
         -- The light rule, unchanged.
-        bg = light_bg
+        border = light
     elseif dark_bg > AUTOCROP_MAX_DARK_BG_LUMA then
         -- Neither a light margin, nor a dark one, nor a uniform border: an edge
         -- with content in it. A mid-grey scan edge is not a margin on either
@@ -281,9 +301,10 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         -- The dark rule, unchanged: the 15th percentile is the *darkest typical*
         -- ring sample exactly as the 85th is the lightest, and it is the border's
         -- own colour when that border is printed or rendered black.
-        bg = dark_bg
+        border = dark
     end
 
+    local bg = border.l
     if bg <= AUTOCROP_MAX_DARK_BG_LUMA and bpp == 2 then
         -- BB8A: lumaAt takes min(gray, alpha), so a transparent texel reads as
         -- black — but a transparent frame is not a black margin, and this
@@ -390,49 +411,16 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
     end
     -- `bg` (the reference border luminance) rides along so the native fine pass
     -- in refineAutoCrop reuses the exact same content predicate as this scan.
-    return { left, top, right, bottom, bg = bg }
+    -- `bg` (the reference the scan measured content against) rides along for the
+    -- fine pass, and the border sample's colour beside it for the reader view's
+    -- surround — one sample, so the two cannot describe different pixels.
+    return { left, top, right, bottom, bg = bg,
+        color = { r = border.r, g = border.g, b = border.b, l = border.l } }
 end
 
 -- Native fine pass; assigned below (it needs `computeContentBox` above it), see
 -- its definition.
 local refineAutoCrop
-
--- Sample the colour of a page's own border, for the reader view's surround: the
--- scan answers in luminance (that is what classifies content, and what the fine
--- pass compares against), and a colour screen needs the channels back — matching
--- a coloured margin with a grey of the same brightness is the one way this looks
--- wrong on a device that can show the colour.
---
--- Taken from the decoded page's own edges, a little way in from the corners so a
--- rounded or ragged corner does not speak for the border, and averaged. Every
--- buffer type answers this one (`getColorRGB32`: a grayscale decode as a grey, a
--- colour one as itself), so a grayscale device gets exactly what it got before.
-local function borderColor(bb)
-    local w, h = bb:getWidth(), bb:getHeight()
-    if not w or not h or w < 16 or h < 16 then
-        return nil
-    end
-    local inset = math.max(2, math.floor(math.min(w, h) * 0.02))
-    local steps = 16
-    local r, g, b, n = 0, 0, 0, 0
-    for i = 0, steps do
-        local x = inset + math.floor((w - 1 - 2 * inset) * i / steps)
-        local y = inset + math.floor((h - 1 - 2 * inset) * i / steps)
-        for _, p in ipairs({ { x, inset }, { x, h - 1 - inset },
-                             { inset, y }, { w - 1 - inset, y } }) do
-            local c = bb:getPixel(p[1], p[2]):getColorRGB32()
-            r, g, b, n = r + c.r, g + c.g, b + c.b, n + 1
-        end
-    end
-    if n == 0 then
-        return nil
-    end
-    return {
-        r = math.floor(r / n + 0.5),
-        g = math.floor(g / n + 0.5),
-        b = math.floor(b / n + 0.5),
-    }
-end
 
 -- Compute the native auto content box of a decoded (working-resolution) page.
 -- Returns { x0, y0, x1, y1 } in native pixels, or nil when the page should be
@@ -539,7 +527,7 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
             return nil
         end
         return { x0 = x0, y0 = y0, x1 = x1, y1 = y1, bg = bg,
-            color = borderColor(native_bb) }
+            color = bounds.color }
     end)
     if not ok then
         logger.warn("Meguru: auto-crop scan failed:", box)
@@ -1986,9 +1974,11 @@ end
 -- is the "scanned, nothing trimmed" mark, so a full-bleed page and a page the
 -- scan refused both answer nil and leave the reader's own colour alone.
 --
--- The colour rides out of computeContentBox on the box table, sampled there while
--- the decode is in hand (see `borderColor`); `bg` beside it is the luminance the
--- scan measured content against.
+-- The colour rides out of `scanContentBounds` on the box table, as the very ring
+-- sample that scan picked as the border; `bg` beside it is that sample's
+-- luminance, the reference content was measured against. Per page, because a
+-- margin is the page's own — a colour insert or a cover keeps its own — and nil
+-- where the page has no margin to offer.
 function MeguruDocument:cropMarginColor(pageno)
     if self.crops[pageno] == nil then
         self:autoContentBox(pageno)
