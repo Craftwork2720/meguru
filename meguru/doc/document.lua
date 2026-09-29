@@ -397,6 +397,43 @@ end
 -- its definition.
 local refineAutoCrop
 
+-- Sample the colour of a page's own border, for the reader view's surround: the
+-- scan answers in luminance (that is what classifies content, and what the fine
+-- pass compares against), and a colour screen needs the channels back — matching
+-- a coloured margin with a grey of the same brightness is the one way this looks
+-- wrong on a device that can show the colour.
+--
+-- Taken from the decoded page's own edges, a little way in from the corners so a
+-- rounded or ragged corner does not speak for the border, and averaged. Every
+-- buffer type answers this one (`getColorRGB32`: a grayscale decode as a grey, a
+-- colour one as itself), so a grayscale device gets exactly what it got before.
+local function borderColor(bb)
+    local w, h = bb:getWidth(), bb:getHeight()
+    if not w or not h or w < 16 or h < 16 then
+        return nil
+    end
+    local inset = math.max(2, math.floor(math.min(w, h) * 0.02))
+    local steps = 16
+    local r, g, b, n = 0, 0, 0, 0
+    for i = 0, steps do
+        local x = inset + math.floor((w - 1 - 2 * inset) * i / steps)
+        local y = inset + math.floor((h - 1 - 2 * inset) * i / steps)
+        for _, p in ipairs({ { x, inset }, { x, h - 1 - inset },
+                             { inset, y }, { w - 1 - inset, y } }) do
+            local c = bb:getPixel(p[1], p[2]):getColorRGB32()
+            r, g, b, n = r + c.r, g + c.g, b + c.b, n + 1
+        end
+    end
+    if n == 0 then
+        return nil
+    end
+    return {
+        r = math.floor(r / n + 0.5),
+        g = math.floor(g / n + 0.5),
+        b = math.floor(b / n + 0.5),
+    }
+end
+
 -- Compute the native auto content box of a decoded (working-resolution) page.
 -- Returns { x0, y0, x1, y1 } in native pixels, or nil when the page should be
 -- left as-is (no detectable margin, blank, or any scan hiccup — a crop
@@ -501,7 +538,8 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
         if (x1 - x0) * (y1 - y0) < AUTOCROP_MIN_KEEP_FRAC * full_w * full_h then
             return nil
         end
-        return { x0 = x0, y0 = y0, x1 = x1, y1 = y1, bg = bg }
+        return { x0 = x0, y0 = y0, x1 = x1, y1 = y1, bg = bg,
+            color = borderColor(native_bb) }
     end)
     if not ok then
         logger.warn("Meguru: auto-crop scan failed:", box)
@@ -1935,9 +1973,11 @@ function MeguruDocument:autoContentBox(pageno)
     return box
 end
 
--- The luminance of the margin this page's crop trimmed off, 0..1, or nil when
--- nothing was trimmed. The reader view paints the screen around the page in it,
--- so the trim reads as the page continuing rather than as a frame around it.
+-- The colour of the margin this page's crop trimmed off (r, g, b in 0..255), or
+-- nil when nothing was trimmed. The reader view paints the screen around the page
+-- in it, so the trim reads as the page continuing rather than as a frame around
+-- it — and on a colour screen it is the margin's own colour, not a grey of the
+-- same brightness.
 --
 -- A cold cache is filled here rather than left to the paint that follows: this
 -- is asked on a page turn, and the decode it costs is the one that paint is
@@ -1946,18 +1986,18 @@ end
 -- is the "scanned, nothing trimmed" mark, so a full-bleed page and a page the
 -- scan refused both answer nil and leave the reader's own colour alone.
 --
--- `bg` is the reference the scan measured content against (see
--- scanContentBounds), which is exactly the margin's colour when the crop
--- succeeded, and it rides out of computeContentBox on the box table.
-function MeguruDocument:cropMarginGray(pageno)
+-- The colour rides out of computeContentBox on the box table, sampled there while
+-- the decode is in hand (see `borderColor`); `bg` beside it is the luminance the
+-- scan measured content against.
+function MeguruDocument:cropMarginColor(pageno)
     if self.crops[pageno] == nil then
         self:autoContentBox(pageno)
     end
     local box = self.crops[pageno]
-    if type(box) ~= "table" or not box.bg then
+    if type(box) ~= "table" or not box.color then
         return nil
     end
-    return box.bg / 255
+    return box.color
 end
 
 -- ---------------------------------------------------------------------------

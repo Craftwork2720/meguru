@@ -287,25 +287,32 @@ being logged at a level nobody is reading.
 
 **The screen around a cropped page is painted in the colour of the margin the crop
 took off.** `ReaderView` already has the field — `outer_page_color`, which
-`drawPageSurround` paints, and `page_bgcolor`, its continuous-mode twin — and stock
-keeps both grey (`DOUTER_PAGE_COLOR` is a 0..15 grey), so the margin is matched by
-its **luminance**: the crop's own reference background, `scanContentBounds`' `bg`,
-carried out of `computeContentBox` on the box table and read back per page by
-`MeguruDocument:cropMarginGray`. `Blitbuffer.gray` takes blackness and that value is
-brightness, so the call inverts it.
+`drawPageSurround` paints, and `page_bgcolor`, its continuous-mode twin — and any
+Blitbuffer colour is legal in it. **The colour is sampled from the decoded page's own
+edges**, a little way in from the corners and averaged (`borderColor`, beside
+`computeContentBox`, which is where the decode is in hand), carried out on the box
+table and read back per page by `MeguruDocument:cropMarginColor`. That is not the
+scan's `bg`: the scan answers in *luminance*, which is what classifies content, and a
+colour screen needs the channels — matching a coloured margin with a grey of the same
+brightness is the one way this looks wrong on a device that can show the colour.
+Every buffer type answers `getColorRGB32` (a grayscale decode as a grey, a colour one
+as itself), so a grayscale device gets what it always got, by the same Rec.601
+weights `lumaAt` measures with.
 
-**And night mode asks for the darker of the margin's colour and its inverse,
-re-derived on every paint rather than on a page turn.** Night mode inverts the whole
-display — the inversion `drawPage` cancels for the page by inverting the region it
-has just drawn — so the level has to be pre-inverted, and the *question* has to be
-asked where the page asks it: `DeviceListener:onToggleNightMode` flips the screen and
-dirties the whole view with no page turn anywhere in it, so a level decided on the
-turn would be one inversion out of date, and a black-bordered page would show a
-*white* band around it. Darker-of-the-two is what a letterboxed page wants in the
-dark: a black margin stays black, so the trim still reads as continuous, a white one
-takes its own inverse and comes out the black the reader's screen already is, and a
-grey border merely darkens a little. The test is `drawPage`'s own
-(`nightmode_document == 1` and `Screen.night_mode`).
+**And night mode asks for the darker of that colour and its inverse, re-derived on
+every paint rather than on a page turn.** Night mode inverts the whole display — the
+inversion `drawPage` cancels for the page by inverting the region it has just drawn —
+so what is painted has to be inverted too, and the *question* has to be asked where
+the page asks it: `DeviceListener:onToggleNightMode` flips the screen and dirties the
+whole view with no page turn anywhere in it, so a colour decided on the turn would be
+one inversion out of date, and a black-bordered page would show a *white* band around
+it. Darker-of-the-two is what a letterboxed page wants in the dark: a black margin
+stays black, so the trim still reads as continuous, a white one takes its own inverse
+and comes out the black the reader's screen already is, and a mid-tone one darkens a
+little rather than flipping. The comparison is by luminance and the inversion is per
+channel, so a coloured margin keeps its hue where it stays on the dark side of that
+line. The test is `drawPage`'s own (`nightmode_document == 1` and
+`Screen.night_mode`).
 
 Two boundaries keep it honest rather than clever. It is only trusted where the crop
 **actually trimmed** — a page whose box came back whole, and a page the scan

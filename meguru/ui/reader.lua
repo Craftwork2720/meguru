@@ -1876,39 +1876,45 @@ local function pageIsInverted(document)
         and Screen.night_mode == true
 end
 
---- Set the reader's two surround fields from a margin brightness (0..1), or back
---- to what the reader had when there is no margin to match.
+--- Rec.601 luminance, the same weights `lumaAt` in the document measures with —
+--- this file asks the same question about a colour, so it uses the same answer.
+local function lumaOf(r, g, b)
+    return math.floor((4898 * r + 9618 * g + 1869 * b) / 16384)
+end
+
+--- Set the reader's two surround fields from a margin colour (`{r, g, b}`), or
+--- back to what the reader had when there is no margin to match.
 ---
 --- The fields are KOReader's own (`ReaderView.outer_page_color`, painted by
---- `drawPageSurround`, and `page_bgcolor`, its continuous-mode twin) and stock
---- keeps them grey — `DOUTER_PAGE_COLOR` is a 0..15 grey — so a margin is matched
---- by its luminance and nothing here invents a colour model.
+--- `drawPageSurround`, and `page_bgcolor`, its continuous-mode twin) and any
+--- Blitbuffer colour is legal in them: a grayscale screen converts it to its
+--- luminance by the same weights, so a grey margin and a coloured one take the
+--- same road and only a colour screen can tell them apart.
 ---
---- **`Blitbuffer.gray` takes blackness, and the display inverts fills under night
---- mode, so the level is inverted in both directions at once**: day mode paints
---- `1 - gray` (brightness), night mode paints the *screen* brightness straight
---- through, since the display will invert it back.
----
---- **Night mode asks for the darker of the two, and that is the whole rule there.**
---- A margin is matched so the trim reads as the page continuing, but on a page
---- being read in the dark the letterbox must not become a light band: a black
---- margin stays black (nothing changes, which is what a letterboxed page wants),
---- and a white one takes its own inverse and comes out the black the reader's
---- screen already is. A mid-grey takes whichever of the two is darker, so a scan
---- whose border is grey darkens a little rather than flipping.
-local function setCropMarginColor(plugin, ui, gray)
+--- **Night mode asks for the darker of the colour and its inverse, and then
+--- inverts what it paints.** The first half is the rule: on a page being read in
+--- the dark the letterbox must not become a light band, so a black margin stays
+--- black and a white one comes out the black the screen already is (the
+--- comparison is by luminance; the inversion is per channel). The second half is
+--- the display's own inversion of every fill under night mode, which the page
+--- cancels for itself by inverting the region it drew — so the colour painted
+--- here is the one that will *come out* as the colour chosen above.
+local function setCropMarginColor(plugin, ui, margin)
     local view = ui and ui.view
     local stock = plugin._meguru_view_color
     if not (view and stock and stock.outer) then
         return
     end
     local color
-    if gray then
+    if margin then
+        local r, g, b = margin.r, margin.g, margin.b
         if pageIsInverted(ui.document) then
-            color = Blitbuffer.gray(math.min(gray, 1 - gray))
-        else
-            color = Blitbuffer.gray(1 - gray)
+            if lumaOf(r, g, b) > 127 then
+                r, g, b = 255 - r, 255 - g, 255 - b
+            end
+            r, g, b = 255 - r, 255 - g, 255 - b
         end
+        color = Blitbuffer.ColorRGB32(r, g, b, 0xFF)
     end
     view.outer_page_color = color or stock.outer
     view.page_bgcolor = color or stock.page
@@ -1918,7 +1924,7 @@ end
 --- paint the surround with it. Called on a page turn and once at install.
 ---
 --- Inert wherever the crop is not: with "Page Crop" off, or on a page the scan
---- refused or found no margin on, `cropMarginGray` answers nil and the reader's
+--- refused or found no margin on, `cropMarginColor` answers nil and the reader's
 --- own surround colour is restored. That is also what keeps this from arguing
 --- with `meguru/doc/image`, whose panel mask is white by a written decision — the
 --- colour here is only trusted on a page the crop actually trimmed.
@@ -1930,17 +1936,19 @@ end
 local function applyCropMarginColor(plugin, ui, page)
     local document = ui and ui.document
     local configurable = document and document.configurable
-    local gray
+    local margin
     if configurable and configurable.trim_page == 1 and type(page) == "number"
-        and type(document.cropMarginGray) == "function" then
-        gray = document:cropMarginGray(page)
+        and type(document.cropMarginColor) == "function" then
+        margin = document:cropMarginColor(page)
     end
-    plugin._meguru_margin_gray = gray
-    if gray then
-        logger.dbg("Meguru: page surround from crop margin bg",
-            math.floor(gray * 255), pageIsInverted(document) and "(night)" or "")
+    plugin._meguru_margin_color = margin
+    if margin then
+        logger.dbg("Meguru: page surround from crop margin",
+            lumaOf(margin.r, margin.g, margin.b),
+            string.format("(%d,%d,%d)", margin.r, margin.g, margin.b),
+            pageIsInverted(document) and "(night)" or "")
     end
-    setCropMarginColor(plugin, ui, gray)
+    setCropMarginColor(plugin, ui, margin)
 end
 
 --- Re-derive the surround on every paint, from the margin a turn remembered.
@@ -1962,7 +1970,7 @@ local function installCropMarginColor(plugin, ui)
     end
     local orig_paint_to = view.paintTo
     view.paintTo = function(self, ...)
-        setCropMarginColor(plugin, ui, plugin._meguru_margin_gray)
+        setCropMarginColor(plugin, ui, plugin._meguru_margin_color)
         return orig_paint_to(self, ...)
     end
 end
