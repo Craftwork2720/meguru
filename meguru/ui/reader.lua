@@ -414,20 +414,40 @@ end
 --- followed `cbz`. One preference for everything Meguru opens has no such gap.
 --- Which of the panel views a long-press opens: `"crop"`, `"window"` or `"zoom"`.
 ---
---- One preference for everything Meguru opens, like the toggle above it and for the
---- same reason — but this one is about the *view* and not about whether there is
---- one. The first two show the same panels in the same order and differ in whether the
---- page is cut up to do it; the third walks no steps at all. `meguru/viewport` is what
---- the windows are, and `ui/panelzoom` is what the free one is.
+--- **The book's own answer, seeded from the plugin-wide preference** — the same
+--- cascade as the Fit row and Page Crop, read from the configurable the way its
+--- sibling `panelZoomDirection` below reads the reading direction and for the same
+--- reason: `meguru/doc/defaults` writes the book's value at open, so the preference
+--- is what a book with no answer of its own gets, not what every book is stuck
+--- with. The first two views show the same panels in the same order and differ in
+--- whether the page is cut up to do it; the third walks no steps at all.
+--- `meguru/viewport` is what the windows are, and `ui/panelzoom` is what the free
+--- one is.
 ---
---- There is no per-book answer and no stock row behind this one, which is why it is
---- read straight from the preference every time rather than through a cascade.
-function Reader.panelViewMode()
-    local mode = Settings.get("panel_view")
-    if mode == "crop" or mode == "window" or mode == "zoom" then
+--- **Asked only when there *is* a panel view.** Whether there is one is a different
+--- question with a different answer — KOReader's own per-book `panel_zoom_enabled`,
+--- which the crop tab's *Long-press* row and KOReader's own row both write, and which
+--- refuses the press before this is reached (`meguruPanelZoomWanted`). So the three
+--- values are the whole domain here, and anything else is a store this build does
+--- not know and gets the default.
+--- Whether `mode` is one of the three views — the one place the domain is spelled
+--- out, asked by `panelViewMode` below and by the crop tab's *Long-press* row, which
+--- carries a fourth answer (Off) that is not a view at all.
+local function panelViewIsView(mode)
+    return mode == "crop" or mode == "window" or mode == "zoom"
+end
+
+function Reader.panelViewMode(ui)
+    local configurable = ui and ui.document and ui.document.configurable
+    local mode = configurable and configurable.panel_view
+    if panelViewIsView(mode) then
         return mode
     end
-    -- A stored value this build does not know — a newer version's view, or a corrupt
+    local seeded = Settings.get("panel_view")
+    if panelViewIsView(seeded) then
+        return seeded
+    end
+    -- A stored value neither place knows — a newer version's view, or a corrupt
     -- store — and the answer is **the default and not the original view**, so that
     -- this line and `Settings.DEFAULTS.panel_view` cannot come to say different
     -- things. They are two places and they must move together.
@@ -577,7 +597,7 @@ local function meguruPanelZoom(self, arg, ges, fallback)
     -- detector would have refused opens in it like any other. What it does need is the
     -- page's own size — and `getPageDims` *is* the fetch and the decode, so asking it
     -- puts the bytes in hand that the render will want anyway.
-    if Reader.panelViewMode() == "zoom" then
+    if Reader.panelViewMode(ui) == "zoom" then
         local ok_dims, dims = pcall(doc.getPageDims, doc, pos.page)
         if not ok_dims or not dims then
             logger.dbg("Meguru: page", pos.page, "panel zoom: no page ("
@@ -636,7 +656,7 @@ local function meguruPanelZoom(self, arg, ges, fallback)
     -- a whole-page rectangle shows the whole page, which is what a refusal has
     -- always meant here.
     local opts = {
-        window = Reader.panelViewMode() == "window" and accepted == true,
+        window = Reader.panelViewMode(ui) == "window" and accepted == true,
         -- In page coordinates, and the reason it travels: the window view opens
         -- centred on the finger rather than at the panel's own edge. `pos` is
         -- already the page point — `screenToPageTransform` above — so nothing
@@ -1363,12 +1383,12 @@ local function buildCuratedOptions(ui)
     -- offered, and both fire the core "ReZoom" so the new box applies to the
     -- page on screen immediately.
     --
-    -- **And it is the crop tab's only row.** "Page Number Crop" and "No crop on
-    -- blank pages" were rows here — the stock ones `pagenumbercrop.koplugin`
-    -- injects when it is installed, this file's own copies when it is not — and
-    -- they are folded into "auto" instead: the engine no longer reads either
-    -- value (`document.lua`'s getPageBBox), so their help text lives on this row
-    -- now, which is the only place a reader can still learn what the crop does.
+    -- "Page Number Crop" and "No crop on blank pages" were rows here — the stock
+    -- ones `pagenumbercrop.koplugin` injects when it is installed, this file's own
+    -- copies when it is not — and they are folded into "auto" instead: the engine
+    -- no longer reads either value (`document.lua`'s getPageBBox), so their help
+    -- text lives on this row now, which is the only place a reader can still learn
+    -- what the crop does.
     local stock_trim = stockOptionRow(crop_tab, "trim_page")
     local crop_options = {
         {
@@ -1380,6 +1400,41 @@ local function buildCuratedOptions(ui)
             default_value = 1,
             event = "ReZoom",
             help_text = _([[Trims the empty margins around the artwork. "auto" also removes a printed page number from the bottom gutter when one is found, and leaves an almost-blank page — a chapter divider, a title page — entirely uncropped instead of zooming into a small element. Nothing is cropped if nothing is found.]]),
+        },
+        -- **The long-press, in one row: the three views and Off.** The three
+        -- labels are the ones the viewer's switch carries (`ui/panelzoom`), so a
+        -- reader meets the same three words in both places; Off is not a fourth
+        -- view at all but KOReader's own per-book answer for whether there is a
+        -- panel zoom, which is why neither the display nor the write here is a
+        -- plain assignment — see `current_func` and `onMeguruPanelViewUpdate`.
+        --
+        -- One row for both questions because that is the question a reader has:
+        -- what happens when I hold on a page. Splitting them is how a row ends up
+        -- showing a view while the long-press does nothing.
+        {
+            name = "panel_view",
+            name_text = _("Long-press"),
+            toggle = {
+                C_("Long-press", "off"),
+                _("Panel Cut"),
+                _("Pan & Zoom"),
+                _("Free View"),
+            },
+            values = { "off", "crop", "window", "zoom" },
+            args = { "off", "crop", "window", "zoom" },
+            default_value = "window",
+            event = "MeguruPanelViewUpdate",
+            -- The two keys this row answers for, read as one value: the book's own
+            -- answer for whether there is a panel zoom (its stash, not the live
+            -- field — see `meguruPanelZoomWanted` for why), and then the view.
+            current_func = function()
+                local hl = ui and ui.highlight
+                if hl and not meguruPanelZoomWanted(hl) then
+                    return "off"
+                end
+                return Reader.panelViewMode(ui)
+            end,
+            help_text = _([[What holding on a page does. Panel Cut shows the panels the detector found, one at a time; Pan & Zoom keeps the page whole and moves a window over it; Free View shows the page alone. "off" leaves the long-press to KOReader, and applies to this book only. Long-press this row to make a view the default for new books. This is Meguru's own panel view — a panel plugin that answers the long-press itself is its own.]]),
         },
     }
 
@@ -1470,7 +1525,10 @@ end
 --- Without this the stock handler would write a global `kopt_*`, leaking a
 --- choice made while reading a stream into every PDF opened afterwards. Rows
 --- this plugin has no preference for get no "set as default" at all — the stock
---- handler is swallowed rather than allowed to fall through.
+--- handler is swallowed rather than allowed to fall through — and a row whose
+--- *value* is not the thing a preference holds declines that one value the same
+--- way, saying so rather than writing something meaningless (the long-press row's
+--- Off, below).
 local function redirectDefaults(config)
     local dialog = config and config.config_dialog
     if not (dialog and type(dialog.onMakeDefault) == "function") then
@@ -1486,6 +1544,20 @@ local function redirectDefaults(config)
             return true
         end
         local value = values and values[position]
+        -- **The one row with a value a preference cannot hold.** The long-press row's
+        -- first answer, Off, is not a view: it is KOReader's own per-book
+        -- `panel_zoom_enabled`, and whether there is a panel view is per-book by
+        -- design (`meguruPanelZoomWanted`: "the per-file answer is the only one there
+        -- is"). So there is no default to set for it, and saying so is better than a
+        -- ConfirmBox that writes a view called "off" and leaving `Settings` to hold a
+        -- word nothing reads. The three views below it are ordinary defaults.
+        if name == "panel_view" and value == "off" then
+            UIManager:show(Notification:new{
+                text = _("Off applies to this book only — a default is one of the three views."),
+                timeout = 2,
+            })
+            return true
+        end
         -- Every row is stored in its own domain, which is what `Settings`
         -- declares and what `seedRowValue` copies back verbatim. The manga row
         -- is the exception: it carries 0/1 because a boolean would be swallowed
@@ -2215,6 +2287,63 @@ function Reader.install(plugin)
             hideStatusBar(footer)
         else
             showStatusBar(footer)
+        end
+        return true
+    end
+
+    -- The crop tab's *Long-press* row: one of the three views, or off.
+    --
+    -- **Two keys, one answer, which is why this is more than an assignment.**
+    -- `panel_view` holds a view and nothing else, so Off cannot be stored in it —
+    -- and it has already been written there by the time this runs, because the
+    -- dialog writes the chosen value through `ReaderKoptListener:onConfigChange`
+    -- and fires the row's own event after it. The Off branch therefore puts the
+    -- reader's own view back: that is a deliberate, narrow normalisation of the
+    -- kind this codebase distrusts — one row, one value, one direction — and the
+    -- alternative was a view key that could also mean "no view", i.e. two keys
+    -- answering the same question and parting company the moment KOReader's own
+    -- *Allow panel zoom* row was used.
+    --
+    -- Whether there *is* a panel zoom is KOReader's `panel_zoom_enabled`, whose only
+    -- stock setter is a toggle that ignores its argument
+    -- (`ReaderHighlight:onTogglePanelZoomSetting`). So the field is first put where
+    -- that flip has to start from, and the flip then leaves it on the wanted answer
+    -- — and sets the pin and the book's own answer from it, in the wrap
+    -- `installPanelZoom` installs, which is what `meguruPanelZoomWanted` reads at
+    -- the press. Both halves are needed: a rival panel plugin moves the field on
+    -- every `ReadSettings`, and the row would otherwise name a view while the press
+    -- went nowhere.
+    plugin.onMeguruPanelViewUpdate = function(self, value)
+        local ui = self.ui
+        local doc = ui and ui.document
+        local configurable = doc and doc.configurable
+        if not (configurable and configurable.panel_view ~= nil) then
+            return true
+        end
+        local view = panelViewIsView(value) and value or nil
+        if not view and value ~= "off" then
+            return true
+        end
+
+        local hl = ui.highlight
+        local want = view ~= nil
+        if hl and (meguruPanelZoomWanted(hl) ~= want
+                or hl.panel_zoom_enabled ~= want) then
+            hl.panel_zoom_enabled = not want
+            hl:onTogglePanelZoomSetting()
+        end
+
+        if view then
+            configurable.panel_view = view
+            if ui.doc_settings then
+                ui.doc_settings:saveSetting("kopt_panel_view", view)
+                ui.doc_settings:flush()
+            end
+        else
+            local ds = ui.doc_settings
+            local stored = ds and ds:readSetting("kopt_panel_view")
+            configurable.panel_view = panelViewIsView(stored) and stored
+                or Reader.panelViewMode(ui)
         end
         return true
     end

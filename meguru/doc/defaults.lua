@@ -60,6 +60,7 @@ Defaults.FIT_TO_ZOOM_MODE = FIT_TO_ZOOM_MODE
 --- `kopt_page_number_crop_auto` keeps it and is never asked about it again.
 Defaults.PREFERENCE_FOR = {
     trim_page             = "trim_page",
+    panel_view            = "panel_view",
     rotate_wide_pages     = "rotate_wide",
     page_scroll           = "page_scroll",
     opdsbook_fit          = "fit",
@@ -114,13 +115,22 @@ function Defaults.seedLayout(ui, configurable)
     end
 end
 
---- The crop itself, and wide-page rotation. Both are rows of the curated
---- dialog; the page-number and blank-page rules used to be rows too and are now
---- part of what "Page Crop: auto" means, so there is nothing to seed for them.
+--- The crop itself, wide-page rotation, and which view a long-press opens. All
+--- three are rows of the curated dialog; the page-number and blank-page rules used
+--- to be rows too and are now part of what "Page Crop: auto" means, so there is
+--- nothing to seed for them.
+---
+--- **`panel_view` seeds from the preference of the same name**, which is why it
+--- needs no entry in `PREFERENCE_FOR` to be seeded — `seedRowValue` falls back to
+--- the row's own name. It carries an entry anyway, for the mapping's other job:
+--- the long-press "set as default". What that default holds is one of the three
+--- *views*; the row's fourth answer, Off, is not a view but KOReader's own per-book
+--- `panel_zoom_enabled`, and a preference cannot hold it — `ui/reader.lua`'s
+--- `redirectDefaults` answers for that one case rather than writing it.
 function Defaults.seedGeometry(ui, configurable)
     local ds = ui.doc_settings
     for _, name in ipairs{
-        "trim_page", "rotate_wide_pages",
+        "trim_page", "rotate_wide_pages", "panel_view",
     } do
         local value = seedRowValue(ds, name)
         if value ~= nil then

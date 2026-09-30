@@ -320,7 +320,7 @@ Each step must pass before the next:
     of the store still shows a panel, softer, through the `Document:drawPagePart`
     fallback.
 
-    Then the same page in the **window view** (*Panel view: Pan & Zoom*), which is the
+    Then the same page in the **window view** (*Long-press: Pan & Zoom*), which is the
     second half of this item because it is the same crop question asked the other way.
     Long-press a point in a large panel: **the panel opens at its own beginning**, not at
     the point under the finger — a panel taller than the window pressed in its lower half
@@ -379,8 +379,17 @@ Each step must pass before the next:
     views and names the view the reader is **in** — `Pan & Zoom` while in pan & zoom,
     `Panel Cut` while cut — the same thing the setting behind it says;
     pressing it changes what the page is cut into, keeps the panel the reader is
-    on, and leaves the row open. **It is the only way to change the view**: there is no menu row
-    for it, so this button and the `panel_view` preference it writes are the whole of the surface. The *cropped* row is the one that carries
+    on, and leaves the row open — and it writes the **book's** value, so the crop tab's
+    *Long-press* row (bottom menu → the crop tab) must read back the view the switch
+    just left the reader in. **The row is the other half of that pair**, and it is the
+    only control there is for a reader whose long-press another panel plugin answers:
+    each of the three views must open on the next long-press, `off` must give the press
+    back to KOReader, and choosing a view while the press is off must turn it back on —
+    both readings of the same question living in two keys is the whole reason that row's
+    handler is not an assignment. **A long-press on one of the views must offer to set it
+    as the default** and a book opened afterwards with no view of its own must open in it;
+    a long-press on `off` must say that it applies to this book only, and must **not** put
+    `off` in the preference. The *cropped* row is the one that carries
     **Rotate**: pressing it there must still work — which is the check that it was forwarded
     rather than dropped — and there must be **no Scale / Original size button** beside it, in
     this row or the other two. That button is the one whose absence is load-bearing rather than
@@ -468,7 +477,7 @@ Each step must pass before the next:
     under the buttons ✓, and in the free view a tap and a spread must still land where they
     should ✓ — that mapping reads the picture area, which the row is what changes.
 
-    Then the third view (*Panel view: Free View*, or the row's switch twice). Long-press a
+    Then the third view (*Long-press: Free View*, or the row's switch twice). Long-press a
     point: the page must open **centred on that point**, sharp at 2× and 3× — it is a render
     from the file, not a magnified tile — and then: pinch changes the scale ✓, drag moves the
     window ✓ **in every direction — down, and on the diagonal**, which is the one a drag is

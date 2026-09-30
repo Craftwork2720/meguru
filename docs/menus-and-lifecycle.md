@@ -33,8 +33,8 @@ this plugin at all: `ReaderKoptListener` writes the row's value into the configu
   (`Settings.dither` is deliberately unset), which is why the row reads back the value the
   page is actually drawn with rather than a stored one.
 
-**The crop tab holds one row, and that is the crop.** *Page Crop* is `none` or `auto`,
-and `auto` is the whole of the feature: the margin box, the printed page number and the
+**The crop tab holds the crop, and then what a long-press does.** *Page Crop* is `none` or
+`auto`, and `auto` is the whole of the feature: the margin box, the printed page number and the
 blank-page rule (`document.lua`'s `getPageBBox`). "Page Number Crop" and "No crop on
 blank pages" used to be rows of their own — the stock ones `pagenumbercrop.koplugin`
 injects when it is installed, this plugin's own copies when it is not — and folding them
@@ -42,6 +42,20 @@ in is deliberate: what a reader wants from this tab is "crop the page or not", a
 three rules are what cropping a page means here. The cost is that neither can be had
 alone, and that a book carrying `kopt_page_number_crop_auto` or `kopt_no_crop_blank_pages`
 from an earlier version keeps the key and gets the rule back — nothing reads either again.
+
+**The second row is *Long-press*, and it is the first row in this dialog that is not one
+value in one key.** Its three views are the book's `kopt_panel_view` — the switch inside the
+panel viewer writes the same one, so the two controls cannot disagree — and its fourth answer,
+`off`, is KOReader's own per-book `panel_zoom_enabled`, which is a different question with a
+different owner. `current_func` reads the two as one value and `onMeguruPanelViewUpdate` writes
+them as one, including putting the book's view back into the view key when `off` is chosen,
+because the dialog has already written the chosen value there by the time the row's event fires.
+It is seeded from the `panel_view` preference like every other row here, and its long-press sets
+that preference as on every other row — with one value it refuses: `off` is not a view, so no
+preference could hold it, and `redirectDefaults` answers for that case with a notification
+instead of writing a word nothing reads. Whether there is a panel view is the per-file answer by
+design, and that is the one place in this dialog where "set as default" is declined rather than
+performed.
 
 The one thing that must not be missed: KOReader's stock "set as default" writes a
 **global** `G_reader_settings["kopt_<name>"]`, which would leak a choice made while
@@ -81,9 +95,11 @@ Invariants when touching these rows:
   a book being read (auto-open next in series, report reading progress, hide status bar,
   save folder, subfolder per server, `Covers for folders`, default reader for `.cbz`,
   check for updates), the FileManager's the ones that are not. **No panel row is among
-  them**, and that is a decision rather than an omission: all three panel choices live in
-  the viewer's own button row, where the reader can see what they do while looking at the
-  page they do it to — see `docs/panel-zoom.md`. The FileManager's depth is a deliberate
+  them**, and that is a decision rather than an omission: the panel choices are per book,
+  and a preference row here would be a plugin-wide answer to a per-book question. Two live
+  in the viewer's own button row, where the reader can see what they do while looking at
+  the page they do it to, and the view is the bottom dialog's *Long-press* row — see
+  `docs/panel-zoom.md`. The FileManager's depth is a deliberate
   cost, paid so the two menus read the same. No `sorting_hint` exists below the top-level
   `meguru` item — the sorter only ever orders a page's own rows.
 - **`Covers for folders` is the one thing below `Settings`, and it is an exception

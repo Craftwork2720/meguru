@@ -602,15 +602,31 @@ call may throw, or a viewer is left on the stack while the caller is told the op
 
 ### The other view: a window over the page
 
-**A long-press opens one of two views, and the preference picks which.** Cropped — the
+**A long-press opens one of two views, and the book's own answer picks which.** Cropped — the
 panels cut out of the page, each its own image, quad-masked. Or *window*: the page
 stays whole and a rectangle moves over it at one fixed zoom, anchored to the panel's
-edges. `meguru/settings.lua`'s `panel_view` is the value, and **the only control for it is the
-switch at the front of the viewer's own button row** — there is no menu row, which is argued
-below. The switch names the three views `Panel Cut`, `Pan & Zoom` and `Free View`; this document
+edges. The value is the book's `kopt_panel_view`, and there are **two controls for it: the
+switch at the front of the viewer's own button row, and the crop tab's *Long-press* row**
+(bottom menu → *Page Crop* tab), which is the one a reader can reach without opening the
+viewer — and the only one there is for a reader whose long-press another panel plugin
+answers. `meguru/settings.lua`'s `panel_view` is now only the **seed**: what a book with
+no value of its own is opened with. The switch names the three views `Panel Cut`,
+`Pan & Zoom` and `Free View`, and the row uses the same three words plus `off`; this document
 calls them the cropped view, the window view and the free view, and they are the same three — the
 label is what a reader reads and the prose is what the code is called, so neither is a rename of
 the other.
+
+**The row is also where "no panel view at all" is chosen**, which is a different question with a
+different answer: KOReader's own per-book `panel_zoom_enabled`, the ⋮ row *Allow panel zoom*. One
+row answers both because that is the question a reader has — what happens when I hold on a page —
+and the row's `current_func` is what reads the two keys as one value
+(`meguru/ui/reader.lua`'s `onMeguruPanelViewUpdate` is where they are written as one).
+
+**A long-press on the row sets the default view for new books** — one of the three, because the
+preference holds a view and nothing else. On `off` it says so rather than writing one: whether
+there is a panel view is the per-file answer and deliberately has no plugin-wide switch
+(`meguruPanelZoomWanted`), so `redirectDefaults` answers for that case and `Settings` never holds
+the word.
 **Window is the default** — a choice rather than a measurement: it shows the page as it
 is, so a panel the detector merged, or a border it read wrongly, still shows the artwork
 that is there, at the price of a strip of the neighbour at the window's edge, where the
@@ -769,7 +785,7 @@ holds `[Pan & Zoom] [-] [1.7x] [+] [Close]`; *Panel Cut* keeps stock's three and
 switch in front — `[Panel Cut] [Rotate] [Close]`. **The switch's
 label names the view the reader is in**, not the one the press leads to: it is the shape
 the zoom button beside it already has (that one shows the level it is on) and the shape
-the menu row that used to carry it had, so the button and the setting name the same
+the crop tab's *Long-press* row has, so the button and the setting name the same
 thing. The first version named the destination, which is defensible for a button and was
 not what a reader wanted — three controls saying different things about one state is the
 thing to avoid. The zoom button is
@@ -815,7 +831,8 @@ Dropping it has one requirement that is not optional. `ImageViewer:update` re-le
 it expects **by id and without checking that they are there**, so a row without one is a nil call
 inside a paint: `installRow` seeds the map those lookups read with a sink for every button its row
 does not carry — `scale` here, and both of them in the two views that have neither. The switch writes
-the same `panel_view` the menu's row does, from a close-and-reopen that keeps the reader's
+the same per-book `kopt_panel_view` the crop tab's *Long-press* row does, from a
+close-and-reopen that keeps the reader's
 panel, which is `steps[cur].panel` in the window view and the bare step index in the crop
 one — read from *that* view's shape rather than from the step, whose `panel` field is nil
 in the crop view and would make `and/or` pick the right answer by accident.

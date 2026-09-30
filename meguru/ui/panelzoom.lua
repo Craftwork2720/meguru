@@ -1206,9 +1206,14 @@ end
 -- carries the panel each of its windows belongs to — and a point to re-enter the two
 -- window-shaped views at, which is the middle of whatever they are looking at.
 --
--- The preference is written here for the same reason the level is: it is a plain
--- preference with no cascade, and the menu's *Panel view* row reads and writes the same
--- one, so the two controls cannot disagree.
+-- **The book's own value**, which is what the crop tab's *Long-press* row reads and
+-- writes too — so the two controls cannot disagree. It used to be the plugin-wide
+-- `panel_view` preference, and that is still what a book with no value of its own is
+-- seeded with (`meguru/doc/defaults`); what moved is where a *choice* lands, because a
+-- reader can now make it per book in the dialog. Nothing writes the preference from
+-- here any more: cycling is choosing for *this* book, and the crop tab's row is where a
+-- reader makes a view the default for the books after it (its long-press). The
+-- preference is what a new book starts from.
 function PanelViewer:meguruCycleView()
     local view = self.view
     local cur = self.steps and self.steps[self._images_list_cur]
@@ -1242,7 +1247,13 @@ function PanelViewer:meguruCycleView()
             return
         end
     end
-    Settings.set("panel_view", kind)
+    local configurable = doc.configurable
+    if configurable and configurable.panel_view ~= nil then
+        configurable.panel_view = kind
+        if ui.doc_settings then
+            ui.doc_settings:saveSetting("kopt_panel_view", kind)
+        end
+    end
     -- Which panel the reader is on, read from the *old* view's shape: the crop view's
     -- step list is the panel list, so its step index is the panel index, while a step in
     -- either window-shaped view carries the panel it belongs to. The free view has none,
@@ -1340,9 +1351,9 @@ local function installRow(viewer)
         id = "view",
         -- **The label names the view the reader is *in*.** It is the shape the zoom
         -- button beside it already has — that one shows the level it is on — and the
-        -- shape the menu's *Panel view* row has, so the two controls and the row all
-        -- name the same thing rather than one of them naming the destination. With three
-        -- views it also has to cycle rather than toggle.
+        -- shape the crop tab's *Long-press* row has, so the switch and the row name the
+        -- same thing rather than one of them naming the destination. With three views it
+        -- also has to cycle rather than toggle.
         text = free and _("Free View")
             or (window and _("Pan & Zoom") or _("Panel Cut")),
         callback = function()
