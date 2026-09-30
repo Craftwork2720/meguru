@@ -110,9 +110,10 @@ end
 -- this document's own getPageBBox whether or not that plugin is installed: its
 -- own patch of the same seam is taken back at ReaderReady
 -- (`takeBackPageBBox`), because the ported analysis carries a width bound the
--- original has no counterpart of. The bottom-menu rows toggle them either way,
--- since the rows themselves are the shared `KoptOptions` entries. Only the
--- plugin's screen-level "Rotate wide pages" is left to it.
+-- original has no counterpart of. They are not rows: "Page Crop" at "auto" is
+-- what turns them on (`getPageBBox` below), so a reader who has that plugin
+-- installed — with its two extra rows — sees them folded into the same choice.
+-- Only the plugin's screen-level "Rotate wide pages" is left to it.
 
 local AUTOCROP_SCAN_TARGET = 128 -- max dimension of the scanned downscale
 -- The two ends of the border band. At or above the light bar a border is a
@@ -606,16 +607,43 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     if native_bb:getRotation() and native_bb:getRotation() ~= 0 then
         return x0, y0, x1, y1 -- raw rows are not axis-aligned: keep the coarse box
     end
-    local raster = Image.rasterFor(native_bb)
-    if not raster then
+    local fw, fh = native_bb:getWidth(), native_bb:getHeight()
+    if fw < 2 or fh < 2 then
         return x0, y0, x1, y1
     end
-    local w, h = raster.w, raster.h
-    if w < 2 or h < 2 then
-        return x0, y0, x1, y1
-    end
-    local luma = raster.luma
+    local w, h = fw, fh
     local delta = AUTOCROP_LUMA_DELTA
+
+    -- **One band of the page at a time, not the whole page.** The four walks
+    -- below are the only readers here and each reads exactly one rectangle: the
+    -- top and bottom walks every column of `2*pad_y+1` rows, the left and right
+    -- every row of `2*pad_x+1` columns. Rasterising that rectangle instead of the
+    -- page leaves every comparison this pass makes exactly as it was — the same
+    -- bytes through the same `Image.rasterFor` conversion, compared against the
+    -- same reference and delta — while a 1600x2400 page stops becoming a 3.8 MB
+    -- Lua string on every page turn to serve a few hundred kilobytes of it. The
+    -- rectangle handed to each walk is its own clamped iteration range, so no read
+    -- can land outside the band it was given, and a band that fails to rasterise
+    -- falls back to the coarse box exactly as a failed whole-page raster did.
+    local function bandLuma(px, py, bw, bh)
+        local band = Blitbuffer.new(bw, bh, native_bb:getType())
+        band:blitFrom(native_bb, 0, 0, px, py, bw, bh)
+        -- Carried because it is a property of the object rather than of the
+        -- bytes, and `rasterFor` reads it: a page that arrived already inverted
+        -- must keep reading inverted. A same-type blit moves the pixels as they
+        -- are, so the copy is byte-for-byte what the whole-page raster held.
+        band:setInverse(native_bb:getInverse())
+        local raster = Image.rasterFor(band)
+        band:free()
+        return raster and raster.luma, px, py
+    end
+
+    -- A reader for one band: the walk's own coordinates, offset into it.
+    local function contentReader(luma, ox, oy)
+        return function(y, x)
+            return math.abs(luma(y - oy, x - ox) - bg) > delta
+        end
+    end
     -- Content = a pixel that departs from the border reference luminance (the
     -- very predicate the coarse scan used). Only a row/column with more than
     -- scattered specks counts: ~0.2% of its span (~4px at a 2048px native)
@@ -625,14 +653,16 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     local row_bar = math.max(2, math.floor(w * 0.002))
     local col_bar = math.max(2, math.floor(h * 0.002))
 
-    local function isContent(y, x)
-        return math.abs(luma(y, x) - bg) > delta
-    end
-
     -- Top: walk rows from the outward band edge downward; margin rows are
     -- blank, so the first row that clears the bar is the true topmost content.
+    local top_y0, top_y1 = math.max(0, y0 - pad_y), math.min(h - 1, y0 + pad_y)
+    local top_luma, top_ox, top_oy = bandLuma(0, top_y0, w, top_y1 - top_y0 + 1)
+    if not top_luma then
+        return x0, y0, x1, y1
+    end
+    local isContent = contentReader(top_luma, top_ox, top_oy)
     local top = y0
-    for y = math.max(0, y0 - pad_y), math.min(h - 1, y0 + pad_y) do
+    for y = top_y0, top_y1 do
         local cnt = 0
         for x = 0, w - 1 do
             if isContent(y, x) then
@@ -649,8 +679,14 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     end
 
     -- Bottom: the mirror walk, from below the coarse bottom edge upward.
+    local bot_y0, bot_y1 = math.max(0, y1 - 1 - pad_y), math.min(h - 1, y1 - 1 + pad_y)
+    local bot_luma, bot_ox, bot_oy = bandLuma(0, bot_y0, w, bot_y1 - bot_y0 + 1)
+    if not bot_luma then
+        return x0, y0, x1, y1
+    end
+    isContent = contentReader(bot_luma, bot_ox, bot_oy)
     local bottom = y1 - 1
-    for y = math.min(h - 1, y1 - 1 + pad_y), math.max(0, y1 - 1 - pad_y), -1 do
+    for y = bot_y1, bot_y0, -1 do
         local cnt = 0
         for x = 0, w - 1 do
             if isContent(y, x) then
@@ -667,8 +703,14 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     end
 
     -- Left: a column counts only when content runs down enough of its height.
+    local lft_x0, lft_x1 = math.max(0, x0 - pad_x), math.min(w - 1, x0 + pad_x)
+    local lft_luma, lft_ox, lft_oy = bandLuma(lft_x0, 0, lft_x1 - lft_x0 + 1, h)
+    if not lft_luma then
+        return x0, y0, x1, y1
+    end
+    isContent = contentReader(lft_luma, lft_ox, lft_oy)
     local left = x0
-    for x = math.max(0, x0 - pad_x), math.min(w - 1, x0 + pad_x) do
+    for x = lft_x0, lft_x1 do
         local cnt = 0
         for y = 0, h - 1 do
             if isContent(y, x) then
@@ -685,8 +727,14 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     end
 
     -- Right: the mirror column walk, from the far side inward.
+    local rgt_x0, rgt_x1 = math.max(0, x1 - 1 - pad_x), math.min(w - 1, x1 - 1 + pad_x)
+    local rgt_luma, rgt_ox, rgt_oy = bandLuma(rgt_x0, 0, rgt_x1 - rgt_x0 + 1, h)
+    if not rgt_luma then
+        return x0, y0, x1, y1
+    end
+    isContent = contentReader(rgt_luma, rgt_ox, rgt_oy)
     local right = x1 - 1
-    for x = math.min(w - 1, x1 - 1 + pad_x), math.max(0, x1 - 1 - pad_x), -1 do
+    for x = rgt_x1, rgt_x0, -1 do
         local cnt = 0
         for y = 0, h - 1 do
             if isContent(y, x) then
@@ -1869,14 +1917,15 @@ end
 -- installs this plugin's own rotation only for a document that plugin has not
 -- patched at all.
 --
--- The finer crops are built in here (see the "Page-number / blank-page
--- analysis" section below): with "Page Crop" at "auto" and "Page Number Crop"
--- on (page_number_crop_auto), a detected printed page-number band trims the
--- bbox's bottom edge; with "No crop on blank pages" on (no_crop_blank_pages), a
--- page whose content area is below the mostly-blank threshold is left as the
--- *full* native page (the margin crop is discarded too). Both are two
--- independent toggles over one combined "active" state, exactly as
--- pagenumbercrop treats them.
+-- **"Page Crop" at "auto" is the whole of the switch.** The two finer crops are
+-- built in here (see the "Page-number / blank-page analysis" section below) and
+-- have no rows of their own: with the box being auto, a detected printed
+-- page-number band trims its bottom edge, and a page whose content area is below
+-- the mostly-blank threshold is left as the *full* native page (the margin crop
+-- discarded too), because a chapter divider must not zoom into a small element.
+-- `pagenumbercrop` treats the same two as independent toggles; this document used
+-- to as well, and folding them in is deliberate — the switch a reader wants is
+-- "crop the page or not", and both rules are what cropping a page means here.
 function MeguruDocument:getPageBBox(pageno)
     -- The content box and the page-number/blank memos are computed from the
     -- rendered page, so a tone change invalidates them before they are read.
@@ -1889,34 +1938,27 @@ function MeguruDocument:getPageBBox(pageno)
         return bbox
     end
     local c = self.configurable
-    if not c then
-        return bbox
-    end
-    local auto_crop = c.text_wrap ~= 1 and c.trim_page == 1
-    local crop_active = auto_crop
-        and (c.page_number_crop_auto == 1 or c.page_number_crop_auto == "1")
-    local blank_active = auto_crop
-        and (c.no_crop_blank_pages == 1 or c.no_crop_blank_pages == "1")
-    if not (crop_active or blank_active) then
+    if not c or c.text_wrap == 1 or c.trim_page ~= 1 then
+        -- "Page Crop" at "none" — nothing finer is offered as a separate choice,
+        -- so this is the only gate the two rules below have.
         return bbox
     end
     -- Blank pages are left ENTIRELY uncropped (the margin crop discarded too),
     -- like pagenumbercrop: a chapter divider / title page must not zoom into a
-    -- small element.
-    if blank_active and self:_meguruPageMostlyBlank(pageno) then
+    -- small element. Asked *before* the strip, which is what keeps such a page
+    -- from paying for a strip render at all.
+    if self:_meguruPageMostlyBlank(pageno) then
         local page_size = self:getNativePageDimensions(pageno)
         return { x0 = 0, y0 = 0, x1 = page_size.w, y1 = page_size.h }
     end
-    if crop_active then
-        local crop_y = self:_meguruPagenumStrip(pageno)
-        if crop_y and crop_y > bbox.y0 and crop_y < bbox.y1 then
-            local page_size = self:getNativePageDimensions(pageno)
-            local min_removal = page_size and math.max(1, page_size.h * 0.001) or 1
-            if bbox.y1 - crop_y >= min_removal then
-                local out = { x0 = bbox.x0, y0 = bbox.y0, x1 = bbox.x1, y1 = bbox.y1 }
-                out.y1 = crop_y
-                return out
-            end
+    local crop_y = self:_meguruPagenumStrip(pageno)
+    if crop_y and crop_y > bbox.y0 and crop_y < bbox.y1 then
+        local page_size = self:getNativePageDimensions(pageno)
+        local min_removal = page_size and math.max(1, page_size.h * 0.001) or 1
+        if bbox.y1 - crop_y >= min_removal then
+            local out = { x0 = bbox.x0, y0 = bbox.y0, x1 = bbox.x1, y1 = bbox.y1 }
+            out.y1 = crop_y
+            return out
         end
     end
     return bbox
@@ -2032,8 +2074,8 @@ end
 -- a port of the pagenumbercrop plugin's own analysis (its main.lua), renamed
 -- `_meguru*`, and this document runs them itself whether or not that plugin is
 -- installed (`takeBackPageBBox` above). They are only ever consulted from
--- getPageBBox, and only when the gate there holds: "Page Crop" at auto plus the
--- row's toggle on.
+-- getPageBBox, and only when the gate there holds: "Page Crop" at auto — they
+-- have no rows of their own, so that one choice is the whole of the gate.
 --
 -- All state is per-page memo tables (`_meguru_pagenum_cache` etc.), created
 -- lazily on first use so a book with the features off allocates nothing. The
@@ -2384,14 +2426,26 @@ local function meguruPagenumCaches(self)
     end
 end
 
--- Render a native-coordinate analysis rectangle, downscaled by `zoom`, and
--- return the bare BlitBuffer (or nil). Unlike renderPage this never enters the
--- tile LRU — the caller analyzes and frees the buffer right away, so a ~700px
+-- Render a native-coordinate analysis rectangle for one of the analyses above,
+-- and return the bare BlitBuffer (or nil). Unlike renderPage this never enters
+-- the tile LRU — the caller analyzes and frees the buffer right away, so a ~700px
 -- strip or a ~256px blank preview never lingers as a large cached tile. The
 -- region is cut+scaled from the LRU-cached native decode (no extra
 -- fetch/decode for a page whose geometry is already known). The analysis flag
 -- is set across the render (defensive: this document's render paths never call
 -- back into getPageBBox).
+--
+-- **`zoom` is the *vertical* scale, and it is capped at 1:1 horizontally.** The
+-- one caller that magnifies is the page-number strip, whose zoom exists to give
+-- the band's *height* enough rows to be measured in — a number is a few glyphs
+-- tall, and the analysis reads its rows. Magnifying the page's whole width with
+-- it bought nothing and cost a great deal: the strip is read as fractions of its
+-- own width, so the same analysis runs at 1:1 horizontally, while the render
+-- stops being `page_w * zoom` wide — 2.2 Mpx for a 1600px page, up to 3.6 Mpx on
+-- the fallback zoom, and the Lua-side scan over it — for a band that is a few
+-- percent of that width. The two axes scale independently here because
+-- `scaleBlitBuffer` takes them independently; the blank preview passes a zoom
+-- that is already ≤ 1.0, so nothing changes for it.
 function MeguruDocument:_meguruAnalysisBB(pageno, x, y, w, h, zoom)
     self._meguru_pagenum_analysis_flag = true
     local ok, bb = pcall(function()
@@ -2402,7 +2456,7 @@ function MeguruDocument:_meguruAnalysisBB(pageno, x, y, w, h, zoom)
         if not (dims and dims.w > 0 and dims.h > 0) then
             return nil
         end
-        local tw = math.max(1, math.floor(w * zoom + 0.5))
+        local tw = math.max(1, math.floor(w * math.min(zoom, 1.0) + 0.5))
         local th = math.max(1, math.floor(h * zoom + 0.5))
         -- Bytes are only for decodeRegion's *decode* path. A local cbz page has
         -- none (it renders from the open archive, ensureNativeBB's local

@@ -392,10 +392,11 @@ Each step must pass before the next:
     book.** On a page printed with a black frame — the letterboxed manga this crop exists for —
     *Page Crop* at `auto` must trim that frame on **all four** screen edges, flush with the
     artwork, and an asymmetric frame must come out trimmed asymmetrically rather than centred.
-    Turn *Page Number Crop* on and the white number printed in the black margin must go with it,
-    leaving the panel at the edge; turn it off and the number must come back — that pair is the
-    whole of the claim, because the number is *content* against a black margin and the margin
-    crop alone stops on it.
+    The white number printed in the black margin must go with the crop, leaving the panel at the
+    edge, and *Page Crop* at `none` must bring both the frame and the number back — that pair is
+    the whole of the claim, because the number is *content* against a black margin and the margin
+    crop alone stops on it. It is one row now: the number has no toggle of its own
+    (`docs/menus-and-lifecycle.md`).
 
     **A band that is not a number must stay on the page.** The strip takes a printed number and
     nothing else, so a bottom margin holding a line of the page's own text must lose nothing at

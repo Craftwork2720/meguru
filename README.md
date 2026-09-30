@@ -41,8 +41,7 @@ Everything below applies whether the book came from your device or from a stream
 
 | Feature | What it does |
 |---|---|
-| Auto-crop | Trims the empty margins around the artwork |
-| Page-number crop | Removes a printed page number from the bottom gutter |
+| Auto-crop | Trims the empty margins, removes a printed page number from the bottom gutter, and leaves an almost-blank page whole |
 | Fit | Full page, fit to width, or fit to height |
 | Manga mode | Pages turn right-to-left |
 | Auto-rotate | Wide double-page spreads rotate the screen to fit |

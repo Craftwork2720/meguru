@@ -62,6 +62,37 @@ this analysis *without* the bound, so its patch is taken back rather than yielde
 corrected crop. What stays the plugin's is its wide-page rotation, whose wrappers cannot be
 unwrapped and which must not run twice.
 
+**The analysis is done on bands, and the page-number strip is no longer magnified sideways.** Two
+of the ported pass's costs were its shape rather than its rules. `refineAutoCrop` rasterised the
+*whole* page into a Lua string — 3.8 MB for a 1600x2400 scan, per page turn — to serve four walks
+that read a few dozen rows and columns of it; it now rasterises each walk's own rectangle, through
+the same `Image.rasterFor` conversion on a copy of exactly the pixels that walk reads, so every
+comparison it makes is the one it made before. And the page-number strip's `zoom` — which exists to
+give a band's *height* enough rows — was applied to the width as well, rendering `page_w * zoom`
+(2.2 Mpx, up to 3.6 Mpx on the fallback) for a band a few percent of that wide; the two axes scale
+independently now and the horizontal one is capped at 1:1. Measured over the same corpus: **562.9 M
+→ 251.4 M strip pixels rendered** across the 91 pages, the same one fallback retry, and **not one
+verdict moved** — the four drawn numbers still crop at the same cuts, the two real false positives
+and the two drawn refusal shapes still refuse, and the 82 uncropped pages stay uncropped.
+
+**Not taken: a strip at its own resolution.** Dropping the vertical zoom too is another ~half, and
+on this corpus it also moves nothing — the crops it returns differ by the sub-pixel rounding the
+zoom introduced (2300.3 → 2300.0), which is the *same* cut. It is not taken because this corpus
+cannot argue it: its page numbers are all 29-54 px tall, and the zoom is what the reference chose
+for the case it cannot test — a *small* printed number, where a native-resolution strip is one or
+two pixels of ink and the fallback retry only fires once the fast pass has already called the page
+suspicious. The horizontal cap is free on the same evidence and costs no resolution that any
+threshold reads.
+
+**And both of the ported rules are the crop, not rows beside it.** They were two toggles of their
+own — "Page Number Crop" and "No crop on blank pages" — mirroring that plugin's rows one for one;
+they are now what *Page Crop* at `auto` means, so the crop tab has a single row and there is no way
+to have the margin trim without the other two. The argument is the one this file keeps making
+about what a reader is choosing: nobody wants a printed number back, and nobody wants a chapter
+divider zoomed into a title, so offering those separately was offering the *symptom* as a
+preference. What it costs is a reader who had deliberately turned one off — they get it back, with
+the key still in their book's sidecar and nothing left to read it.
+
 **What the bound costs is a crop, never a page.** Every page that cropped before still crops, at the
 same place to the pixel: the artwork branch's cut is returned exactly as it was, and the tests added
 to it can only refuse. That was measured, not argued — the before and after cuts over 84 real pages

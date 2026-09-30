@@ -11,6 +11,7 @@ is **curated** rather than replaced: rows the engine does not implement (page ma
 auto-straighten, the reflow and zoom-matrix family) are dropped, because each would set
 a value with no visible effect. Four tabs come back: stock's **rotation** and **crop**
 tabs with this engine's rows in them, a **page-view** tab (fit, page scroll, manga), and
+
 a fourth **tone** tab — placed on its own because the first three are about the *shape*
 of what is shown and this is the only one about the picture. It holds three rows, and all
 three are stock's own wiring with `name` and `event` left alone, so none has a handler in
@@ -31,6 +32,16 @@ this plugin at all: `ReaderKoptListener` writes the row's value into the configu
   every other one. Its default is neither on nor off but "whatever this device decided"
   (`Settings.dither` is deliberately unset), which is why the row reads back the value the
   page is actually drawn with rather than a stored one.
+
+**The crop tab holds one row, and that is the crop.** *Page Crop* is `none` or `auto`,
+and `auto` is the whole of the feature: the margin box, the printed page number and the
+blank-page rule (`document.lua`'s `getPageBBox`). "Page Number Crop" and "No crop on
+blank pages" used to be rows of their own — the stock ones `pagenumbercrop.koplugin`
+injects when it is installed, this plugin's own copies when it is not — and folding them
+in is deliberate: what a reader wants from this tab is "crop the page or not", and the
+three rules are what cropping a page means here. The cost is that neither can be had
+alone, and that a book carrying `kopt_page_number_crop_auto` or `kopt_no_crop_blank_pages`
+from an earlier version keeps the key and gets the rule back — nothing reads either again.
 
 The one thing that must not be missed: KOReader's stock "set as default" writes a
 **global** `G_reader_settings["kopt_<name>"]`, which would leak a choice made while
@@ -136,19 +147,19 @@ Invariants when touching these rows:
   `Defaults.apply` ends by firing `ReZoom`.** `ReaderView`/`ReaderZooming` derive the box
   for the page a book opens on inside their own `ReadSettings` handler — that is where
   `use_bbox` is set and the margin crop applied — and the core modules are dispatched
-  before the plugins. The crop rows are still at their stock values at that moment:
-  `page_number_crop_auto` is the row's own default of `0`, because this plugin writes a
-  reader's choice into the **book** and never into the global `kopt_*` that would
-  otherwise have filled the configurable. So no page had its page number analysed at open
-  — the number stayed on the page the book opened on, came off the next page turned to,
-  and came off the first one again only once a turn back had re-derived its box. `ReZoom`
-  is the reader's own "the box may have changed" verb (the one the crop rows fire), and
-  it lands before the first paint, so nothing is drawn twice. **Anything else seeded here
-  that the geometry depends on needs the same treatment.** A book opened a *second* time
-  does not show the fault, and that is the same mechanism rather than an exception: its
-  own stored `kopt_page_number_crop_auto` is loaded into the configurable before the
-  derivation, so only a book's **first** open has the row's default standing where the
-  reader's choice should be.
+  before the plugins. `trim_page` is still at its stock value at that moment — the row's
+  own default, or the *global* `kopt_trim_page` — because this plugin writes a reader's
+  choice into the **book** and never into the global `kopt_*` that would otherwise have
+  filled the configurable. So the page a book opened on came back **uncropped** (every
+  crop rule rides that one row now), until something derived the box again: the crop
+  appeared on the next page turned to, and on the first page only once a turn back had
+  re-derived its box. `ReZoom` is the reader's own "the box may have changed" verb (the
+  one the crop rows fire), and it lands before the first paint, so nothing is drawn
+  twice. **Anything else seeded here that the geometry depends on needs the same
+  treatment.** A book opened a *second* time does not show the fault, and that is the same
+  mechanism rather than an exception: its own stored `kopt_trim_page` is loaded into the
+  configurable before the derivation, so only a book's **first** open has the row's
+  default standing where the reader's choice should be.
 - **`pagenumbercrop.koplugin` patches a Meguru document in its own init, and this plugin
   takes the crop seam back on `ReaderReady`.** That plugin's init gates on
   `document.koptinterface` — the sentinel this engine exposes for `ReaderConfig` — and then
@@ -164,10 +175,12 @@ Invariants when touching these rows:
   consequences worth keeping: its **wide-page rotation stays**, since those two wrappers
   cannot be unwrapped — `ui/reader.lua` installs this plugin's own rotation only for a
   document that plugin has not patched, reading its markers at install time; and its
-  **rows stay**, because they are `KoptOptions` entries this plugin's curated dialog reads
-  from there in preference to its own. The take-back fires `ReZoom` when it took something
-  back — the box for the page a book opens on is derived during `ReadSettings`, with the
-  plugin's wrapper already in place.
+  **`rotate_wide_pages` row stays**, because that one drives that rotation and is a
+  `KoptOptions` entry the curated dialog reads from there in preference to its own. Its
+  two crop toggles are not read by anything here any more — they are rules of this
+  engine, folded into *Page Crop* (`document.lua`'s getPageBBox). The take-back fires
+  `ReZoom` when it took something back — the box for the page a book opens on is derived
+  during `ReadSettings`, with the plugin's wrapper already in place.
 - Every menu surface Meguru writes is a `TouchMenu`; the plugin no longer has a
   plain-`Menu` surface of its own.
 - `C_` is **not** a global. Every core file declares `local C_ = _.pgettext`; a plugin

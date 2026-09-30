@@ -46,15 +46,20 @@ Defaults.FIT_TO_ZOOM_MODE = FIT_TO_ZOOM_MODE
 --- default" on a curated row to the same preference — two things that would
 --- otherwise drift apart, one of them silently.
 ---
---- The values are stored in the row's *own* domain, not as booleans: the crop
---- rows are 0/1, `trim_page` is 1-or-3, `rotate_wide_pages` is 0/1/2, and `fit`
---- is a string — exactly what `Settings.DEFAULTS` declares and what
---- `ConfigDialog` writes into a book's sidecar. `seedRowValue` therefore copies
---- a preference verbatim rather than normalising it.
+--- The values are stored in the row's *own* domain, not as booleans: `trim_page`
+--- is 1-or-3, `rotate_wide_pages` is 0/1/2, and `fit` is a string — exactly what
+--- `Settings.DEFAULTS` declares and what `ConfigDialog` writes into a book's
+--- sidecar. `seedRowValue` therefore copies a preference verbatim rather than
+--- normalising it.
+---
+--- **Only rows that still exist are here.** The two page-number/blank toggles
+--- used to be, and the argument for them was the same one as for `trim_page`:
+--- they were rows of the curated crop tab. They are rules of the engine now
+--- (`document.lua`'s getPageBBox), not rows, so there is no value to seed into a
+--- book and nothing that would read one — a book that carries
+--- `kopt_page_number_crop_auto` keeps it and is never asked about it again.
 Defaults.PREFERENCE_FOR = {
     trim_page             = "trim_page",
-    page_number_crop_auto = "page_number_crop",
-    no_crop_blank_pages   = "no_crop_blank",
     rotate_wide_pages     = "rotate_wide",
     page_scroll           = "page_scroll",
     opdsbook_fit          = "fit",
@@ -109,11 +114,13 @@ function Defaults.seedLayout(ui, configurable)
     end
 end
 
---- Crop, page-number removal, blank-page handling and wide-page rotation.
+--- The crop itself, and wide-page rotation. Both are rows of the curated
+--- dialog; the page-number and blank-page rules used to be rows too and are now
+--- part of what "Page Crop: auto" means, so there is nothing to seed for them.
 function Defaults.seedGeometry(ui, configurable)
     local ds = ui.doc_settings
     for _, name in ipairs{
-        "trim_page", "page_number_crop_auto", "no_crop_blank_pages", "rotate_wide_pages",
+        "trim_page", "rotate_wide_pages",
     } do
         local value = seedRowValue(ds, name)
         if value ~= nil then
@@ -315,22 +322,22 @@ function Defaults.apply(ui, doc)
     -- it before any of this ran.** The reader's own modules handle `ReadSettings`
     -- before the plugins do, and `ReaderView`/`ReaderZooming` derive the box for
     -- the page a book opens on inside their own handler: `use_bbox` is set, the
-    -- margin crop is applied, and the result is cached in the view. The crop rows
-    -- seeded above were still at their stock values when that happened —
-    -- `page_number_crop_auto` is the row's own default of `0` at that point,
-    -- because this plugin writes a reader's choice into the **book**, never into
-    -- the global `kopt_*` that would otherwise have filled the configurable — so
-    -- the page-number strip was never analysed for the page the book opened on,
-    -- and its number stayed. Nothing derives the box again unless the fit
-    -- changes, which is why the number came off the next page turned to and off
-    -- the first one again only once a turn back had re-derived it.
+    -- crop is applied from whatever the configurable held at that moment, and the
+    -- result is cached in the view. `trim_page` was still at its stock value when
+    -- that happened — the row's own default, or the *global* `kopt_trim_page`,
+    -- because this plugin writes a reader's choice into the **book** and never
+    -- into the global that would otherwise have filled the configurable — so the
+    -- page the book opened on came back uncropped until something derived the box
+    -- again. Nothing does that unless the fit changes, which is why the crop
+    -- appeared on the next page turned to and on the first one again only after a
+    -- turn back had re-derived it. Every rule this plugin crops with rides that
+    -- one row now, so this is the whole of the crop's behaviour at open.
     --
     -- **A book that has been opened before does not show it**, and that is this
-    -- same mechanism rather than an exception: a book's own stored
-    -- `kopt_page_number_crop_auto` is loaded into the configurable before that
-    -- derivation, so its row is already right by then. Only a book with no stored
-    -- value — a book's *first* open — has the default standing where the reader's
-    -- choice should be, which is where this was reported from.
+    -- same mechanism rather than an exception: its own stored `kopt_trim_page` is
+    -- loaded into the configurable before that derivation, so the row is already
+    -- right by then. Only a book with no stored value — a book's *first* open —
+    -- has the default standing where the reader's choice should be.
     --
     -- `ReZoom` is the reader's own "the box may have changed" verb, and the one
     -- the crop rows themselves fire. It lands here well before the first paint,

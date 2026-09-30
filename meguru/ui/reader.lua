@@ -1156,42 +1156,21 @@ local function stockOptionRow(tab, name)
     return nil
 end
 
---- Standalone rows for the page-number-crop family, used only when
---- `pagenumbercrop.koplugin` is absent.
+--- The standalone wide-page-rotation row, used only when
+--- `pagenumbercrop.koplugin` is absent — its own row is preferred when it is
+--- there, because that row drives that plugin's rotation.
 ---
---- The values match that plugin's own rows exactly — `{0, 1}` for the two
---- toggles and `{off, left, right}` for the rotation — so a book switched
---- between the two keeps identical behaviour and the stored numbers never change
---- meaning. The only difference is the rotation row's event, which is namespaced
---- so this plugin can never swallow the real plugin's event.
-local PAGE_NUMBER_CROP_ROW = {
-    name = "page_number_crop_auto",
-    name_text = _("Page Number Crop"),
-    toggle = { C_("Page Number Crop", "off"), C_("Page Number Crop", "on") },
-    values = { 0, 1 },
-    default_value = 0,
-    enabled_func = function(configurable)
-        return configurable.text_wrap ~= 1 and configurable.trim_page == 1
-    end,
-    event = "ReZoom",
-    args = { 0, 1 },
-    help_text = _([[Automatically removes the printed page number when "Page Crop" is "auto". Nothing is cropped if no number is found.]]),
-}
-
-local NO_CROP_BLANK_ROW = {
-    name = "no_crop_blank_pages",
-    name_text = _("No crop on blank pages"),
-    toggle = { C_("No crop on blank pages", "off"), C_("No crop on blank pages", "on") },
-    values = { 0, 1 },
-    default_value = 1,
-    enabled_func = function(configurable)
-        return configurable.text_wrap ~= 1 and configurable.trim_page == 1
-    end,
-    event = "ReZoom",
-    args = { 0, 1 },
-    help_text = _([[Keeps almost-blank pages (chapter dividers, title pages) uncropped instead of zooming into a small element.]]),
-}
-
+--- The values match that plugin's own row exactly — `{off, left, right}` — so a
+--- book switched between the two keeps identical behaviour and the stored
+--- numbers never change meaning. The event is namespaced, so this plugin can
+--- never swallow the real plugin's event.
+---
+--- **The two rows this used to sit beside are gone.** "Page Number Crop" and
+--- "No crop on blank pages" were independent toggles over rules that only mean
+--- anything together — what a reader wants is "crop the page or not", and all
+--- three rules are what cropping a page means here (`document.lua`'s
+--- getPageBBox). Their values are therefore no longer read from anywhere: a book
+--- that had either turned off keeps the key in its sidecar and gets the rule back.
 local ROTATE_WIDE_ROW = {
     name = "rotate_wide_pages",
     name_text = _("Rotate wide pages"),
@@ -1383,6 +1362,13 @@ local function buildCuratedOptions(ui)
     -- streamed page has none. Only the two states the engine realises are
     -- offered, and both fire the core "ReZoom" so the new box applies to the
     -- page on screen immediately.
+    --
+    -- **And it is the crop tab's only row.** "Page Number Crop" and "No crop on
+    -- blank pages" were rows here — the stock ones `pagenumbercrop.koplugin`
+    -- injects when it is installed, this file's own copies when it is not — and
+    -- they are folded into "auto" instead: the engine no longer reads either
+    -- value (`document.lua`'s getPageBBox), so their help text lives on this row
+    -- now, which is the only place a reader can still learn what the crop does.
     local stock_trim = stockOptionRow(crop_tab, "trim_page")
     local crop_options = {
         {
@@ -1393,13 +1379,9 @@ local function buildCuratedOptions(ui)
             args = { 3, 1 },
             default_value = 1,
             event = "ReZoom",
-            help_text = stock_trim and stock_trim.help_text or nil,
+            help_text = _([[Trims the empty margins around the artwork. "auto" also removes a printed page number from the bottom gutter when one is found, and leaves an almost-blank page — a chapter divider, a title page — entirely uncropped instead of zooming into a small element. Nothing is cropped if nothing is found.]]),
         },
     }
-    crop_options[#crop_options + 1] =
-        stockOptionRow(crop_tab, "page_number_crop_auto") or PAGE_NUMBER_CROP_ROW
-    crop_options[#crop_options + 1] =
-        stockOptionRow(crop_tab, "no_crop_blank_pages") or NO_CROP_BLANK_ROW
 
     local reading_options = {
         {

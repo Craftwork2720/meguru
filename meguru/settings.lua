@@ -162,10 +162,14 @@ local DEFAULTS = {
     -- Reading geometry. These are the plugin-wide fallbacks a book with no
     -- value of its own picks up; once written into a book's sidecar the book
     -- keeps its own and is never touched again.
+    --
+    -- `trim_page` is the whole of the crop: the printed page number and the
+    -- blank-page rule are rules of the engine rather than rows of the dialog
+    -- (`meguru/doc/document.lua`'s getPageBBox), so there is no preference for
+    -- either. A device that carries `page_number_crop` or `no_crop_blank` from an
+    -- earlier version simply stops having them read.
     page_scroll       = 0,            -- 0 = page view, 1 = continuous
-    trim_page         = 1,            -- 1 = auto margin crop, 3 = none
-    page_number_crop  = 1,            -- cut a printed page number from the gutter
-    no_crop_blank     = 1,            -- leave blank pages uncropped
+    trim_page         = 1,            -- 1 = auto crop (margins, number, blank), 3 = none
     rotate_wide       = 1,            -- 0 = off, 1 = right, 2 = left
     night_mode        = true,         -- pre-invert pages instead of a stark negative
 
