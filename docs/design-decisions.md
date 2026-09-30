@@ -55,8 +55,12 @@ chapter, neither page having been looked at first. The bound is now `max_number_
 width): a band wider than it is not a candidate, a strip holding one yields no crop at all, and the
 artwork branch finally runs the same short-band, clean-gutter and content-above tests the other
 branch always ran. **It is the port's second deliberate deviation** (the first is the ink's
-polarity, above). The reference plugin still behaves as it did — that is its own to change — and
-where it is installed it owns `getPageBBox` and none of this runs.
+polarity, above). The reference plugin still behaves as it did — that is its own to change — but
+it no longer decides this on a Meguru book: a plugin that patches the same seam is one version of
+this analysis *without* the bound, so its patch is taken back rather than yielded to
+(`takeBackPageBBox`, from the `ReaderReady` seam `Reader.install` registers). A reader who has both installed gets the
+corrected crop. What stays the plugin's is its wide-page rotation, whose wrappers cannot be
+unwrapped and which must not run twice.
 
 **What the bound costs is a crop, never a page.** Every page that cropped before still crops, at the
 same place to the pixel: the artwork branch's cut is returned exactly as it was, and the tests added

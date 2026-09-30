@@ -106,13 +106,13 @@ end
 -- The two finer crops a KOReader CBZ user gets from the pagenumbercrop plugin
 -- — removing a printed page number from the bottom gutter, and "no crop on
 -- blank pages" — are built in here (see the "Page-number / blank-page
--- analysis" section below and the rewritten getPageBBox): with the plugin
--- absent they run straight off this document's own getPageBBox, and its
--- bottom-menu rows (see main.lua) toggle them. When the plugin IS installed it
--- drives both (plus its screen-level "Rotate wide pages") by wrapping this
--- document's getPageBBox, exactly as it wraps a KOpt engine's, and this
--- document's body yields only the plain margin/full box below (see the
--- _pagenum_cache gate in getPageBBox) — so the two never double-crop.
+-- analysis" section below and the rewritten getPageBBox), and they run off
+-- this document's own getPageBBox whether or not that plugin is installed: its
+-- own patch of the same seam is taken back at ReaderReady
+-- (`takeBackPageBBox`), because the ported analysis carries a width bound the
+-- original has no counterpart of. The bottom-menu rows toggle them either way,
+-- since the rows themselves are the shared `KoptOptions` entries. Only the
+-- plugin's screen-level "Rotate wide pages" is left to it.
 
 local AUTOCROP_SCAN_TARGET = 128 -- max dimension of the scanned downscale
 -- The two ends of the border band. At or above the light bar a border is a
@@ -426,8 +426,8 @@ local refineAutoCrop
 -- Returns { x0, y0, x1, y1 } in native pixels, or nil when the page should be
 -- left as-is (no detectable margin, blank, or any scan hiccup — a crop
 -- must never be worse than no crop). This is the *plain margin* crop only;
--- the finer page-number / blank-page refinements used to be layered on top
--- here but now live in the pagenumbercrop plugin, which wraps getPageBBox.
+-- the finer page-number / blank-page refinements are layered on top of it in
+-- getPageBBox (see the "Page-number / blank-page analysis" section below).
 --
 -- Maximal on every side: top, bottom, left and right are each trimmed right
 -- up to the detected margin, whatever lies between the content and the
@@ -520,9 +520,9 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
             return nil
         end
         -- Degenerate-crop guard: whatever happened above, never let a scan
-        -- shrink a page below a tiny fraction of its area. (The pagenumbercrop
-        -- plugin is what keeps genuinely blank pages uncropped; this is only a
-        -- last line of defence against a pathological scan.)
+        -- shrink a page below a tiny fraction of its area. (The blank-page rule
+        -- in getPageBBox is what keeps a genuinely blank page uncropped; this is
+        -- only a last line of defence against a pathological scan.)
         if (x1 - x0) * (y1 - y0) < AUTOCROP_MIN_KEEP_FRAC * full_w * full_h then
             return nil
         end
@@ -717,7 +717,10 @@ end
 -- The pagenumbercrop plugin renders its crop-analysis strips by calling the
 -- *base* `Document.renderPage` method slot directly (it is a standalone plugin
 -- that patches engine module code, and for a PdfDocument the engine-backed
--- renderPage is an instance override of exactly that slot). For this virtual
+-- renderPage is an instance override of exactly that slot). On a Meguru book
+-- its automatic analysis no longer runs — `takeBackPageBBox` takes that seam
+-- back — but its own menu actions still reach here, and so may any other
+-- plugin's analysis. For this virtual
 -- document — _document == nil — the base slot would crash on the missing
 -- engine (document.lua:514), so the slot is redirected once per process: our
 -- own documents delegate to their renderPage (which already implements the
@@ -1850,22 +1853,27 @@ end
 -- full native page. The base getUsedBBoxDimensions mutates the table it is
 -- handed, so a *fresh* table is returned on every call.
 --
--- This is also the hook the pagenumbercrop plugin wraps — its own init
--- replaces document.getPageBBox on the instance — to apply its page-number
--- strip crop, its "no crop on blank pages", and (through its own option
--- events) its whole-screen wide-page rotation. When that plugin is present it
--- stamps `document._pagenum_cache = {}` *before* swapping the method, so every
--- time this body then runs — as the pagenumbercrop wrapper's captured `orig` —
--- `self._pagenum_cache ~= nil` is already true and we yield ONLY the plain
--- margin/full box below (`_basePageBBox`): pagenumbercrop drives the finer
--- crops and double-cropping is impossible.
+-- **This seam is this document's own, whatever else is installed.**
+-- `pagenumbercrop.koplugin` patches it too — its init replaces
+-- `document.getPageBBox` on the *instance* to apply its own page-number strip
+-- crop, its "no crop on blank pages" and its wide-page rotation — and this file
+-- was ported from that analysis. It does not get to drive a Meguru book: the
+-- port carries a width bound the original has no counterpart of (a band wider
+-- than a printed number is the page's own text, not furniture to remove — see
+-- `meguruAnalyzeStrip` below), so a reader who has that plugin installed would
+-- otherwise be handed back the crop that removes their sound effects and boxed
+-- titles. `MeguruDocument:takeBackPageBBox` (below) restores this method, from
+-- the `ReaderReady` seam `ui/reader.lua` installs — which is provably later than
+-- every plugin's init. What that plugin keeps is its wide-page rotation: its
+-- wrappers around `paging` and `view` cannot be unwrapped, so `ui/reader.lua`
+-- installs this plugin's own rotation only for a document that plugin has not
+-- patched at all.
 --
--- When pagenumbercrop is NOT installed, the finer crops are built in here
--- (see the "Page-number / blank-page analysis" section below), mirroring that
--- plugin exactly: with "Page Crop" at "auto" and "Page Number Crop" on
--- (page_number_crop_auto), a detected printed page-number band trims the
--- bbox's bottom edge; with "No crop on blank pages" on (no_crop_blank_pages),
--- a page whose content area is below the mostly-blank threshold is left as the
+-- The finer crops are built in here (see the "Page-number / blank-page
+-- analysis" section below): with "Page Crop" at "auto" and "Page Number Crop"
+-- on (page_number_crop_auto), a detected printed page-number band trims the
+-- bbox's bottom edge; with "No crop on blank pages" on (no_crop_blank_pages), a
+-- page whose content area is below the mostly-blank threshold is left as the
 -- *full* native page (the margin crop is discarded too). Both are two
 -- independent toggles over one combined "active" state, exactly as
 -- pagenumbercrop treats them.
@@ -1873,13 +1881,6 @@ function MeguruDocument:getPageBBox(pageno)
     -- The content box and the page-number/blank memos are computed from the
     -- rendered page, so a tone change invalidates them before they are read.
     self:syncTone()
-    -- pagenumbercrop owns this seam: it replaced getPageBBox and stamped
-    -- doc._pagenum_cache before doing so, so this body runs as its `orig`
-    -- only to yield the base box. Never run the built-in crop/blank below
-    -- while it is driving.
-    if self._pagenum_cache ~= nil then
-        return self:_basePageBBox(pageno)
-    end
     local bbox = self:_basePageBBox(pageno)
     if not bbox or self._meguru_pagenum_analysis_flag then
         -- The analysis flag guards the (theoretical) re-entry of an analysis
@@ -1921,8 +1922,40 @@ function MeguruDocument:getPageBBox(pageno)
     return bbox
 end
 
--- The plain margin/full-page box, shared by getPageBBox above and by
--- pagenumbercrop's wrapper when it calls this body as its `orig`. Returns a
+-- Take the crop seam above back from `pagenumbercrop.koplugin`.
+--
+-- It assigns its wrapper onto the *instance* (`document.getPageBBox = ...`)
+-- while this document's own is the class method, so clearing the field is the
+-- whole of the restore — and the plugin's captured `orig` becomes unreachable
+-- rather than merely unused. Its per-page memo tables are reset to *empty
+-- tables* rather than removed, and that is the deliberate half: nothing reads
+-- them once the wrapper is gone, but three of its own entry points still index
+-- them — `_pagenum_strip`, `_page_mostly_blank`, and the Dispatcher action that
+-- crops one page on demand — and a nil there is an index error inside a
+-- gesture, which is the loud direction. Empty, its page-turn wrapper warms the
+-- next page with its own analysis into its own tables; that is work nobody
+-- reads, and it is the price of not unwrapping a closure.
+--
+-- Its menu rows and its rotation are left alone on purpose: the rows are the
+-- shared `KoptOptions` entries this plugin's curated dialog reads in preference
+-- to its own, and the rotation is wrapped into `paging`/`view` in a way that
+-- cannot be unwrapped — see the note on getPageBBox.
+--
+-- Returns true only when there was something to take back, which is what tells
+-- the caller that the box already derived for the page on screen may be the
+-- plugin's answer and has to be derived again.
+function MeguruDocument:takeBackPageBBox()
+    if rawget(self, "getPageBBox") == nil then
+        return false
+    end
+    self.getPageBBox = nil
+    self._pagenum_cache = {}
+    self._pagenum_blank_cache = {}
+    return true
+end
+
+-- The plain margin/full-page box, shared by getPageBBox above and by the
+-- `_meguru*` analyses. Returns a
 -- fresh table on every call (the base getUsedBBoxDimensions mutates the table
 -- it is handed).
 function MeguruDocument:_basePageBBox(pageno)
@@ -1991,18 +2024,16 @@ function MeguruDocument:cropMarginColor(pageno)
 end
 
 -- ---------------------------------------------------------------------------
--- Page-number / blank-page analysis (standalone, no pagenumbercrop needed)
+-- Page-number / blank-page analysis
 -- ---------------------------------------------------------------------------
 --
--- The two finer crops the pagenumbercrop plugin would apply by wrapping
--- getPageBBox — cropping a detected printed page-number band off the bottom,
--- and leaving mostly-blank pages entirely uncropped — are reimplemented here
--- as a faithful port of that plugin's analysis (its main.lua), renamed
--- `_meguru*`. They are only ever consulted from getPageBBox, and only when the
--- standalone gate there holds: "Page Crop" at auto + the row's toggle on, and
--- `self._pagenum_cache == nil` (the real plugin absent — when it is present it
--- owns `getPageBBox` and this body runs as its `orig`, so none of the code
--- below executes).
+-- The two finer crops — cropping a detected printed page-number band off the
+-- bottom, and leaving mostly-blank pages entirely uncropped — are built here as
+-- a port of the pagenumbercrop plugin's own analysis (its main.lua), renamed
+-- `_meguru*`, and this document runs them itself whether or not that plugin is
+-- installed (`takeBackPageBBox` above). They are only ever consulted from
+-- getPageBBox, and only when the gate there holds: "Page Crop" at auto plus the
+-- row's toggle on.
 --
 -- All state is per-page memo tables (`_meguru_pagenum_cache` etc.), created
 -- lazily on first use so a book with the features off allocates nothing. The
@@ -2010,9 +2041,11 @@ end
 -- depends on trim_page or the margin box, so — exactly like pagenumbercrop —
 -- there is no cross-toggle invalidation: toggling a row only flips the
 -- `active` flag in getPageBBox and a warm per-page memo is reused. Meguru
--- field names (`_meguru_*`) never collide with pagenumbercrop's `_pagenum_*`
--- (and never tripping its coexistence probe: writing `_pagenum_cache` itself
--- would disable the standalone gate).
+-- field names (`_meguru_*`) never collide with pagenumbercrop's `_pagenum_*`,
+-- which matters for the one moment both are on the same document: until
+-- `takeBackPageBBox` runs, this document's body may be called as that plugin's
+-- wrapper's `orig` — so it answers with its own crop, which the wrapper may
+-- then trim further, and nothing here writes into that plugin's own tables.
 --
 -- Cost: the strip and the blank check cut+scale from the per-page cached
 -- native decode that getPageDims already keeps (the same render the margin

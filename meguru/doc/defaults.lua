@@ -310,6 +310,36 @@ function Defaults.apply(ui, doc)
     Defaults.seedRotation(ui, configurable)
     Defaults.seedNightMode(ui, configurable)
     Defaults.seedFit(ui)
+
+    -- **And the page's box has to be derived again, because the reader derived
+    -- it before any of this ran.** The reader's own modules handle `ReadSettings`
+    -- before the plugins do, and `ReaderView`/`ReaderZooming` derive the box for
+    -- the page a book opens on inside their own handler: `use_bbox` is set, the
+    -- margin crop is applied, and the result is cached in the view. The crop rows
+    -- seeded above were still at their stock values when that happened —
+    -- `page_number_crop_auto` is the row's own default of `0` at that point,
+    -- because this plugin writes a reader's choice into the **book**, never into
+    -- the global `kopt_*` that would otherwise have filled the configurable — so
+    -- the page-number strip was never analysed for the page the book opened on,
+    -- and its number stayed. Nothing derives the box again unless the fit
+    -- changes, which is why the number came off the next page turned to and off
+    -- the first one again only once a turn back had re-derived it.
+    --
+    -- **A book that has been opened before does not show it**, and that is this
+    -- same mechanism rather than an exception: a book's own stored
+    -- `kopt_page_number_crop_auto` is loaded into the configurable before that
+    -- derivation, so its row is already right by then. Only a book with no stored
+    -- value — a book's *first* open — has the default standing where the reader's
+    -- choice should be, which is where this was reported from.
+    --
+    -- `ReZoom` is the reader's own "the box may have changed" verb, and the one
+    -- the crop rows themselves fire. It lands here well before the first paint,
+    -- so nothing is drawn twice.
+    if type(ui.handleEvent) == "function" then
+        local Event = require("ui/event")
+        ui:handleEvent(Event:new("ReZoom"))
+    end
+
     logger.dbg("Meguru: seeded per-book defaults for", doc.file)
     return true
 end

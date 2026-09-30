@@ -643,8 +643,10 @@ strip when that row is on, and **the whole page when the reader has cropping off
 two views follow the setting instead of second-guessing it, and switch themselves off exactly
 when the reader asked for no crop. `contentDims` is the whole of it, and its three refusals are
 what keep the change inert where it has nothing to do: no crop, a page the scan refused, and a
-box that is simply the whole page. A box it cannot *read* is refused too, `pcall`ed, because
-that seam may be `pagenumbercrop`'s and a foreign plugin's throw must cost the crop and never
+box that is simply the whole page. A box it cannot *read* is refused too, `pcall`ed, because that
+seam is a method the document shares with the reader and with plugins — `pagenumbercrop` patches
+it, and a Meguru book takes that patch back rather than trusting it — and a throw out of any of
+them must cost the crop and never
 the long-press. Since only the box's **ratio** to the page is used, the units it arrives in stop
 mattering — native pixels, a foreign plugin's, anything proportional measures the same.
 

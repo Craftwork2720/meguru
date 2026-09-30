@@ -1492,9 +1492,10 @@ local function contentDims(doc, page, dims)
     if not (doc and page and dims and type(doc.getPageBBox) == "function") then
         return nil
     end
-    -- pcall'd because that seam may be a foreign plugin's: `pagenumbercrop` replaces
-    -- `getPageBBox` outright, and it is not ours to constrain. A box this cannot read has to
-    -- cost the crop and never the long-press.
+    -- pcall'd because that seam is a method this document shares with the reader and with
+    -- plugins: `pagenumbercrop` patches it (taken back on a Meguru book, which the `pcall`
+    -- makes irrelevant either way), and a box this cannot read has to cost the crop and never
+    -- the long-press.
     local ok, box = pcall(doc.getPageBBox, doc, page)
     if not ok or type(box) ~= "table" then
         return nil

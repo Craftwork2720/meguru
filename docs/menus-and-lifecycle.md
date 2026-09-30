@@ -132,6 +132,42 @@ Invariants when touching these rows:
   makes `Reader.installStatusBarHook`'s once-per-process guard correct, and what makes
   the `DocumentRegistry:addProvider` guard necessary — `addProvider` only ever appends,
   so a second call would list the provider twice.
+- **The plugin's `ReadSettings` runs *after* the reader has derived the page's box, so
+  `Defaults.apply` ends by firing `ReZoom`.** `ReaderView`/`ReaderZooming` derive the box
+  for the page a book opens on inside their own `ReadSettings` handler — that is where
+  `use_bbox` is set and the margin crop applied — and the core modules are dispatched
+  before the plugins. The crop rows are still at their stock values at that moment:
+  `page_number_crop_auto` is the row's own default of `0`, because this plugin writes a
+  reader's choice into the **book** and never into the global `kopt_*` that would
+  otherwise have filled the configurable. So no page had its page number analysed at open
+  — the number stayed on the page the book opened on, came off the next page turned to,
+  and came off the first one again only once a turn back had re-derived its box. `ReZoom`
+  is the reader's own "the box may have changed" verb (the one the crop rows fire), and
+  it lands before the first paint, so nothing is drawn twice. **Anything else seeded here
+  that the geometry depends on needs the same treatment.** A book opened a *second* time
+  does not show the fault, and that is the same mechanism rather than an exception: its
+  own stored `kopt_page_number_crop_auto` is loaded into the configurable before the
+  derivation, so only a book's **first** open has the row's default standing where the
+  reader's choice should be.
+- **`pagenumbercrop.koplugin` patches a Meguru document in its own init, and this plugin
+  takes the crop seam back on `ReaderReady`.** That plugin's init gates on
+  `document.koptinterface` — the sentinel this engine exposes for `ReaderConfig` — and then
+  assigns `document.getPageBBox` **onto the instance**, seeds its own `_pagenum_cache`
+  tables, and wraps `paging.onPageUpdate` and `view.onSetScrollMode`.
+  `Reader.install` runs on `ReaderReady`, later than every plugin's init, and calls
+  `takeBackPageBBox`: clearing the instance field is the whole restore, because ours is the
+  class method. Its memo tables are reset to **empty tables** rather than removed, because
+  its own `_pagenum_strip`, `_page_mostly_blank` and Dispatcher action still index them —
+  a nil there would be an index error raised inside a gesture, and the empty tables also
+  keep that plugin's page-turn wrapper working, warming the next page with *its* analysis
+  into *its* tables where nobody reads it (the price of not unwrapping a closure). Two
+  consequences worth keeping: its **wide-page rotation stays**, since those two wrappers
+  cannot be unwrapped — `ui/reader.lua` installs this plugin's own rotation only for a
+  document that plugin has not patched, reading its markers at install time; and its
+  **rows stay**, because they are `KoptOptions` entries this plugin's curated dialog reads
+  from there in preference to its own. The take-back fires `ReZoom` when it took something
+  back — the box for the page a book opens on is derived during `ReadSettings`, with the
+  plugin's wrapper already in place.
 - Every menu surface Meguru writes is a `TouchMenu`; the plugin no longer has a
   plain-`Menu` surface of its own.
 - `C_` is **not** a global. Every core file declares `local C_ = _.pgettext`; a plugin

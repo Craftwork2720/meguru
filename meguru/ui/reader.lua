@@ -2071,9 +2071,17 @@ function Reader.install(plugin)
     plugin._meguru_rotate_state = rotate_state
 
     -- Standalone wide-page rotation, unless pagenumbercrop.koplugin is already
-    -- driving this document — wrapping paging twice would rotate a wide spread
-    -- twice. Both of its markers are probed, since either may be present
-    -- depending on which of its patches applied.
+    -- driving this document — one owner of a screen's rotation, not two. Both of
+    -- its markers are probed, since either may be present depending on which of
+    -- its patches applied.
+    --
+    -- **Read here, which is as early as this plugin gets**, and the two plugins
+    -- are constructed in path order (`pluginloader.lua:289`), so a plugin whose
+    -- init runs *after* this one has not patched yet and neither marker is set:
+    -- then both rotations are installed. That is redundant rather than wrong —
+    -- `updatePageRotation` reconciles against the screen's own rotation instead
+    -- of toggling it, so the second call is a no-op — and it is unobservable
+    -- either way, which is why this is a note and not a guard.
     local pagenumbercrop_owns = doc._pagenum_cache ~= nil
         or (ui.paging and ui.paging._page_number_crop_patched)
     if not pagenumbercrop_owns then
@@ -2137,6 +2145,35 @@ function Reader.install(plugin)
                 logger.info("Meguru: the config menu was replaced since load;"
                     .. " curation re-installed")
             end
+        end)
+
+        -- **And the page-number crop is this plugin's, whatever else is
+        -- installed.** `pagenumbercrop.koplugin` patches the same seam from its
+        -- own init, and its analysis is the one this plugin was ported from —
+        -- without the width bound that keeps a sound effect or a boxed title
+        -- from being removed as if it were a number. A reader who has both
+        -- installed gets this plugin's crop.
+        --
+        -- This is the seam for it, and *not* the install above: plugins are
+        -- constructed one after another in `ReaderUI:init`, so a take-back done
+        -- there is only as late as this plugin's own turn — whichever of the two
+        -- inits runs last would decide it. `postReaderReadyCallback` is provably
+        -- later than all of them: `ReaderUI:init` fires `ReaderReady` and only
+        -- then runs that list (`readerui.lua:517-522`), and the reader's first
+        -- paint comes after init returns. Taking it back here also re-derives the
+        -- box (below), which is still before that paint — so nothing is drawn
+        -- twice.
+        ui:registerPostReaderReadyCallback(function()
+            if type(doc.takeBackPageBBox) ~= "function" or not doc:takeBackPageBBox() then
+                return
+            end
+            logger.info("Meguru: took the crop seam back from pagenumbercrop")
+            -- It had patched, so its answer may be in the box already derived
+            -- for the page this book opened on: that box is derived during
+            -- `ReadSettings`, which runs after every plugin's init. Derive it
+            -- again, for the same reason the seeded rows do
+            -- (`meguru/doc/defaults`).
+            ui:handleEvent(Event:new("ReZoom"))
         end)
     end
 

@@ -209,8 +209,12 @@ Each step must pass before the next:
    zoom, night-mode invert, wide-page rotation, local `.cbz` via "Open with…" —
    behaviour identical to the old plugin, with one deliberate exception: the
    page-number strip refuses a band wider than 12% of the page's width, which the
-   old plugin (and `pagenumbercrop`) removes. See *Page-number crop* below for
-   what must and must not move.
+   old plugin removes. See *Page-number crop* below for what must and must not move.
+   **With `pagenumbercrop.koplugin` installed as well** the same run must give the same
+   answers: that plugin patches the crop seam in its own init and this plugin takes it
+   back on `ReaderReady`, so a book with both installed gets *this* crop and not the
+   uncorrected one — including on the page it opens on, and including the case where
+   the plugin was already patched when that page's box was derived.
 6. **Concurrency.** Two windows (FileManager + ReaderUI): the provider registers once,
    and a walk started from one does not disturb the other. The UI must stay responsive
    while a walk runs — it is synchronous, so what keeps it bearable is the page cap and
@@ -402,6 +406,13 @@ Each step must pass before the next:
     A white number in a black margin is 3% of the page's width and the bound is 12%, so the pair
     above is still the claim — widening the bound is the only way this check can fail, and the
     widths in the log's bracket are what a future one would be argued from.
+
+    **And the page the book *opens* on must be treated like every other.** A book whose printed
+    number the row removes must come up with the number already gone, not from the next turn: the
+    per-book seeds land after the reader has derived that page's box, which is what the `ReZoom`
+    at the end of `Defaults.apply` is for (`docs/menus-and-lifecycle.md` has the ordering). With
+    `-d` the open must show a page-number line for that page — a `crop y =` or a refusal — before
+    anything is painted; no line at all for it is the fault this checks for.
 
     **What must not move is every page that used to be cropped**, and here that means the
     *margin* crop and the strip's own cut alike: turn six pages of a white-margined book and
