@@ -2050,18 +2050,42 @@ local function meguruMarginIsDark(bb, w, h, mid)
 end
 
 -- Analyze a bottom-strip render for a page-number band. Ported from
--- pagenumbercrop's PageNumberCrop.analyzeStrip, with one deliberate deviation:
--- the port inherited that plugin's "dark is ink" as a constant, which is the
--- white-margin page only — on a page whose margin is black it read the margin
--- itself as one full-width band and answered "panel reaches the bottom" on
--- every page of a black-bordered book. Ink is now read in the margin's own
--- polarity (see meguruMarginIsDark above), so a printed number is removed from
--- a dark margin by the same rule that removes it from a light one. `bb` is the
--- downscaled strip; `y_start_override` (0 here) pins the scan to the strip's own
--- bottom. Returns (crop_y, detail[, suspicious]): crop_y is the band's top in
--- *strip-image* pixels (0 = no page number), detail a human log, and the third
--- value flags "only noise bands" so the caller retries at fallback zoom.
--- Heuristics: the band must be short and narrow-ish, sit above a clean gutter,
+-- pagenumbercrop's PageNumberCrop.analyzeStrip, with two deliberate deviations.
+--
+-- **The first is the ink polarity.** The port inherited that plugin's "dark is
+-- ink" as a constant, which is the white-margin page only — on a page whose
+-- margin is black it read the margin itself as one full-width band and answered
+-- "panel reaches the bottom" on every page of a black-bordered book. Ink is now
+-- read in the margin's own polarity (see meguruMarginIsDark above), so a printed
+-- number is removed from a dark margin by the same rule that removes it from a
+-- light one.
+--
+-- **The second is a width bound, and it is here because the port removed the
+-- reader's content.** `narrow-ish` was `max_band_span` below, a *panel* test at
+-- 60% of the width, and the branch that fires when artwork reaches the bottom of
+-- the page (below) asked nothing at all of the bands under it — it returned the
+-- artwork's own bottom edge and discarded everything below, whatever it was. On
+-- Kavita chapter 197622 (library 39) that removed the sound-effect line "THE
+-- DARK MAGI!!!" on the reader's page 29 (28% of the page's width) and the boxed
+-- title "Chapter 0: Prologue" on page 3 (19%) — both measured with a mirror of
+-- this function over 46 pages of it. A printed number is a few glyphs wide: a
+-- corner "24" measures 2.6% of the page's width, a big "128" 7%, and even the
+-- wide footer "Page 128" only 10%, against those two at 19% and 28%. The bound
+-- goes between them, and it is `max_number_span`. A band
+-- wider than it is not a number but the page's own drawing or text, and a strip
+-- holding one yields no crop at all — a number under a caption is not worth a
+-- caption removed. Every page that crops today still crops: this can only turn
+-- a crop into a refusal, and the artwork case's cut is returned unchanged.
+--
+-- The plugin's own defect is not ours to fix, and when it is installed it owns
+-- `getPageBBox` and this body never runs the built-in crop at all.
+--
+-- `bb` is the downscaled strip; `y_start_override` (0 here) pins the scan to the
+-- strip's own bottom. Returns (crop_y, detail[, suspicious]): crop_y is the
+-- band's top in *strip-image* pixels (0 = no page number), detail a human log,
+-- and the third value flags "only noise bands" so the caller retries at fallback
+-- zoom.
+-- Heuristics: the band must be short and narrow, sit above a clean gutter,
 -- leave content above it, and never touch the page edges like real artwork
 -- would.
 local function meguruAnalyzeStrip(bb, y_start_override)
@@ -2116,6 +2140,11 @@ local function meguruAnalyzeStrip(bb, y_start_override)
     local max_big_band_h = math.max(3, h * 0.15)
     local min_gutter_h = math.max(1, math.floor(h * 0.01))
     local min_band_span = math.max(3, math.floor(w * 0.005))
+    -- The widest a printed number can be, and the one bound that separates it
+    -- from a line of the page's own text (see the header). Scale-invariant — it
+    -- is the same fraction of the page at either analysis zoom — so a wide band
+    -- is wide at the fallback zoom too and the retry below is never earned.
+    local max_number_span = w * 0.12
 
     -- Skip the empty run at the very bottom of the page.
     local y = h - 1
@@ -2129,6 +2158,10 @@ local function meguruAnalyzeStrip(bb, y_start_override)
     -- Walk ink bands from the bottom up.
     local bands = {}
     local descr = {}
+    -- A band too wide to be a number refuses the crop for the whole strip, and
+    -- `panel_bottom` is where the walk stopped when it stopped on artwork.
+    local saw_wide_band = false
+    local panel_bottom
     while y >= y_start do
         local bottom = y
         local top = y
@@ -2155,13 +2188,33 @@ local function meguruAnalyzeStrip(bb, y_start_override)
         if b_span >= min_band_span then
             if panel_like then
                 local detail = "bands(" .. #descr .. ") " .. table.concat(descr, ", ")
+                if saw_wide_band then
+                    -- Artwork, and under it the page's own text: everything
+                    -- below the artwork is what a crop here would discard, so
+                    -- there is nothing here it may discard. Asked before the
+                    -- #bands test because it is the more useful answer -- it
+                    -- says why no band was kept, where "panel reaches the
+                    -- bottom" would blame the artwork.
+                    return 0, "text in the bottom margin [" .. detail .. "]"
+                end
                 if #bands == 0 then
                     return 0, "panel reaches the bottom [" .. detail .. "]"
                 end
-                local log_detail = string.format("crop_y=%d %s", bottom, detail)
-                return bottom, log_detail
+                -- Everything the walk kept under the artwork is number-shaped. Stop the walk
+                -- here and let the tail below -- the same merge, height, gutter
+                -- and content-above tests the ordinary path runs -- decide
+                -- whether it is a number worth cutting to; no exit asks a
+                -- weaker question than the other.
+                panel_bottom = bottom
+                break
             end
-            table.insert(bands, { top = top, bottom = bottom, row_ink = b_ink, span = b_span })
+            if b_span > max_number_span then
+                -- Too wide for a number: a line of text, a boxed title, a
+                -- sound effect. The reader's, not the page's furniture.
+                saw_wide_band = true
+            else
+                table.insert(bands, { top = top, bottom = bottom, row_ink = b_ink, span = b_span })
+            end
         end
 
         while y >= y_start and inkAt(y) <= ink_threshold do
@@ -2172,6 +2225,12 @@ local function meguruAnalyzeStrip(bb, y_start_override)
     local detail = "bands(" .. #descr .. ") " .. table.concat(descr, ", ")
     if #bands == 0 then
         return 0, "only noise bands [" .. detail .. "]", true
+    end
+    if saw_wide_band then
+        -- Something in this margin is wider than any number: no crop, and no
+        -- fallback zoom either — `max_number_span` is a fraction of the page,
+        -- so the retry would measure the same width and refuse the same page.
+        return 0, "text in the bottom margin [" .. detail .. "]"
     end
     local first = bands[1]
 
@@ -2207,27 +2266,41 @@ local function meguruAnalyzeStrip(bb, y_start_override)
         return 0, "band too tall (" .. band_h .. " px) [" .. fallback_detail .. "]"
     end
 
-    local has_content = false
-    for ry = y_start, math.max(y_start, yy) do
-        if ink[ry] > ink_threshold then
-            has_content = true
-            break
+    -- What the crop would leave above the band, which the ordinary path has to
+    -- scan for — every row of the strip is in `ink` by then. Where the walk
+    -- stopped on artwork the answer is that artwork, already found, and the rows
+    -- over it were deliberately never scanned, so the scan is skipped rather
+    -- than asked about rows that are not there.
+    local has_content = panel_bottom ~= nil
+    if not has_content then
+        for ry = y_start, math.max(y_start, yy) do
+            if ink[ry] > ink_threshold then
+                has_content = true
+                break
+            end
         end
     end
     if not has_content then
         return 0, "no content above the band [" .. fallback_detail .. "]"
     end
 
-    local crop_y = stack_top - gutter_len
+    -- The cut the artwork case has always taken is the artwork's own bottom
+    -- edge, and it is returned as it was rather than recomputed: the gutter
+    -- above the stack ends there, so `stack_top - gutter_len` is that same row
+    -- one pixel on, and a page that crops today must not move by even one. Only
+    -- the tests above have changed, and only in the refusing direction.
+    local crop_y = panel_bottom or (stack_top - gutter_len)
     local log_detail = string.format("crop_y=%d %s", crop_y, fallback_detail)
     return crop_y, log_detail
 end
 
 -- Mostly-blank check on a full-page downscale: true when the content spans less
 -- than ~10% of the page area (a chapter divider, a title page). Ported from
--- pagenumbercrop's PageNumberCrop.pageMostlyBlank, with the same one deviation
--- its sibling meguruAnalyzeStrip carries: content is what departs from the
--- page's own margin, and on a page framed in black that is the *light* pixels.
+-- pagenumbercrop's PageNumberCrop.pageMostlyBlank, with the polarity deviation
+-- its sibling meguruAnalyzeStrip carries (that one's second deviation is about
+-- how wide a band may be, which this rule has no counterpart of): content is
+-- what departs from the page's own margin, and on a page framed in black that is
+-- the *light* pixels.
 -- Without it the rule cannot see a black-framed divider as blank at all (the
 -- frame alone is more than 10% of the page), so the crop would trim the frame
 -- and zoom into the small title the row exists to protect.

@@ -158,6 +158,17 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   measurements were taken from one numbering and the complaints from the other, and
   matching them cost a wrong diagnosis — three of five "failing" pages were not the
   pages being complained about. Quote the `pageNumber` when a page has to be identified.
+- **The page-number strip's width bound is argued from two false positives and from drawn
+  controls, not from a real printed number.** No book measured here carries one: 84 real pages
+  from three series (chapter 197622, Invincible #1, 20th Century Boys vol. 1) produced two crops
+  and both were wrong — a sound-effect line at 28% of the page's width, a boxed chapter title at
+  19%. The other side of the bound is therefore *drawn*: a corner "24" at 2.6% of the width, a big
+  "128" at 7%, a wide footer "Page 128" at 10%, each of which still crops at the cut it took
+  before the bound existed (`docs/design-decisions.md` has the rule and the reason). What would
+  settle it is one real book with printed numbers: if one of them measures wider than 12% of the
+  page the bound is too tight, and the width every refusal logs in its bracket is what it would be
+  re-argued from. What a wrong answer costs is a page number left on the page — the crop does not
+  run, nothing is cut, and the reader sees the margin they would have seen with the row off.
 - **A *second* chapter of that series merges panels, and chasing it is worth keeping
   whole.** Its mergers are mostly *partial* — a tier's two panels left as one — and their
   boundaries are neither an empty gutter nor a drawn line but simply the artwork stopping.

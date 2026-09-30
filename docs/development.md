@@ -207,7 +207,10 @@ Each step must pass before the next:
    reopens on is fetched, because the store died with the document.
 5. **Engine port.** On the same title as the old plugin: crop, page-number crop, panel
    zoom, night-mode invert, wide-page rotation, local `.cbz` via "Open with…" —
-   behaviour identical to the old plugin.
+   behaviour identical to the old plugin, with one deliberate exception: the
+   page-number strip refuses a band wider than 12% of the page's width, which the
+   old plugin (and `pagenumbercrop`) removes. See *Page-number crop* below for
+   what must and must not move.
 6. **Concurrency.** Two windows (FileManager + ReaderUI): the provider registers once,
    and a walk started from one does not disturb the other. The UI must stay responsive
    while a walk runs — it is synchronous, so what keeps it bearable is the page cap and
@@ -388,9 +391,25 @@ Each step must pass before the next:
     Turn *Page Number Crop* on and the white number printed in the black margin must go with it,
     leaving the panel at the edge; turn it off and the number must come back — that pair is the
     whole of the claim, because the number is *content* against a black margin and the margin
-    crop alone stops on it. **What must not move is every page that used to be cropped**: turn
-    six pages of a white-margined book and compare against the build from before dark support —
-    the same place, to the pixel, is the property this change is built on. **A full-bleed dark
+    crop alone stops on it.
+
+    **A band that is not a number must stay on the page.** The strip takes a printed number and
+    nothing else, so a bottom margin holding a line of the page's own text must lose nothing at
+    all — the `-d` line says `no page number [text in the bottom margin …]`, and the two pages
+    this was measured on are Kavita chapter `197622` (library 39): the sound-effect line under
+    `pageNumber=28` and the boxed `Chapter 0: Prologue` under `pageNumber=2` must both come back
+    whole, in the reader's page 29 and 3 respectively (`docs/known-issues.md` on the numbering).
+    A white number in a black margin is 3% of the page's width and the bound is 12%, so the pair
+    above is still the claim — widening the bound is the only way this check can fail, and the
+    widths in the log's bracket are what a future one would be argued from.
+
+    **What must not move is every page that used to be cropped**, and here that means the
+    *margin* crop and the strip's own cut alike: turn six pages of a white-margined book and
+    compare against the build from before dark support — the same place, to the pixel, is the
+    property that change is built on. The page-number bound above is the one deliberate
+    exception, and it is measured rather than hoped for: on those six pages the strip must land
+    where it landed, and only a page whose margin holds something wider than a number may lose
+    its crop. **A full-bleed dark
     page must survive**: a night scene reaching all four edges is content-lit everywhere, so the
     box comes back whole and nothing is trimmed; if one is ever cut, the crop has read a dark
     uniform area as a margin and that is the case to report. **A border with content in it must

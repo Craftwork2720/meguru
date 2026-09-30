@@ -38,9 +38,36 @@ white margin: something a reader can see, traded for a strip of blank they canno
 instead is the border's own colour as the reference, light or dark, with the edge at the outermost
 content pixel — the rule the crop has always had, asked about the other side of the midpoint where
 the light side refuses. The strip carries the same polarity, which is what makes it work on a
-black margin at all. Its known over-eagerness travels with it: a short band above a clean gutter is
-cut whether or not it is a page number (a printed title line under a panel goes the same way on a
-white page), and that is unchanged from before — it now applies to dark margins too.
+black margin at all.
+
+**The page-number strip takes a number or it takes nothing, and the branch that fires most often
+was the one asking no questions.** The analysis ported from `pagenumbercrop` calls any short ink
+band in the bottom margin a printed number as long as it is under 60% of the page's width — a
+*panel* test, not a number test — and the branch that fires when artwork reaches the bottom of the
+page returned the artwork's own bottom edge and discarded **everything** below it, whatever was
+there. That is the ordinary shape, not an exotic one: a margin crop normally ends at the artwork,
+so the artwork is in the strip. On Kavita chapter 197622 (library 39) it removed the sound-effect
+line "THE DARK MAGI!!!" on the reader's page 29 — 28% of the page's width — and the boxed title
+"Chapter 0: Prologue" on page 3, at 19%. A printed number is a few glyphs: a corner "24" measures
+2.6% of the page's width, a big "128" 7%, even a wide footer "Page 128" only 10% — and both of those
+false positives were found by running a transcription of the analysis over 46 pages of that
+chapter, neither page having been looked at first. The bound is now `max_number_span` (12% of the
+width): a band wider than it is not a candidate, a strip holding one yields no crop at all, and the
+artwork branch finally runs the same short-band, clean-gutter and content-above tests the other
+branch always ran. **It is the port's second deliberate deviation** (the first is the ink's
+polarity, above). The reference plugin still behaves as it did — that is its own to change — and
+where it is installed it owns `getPageBBox` and none of this runs.
+
+**What the bound costs is a crop, never a page.** Every page that cropped before still crops, at the
+same place to the pixel: the artwork branch's cut is returned exactly as it was, and the tests added
+to it can only refuse. That was measured, not argued — the before and after cuts over 84 real pages
+(chapter 197622, Invincible #1, 20th Century Boys vol. 1) and seven drawn controls, with the shipped
+Lua's own `meguruAnalyzeStrip` run over every one of them beside the transcription and agreeing with
+it band for band (`lupa`; the device's 5.1 is not what it was loaded in, so the arithmetic is what
+this settles and the syntax is not). What stops cropping is a margin holding anything wider than a
+number: a caption line, a sound effect, a boxed title, a vertical column. The white number in a
+black margin — the case the device checklist walks for the dark side — is 3% of the width and is
+untouched.
 
 **A border is a margin when it is *uniform*, not when it is light or dark.** The crop read a
 border's luminance and accepted it at either end of the scale — paper above 170, a printed or
