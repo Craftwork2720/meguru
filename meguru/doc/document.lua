@@ -1530,6 +1530,19 @@ end
 -- until something clears that** — see the field's comment in init. The warning
 -- is logged once, with the attempt, for the same reason.
 function MeguruDocument:fetchPage(pageno)
+    -- **Nothing below the first page, and no request for it.** This document
+    -- numbers pages from 1 (KOReader's own numbering) and `pageno - 1` below is
+    -- what maps that to the server's, which numbers from 0 — so index 0 is the
+    -- page *before* the first, which no server has. One is asked for at open on
+    -- some path (measured: a device logs it immediately after the stream is
+    -- ready), and Kavita answers 400: a failed fetch, logged as one, for a page
+    -- nobody can draw. The lower bound is the whole of the guard: the server
+    -- *does* answer past the last page, with the last page's own bytes, and the
+    -- upper bound belongs to `prefetchPage` below, which is about not warming a
+    -- page the book does not have rather than about what can be served.
+    if pageno < 1 then
+        return nil
+    end
     local data = self:readCachedPage(pageno)
     if data then
         return data
