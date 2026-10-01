@@ -474,6 +474,23 @@ bottom-left screenshot corner, which are deliberate gestures this must not quiet
 take over. The hardware keys come free: `ImageViewer:init` binds `PgFwd`/`PgBack` to
 next/previous image and `Back` to close whenever `image` is a list.
 
+**And the left and right arrows are ours, because stock leaves the arrows unbound in a
+list.** Its single-image branch gives all four to panning the picture; with a list it binds
+the page keys alone, so a D-pad or a keyboard had no way through a panel page at all. They
+walk the two panel views exactly as the thirds do, and the direction is the *book's* rather
+than the UI's — the same `nextIsRight` rule `onTap` takes, so a manga's next panel is the
+one to its left.
+
+**Up and down do nothing anywhere, and no arrow does anything in the free view.** A cropped
+panel is the whole of what is shown, with no page under it to move over; the free view has
+no steps to walk, and the two window-shaped views pan by gesture. A key that moved a window
+here would be a second kind of navigation neither view has.
+
+**All four are bound even so, and each answers `true` — the ones that do nothing included.**
+An unconsumed key falls through to the reader underneath, where `Left`/`Right` turn a *page*
+under the viewer and `Up`/`Down` move the reading position behind it. A viewer the reader
+cannot see past must not be transparent to the keys it ignores.
+
 **A panel is turned the book's way.** With `Rotate wide pages: left` the *page* goes
 left, and a panel wider than the screen used to be able to go right: the page is
 turned by `Screen:setRotationMode` in the setting's direction, while a panel is turned

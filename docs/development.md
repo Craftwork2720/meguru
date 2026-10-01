@@ -352,6 +352,13 @@ Each step must pass before the next:
     the same preference the cycle does, so a level reached by nudging must survive the next
     page and the next book.
 
+    **And the arrow keys, which are the half of this a device without a touchscreen has.**
+    `Left`/`Right` must walk the steps exactly as a swipe does — the book's way, so a manga's
+    next panel is the one to its *left*. `Up`/`Down` must do **nothing at all**, here and in the
+    free view, and so must every arrow in the free view. *Nothing* is the check that matters and
+    not the walking: an arrow this viewer does not answer reaches the reader underneath, which
+    turns the page or moves the reading position behind a viewer the reader cannot see past.
+
     Then the **content crop**, which these two views work their zoom out from and the cropped
     view does not touch at all. With *Page Crop* at `auto` (⋮ → **Page crop** → *auto*),
     long-press the same page and compare it against the same page with the crop off:
@@ -489,7 +496,9 @@ Each step must pass before the next:
     **not** close the view ✓, and a tap elsewhere closes it **whether the row is up or not** ✓
     (the row is put away by leaving, which is the arrangement this view asked for),
     the row is **hidden from the first paint** like the other two views' ✓ and PgFwd/PgBack
-    and a swipe in any direction do **not** turn the page ✓, and the zoom is three buttons:
+    and a swipe in any direction do **not** turn the page ✓ — here there is nothing to turn to
+    and nothing to walk, so **no arrow may do anything either** ✓, and none may reach the page
+    behind ✓ — and the zoom is three buttons:
     `-` and `+` move by a **quarter** of a level, stop at 1x and 4x, and step from wherever the reader is
     (pinch to 2.4x, press `+`, get 2.65x ✓), while the value between them cycles
     1.5 → 2 → 2.5 → 1.5 ✓, and a **pinch** down to the file's own pixels must make that button

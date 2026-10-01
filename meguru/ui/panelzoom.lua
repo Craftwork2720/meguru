@@ -280,6 +280,32 @@ local PanelViewer = ImageViewer:extend{
     _meguru_handoff_pending = nil,
 }
 
+-- The arrow keys, which stock leaves unbound in a viewer showing a *list*.
+--
+-- `ImageViewer:init` binds the page keys — `Device.input.group.PgFwd` is
+-- `{ RPgFwd, LPgFwd }`, so both of a device's side buttons are in it — and `Back`
+-- to close, which is what the panel views have always walked with. The reader's own
+-- page turning has more than those: `readerpaging.lua` gives `Left`/`Right` the same
+-- job, and `" "` on a D-pad read as action keys. Stock's viewer binds the arrows only
+-- in its *single*-image branch, where they pan the picture, so a D-pad or a keyboard
+-- had no way through a panel page at all.
+--
+-- Bound unconditionally, and that is not the same as bound `if Device:hasKeys()`:
+-- stock guards on that, and a D-pad-only device answers `hasDPad()` and not
+-- `hasKeys()` — which is exactly the reader this is for. A key that is not there
+-- never arrives.
+--
+-- What each arrow does is `meguruArrow`: left and right walk the panel views, and
+-- everything else is bound only so that it cannot fall through to the reader underneath.
+function PanelViewer:init()
+    ImageViewer.init(self)
+    self.key_events = self.key_events or {}
+    self.key_events.MeguruArrowLeft = { { "Left" } }
+    self.key_events.MeguruArrowRight = { { "Right" } }
+    self.key_events.MeguruArrowUp = { { "Up" } }
+    self.key_events.MeguruArrowDown = { { "Down" } }
+end
+
 -- Hand a step's tile back to the document.
 --
 -- Called for the step just left and for the one on screen when the viewer closes,
@@ -458,6 +484,53 @@ function PanelViewer:onShowPrevImage()
         return true
     end
     return self:meguruHandoff("previous")
+end
+
+-- One arrow key, in whichever view is up.
+--
+-- **Left and right walk the two panel views, and nothing else is bound to anything.**
+-- A cropped panel is a picture at its own size and the whole of what is shown, so there
+-- is no page under it to move it over; the two window-shaped views pan by gesture, and
+-- the free view has no steps at all — so an up or down press has nothing to do in any of
+-- them, and one that was let through would reach the reader underneath and move the
+-- reading position behind the viewer.
+--
+-- **Which horizontal arrow means "next" is the book's answer and not the UI's.**
+-- `nextIsRight` is the rule `onTap` takes, so a manga's next panel is the one to its
+-- *left*, and the keys agree with the thirds the reader already knows.
+function PanelViewer:meguruArrow(direction)
+    if self.meguru_free then
+        return
+    end
+    if (direction == "right") == nextIsRight(self.mode) then
+        return self:onShowNextImage()
+    end
+    return self:onShowPrevImage()
+end
+
+-- The four bound names, each answering with the key taken.
+--
+-- `true` and not what the arrow did: a key this viewer did not consume reaches the
+-- reader underneath, where `Left`/`Right` turn a *page* under the viewer and `Up`/`Down`
+-- move the reading position behind it. The three presses that do nothing — either
+-- vertical arrow anywhere, and every arrow in the free view — are exactly the ones that
+-- must not leak.
+function PanelViewer:onMeguruArrowLeft()
+    self:meguruArrow("left")
+    return true
+end
+
+function PanelViewer:onMeguruArrowRight()
+    self:meguruArrow("right")
+    return true
+end
+
+function PanelViewer:onMeguruArrowUp()
+    return true
+end
+
+function PanelViewer:onMeguruArrowDown()
+    return true
 end
 
 function PanelViewer:onShow()
