@@ -62,6 +62,19 @@ this analysis *without* the bound, so its patch is taken back rather than yielde
 corrected crop. What stays the plugin's is its wide-page rotation, whose wrappers cannot be
 unwrapped and which must not run twice.
 
+**And the height a band may have is one number, not two.** The port refuses a band taller than
+`max_band_h` (4% of the strip) *when a clean gutter does not separate it from the content above*,
+and allows up to `max_big_band_h` (15%) only when one does — so a printed number touching the
+artwork's edge, which is what a tight margin gives, is read as artwork. Measured on a device, on
+one page with one printed "6": analysed from MuPDF's grayscale render the number sat **1 px** below
+the artwork's black edge and was refused as `band too tall (19 px)`, and analysed from its colour
+render — the same page, the same size — it had more gutter than the test wants and was cropped. A
+reader turning colour rendering off lost the crop and put it down to colour; a few pixels between
+two decodes of one page were deciding it. There is one allowance now, whichever side of the gutter
+test a band falls on, which is what the reference already grants a band it *can* separate. Measured
+over the same corpus as the deviations above: **no page that cropped before moved**, and the two
+false positives the width bound exists for are refused by it either way.
+
 **The analysis is done on bands, and the page-number strip is no longer magnified sideways.** Two
 of the ported pass's costs were its shape rather than its rules. `refineAutoCrop` rasterised the
 *whole* page into a Lua string — 3.8 MB for a 1600x2400 scan, per page turn — to serve four walks

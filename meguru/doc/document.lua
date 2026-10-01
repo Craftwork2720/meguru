@@ -2125,7 +2125,7 @@ local function meguruMarginIsDark(bb, w, h, mid)
 end
 
 -- Analyze a bottom-strip render for a page-number band. Ported from
--- pagenumbercrop's PageNumberCrop.analyzeStrip, with two deliberate deviations.
+-- pagenumbercrop's PageNumberCrop.analyzeStrip, with three deliberate deviations.
 --
 -- **The first is the ink polarity.** The port inherited that plugin's "dark is
 -- ink" as a constant, which is the white-margin page only — on a page whose
@@ -2151,6 +2151,19 @@ end
 -- holding one yields no crop at all — a number under a caption is not worth a
 -- caption removed. Every page that crops today still crops: this can only turn
 -- a crop into a refusal, and the artwork case's cut is returned unchanged.
+--
+-- **The third is the height a band may have**, and it is here because the port
+-- made that a knife edge. It refuses a band taller than its `max_band_h` (4% of
+-- the strip) *when no clean gutter separates it from the content above*, and
+-- allows up to `max_big_band_h` (15%) only when one does — so a printed number
+-- touching the artwork's edge reads as artwork, and a tight margin is where that
+-- happens. One page, one printed "6", analysed from MuPDF's grayscale render and
+-- from its colour one: the gray render leaves a 1-px gap above the number and the
+-- colour render more than the gutter test wants, so the crop happened with colour
+-- rendering on and not with it off — a few pixels between two decodes of one
+-- page deciding the reader's crop. There is one allowance now, whichever side of
+-- the gutter test a band falls on (see the refusal below); measured over the
+-- corpus, no page that cropped before moved.
 --
 -- The plugin's own defect is not ours to fix, and when it is installed it owns
 -- `getPageBBox` and this body never runs the built-in crop at all.
@@ -2211,7 +2224,6 @@ local function meguruAnalyzeStrip(bb, y_start_override)
 
     local max_row_ink = 0.30
     local max_band_span = w * 0.60
-    local max_band_h = math.max(2, h * 0.04)
     local max_big_band_h = math.max(3, h * 0.15)
     local min_gutter_h = math.max(1, math.floor(h * 0.01))
     local min_band_span = math.max(3, math.floor(w * 0.005))
@@ -2336,8 +2348,11 @@ local function meguruAnalyzeStrip(bb, y_start_override)
     local fallback_detail = string.format("band_h=%d row_ink=%.2f span=%d%% gutter=%dpx",
         band_h, first.row_ink, math.floor(first.span / w * 100), gutter_len)
 
-    local glued = gutter_len < min_gutter_h
-    if band_h > max_band_h and (glued or band_h > max_big_band_h) then
+    -- One allowance, glued or not — the third deviation, argued in the header.
+    -- The port's two here were a knife edge: `glued` chose between them, and a
+    -- printed number touching the artwork's edge (a tight margin) came out as
+    -- artwork on one decode of a page and as a number on another.
+    if band_h > max_big_band_h then
         return 0, "band too tall (" .. band_h .. " px) [" .. fallback_detail .. "]"
     end
 
@@ -2372,8 +2387,8 @@ end
 -- Mostly-blank check on a full-page downscale: true when the content spans less
 -- than ~10% of the page area (a chapter divider, a title page). Ported from
 -- pagenumbercrop's PageNumberCrop.pageMostlyBlank, with the polarity deviation
--- its sibling meguruAnalyzeStrip carries (that one's second deviation is about
--- how wide a band may be, which this rule has no counterpart of): content is
+-- its sibling meguruAnalyzeStrip carries (that one's other two are about the
+-- bands a strip holds, which this rule has no counterpart of): content is
 -- what departs from the page's own margin, and on a page framed in black that is
 -- the *light* pixels.
 -- Without it the rule cannot see a black-framed divider as blank at all (the
