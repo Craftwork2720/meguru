@@ -2182,6 +2182,27 @@ function Reader.install(plugin)
     -- And the page the book opens on, which no page turn announces.
     applyCropMarginColor(plugin, ui, currentPage(ui))
 
+    -- And whenever the crop moves with no turn in it. The Page Crop row fires the
+    -- reader's own `ReZoom` rather than a page turn, so switching it — `none` to
+    -- `auto` most visibly — left the newly cropped page inside the colour the
+    -- *uncropped* one answered: invisible on a white margin, where the reader's own
+    -- surround already matches, and on a coloured one it reads as the crop not
+    -- working at all.
+    --
+    -- Wrapped on the handler that derives the box, so the crop is warm by the time
+    -- the colour is asked for — which is what keeps the asking off the paint, where
+    -- a cold crop would be a decode. A plugin `onReZoom` would not do:
+    -- `ReaderZooming:onReZoom` returns true and consumes the event.
+    local zooming = ui.zooming
+    if zooming and type(zooming.onReZoom) == "function" then
+        local zooming_rezoom = zooming.onReZoom
+        zooming.onReZoom = function(self, ...)
+            local handled = zooming_rezoom(self, ...)
+            applyCropMarginColor(plugin, ui, currentPage(ui))
+            return handled
+        end
+    end
+
     curateConfigMenu(plugin)
 
     -- And again once the reader is up, because a plugin can replace the method

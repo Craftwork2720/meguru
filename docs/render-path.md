@@ -348,6 +348,16 @@ decision. One interaction is worth knowing: stock's own Page Crop dialog reads t
 fields when it opens and restores them when it closes, so a reader who crops by hand
 mid-book gets their own colour back until the next page turn re-applies this.
 
+**There is a second way the margin changes with no turn in it: the crop mode itself.**
+The colour is remembered from the turn, so the Page Crop row — which fires the
+reader's own `ReZoom`, not a turn — left the new box inside the old colour. Switching
+it from `none` to `auto` is where a reader meets it: the page is cropped and the
+surround still carries the *uncropped* page's answer, which reads as the crop not
+working on a coloured margin and as nothing at all on a white one, where the reader's
+own surround already matches. It is re-asked from a wrap on `ReaderZooming:onReZoom`
+rather than from the paint, because a cold crop is a decode and that handler is the
+one that has just derived the box the colour comes from.
+
 ### Contrast and saturation
 
 **The bottom menu's Contrast and Saturation rows are stock KOReader's, applied the way
