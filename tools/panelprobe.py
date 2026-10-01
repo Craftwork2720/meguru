@@ -41,6 +41,9 @@ PANEL_BG_MID_LO, PANEL_BG_MID_HI = 32, 224
 PANEL_SEPARATOR_MIN_LUMA = 245
 PANEL_SEPARATOR_FRAC = 0.80
 PANEL_SEPARATOR_EDGE_FRAC = 0.03
+# A dark page keeps a cell of itself around each panel; see meguru/panel.lua.
+PANEL_DARK_BG_LUMA = 128
+PANEL_DARK_FRAME_CELLS = 1
 PANEL_GUTTER_INK_RATIO = 0.005
 PANEL_GUTTER_RATIO = 0.004
 PANEL_MIN_SIDE_FRAC = 0.03
@@ -589,17 +592,34 @@ def detect(path):
           f", vetoed candidates {ctx.vetoes}")
 
     sx, sy = native_w / sw, native_h / sh
+    dark = bg < PANEL_DARK_BG_LUMA
+
+    def frame_cells(x0, y0, x1, y1):
+        """PANEL_DARK_FRAME_CELLS when that strip is background all along, else 0.
+        The mirror of frameCells() in meguru/panel.lua."""
+        if x0 < 0 or y0 < 0 or x1 > sw - 1 or y1 > sh - 1:
+            return 0
+        for y in range(y0, y1 + 1):
+            for x in range(x0, x1 + 1):
+                if data[y][x]:
+                    return 0
+        return PANEL_DARK_FRAME_CELLS if dark else 0
 
     def planes_for(c):
         """Cells -> the four half-planes in native page coordinates, exactly as
-        segment() builds them, one-cell expansion included."""
+        segment() builds them, the dark page's frame included."""
         e = c[5]
+        n = PANEL_DARK_FRAME_CELLS
+        fl = frame_cells(c[0] - n, c[1], c[0] - 1, c[1] + c[3] - 1)
+        fr = frame_cells(c[0] + c[2], c[1], c[0] + c[2] + n - 1, c[1] + c[3] - 1)
+        ft = frame_cells(c[0], c[1] - n, c[0] + c[2] - 1, c[1] - 1)
+        fb = frame_cells(c[0], c[1] + c[3], c[0] + c[2] - 1, c[1] + c[3] + n - 1)
         x0n, x1n = c[0] * sx, (c[0] + c[2] - 1) * sx
         y0n, y1n = c[1] * sy, (c[1] + c[3] - 1) * sy
-        l = (e["l"][0] * sx - sx, e["l"][1] * sx / sy)
-        r = (e["r"][0] * sx + sx, e["r"][1] * sx / sy)
-        t = (e["t"][0] * sy - sy, e["t"][1] * sy / sx)
-        bo = (e["bo"][0] * sy + sy, e["bo"][1] * sy / sx)
+        l = ((e["l"][0] - fl) * sx, e["l"][1] * sx / sy)
+        r = ((e["r"][0] + 1 + fr) * sx, e["r"][1] * sx / sy)
+        t = ((e["t"][0] - ft) * sy, e["t"][1] * sy / sx)
+        bo = ((e["bo"][0] + 1 + fb) * sy, e["bo"][1] * sy / sx)
         left = max(0.0, min(l[0] + l[1] * y0n, l[0] + l[1] * y1n))
         right = min(float(native_w), max(r[0] + r[1] * y0n, r[0] + r[1] * y1n))
         top = max(0.0, min(t[0] + t[1] * x0n, t[0] + t[1] * x1n))

@@ -144,6 +144,11 @@ local PANEL_BG_RING_FRAC = 0.01
 -- near-white separator test below recovers from.
 local PANEL_BG_MID_LO = 32
 local PANEL_BG_MID_HI = 224
+-- **A dark page keeps a cell of its own background around each panel**: a crop is
+-- otherwise flush, which is right on paper — the panel's own black border is its
+-- frame there — and leaves bright artwork bare on a viewer whose field is white.
+local PANEL_DARK_BG_LUMA = 128
+local PANEL_DARK_FRAME_CELLS = 1
 -- What "near-white" means to that test, how much of a row or column must be
 -- that white to count as spanning, and how much of each axis is excluded as
 -- interior margin.
@@ -423,6 +428,10 @@ local function buildInkMap(raster, bg, native_w, native_h)
         h = h,
         data = data,
         ink = ink,
+        -- The background this map was cut against, and the one thing the frame
+        -- below needs to know about the page it came from: a dark one is kept
+        -- around a panel. See `PANEL_DARK_BG_LUMA`.
+        bg = bg,
         native_w = native_w,
         native_h = native_h,
         scale_x = native_w / w,
@@ -1159,6 +1168,27 @@ local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
         { l = el, r = er, t = et, bo = ebo })
 end
 
+-- The cells of a dark page's background to keep outside one edge of a leaf, or none.
+--
+-- The strip asked about is the one just outside the edge: ink anywhere in it is a
+-- neighbour's artwork or the panel's own bleed, and not a frame. Off the page is none
+-- too, which costs nothing — the box is clamped to the page either way.
+local function frameCells(map, x0, y0, x1, y1)
+    if x0 < 0 or y0 < 0 or x1 > map.w - 1 or y1 > map.h - 1 then
+        return 0
+    end
+    local data, width = map.data, map.w
+    for y = y0, y1 do
+        local base = y * width
+        for x = x0, x1 do
+            if data[base + x] == 1 then
+                return 0
+            end
+        end
+    end
+    return PANEL_DARK_FRAME_CELLS
+end
+
 -- Segment a page ink map into panel rectangles in native page coordinates.
 local function segment(map)
     local min_dimension = math.min(map.w, map.h)
@@ -1242,13 +1272,29 @@ local function segment(map)
     end
     cells = kept
 
-    -- Cell -> native, growing every edge by one cell *outward*: a cell is several
-    -- page pixels, and without the expansion the quantisation would shave the
-    -- outermost artwork off the crop. It is applied to the edges rather than to
-    -- the box, so the box and the shape agree — a panel whose sides are all
-    -- straight comes out byte for byte the rectangle this used to return. These
-    -- are floats, and deliberately not rounded: everything downstream compares or
-    -- multiplies them, and `panelTileKey` is where they become integers.
+    -- Cell -> native. **The crop is the cells the ink was found in and nothing
+    -- more**, apart from the frame a dark page keeps — see `PANEL_DARK_BG_LUMA`.
+    -- Nothing is shaved by that: the ink of the first and of the last cell lies
+    -- *inside* those cells, so what is left over is the quantisation's own, under a
+    -- cell a side.
+    --
+    -- `a` is a cell *index* — the region's first cell on a start edge and its last
+    -- on an end one — so the crop runs from the *start* of the first cell to the
+    -- *end* of the last: `a` at the left and the top, `a + 1` at the right and the
+    -- bottom. Reading that index as a line is what the two versions before this did,
+    -- and both showed: `- 1`/`+ 1` left a cell of paper above and to the left of
+    -- every panel and none below or to the right, and `- 1`/`+ 2` evened those out by
+    -- adding paper to all four sides. The measurements are in docs/panel-zoom.md.
+    --
+    -- A slanted edge is a line and not an index, and keeps its own rule: there the
+    -- box is the bound of the line and the mask cuts to it, so what is seen is the
+    -- quad, and the paper beside it is the wedge a slanted separator costs.
+    --
+    -- The conversion is applied to the edges rather than to the box, so the box and
+    -- the shape agree: a panel whose sides are all straight is cropped to exactly
+    -- the box, with nothing painted over. These are floats, and deliberately not
+    -- rounded: everything downstream compares or multiplies them, and
+    -- `panelTileKey` is where they become integers.
     --
     -- **`planes` is what the crop is, and it replaces the rectangle as the panel's
     -- shape.** Four half-planes, `A*x + B*y + C <= 0` for the inside, in native
@@ -1265,19 +1311,33 @@ local function segment(map)
     -- to find at all. It can only ever come out bigger than the quad, and the quad
     -- is what the mask cuts to.
     local panels = {}
+    -- Does this page keep a frame of its own background around its panels?
+    local dark = (map.bg or 255) < PANEL_DARK_BG_LUMA
     for _, cell in ipairs(cells) do
         local e = cell.edges
         local x0n, x1n = cell.x * map.scale_x, (cell.x + cell.w - 1) * map.scale_x
         local y0n, y1n = cell.y * map.scale_y, (cell.y + cell.h - 1) * map.scale_y
+        -- The cells of that frame, per side, before the edges are converted.
+        local fl, fr, ft, fb = 0, 0, 0, 0
+        if dark then
+            local n, w, h = PANEL_DARK_FRAME_CELLS, cell.w, cell.h
+            fl = frameCells(map, cell.x - n, cell.y, cell.x - 1, cell.y + h - 1)
+            fr = frameCells(map, cell.x + w, cell.y, cell.x + w + n - 1, cell.y + h - 1)
+            ft = frameCells(map, cell.x, cell.y - n, cell.x + w - 1, cell.y - 1)
+            fb = frameCells(map, cell.x, cell.y + h, cell.x + w - 1, cell.y + h + n - 1)
+        end
         -- A vertical edge is x = a + b*y and a horizontal one y = a + b*x, both in
         -- cells; converting a line is converting its coefficients, not two points.
-        local l = { a = e.l.a * map.scale_x - map.scale_x,
+        -- The `+ 1` on the end edges is the end of their cell; the start edges
+        -- need nothing, because their index already names the edge the crop
+        -- starts at. See the note above.
+        local l = { a = (e.l.a - fl) * map.scale_x,
                     b = e.l.b * map.scale_x / map.scale_y }
-        local r = { a = e.r.a * map.scale_x + map.scale_x,
+        local r = { a = (e.r.a + 1 + fr) * map.scale_x,
                     b = e.r.b * map.scale_x / map.scale_y }
-        local t = { a = e.t.a * map.scale_y - map.scale_y,
+        local t = { a = (e.t.a - ft) * map.scale_y,
                     b = e.t.b * map.scale_y / map.scale_x }
-        local bo = { a = e.bo.a * map.scale_y + map.scale_y,
+        local bo = { a = (e.bo.a + 1 + fb) * map.scale_y,
                      b = e.bo.b * map.scale_y / map.scale_x }
 
         local left = math.max(0, math.min(l.a + l.b * y0n, l.a + l.b * y1n))

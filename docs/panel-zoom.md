@@ -141,6 +141,35 @@ showing — the strip of the panel next door that runs along the slant. `planes`
 what the crop is cut to and what a touch is tested against; the box is what MuPDF
 is asked for, because a pixmap is a rectangle and a clip path is not available.
 
+**And the box is the cells the ink was found in, with no paper added to it.** A
+panel's ink is found in whole cells and the cell it was found in is named by its
+*index* — the region's first cell on the left and the top, its last on the right
+and the bottom — so the crop runs from the start of the first cell to the *end* of
+the last. Reading that index as a line instead is the mistake both earlier versions
+made: `- 1`/`+ 1` gave the left and the top a cell of paper and the right and the
+bottom none, so the panel sat low and right inside its own crop, which is the
+asymmetry a reader reported; `- 1`/`+ 2` evened the two out by giving all four sides
+a cell. Measured on drawn panels — a 480x720 control, where one cell is one page
+pixel, and 36 pages whose two edges each walk across a cell (10/3 px) — the paper on
+the left against the paper on the right goes from **4.72 px against 1.50 px** to
+4.72 against 4.83 and to **1.39 against 1.50**, and the control's crop from 19..460
+to 19..461 and to **20..460**: the ink's own cells, flush on all four sides. Nothing
+is shaved by that, because the ink of the first and of the last cell lies inside
+those cells. A *slanted* edge is a line and not an index and keeps its own rule —
+there the box is the bound of a line and the mask cuts to it.
+
+**On a dark page the crop keeps a cell of that background as a frame**, which is the
+same rule from the other side: flush is right where the artwork sits on paper — the
+panel's own black border is its frame there — and wrong on a page whose background is
+black, where it hands the reader bare artwork on the viewer's own white field. So a
+background darker than `PANEL_DARK_BG_LUMA` (128) keeps `PANEL_DARK_FRAME_CELLS` of
+itself, one cell, on each *side* whose neighbouring strip is background — not a
+neighbour panel's ink, and not off the page. The background is `backgroundFor`'s
+estimate, which the ink map already carries, so the rule costs a walk over the cells
+beside one edge and nothing in the scan. Drawn at 480x720: a dark page whose artwork
+covers cells 40..440 crops to **39..442**, where the same page on white crops to
+40..441.
+
 **The cut's own lines *are* the panel's borders, which is why this costs nothing
 to know.** A sheared split puts its separator on the line of constant index in the
 sheared projection — `y = split + slope * (x - xmid)` — and `xmid` is the region's
