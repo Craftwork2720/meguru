@@ -1431,8 +1431,8 @@ local function installRow(viewer)
         -- The three words are the row's, letter for letter
         -- (`ui/reader.lua`'s `Panel view`): a reader meets them in both places, and
         -- two spellings of one view is how a switch and a row come to disagree.
-        text = free and _("free")
-            or (window and _("pan & zoom") or _("cut")),
+        text = free and _("free view")
+            or (window and _("pan & zoom") or _("panel cut")),
         callback = function()
             viewer:meguruCycleView()
         end,

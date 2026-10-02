@@ -691,8 +691,8 @@ switch at the front of the viewer's own button row, and the *Reading* tab's *Pan
 row** (bottom menu → the *Reading* tab), which is the one a reader can reach without opening the
 viewer — and the only one there is for a reader whose long-press another panel plugin
 answers. `meguru/settings.lua`'s `panel_view` is now only the **seed**: what a book with
-no value of its own is opened with. The switch names the three views `cut`,
-`pan & zoom` and `free`, and the row uses the same three words plus `off`; this document
+no value of its own is opened with. The switch names the three views `panel cut`,
+`pan & zoom` and `free view`, and the row uses the same three words plus `off`; this document
 calls them the cropped view, the window view and the free view, and they are the same three — the
 label is what a reader reads and the prose is what the code is called, so neither is a rename of
 the other.

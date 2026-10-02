@@ -1725,14 +1725,14 @@ local function buildCuratedOptions(ui)
         name_text = _("Two pages"),
         toggle = {
             C_("Two pages", "off"),
-            C_("Two pages", "landscape"),
+            C_("Two pages", "in landscape"),
             C_("Two pages", "always"),
         },
         values = { "off", "auto", "on" },
         args = { "off", "auto", "on" },
         default_value = "off",
         event = "MeguruSpreadUpdate",
-        help_text = _([[Shows two pages side by side, the way a printed book falls open. "landscape" does it only while the screen is turned on its side, "always" in either orientation. A page the artist drew as one wide image is always shown whole and on its own, and the pairing starts again after it, so a printed spread never lands halfway through a pair. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+        help_text = _([[Shows two pages side by side, the way a printed book falls open. "in landscape" does it only while the screen is turned on its side, "always" in either orientation. A page the artist drew as one wide image is always shown whole and on its own, and the pairing starts again after it, so a printed spread never lands halfway through a pair. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
     }
     reading_options[#reading_options + 1] = {
         name = "spread_offset",
@@ -1798,15 +1798,17 @@ local function buildCuratedOptions(ui)
         name = "panel_view",
         -- **Named for what it sets, not for the gesture that sets it**: "Long-press"
         -- named the way in, which the row's own help text has to explain anyway, and
-        -- said nothing to a reader who had not tried it. The three answers are
-        -- short and lower case for the same reason — they are the names of the
-        -- views, and the switch inside the viewer carries the same three words.
+        -- said nothing to a reader who had not tried it. Its three answers are the
+        -- views' own names, and lower case as they are written here: they are the
+        -- values of a switch, not headings. The switch inside the viewer carries the
+        -- same three words, letter for letter, so a reader who learns one of them in
+        -- either place recognises it in the other.
         name_text = _("Panel view"),
         toggle = {
             C_("Panel view", "off"),
-            C_("Panel view", "cut"),
+            C_("Panel view", "panel cut"),
             C_("Panel view", "pan & zoom"),
-            C_("Panel view", "free"),
+            C_("Panel view", "free view"),
         },
         values = { "off", "crop", "window", "zoom" },
         args = { "off", "crop", "window", "zoom" },
@@ -1822,7 +1824,7 @@ local function buildCuratedOptions(ui)
             end
             return Reader.panelViewMode(ui)
         end,
-        help_text = _([[What holding on a page does. "cut" shows the panels the detector found, one at a time; "pan & zoom" keeps the page whole and moves a window over it; "free" shows the page alone. "off" leaves the long-press to KOReader, and applies to this book only. Long-press this row to make a view the default for new books. This is Meguru's own panel view — a panel plugin that answers the long-press itself is its own.]]),
+        help_text = _([[What holding on a page does. "panel cut" shows the panels the detector found, one at a time; "pan & zoom" keeps the page whole and moves a window over it; "free view" shows the page alone. "off" leaves the long-press to KOReader, and applies to this book only. Long-press this row to make a view the default for new books. This is Meguru's own panel view — a panel plugin that answers the long-press itself is its own.]]),
     }
 
     -- **Three tabs of this plugin's own, and the order is a reader's**: what a

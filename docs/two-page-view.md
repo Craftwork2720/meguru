@@ -94,7 +94,7 @@ At the end of the book the counter never passes the last page while the last uni
 
 The rotation also reads `pageIsWide`, never `getNativePageDimensions`: that seam answers with the pair, and a pair is wider than tall by construction, so asking it would turn the screen for two pages that are only wide because they are lying side by side.
 
-The shape this leaves is the one worth stating: in **portrait** with the view on "landscape", nothing about this feature is active and `rotate_wide` behaves exactly as it did before it existed — a wide page still turns the screen. In **landscape** the pair is what the screen is for, and the wide page inside it is simply shown whole.
+The shape this leaves is the one worth stating: in **portrait** with the view on "in landscape", nothing about this feature is active and `rotate_wide` behaves exactly as it did before it existed — a wide page still turns the screen. In **landscape** the pair is what the screen is for, and the wide page inside it is simply shown whole.
 
 Two other live conditions switch the view off, both because "two pages" would not mean what it says: **continuous scroll**, where pages are laid out one after another in a strip and would be a page in two slots, and any value of the row other than the three it names.
 

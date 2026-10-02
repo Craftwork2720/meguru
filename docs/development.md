@@ -402,7 +402,7 @@ Each step must pass before the next:
     `[1.7x]` that turns into `[Original size]` is the `update()`-after-the-swap bug, not a
     preference going missing. The **view switch** sits at the front of the row in both
     views and names the view the reader is **in** — `pan & zoom` while in pan & zoom,
-    `cut` while cut — the same thing the setting behind it says;
+    `panel cut` while cut — the same thing the setting behind it says;
     pressing it changes what the page is cut into, keeps the panel the reader is
     on, and leaves the row open — and it writes the **book's** value, so the *Reading*
     tab's *Panel view* row (bottom menu → the *Reading* tab) must read back the view the switch
@@ -502,7 +502,7 @@ Each step must pass before the next:
     under the buttons ✓, and in the free view a tap and a spread must still land where they
     should ✓ — that mapping reads the picture area, which the row is what changes.
 
-    Then the third view (*Panel view: free*, or the row's switch twice). Long-press a
+    Then the third view (*Panel view: free view*, or the row's switch twice). Long-press a
     point: the page must open **centred on that point**, sharp at 2× and 3× — it is a render
     from the file, not a magnified tile — and then: pinch changes the scale ✓, drag moves the
     window ✓ **in every direction — down, and on the diagonal**, which is the one a drag is
