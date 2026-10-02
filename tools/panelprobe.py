@@ -13,6 +13,9 @@ shipped behaviour; each flag names an experiment:
 * `noveto` empties the body pass and with it the guard that refuses a split
   through a detected panel. That is the parent commit's behaviour, for an A/B on
   the same page.
+* `nofit` skips the re-measurement of a sheared split's line (`refine_sheared_split`),
+  which is the parent commit's behaviour: the ladder's slope is taken as it stands.
+  For an A/B on a page whose separators are drawn at an angle.
 
 **What this models and what it does not**, per CLAUDE.md's rule about mirrors:
 it models the *arithmetic* of the detector - the ink predicate, the two
@@ -27,6 +30,7 @@ happen: the downscale is a single PIL resample where the plugin decodes at the
 capped native size and resamples again, and MuPDF's own render is not modelled.
 """
 
+import math
 import sys
 from collections import Counter
 
@@ -60,6 +64,17 @@ PANEL_SHEAR_MAX_DEPTH = 4
 PANEL_SHEAR_TRIGGER = 0.35
 PANEL_SHEAR_STEP = 2
 PANEL_SHEAR_INK_RATIO = 0
+# The line the ladder found is re-measured from the pixels; see meguru/panel.lua's
+# refineShearedSplit for the page that made this necessary and what each guard is
+# bracketed against.
+PANEL_SHEAR_FIT_MIN_SAMPLES = 8
+PANEL_SHEAR_FIT_MIN_FRAC = 0.25
+PANEL_SHEAR_FIT_MAX_RESIDUAL = 2.5
+PANEL_SHEAR_FIT_SLOPE_MAX = 0.165
+PANEL_SHEAR_REFINE_EPS = 0.010
+# Disables the re-measurement, which is the parent commit's behaviour (see
+# `refine_sheared_split`). The default is the shipped behaviour.
+NOFIT = False
 SINGLE_RATIO, PAGE_COV_MIN, COV_MIN = 0.6, 0.4, 0.5
 
 # The bodies of ink, and the evidence a panel's frame leaves. These five are the
@@ -415,16 +430,90 @@ def try_slope(data, left, top, right, bottom, ctx, slope):
     return None
 
 
+def refine_sheared_split(data, left, top, right, bottom, axis, split, slope):
+    """The separator's line, measured from the pixels instead of taken from the
+    ladder. Mirrors meguru/panel.lua's refineShearedSplit.
+
+    Returns (split, slope) for the fitted line, None when the measurement cannot
+    serve, or (False, None) when the fitted line lands on the region's own edge.
+    """
+    rows = axis == "rows"
+    if rows:
+        frm, to, lo_bound, hi_bound = left, right, top, bottom
+        mid = (left + right) // 2
+    else:
+        frm, to, lo_bound, hi_bound = top, bottom, left, right
+        mid = (top + bottom) // 2
+
+    def inked(along, across):
+        return bool(data[across][along] if rows else data[along][across])
+
+    xs, ys = [], []
+    for along in range(frm, to + 1):
+        across = int(math.floor(split + slope * (along - mid) + 0.5))
+        if lo_bound <= across <= hi_bound and not inked(along, across):
+            lo = hi = across
+            while lo - 1 >= lo_bound and not inked(along, lo - 1):
+                lo -= 1
+            while hi + 1 <= hi_bound and not inked(along, hi + 1):
+                hi += 1
+            if lo > lo_bound and hi < hi_bound:
+                xs.append(along)
+                ys.append((lo + hi) / 2.0)
+    count = len(xs)
+    need = max(PANEL_SHEAR_FIT_MIN_SAMPLES,
+               int((to - frm + 1) * PANEL_SHEAR_FIT_MIN_FRAC))
+    if count < need:
+        return None, None
+    mx = sum(xs) / count
+    my = sum(ys) / count
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    den = sum((x - mx) ** 2 for x in xs)
+    if den == 0:
+        return None, None
+    b = num / den
+    a = my - b * mx
+    if abs(b) > PANEL_SHEAR_FIT_SLOPE_MAX:
+        return None, None
+    residual = math.sqrt(sum((y - (a + b * x)) ** 2 for x, y in zip(xs, ys)) / count)
+    if residual > PANEL_SHEAR_FIT_MAX_RESIDUAL:
+        return None, None
+    if abs(b - slope) <= PANEL_SHEAR_REFINE_EPS:
+        return None, None
+    refined = int(math.floor(a + b * mid + 0.5))
+    if refined <= lo_bound or refined >= hi_bound:
+        return False, None
+    return refined, b
+
+
 def find_sheared_split(data, left, top, right, bottom, ctx):
+    def attempt(slope):
+        r = try_slope(data, left, top, right, bottom, ctx, slope)
+        if not r:
+            return None
+        axis, split = r
+        if NOFIT:
+            ctx.slope_hint = slope
+            return axis, split
+        refined, fitted = refine_sheared_split(data, left, top, right, bottom,
+                                               axis, split, slope)
+        if refined is False:
+            return "reject"
+        ctx.slope_hint = slope if fitted is None else fitted
+        return axis, split if refined is None else refined
+
     if ctx.slope_hint is not None:
-        r = try_slope(data, left, top, right, bottom, ctx, ctx.slope_hint)
+        r = attempt(ctx.slope_hint)
+        if r == "reject":
+            return None
         if r:
             return r
     for slope in PANEL_SHEAR_SLOPES:
         if slope != ctx.slope_hint:
-            r = try_slope(data, left, top, right, bottom, ctx, slope)
+            r = attempt(slope)
+            if r == "reject":
+                return None
             if r:
-                ctx.slope_hint = slope
                 return r
     return None
 
@@ -628,6 +717,59 @@ def detect(path):
                 [(-1.0, l[1], l[0]), (1.0, -r[1], -r[0]),
                  (t[1], -1.0, t[0]), (-bo[1], 1.0, -bo[0])]]
 
+    def measure_edge(box, kind, a, b):
+        """What the per-line measurement finds for one edge of this crop, so the cut's
+        slope can be compared with the page's own. `a`/`b` are the edge in native page
+        coordinates: `x = a + b*y` for "l"/"r", `y = a + b*x` for "t"/"bo".
+
+        Walks the trough in *cells* (that is the ink map's own space) and reports the
+        slope in native pixels per pixel, which is the same thing the plane's `b` is.
+        """
+        vertical = kind in ("l", "r")
+        # the native span the edge runs over, and the native span it may be found in
+        along0 = box[1] if vertical else box[0]
+        along1 = box[3] if vertical else box[2]
+        across0 = box[0] if vertical else box[1]
+        across1 = box[2] if vertical else box[3]
+        step = sy if vertical else sx
+        xs, ys = [], []
+        for along in np.arange(along0 + step, along1 - step, step):
+            across = a + b * along
+            if not (across0 + step < across < across1 - step):
+                continue
+            # the cell the line sits in, and the trough walked along the other axis
+            ca = int(along / (sy if vertical else sx))
+            cb = int(across / (sx if vertical else sy))
+            if not (0 <= ca < (sh if vertical else sw) and 0 <= cb < (sw if vertical else sh)):
+                continue
+            cell = data[ca][cb] if vertical else data[cb][ca]
+            if cell:
+                continue
+            limit_lo, limit_hi = (0, sw - 1) if vertical else (0, sh - 1)
+            lo, hi = cb, cb
+            while lo - 1 >= limit_lo and not (data[ca][lo - 1] if vertical else data[lo - 1][ca]):
+                lo -= 1
+            while hi + 1 <= limit_hi and not (data[ca][hi + 1] if vertical else data[hi + 1][ca]):
+                hi += 1
+            if lo == limit_lo or hi == limit_hi:      # ran to the page's edge: a margin
+                continue
+            mid_cells = (lo + hi) / 2.0
+            mid_native = mid_cells * (sx if vertical else sy)
+            xs.append(along)
+            ys.append(mid_native)
+        if len(xs) < 8:
+            return None
+        xs = np.array(xs, dtype=float)
+        ys = np.array(ys, dtype=float)
+        mx, my = xs.mean(), ys.mean()
+        den = float(((xs - mx) ** 2).sum())
+        if den == 0:
+            return None
+        m = float(((xs - mx) * (ys - my)).sum()) / den
+        c = my - m * mx
+        rms = float(np.sqrt(((ys - (c + m * xs)) ** 2).mean()))
+        return m, rms, len(xs)
+
     def show(tag, lst):
         for i, c in enumerate(lst):
             box, p = planes_for(c)
@@ -639,6 +781,27 @@ def detect(path):
                   "  l%+.3f r%+.3f t%+.3f b%+.3f"
                   % (box[0], box[1], box[2] - box[0], box[3] - box[1],
                      p[0][1], p[1][1], p[2][0], p[3][0]))
+            # Each slanted edge against the page's own measurement of it: the cut's slope,
+            # the slope measured from the ink map around that same line, and how far apart
+            # the two put the edge at the crop's two ends. This is the number a reader sees
+            # as "the mask is not parallel to the panel's cut".
+            for kind, (pa, pb, pc) in zip(("l", "r", "t", "bo"), p):
+                if kind in ("l", "r"):
+                    a, b = (pc, pb) if kind == "l" else (-pc, -pb)
+                    half = (box[3] - box[1]) / 2.0
+                else:
+                    a, b = (pc, pa) if kind == "t" else (-pc, -pa)
+                    half = (box[2] - box[0]) / 2.0
+                if abs(b) < 1e-9:
+                    continue
+                got = measure_edge(box, kind, a, b)
+                if not got:
+                    print("        line %-2s cut %+.4f  map: no trough found" % (kind, b))
+                    continue
+                m, rms, n = got
+                ends = abs(b - m) * half
+                print("        line %-2s cut %+.4f  map %+.4f (n=%d rms %.2f)  ends %+.1f px  %s"
+                      % (kind, b, m, n, rms, ends, "ok" if ends < 2 else "OFF"))
     show("raw", cells)
 
     kept = []
@@ -665,10 +828,10 @@ if __name__ == "__main__":
     # `... noclip` and silently ignored the word it was documented to read.
     args = sys.argv[2:]
     unknown = [a for a in args
-               if a not in ("noclip", "root", "all", "loose", "noveto")]
+               if a not in ("noclip", "root", "all", "loose", "noveto", "nofit")]
     if unknown:
         raise SystemExit("unknown argument(s): %s\n"
-                         "usage: panelprobe.py <image> [noclip] [root|all] [loose] [noveto]"
+                         "usage: panelprobe.py <image> [noclip] [root|all] [loose] [noveto] [nofit]"
                          % " ".join(unknown))
     NOCLIP = "noclip" in args
     NOVETO = "noveto" in args
@@ -677,4 +840,5 @@ if __name__ == "__main__":
     elif "all" in args:
         SHEAR_DEPTH = "all"
     SHEAR_LOOSE = "loose" in args
+    NOFIT = "nofit" in args
     detect(sys.argv[1])

@@ -300,6 +300,25 @@ local PANEL_SHEAR_STEP = 2
 -- nothing except the page it fixes.
 local PANEL_SHEAR_INK_RATIO = 0
 
+-- The line the ladder found is re-measured from the pixels, and these are the four
+-- guards that keep that measurement honest. See `refineShearedSplit` for the page that
+-- made this necessary and for what each one is bracketed against.
+--
+-- **The residual is the load-bearing one.** A trough whose centre steps — which is what a
+-- paper page's tier gutter does where a bubble pokes into it — fits a straight line with a
+-- *small* residual if the fit is taken over few points, and this one refuses it: measured
+-- on `k198473`'s page 34 the per-line fit gives a residual of 10.6 cells, against 1.78 on
+-- the page it is for. The slope ceiling is the ladder's own reach plus a step, so a fit
+-- that leaves that range is not describing a separator this cut could have found.
+local PANEL_SHEAR_FIT_MIN_SAMPLES = 8
+local PANEL_SHEAR_FIT_MIN_FRAC = 0.25
+local PANEL_SHEAR_FIT_MAX_RESIDUAL = 2.5
+local PANEL_SHEAR_FIT_SLOPE_MAX = 0.165
+-- Below this the ladder's own slope is already the measured one, and the cut is left
+-- exactly as it was — which is what keeps the change off every page whose separators are
+-- straight or nearly so.
+local PANEL_SHEAR_REFINE_EPS = 0.010
+
 -- ---------------------------------------------------------------------------
 -- The ink map
 -- ---------------------------------------------------------------------------
@@ -918,23 +937,155 @@ local function trySlope(map, left, top, right, bottom, ctx, slope)
     return nil
 end
 
+-- The separator's line, measured from the pixels instead of taken from the ladder.
+--
+-- **The ladder's slope is not the separator's angle, and this is the measurement that says
+-- so.** `findShearedSplit` takes the *first* slope whose sheared projection shows an empty
+-- run, and a slope shallower than the true one reads empty just as well whenever the trough
+-- is thick — which is why `PANEL_SHEAR_INK_RATIO = 0` does not close it: the projection *is*
+-- the "is this line empty" test, and a wrong-angle line through a thick trough passes it.
+-- On the reported page (Kavita `chapterId=187445`, page 11, a dark page whose tiers are
+-- drawn at about -0.115) the ladder answered -0.090 for one region and -0.060 for the region
+-- inside it — for one physical separator — while the drawn border measures -0.113. Both
+-- panels' crops cut across their border as a result: measured with the real mask, the edge
+-- stood 31 px above the drawn border at one end of the crop and the box clipped about 50 px
+-- off the panel's corner.
+--
+-- So the ladder is left to do what it is good at — *finding* that a separator is there, and
+-- where at the region's mid-line — and the line's angle comes from the pixels: across the
+-- region, the middle of the empty trough that line sits in. The trough is walked
+-- **unbounded**, and a run reaching the region's own edge is refused, which is the straight
+-- cut's own rule (`findWidestGutter`) and what keeps a page's outer margin from reading as a
+-- separator.
+--
+-- Measured on that page: 391 of 417 lines give a trough, slope -0.1119, residual 1.78 cells;
+-- the region inside it 119 lines, -0.1134, 0.94.
+--
+-- Returns `split, slope` for the fitted line, `nil` when the measurement cannot serve (and
+-- the ladder's line stands), or **`false` when the fitted line lands on the region's own
+-- edge** — a residual band left by the parent's cut rather than a separator, which must not
+-- be re-taken as one. That third answer is what keeps a child from overwriting the line its
+-- parent gave it.
+local function refineShearedSplit(map, left, top, right, bottom, axis, split, slope)
+    local data, width = map.data, map.w
+    local rows = axis == "rows"
+    local from, to, lo_bound, hi_bound, mid
+    if rows then
+        from, to, lo_bound, hi_bound = left, right, top, bottom
+        mid = math.floor((left + right) / 2)
+    else
+        from, to, lo_bound, hi_bound = top, bottom, left, right
+        mid = math.floor((top + bottom) / 2)
+    end
+    -- A cell of the map, addressed along the line (`along`) and across it (`across`).
+    local function inked(along, across)
+        if rows then
+            return data[across * width + along] == 1
+        end
+        return data[along * width + across] == 1
+    end
+
+    local xs, ys, count = {}, {}, 0
+    for along = from, to do
+        local across = math.floor(split + slope * (along - mid) + 0.5)
+        if across >= lo_bound and across <= hi_bound and not inked(along, across) then
+            local lo, hi = across, across
+            while lo - 1 >= lo_bound and not inked(along, lo - 1) do
+                lo = lo - 1
+            end
+            while hi + 1 <= hi_bound and not inked(along, hi + 1) do
+                hi = hi + 1
+            end
+            if lo > lo_bound and hi < hi_bound then
+                count = count + 1
+                xs[count], ys[count] = along, (lo + hi) / 2
+            end
+        end
+    end
+
+    local need = math.max(PANEL_SHEAR_FIT_MIN_SAMPLES,
+        math.floor((to - from + 1) * PANEL_SHEAR_FIT_MIN_FRAC))
+    if count < need then
+        return nil
+    end
+    local mx, my = 0, 0
+    for i = 1, count do
+        mx, my = mx + xs[i], my + ys[i]
+    end
+    mx, my = mx / count, my / count
+    local num, den = 0, 0
+    for i = 1, count do
+        local dx = xs[i] - mx
+        num = num + dx * (ys[i] - my)
+        den = den + dx * dx
+    end
+    if den == 0 then
+        return nil
+    end
+    local b = num / den
+    local a = my - b * mx
+    if math.abs(b) > PANEL_SHEAR_FIT_SLOPE_MAX then
+        return nil
+    end
+    local residual = 0
+    for i = 1, count do
+        local d = ys[i] - (a + b * xs[i])
+        residual = residual + d * d
+    end
+    if math.sqrt(residual / count) > PANEL_SHEAR_FIT_MAX_RESIDUAL then
+        return nil
+    end
+    if math.abs(b - slope) <= PANEL_SHEAR_REFINE_EPS then
+        return nil -- the ladder was already right, and the cut keeps its own arithmetic
+    end
+    local refined = math.floor(a + b * mid + 0.5)
+    if refined <= lo_bound or refined >= hi_bound then
+        return false
+    end
+    return refined, b
+end
+
 -- Look for a split along slanted lines.
 --
 -- Whichever slope worked last is overwhelmingly likely to work again on the same
 -- page — a page is skewed by one angle, not by a different one in each corner —
 -- so the hint is tried before the rest of the ladder, and the ladder skips it.
+--
+-- **The hint is the *measured* slope** wherever `refineShearedSplit` could measure one, so
+-- the page's later regions start from the angle the page is actually drawn at and cannot
+-- describe one separator two ways. A candidate whose fitted line lands on the region's own
+-- edge ends the search rather than moving on to the next slope: every slope would find the
+-- same residual band, because there is no separator here to find.
 local function findShearedSplit(map, left, top, right, bottom, ctx)
+    local function attempt(slope)
+        local axis, split = trySlope(map, left, top, right, bottom, ctx, slope)
+        if not axis then
+            return nil
+        end
+        local refined, fitted = refineShearedSplit(map, left, top, right, bottom,
+            axis, split, slope)
+        if refined == false then
+            return "reject"
+        end
+        ctx.slope_hint = fitted or slope
+        return axis, refined or split
+    end
     if ctx.slope_hint then
-        local axis, split = trySlope(map, left, top, right, bottom, ctx, ctx.slope_hint)
+        local axis, split = attempt(ctx.slope_hint)
+        if axis == "reject" then
+            return nil
+        end
         if axis then
             return axis, split
         end
     end
     for _, slope in ipairs(PANEL_SHEAR_SLOPES) do
         if slope ~= ctx.slope_hint then
-            local axis, split = trySlope(map, left, top, right, bottom, ctx, slope)
+            local axis, split = attempt(slope)
+            if axis == "reject" then
+                return nil
+            end
             if axis then
-                ctx.slope_hint = slope
                 return axis, split
             end
         end
@@ -1122,8 +1273,10 @@ local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
             local axis, split = findShearedSplit(map, left, top, right, bottom, ctx)
             if axis then
                 -- The line the separator actually lies on, and the same one for
-                -- both children: the value the projection found is that line at
-                -- the region's mid, and `xmid`/`ymid` are recomputed exactly as
+                -- both children: `split` is that line at the region's mid — the
+                -- value the projection found, moved onto the trough's measured
+                -- centre by `refineShearedSplit` — and `slope` is the measured
+                -- angle, so `xmid`/`ymid` are recomputed exactly as
                 -- `projectRowsSheared`/`projectColumnsSheared` computed them.
                 --
                 -- `mid` is that mid-line, and the band below is where the line runs

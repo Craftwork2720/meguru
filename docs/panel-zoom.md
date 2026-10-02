@@ -224,6 +224,41 @@ neighbour on one side and gives one up on the other; which way round that falls
 depends on where on the page the reader is looking, and it is the price of the crop
 being axis-aligned.
 
+**And the ladder's slope is not the separator's angle — which is what a reader met.** The
+ladder takes the *first* slope whose sheared projection shows an empty run, and a slope
+shallower than the true one reads empty just as well whenever the trough is thick: the
+projection *is* the "is this line empty" test, so a wrong-angle line through a thick trough
+passes it. On the reported page (Kavita `chapterId=187445`, page 11 — a dark page whose
+tiers are drawn at about −0.115) one separator came out as **−0.090 at one node and −0.060
+at the node inside it**, while the drawn border measures **−0.113**. Both panels' crops then
+cut across their own border: measured with the real mask, the edge stood **31 px above the
+drawn border** at one end of the crop and the box clipped about **50 px** off the panel's
+corner. That is what "the masking is not parallel to the cut" means, and it is the ladder's
+arithmetic rather than the page's.
+
+So the line is now **measured from the pixels** once the ladder has found where the
+separator is (`refineShearedSplit`): across the region, the middle of the empty trough that
+line sits in, walked unbounded and refused when it reaches the region's own edge — the
+straight cut's own rule, the one that keeps a page's outer margin from reading as a
+separator. On that page it gives **−0.1119** from 391 of 417 lines (residual 1.78 cells),
+and the region inside it −0.1134 (119 lines, 0.94). Both panels of one separator now carry
+the *same* line, and the crop's edge lands within a pixel of the border where it stood 31 px
+off.
+
+Four guards keep the measurement honest, and each is bracketed against a page rather than
+chosen: at least 8 lines and a quarter of the region's length; a residual ceiling of 2.5
+cells; a slope ceiling at the ladder's own reach; and a minimum change, below which the
+ladder's line is left exactly as it was — which is what keeps every page whose separators
+are straight out of this arithmetic. **The residual is the one that matters**: a trough
+whose centre *steps* — a paper page's tier gutter where a bubble pokes into it — fits a line
+with a deceptively small residual if the fit is taken over few points, and the per-line fit
+refuses what the sums do not (`k198473` page 34: 10.6 cells against 1.78 on the page this is
+for). A fit taken over six slab sums was tried first and rejected on exactly that page: a
+six-point fit cannot see a step, and it reported 1.20 there. A fitted line that lands on the
+region's own edge is **not a separator** but a residual band left by the parent's cut, and
+it ends the search instead of being re-taken — the rule that stops a child from overwriting
+the line its parent gave it.
+
 **The ladder's step is 0.015, and it was 0.035 — a reader found the reason.** They
 reported that panels separated by a *slanted* gap merge more often than square ones,
 and that is the shear's own arithmetic: `floor(slope * (x - xmid) + 0.5)` means a

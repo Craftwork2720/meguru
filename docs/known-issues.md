@@ -141,6 +141,21 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   visible — the one case no sample here contains, because it needs a slope past the 8
   degrees the ladder reaches. Neither of the first two has been seen. The three constants
   are the first thing to look at if any of those shapes of page misbehaves.
+- **The crop's box can be smaller than the quadrilateral it holds, and nothing has been
+  built to show it.** `segment` takes each line's extreme over the *cell box* — `l`/`r` over
+  the cell box's rows, `t`/`bo` over its columns — while the cell box is itself an
+  axis-aligned rectangle at the cut's constant indices. The quad's corners are line
+  intersections, and one can fall outside that rectangle: with `l: x = 100 + 0.3y`,
+  `t: y = 50 - 0.2x`, `r: x = 180`, `bo: y = 200` over a cell box of `95..185 × 45..205`, the
+  corner `l∩t` is `(108.5, 28.3)` and the code's `left = min(l(45), l(205)) = 113.5` — the box
+  starts 5 px inside the panel, so the render clips a corner the mask would have kept. Every
+  page in the sample has at most one slanted axis per panel, which is why it has never been
+  seen; it needs a panel whose *two* axes are both tilted. The fix is a fixed-point span
+  evaluation (each pass grows the span from the previous one; two or three passes), and it is
+  left unwritten deliberately — it is geometry with no measured payoff on any page there is,
+  and the reader who reported the slanted-line defect chose to fix the line alone. What would
+  settle it: one page whose panels are quadrilaterals in both axes, printed through
+  `tools/panelprobe.py`, comparing the box against the four corners.
 - **A page the cut cannot decompose at all is still one panel, and that is most of one
   chapter of the reported series.** Eleven of the fifteen pages sampled from the reported
   chapter come back as a single whole-page rectangle — accepted, because a lone rectangle
