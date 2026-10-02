@@ -537,6 +537,14 @@ local function setSpread(ui, value, text)
     return true
 end
 
+--- What the offset switch says when it flips, in the two places that flip it: the
+--- *Pair offset* row's own event, and the Dispatcher action a reader can bind a
+--- gesture to (`main.lua`). One function so the two cannot come to describe the
+--- same setting differently.
+local function spreadOffsetNotice(on)
+    return on and _("Pair offset: from here") or _("Pair offset: off")
+end
+
 --- The offset beside it. Its value is the **page the offset is anchored at** (0
 --- for off) rather than a flag — the rule is in `meguru/spread`, and what this
 --- does is write it where the document reads it: the live configurable and the
@@ -2631,8 +2639,27 @@ function Reader.install(plugin)
         if value == 1 or value == "1" or value == true then
             anchor = (ui and ui.paging and ui.paging.current_page) or 1
         end
-        setSpreadOffset(ui, anchor,
-            anchor > 0 and _("Pair offset: from here") or _("Pair offset: off"))
+        setSpreadOffset(ui, anchor, spreadOffsetNotice(anchor > 0))
+        return true
+    end
+
+    -- The same flip, for a reader who would rather have a gesture than a menu: the
+    -- Dispatcher action `main.lua` registers fires this event, and what it does is
+    -- exactly what the row's switch does — off when the run the reader is in is
+    -- already offset, and anchored *here* when it is not.
+    --
+    -- **Installed per reader, like every handler in this block**, which is what
+    -- makes the Dispatcher action safe to leave bound outside a Meguru book: the
+    -- event arrives, no instance has the method, and nothing happens.
+    plugin.onMeguruPairOffsetToggle = function(self)
+        local ui = self.ui
+        local doc = ui and ui.document
+        local page = currentPage(ui)
+        if not (doc and page and type(doc.spreadOffsetHere) == "function") then
+            return true
+        end
+        local on = not doc:spreadOffsetHere(page)
+        setSpreadOffset(ui, on and page or 0, spreadOffsetNotice(on))
         return true
     end
 

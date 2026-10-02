@@ -25,7 +25,7 @@ The rejected rule was a flag that offsets **every** run, which reads 9 (spread),
 
 Where a re-anchored offset meets the wide page before it, there are two single pages in a row: 9 is the spread, 10 is the run's first page. That is the shape to look at if the pairing after a wide page ever reads wrong.
 
-It is also the reader's correction for the approximate case below.
+It is also the reader's correction for the approximate case below, and the flip is what KOReader's gesture editor is offered (under *Fixed layout documents*, as *Toggle pair offset*) — a reader who meets a spread that has come out a page out is looking at the page, not at a menu.
 
 **What the imposition cannot know is everything it was not shown.** The feed carries no page dimensions at all: a page's size is known only once its image has been fetched and decoded (`MeguruDocument:getPageDims`). Reading in order is exact — by the time a page is reached, it and its neighbour have been decoded — but a *jump* can land past wide pages nobody saw, and the run is then the one page 1 would have given. What the reader sees is a **parity flip**: two spreads shown the other way round, each page individually correct, until the next known wide page re-anchors the run. What settles it is the offset row, which moves the pairing of the run it is set in by one page.
 

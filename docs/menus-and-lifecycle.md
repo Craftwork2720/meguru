@@ -95,6 +95,10 @@ instead of writing a word nothing reads. Whether there is a panel view is the pe
 design, and that is the one place in this dialog where "set as default" is declined rather than
 performed.
 
+**One row is also offered to KOReader's gesture editor**, where a reader binds a tap, a swipe or a key to it instead: *Toggle pair offset (two-page view)*, registered by `main.lua` as `meguru_pair_offset` and listed under **Fixed layout documents**, beside *Toggle page flipping* and *Toggle panel zoom*. It fires `MeguruPairOffsetToggle`, and the handler for it is installed per reader like every other handler in `ui/reader.lua` — which is what makes the action safe to leave bound outside a Meguru book: the event arrives, no instance has the method, and nothing happens. The section is a list rather than a gate, so every fixed-layout document is *offered* it for the same reason.
+
+Its behaviour is the row's, exactly: off when the run the reader is in is already offset, anchored *here* when it is not. The two write through one function (`setSpreadOffset`) and announce through one (`spreadOffsetNotice`), so a gesture and a menu row cannot come to describe the same setting differently. Anything else here could be offered the same way — `Dispatcher:registerAction` is one table per action and the handler is one method — but a gesture is worth binding for the row a reader reaches for *while looking at the page*, and that is this one.
+
 The one thing that must not be missed: KOReader's stock "set as default" writes a
 **global** `G_reader_settings["kopt_<name>"]`, which would leak a choice made while
 reading a stream into every PDF opened afterwards. `ui/reader.lua` redirects it onto

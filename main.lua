@@ -1,7 +1,10 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
 
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local Dispatcher = require("dispatcher")
 local logger = require("logger")
+
+local _ = require("gettext")
 
 local Association = require("meguru/association")
 local Defaults = require("meguru/doc/defaults")
@@ -62,6 +65,12 @@ function Meguru:init()
     -- be built for any book, so the wrap has to be in place before one is opened.
     Icons.install()
 
+    -- And the actions this plugin puts in KOReader's gesture list, so a reader can
+    -- bind a gesture to one. Registered here rather than when a book opens: the
+    -- gesture editor lists what is registered, and a reader sets a gesture up from
+    -- the file browser as often as from inside a book.
+    self:onDispatcherRegisterActions()
+
     -- Class-level and once per process: the hook lives on ReaderFooter and
     -- there is no instance to hang it on. Installed from whichever instance
     -- loads first (FileManager, at startup) so it is in place before any book
@@ -97,6 +106,32 @@ function Meguru:registerProvider()
     logger.info("Meguru: registered ." .. Paths.MARKER_EXT
         .. " and .cbz document providers")
     Association.claimOnce()
+end
+
+--- The actions this plugin offers to KOReader's gesture editor, so a reader can
+--- bind a gesture (or a key) to one instead of opening the bottom menu.
+---
+--- **Called from `init` *and* by the Dispatcher's own broadcast**, which is why
+--- `registerAction`'s `settingsList[name] == nil` guard matters: `init` runs once
+--- per plugin instance and the broadcast once per gesture-editor build, so this
+--- body runs several times a session and must register the action exactly once.
+---
+--- One action for now, the one a reader reaches for while looking at a spread
+--- that has come out a page out: the same flip the *Pair offset* row's switch
+--- makes (`ui/reader.lua`, which is also where the handler is installed — per
+--- reader, so the event does nothing at all outside a Meguru book).
+function Meguru:onDispatcherRegisterActions()
+    Dispatcher:registerAction("meguru_pair_offset", {
+        category = "none",
+        event = "MeguruPairOffsetToggle",
+        title = _("Toggle pair offset (two-page view)"),
+        -- **The *fixed layout* section**, beside "Toggle page flipping" and
+        -- "Toggle panel zoom" — this is a paging behaviour of this plugin's own
+        -- documents, and that is where a reader looks for one. The section is a
+        -- list rather than a gate, so every fixed-layout document is offered it;
+        -- the event is what decides, and only a Meguru reader has a handler.
+        paging = true,
+    })
 end
 
 --- A book is being opened and its settings have been read. Anything that was
