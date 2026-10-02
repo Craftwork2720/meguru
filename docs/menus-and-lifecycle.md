@@ -9,15 +9,51 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
 Meguru books share KOReader's per-book `kopt_*` settings, so the bottom `ConfigDialog`
 is **curated** rather than replaced: rows the engine does not implement (page margins,
 auto-straighten, the reflow and zoom-matrix family) are dropped, because each would set
-a value with no visible effect. Four tabs come back: stock's **rotation** and **crop**
-tabs with this engine's rows in them, a **page-view** tab (fit, page scroll, manga, the
-two-page view and its page offset — see [docs/two-page-view.md](two-page-view.md)), and
+a value with no visible effect.
 
-a fourth **tone** tab — placed on its own because the first three are about the *shape*
-of what is shown and this is the only one about the picture. It holds three rows, and all
-three are stock's own wiring with `name` and `event` left alone, so none has a handler in
-this plugin at all: `ReaderKoptListener` writes the row's value into the configurable and
-`ReaderView` is what acts on the event (see `docs/render-path.md` for what each does).
+**The three tabs carry this plugin's icons, and a PDF's carry KOReader's**, which is
+worth knowing before anyone "simplifies" it. `meguru/icons` gives the tabs names of
+its own (`meguru.rotation`) and wraps `IconWidget` to resolve *only those names* to
+the SVGs in `assets/icons/`; a PDF's dialog asks for the stock `appbar.*` names and
+never reaches the branch, so one process-wide wrap touches no book but a Meguru
+one. The alternative — dropping the files into the icon directory KOReader searches
+first, `<data dir>/icons` — is the documented drop-in way and it is wrong twice
+over: it replaces those icons for every document, and it makes a plugin write to the
+user's storage at startup for something it already ships. The artwork itself is
+optional, like the series row's: `Icons.tab` answers the stock name when a file is
+missing, so an install without the SVGs draws KOReader's own icons, and `FALLBACK`
+in that module is the table that says which of KOReader's each tab wears — our names
+and KOReader's are not interchangeable, so a tab of ours has to name its own.
+
+**Three tabs come back, and they are this plugin's own rather than stock's four:**
+
+- **Reading** — what a page turn does, how many pages are on the screen, and what a
+  long-press does: manga mode, page scroll, the two-page view with its page offset
+  and its gutter beside it, and the long-press. See
+  [docs/two-page-view.md](two-page-view.md).
+- **Page** — the page's own shape and its picture: fit, crop, and the three tone
+  rows, which are the tab stock keeps apart and this one does not.
+- **Rotation** — rotation mode and the wide-page rotation.
+
+The regrouping is deliberate: a reader changing how a page is *shown* is not served
+by having the crop and the contrast two tabs apart, and stock's page-margin and
+reflow tabs have nothing here to hold. Stock's tabs are still **where the rows come
+from** (`buildCuratedOptions` lifts `rotation_mode`, `page_scroll` and the crop row's
+name text out of them by name) — a tab is a place to find a row, not a shape to
+reuse — which is why the lookup still happens even though none of stock's tab objects
+is handed back.
+
+**The two rows under "Two pages" belong to it and are dimmed until it is on, and
+that is as close to a group as this menu can come.** *The bottom menu has no
+sub-items at all*: `sub_item_table` is the ⋮ menu's, `ui/widget/menu.lua` and
+`touchmenu.lua` implement it, and `ConfigDialog` implements none of it. So a parent
+and its children can be ordered and gated here, never indented — the ordering and
+the two `enabled_func`s are the grouping.
+
+Three tone rows are all stock's own wiring with `name` and `event` left alone, so none
+has a handler in this plugin at all: `ReaderKoptListener` writes the row's value into
+the configurable and `ReaderView` is what acts on the event (see `docs/render-path.md`
+for what each does).
 
 - **Contrast** is stock's contrast row with the presets stopped at 3.0, where stock's run
   to 50 for a badly scanned text page — the one curated row written here for its *values*
@@ -34,8 +70,8 @@ this plugin at all: `ReaderKoptListener` writes the row's value into the configu
   (`Settings.dither` is deliberately unset), which is why the row reads back the value the
   page is actually drawn with rather than a stored one.
 
-**The crop tab holds the crop, and then what a long-press does.** *Page Crop* is `none` or
-`auto`, and `auto` is the whole of the feature: the margin box, the printed page number and the
+**The crop is one row of the *Page* tab, and it is `none` or
+`auto`; `auto` is the whole of the feature: the margin box, the printed page number and the
 blank-page rule (`document.lua`'s `getPageBBox`). "Page Number Crop" and "No crop on
 blank pages" used to be rows of their own — the stock ones `pagenumbercrop.koplugin`
 injects when it is installed, this plugin's own copies when it is not — and folding them
@@ -44,8 +80,8 @@ three rules are what cropping a page means here. The cost is that neither can be
 alone, and that a book carrying `kopt_page_number_crop_auto` or `kopt_no_crop_blank_pages`
 from an earlier version keeps the key and gets the rule back — nothing reads either again.
 
-**The second row is *Long-press*, and it is the first row in this dialog that is not one
-value in one key.** Its three views are the book's `kopt_panel_view` — the switch inside the
+**The *Long-press* row — the last of the *Reading* tab — is the first row in this dialog
+that is not one value in one key.** Its three views are the book's `kopt_panel_view` — the switch inside the
 panel viewer writes the same one, so the two controls cannot disagree — and its fourth answer,
 `off`, is KOReader's own per-book `panel_zoom_enabled`, which is a different question with a
 different owner. `current_func` reads the two as one value and `onMeguruPanelViewUpdate` writes

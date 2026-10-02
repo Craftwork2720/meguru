@@ -93,6 +93,11 @@ on the side that goes into the binding, and when the two pages of a spread are
 cropped to their panels that margin is thrown away. `gutter` gives it back —
 **as much of it as the screen has room for, and never more than the page had.**
 
+**Whether it is asked at all is the reader's, and that is the one thing here that
+is not arithmetic**: the *Flexible gutter* row under *Two pages*, on by default,
+and `document.lua`'s `_pairLayout` skips this function entirely when it is off. The
+four sentences below do not change with it.
+
 The rule is four sentences, and the order of them is the whole of it:
 
 1. The **outer** edges of the pair stay tight to the artwork. They are the crop's

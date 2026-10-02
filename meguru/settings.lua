@@ -210,6 +210,17 @@ local DEFAULTS = {
     -- which is both the front of the book and what this row stored when it was a
     -- flag — a book written then keeps exactly the behaviour it had.
     spread_offset     = 0,
+
+    -- Whether a pair keeps the gutter the crop would otherwise have thrown away:
+    -- the inner margin of each page, as far as the screen has room for it. 1 is
+    -- on, and on is the default — a book whose pages are cropped to their panels
+    -- has no white left between them at all, and a spread with its two pages
+    -- butted together is the thing this row exists to undo. Turned off, a pair is
+    -- drawn exactly as the crop left it.
+    --
+    -- The rule itself is `meguru/spread`'s; this is only whether it is asked, and
+    -- `_pairLayout` is the one place that asks.
+    spread_gutter     = 1,
     night_mode        = true,         -- pre-invert pages instead of a stark negative
 
     -- Page tone, as MuPDF's contrast: 1.0 is the page as it arrived, above it

@@ -2023,6 +2023,20 @@ function MeguruDocument:_spreadAnchor()
     return math.floor(anchor)
 end
 
+--- Whether a pair keeps its gutter — the row beside the offset, on by default.
+---
+--- Read by comparison, and **with nil answering yes**: a configurable that has not
+--- been seeded yet is a book whose answer is the plugin default, and the default
+--- here is on. The trap is the usual one: `0` is truthy in Lua, so a truth test
+--- would read a stored "off" as on.
+function MeguruDocument:_spreadGutterOn()
+    local value = self.configurable and self.configurable.spread_gutter
+    if value == nil then
+        return true
+    end
+    return value == 1 or value == "1" or value == true
+end
+
 --- Whether the offset is in force for `pageno`: the run it is anchored in being
 --- the run that page is in.
 ---
@@ -2159,11 +2173,17 @@ end
 function MeguruDocument:_pairLayout(pair)
     local left_page, right_page = self:_pairSides(pair)
     local l, r = self:_pageBox(left_page), self:_pageBox(right_page)
-    local inner_left = math.max(0, self:_pageGeom(left_page).w - (l.x + l.w))
-    local inner_right = math.max(0, r.x)
-    local screen = self:_spreadScreen()
-    local gutter = Spread.gutter(l.w + r.w, math.max(l.h, r.h),
-        inner_left, inner_right, screen.w, screen.h)
+    -- The row first, then the rule: with "Flexible gutter" off a pair is drawn
+    -- exactly as the crop left it, which is the only thing this row decides —
+    -- `meguru/spread`'s four sentences are unchanged by it.
+    local gutter = { left = 0, right = 0 }
+    if self:_spreadGutterOn() then
+        local inner_left = math.max(0, self:_pageGeom(left_page).w - (l.x + l.w))
+        local inner_right = math.max(0, r.x)
+        local screen = self:_spreadScreen()
+        gutter = Spread.gutter(l.w + r.w, math.max(l.h, r.h),
+            inner_left, inner_right, screen.w, screen.h)
+    end
     local left = { x = l.x, y = l.y, w = l.w + gutter.left, h = l.h }
     local right = { x = r.x - gutter.right, y = r.y, w = r.w + gutter.right, h = r.h }
     return {

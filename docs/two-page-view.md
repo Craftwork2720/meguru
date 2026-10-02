@@ -54,6 +54,8 @@ Two decisions inside that are worth keeping:
 
 **The crop trims the pages' inner margins away, and the pair puts them back — as much of them as the screen has room for, and never more than the page had.** A page cropped tight to its artwork has nothing between it and the other page of a spread, so the two pages butt together at the middle; a printed book has white there, on the side that goes into the binding. This is the one place the pair's drawing is not simply two crops side by side.
 
+**The row *Flexible gutter*, under *Two pages*, is whether the rule is asked at all** — on by default, because two pages butted together at the middle is the thing this exists to undo; off, a pair is drawn exactly as the crop left it. `MeguruDocument:_pairLayout` is the one place that asks, so the four sentences below are unchanged either way.
+
 The rule is `Spread.gutter` (`meguru/spread.lua`), and **the order of its four sentences is the whole of it**:
 
 1. The **outer** edges stay tight to the artwork. They are the crop's business and this does not touch them.

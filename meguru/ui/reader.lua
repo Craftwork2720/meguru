@@ -49,6 +49,7 @@ local ffiutil = require("ffi/util")
 local T = ffiutil.template
 
 local Feed = require("meguru/feed")
+local Icons = require("meguru/icons")
 local Defaults = require("meguru/doc/defaults")
 local Image = require("meguru/doc/image")
 local Local = require("meguru/local")
@@ -556,6 +557,28 @@ local function setSpreadOffset(ui, anchor, text)
     end
     -- The unit under the reader has almost certainly changed — pairing from a
     -- different page is the whole of the setting — so the page is laid out again.
+    if type(ui.handleEvent) == "function" then
+        ui:handleEvent(Event:new("ReZoom"))
+    end
+    if text then
+        UIManager:show(Notification:new{ text = text, timeout = 2 })
+    end
+    return true
+end
+
+--- The gutter switch beside the offset. It decides whether `Spread.gutter` is
+--- asked at all (`document.lua`'s `_pairLayout`), so the pair's box changes shape
+--- and the page has to be laid out again — the same `ReZoom` the offset fires.
+local function setSpreadGutter(ui, value, text)
+    local configurable = ui and ui.document and ui.document.configurable
+    if not (configurable and configurable.spread_gutter ~= nil) then
+        return false
+    end
+    configurable.spread_gutter = value
+    if ui.doc_settings then
+        ui.doc_settings:saveSetting("kopt_spread_gutter", value)
+        ui.doc_settings:flush()
+    end
     if type(ui.handleEvent) == "function" then
         ui:handleEvent(Event:new("ReZoom"))
     end
@@ -1542,7 +1565,22 @@ end
 --- zoom-matrix family) would each set a value with no visible effect, which is
 --- worse than not offering them.
 local function buildCuratedOptions(ui)
-    local rotation_tab, crop_tab, pageview_tab, contrast_tab
+    -- The stock tabs are found for the rows they hold — by their **icons**, which
+    -- is the only name `KoptOptions` gives them — and for nothing else. The dialog
+    -- that comes back is three tabs of this plugin's own (see the return below),
+    -- so a stock tab is a place to lift a row from, not a shape to reuse.
+    --
+    -- **There is no fallback to the whole of `KoptOptions` any more**, and there
+    -- was one: it answered a stock layout we did not recognise with everything,
+    -- on the grounds that a wrong menu beat an empty one. It cannot be wrong now
+    -- in that way — the crop row, the fit row, the tone rows and the two-page rows
+    -- are this file's, so the dialog is never empty — and stock's rows are exactly
+    -- what this function exists to keep out of a streamed book. A tab that is not
+    -- found costs exactly the rows lifted from it — `stockOptionRow` is nil-safe,
+    -- and every one of those lookups already tolerates nil — and costs them
+    -- silently, which is the price of the rows this file owns being enough to
+    -- build a working menu without it.
+    local rotation_tab, crop_tab, pageview_tab
     for _, tab in ipairs(KoptOptions) do
         if tab.icon == "appbar.rotation" and not rotation_tab then
             rotation_tab = tab
@@ -1550,16 +1588,7 @@ local function buildCuratedOptions(ui)
             crop_tab = tab
         elseif tab.icon == "appbar.pageview" and not pageview_tab then
             pageview_tab = tab
-        elseif tab.icon == "appbar.contrast" and not contrast_tab then
-            -- Read for its icon and nothing else: the tab is stock's, the row
-            -- that goes in it is ours (see CONTRAST_ROW for why).
-            contrast_tab = tab
         end
-    end
-    -- If the stock layout is ever not what we expect, show everything rather
-    -- than an empty dialog.
-    if not (rotation_tab and crop_tab) then
-        return KoptOptions
     end
 
     local rotation_options = {}
@@ -1570,68 +1599,27 @@ local function buildCuratedOptions(ui)
     rotation_options[#rotation_options + 1] =
         stockOptionRow(rotation_tab, "rotate_wide_pages") or ROTATE_WIDE_ROW
 
-    -- Our own "Page Crop" row, not the stock one: the stock row carries the
-    -- semi-manual define-an-area flow, which needs a crop box to persist and a
-    -- streamed page has none. Only the two states the engine realises are
-    -- offered, and both fire the core "ReZoom" so the new box applies to the
-    -- page on screen immediately.
+    -- **Page**: the page's own shape and its picture. How it is fitted, what is
+    -- cut off it, and the three tone rows — which had a tab of their own until the
+    -- tabs were regrouped into these three, and belong here because every one of
+    -- them is about the page rather than about how many of them are on the screen.
     --
-    -- "Page Number Crop" and "No crop on blank pages" were rows here — the stock
-    -- ones `pagenumbercrop.koplugin` injects when it is installed, this file's own
-    -- copies when it is not — and they are folded into "auto" instead: the engine
-    -- no longer reads either value (`document.lua`'s getPageBBox), so their help
-    -- text lives on this row now, which is the only place a reader can still learn
-    -- what the crop does.
+    -- Contrast is the one tone row that is always offered; the other two are each
+    -- about *this screen* rather than about the page — saturation is a colour
+    -- operation, and a dither is how the page is written to an 8-bit framebuffer —
+    -- so each appears only where the screen can honour it. Their order is stock's
+    -- own (`appbar.contrast` lists them Contrast, Saturation, ... Dithering), so a
+    -- reader who knows a PDF's tone tab finds the same things in the same places.
+    --
+    -- `stock_trim` is read for its *name text* and for nothing else — a build that
+    -- renamed the row still gets a sensible label — which is why the lookup is
+    -- here and the row it names is below.
     local stock_trim = stockOptionRow(crop_tab, "trim_page")
-    local crop_options = {
-        {
-            name = "trim_page",
-            name_text = (stock_trim and stock_trim.name_text) or _("Page Crop"),
-            toggle = { C_("Page crop", "none"), C_("Page crop", "auto") },
-            values = { 3, 1 },
-            args = { 3, 1 },
-            default_value = 1,
-            event = "ReZoom",
-            help_text = _([[Trims the empty margins around the artwork. "auto" also removes a printed page number from the bottom gutter when one is found, and leaves an almost-blank page — a chapter divider, a title page — entirely uncropped instead of zooming into a small element. Nothing is cropped if nothing is found.]]),
-        },
-        -- **The long-press, in one row: the three views and Off.** The three
-        -- labels are the ones the viewer's switch carries (`ui/panelzoom`), so a
-        -- reader meets the same three words in both places; Off is not a fourth
-        -- view at all but KOReader's own per-book answer for whether there is a
-        -- panel zoom, which is why neither the display nor the write here is a
-        -- plain assignment — see `current_func` and `onMeguruPanelViewUpdate`.
-        --
-        -- One row for both questions because that is the question a reader has:
-        -- what happens when I hold on a page. Splitting them is how a row ends up
-        -- showing a view while the long-press does nothing.
-        {
-            name = "panel_view",
-            name_text = _("Long-press"),
-            toggle = {
-                C_("Long-press", "off"),
-                _("Panel Cut"),
-                _("Pan & Zoom"),
-                _("Free View"),
-            },
-            values = { "off", "crop", "window", "zoom" },
-            args = { "off", "crop", "window", "zoom" },
-            default_value = "window",
-            event = "MeguruPanelViewUpdate",
-            -- The two keys this row answers for, read as one value: the book's own
-            -- answer for whether there is a panel zoom (its stash, not the live
-            -- field — see `meguruPanelZoomWanted` for why), and then the view.
-            current_func = function()
-                local hl = ui and ui.highlight
-                if hl and not meguruPanelZoomWanted(hl) then
-                    return "off"
-                end
-                return Reader.panelViewMode(ui)
-            end,
-            help_text = _([[What holding on a page does. Panel Cut shows the panels the detector found, one at a time; Pan & Zoom keeps the page whole and moves a window over it; Free View shows the page alone. "off" leaves the long-press to KOReader, and applies to this book only. Long-press this row to make a view the default for new books. This is Meguru's own panel view — a panel plugin that answers the long-press itself is its own.]]),
-        },
-    }
-
-    local reading_options = {
+    local page_options = {
+        -- Computed live from the reader's own zoom mode, so the row reflects what
+        -- the book is actually showing even after a manual pinch, and falls back
+        -- to the plugin preference when the current zoom is one of the three fits
+        -- does not name (a manual pinch, "page", ...).
         {
             name = "opdsbook_fit",
             name_text = _("Fit"),
@@ -1644,10 +1632,6 @@ local function buildCuratedOptions(ui)
             args = { "full", "width", "height" },
             default_value = "full",
             event = "MeguruSetFit",
-            -- Computed live from the reader's own zoom mode, so the row reflects
-            -- what the book is actually showing even after a manual pinch, and
-            -- falls back to the plugin preference when the current zoom is one
-            -- of the three fits does not name (a manual pinch, "page", ...).
             current_func = function()
                 local zooming = ui and ui.zooming
                 local mode = zooming and zooming.zoom_mode
@@ -1662,11 +1646,46 @@ local function buildCuratedOptions(ui)
             end,
             help_text = _([[How a page is zoomed to the screen: full shows the whole cropped page, width fills the screen width, height fills the screen height.]]),
         },
+        -- Our own "Page Crop" row, not the stock one: the stock row carries the
+        -- semi-manual define-an-area flow, which needs a crop box to persist and a
+        -- streamed page has none. Only the two states the engine realises are
+        -- offered, and both fire the core "ReZoom" so the new box applies to the
+        -- page on screen immediately.
+        --
+        -- "Page Number Crop" and "No crop on blank pages" were rows here — the
+        -- stock ones `pagenumbercrop.koplugin` injects when it is installed, this
+        -- file's own copies when it is not — and they are folded into "auto"
+        -- instead: the engine no longer reads either value (`document.lua`'s
+        -- getPageBBox), so their help text lives on this row now, which is the only
+        -- place a reader can still learn what the crop does.
+        {
+            name = "trim_page",
+            name_text = (stock_trim and stock_trim.name_text) or _("Page Crop"),
+            toggle = { C_("Page crop", "none"), C_("Page crop", "auto") },
+            values = { 3, 1 },
+            args = { 3, 1 },
+            default_value = 1,
+            event = "ReZoom",
+            help_text = _([[Trims the empty margins around the artwork. "auto" also removes a printed page number from the bottom gutter when one is found, and leaves an almost-blank page — a chapter divider, a title page — entirely uncropped instead of zooming into a small element. Nothing is cropped if nothing is found.]]),
+        },
+        CONTRAST_ROW,
     }
-    local page_view = stockOptionRow(pageview_tab, "page_scroll")
-    if page_view then
-        reading_options[#reading_options + 1] = page_view
+    if Image.colorEnabled() then
+        page_options[#page_options + 1] = SATURATION_ROW
     end
+    if ditheringOffered() then
+        page_options[#page_options + 1] = DITHERING_ROW
+    end
+
+    -- **Reading**: what a page turn does, how many pages are on the screen, and
+    -- what a long-press does.
+    --
+    -- The two rows below "Two pages" belong to it and are dimmed until it is on,
+    -- which is as close as this menu can come to the group a reader would draw:
+    -- **the bottom menu has no sub-items at all** — `sub_item_table` is the ⋮
+    -- menu's (`ui/widget/menu.lua`), and `ConfigDialog` implements none of it — so
+    -- a parent and its children can be ordered and gated here, never indented.
+    local reading_options = {}
     reading_options[#reading_options + 1] = {
         name = "opdsbook_manga",
         name_text = _("Invert read (manga mode)"),
@@ -1677,16 +1696,19 @@ local function buildCuratedOptions(ui)
         event = "MeguruMangaRead",
         help_text = _([[Right-to-left page turning, so the book reads like Japanese manga. Remembered for this book; new Meguru books start with it on — long-press this row to change that default.]]),
     }
+    local page_view = stockOptionRow(pageview_tab, "page_scroll")
+    if page_view then
+        reading_options[#reading_options + 1] = page_view
+    end
 
-    -- Whether two pages are shown at once, and which one a pair starts on.
+    -- **The two-page group, in the order a reader meets it.** "Two pages" is the
+    -- switch; the two rows under it are what it makes available, and both are
+    -- inert while it is off (`enabled_func`) — which is the only thing telling a
+    -- reader they belong to it, this menu having no way to indent them (see the
+    -- note on the tab above).
     --
-    -- Both are here, on the tab about *how a page is shown*, rather than beside
-    -- the rotation and the crop: they describe the shape of what is on the
-    -- screen, which is what `Fit` and `Page scroll` above describe too.
-    --
-    -- **"off" is the default**, so nothing about an existing book changes until
-    -- a reader asks — and the offset below is inert until they do, which is what
-    -- its `enabled_func` is for.
+    -- **"off" is the default**, so nothing about an existing book changes until a
+    -- reader asks.
     reading_options[#reading_options + 1] = {
         name = "spread",
         name_text = _("Two pages"),
@@ -1699,9 +1721,7 @@ local function buildCuratedOptions(ui)
         args = { "off", "auto", "on" },
         default_value = "off",
         event = "MeguruSpreadUpdate",
-        help_text = _([[Shows two pages side by side, the way a printed book falls open. "in landscape" does it only while the screen is turned on its side, "always" in either orientation. A page the artist drew as one wide image is always shown whole and on its own, and the pairing starts again after it, so a printed spread never lands halfway through a pair.
-
-The crop trims the pages' inner margins away, which would butt the two pages together at the middle; instead the space left over once they are fitted to the screen goes back into that gutter, up to the margin the page itself has. So a spread keeps the white space of its binding, and a page cropped flush to its inner edge keeps none. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+        help_text = _([[Shows two pages side by side, the way a printed book falls open. "in landscape" does it only while the screen is turned on its side, "always" in either orientation. A page the artist drew as one wide image is always shown whole and on its own, and the pairing starts again after it, so a printed spread never lands halfway through a pair. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
     }
     reading_options[#reading_options + 1] = {
         name = "spread_offset",
@@ -1735,39 +1755,70 @@ The crop trims the pages' inner margins away, which would butt the two pages tog
         end,
         help_text = _([[Shifts the pairs of the run you are reading one page back: off pairs 1+2, 3+4; on leaves the run's first page standing alone and pairs 2+3, 4+5, so on page 7 you see 6+7 rather than 7+8. It applies from where you set it. A page the artist drew as one wide image ends it by itself — the pairs after a spread are as they fall unless you set it again there — which is also the row's way of telling you where you are. Turn it on for a book whose spreads read one page out: a cover or a title page that is its own page, or a printed spread the file counts as one.]]),
     }
+    reading_options[#reading_options + 1] = {
+        name = "spread_gutter",
+        name_text = _("Flexible gutter"),
+        toggle = { C_("Flexible gutter", "off"), C_("Flexible gutter", "on") },
+        values = { 0, 1 },
+        args = { 0, 1 },
+        default_value = 1,
+        event = "MeguruSpreadGutterUpdate",
+        -- Inert with nothing showing two pages, like the offset above and for the
+        -- same reason.
+        enabled_func = function(configurable)
+            return configurable.spread ~= nil and configurable.spread ~= "off"
+        end,
+        help_text = _([[The crop trims each page's inner margin, which would butt the two pages of a spread together at the middle. With this on, the space left over once the artwork is fitted to the screen goes back into that gutter — never more than the margin the page itself has, and never enough to make the artwork smaller. With it off, a pair is drawn exactly as the crop left it. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+    }
 
-    -- The tone tab: what the page looks like, where the three above are about the
-    -- shape of what is shown. Contrast is the one row that is always here; the
-    -- other two are each about *this screen* rather than about the page —
-    -- saturation is a colour operation, and a dither is how the page is written to
-    -- an 8-bit framebuffer — so each appears only where the screen can honour it.
-    -- The order within the tab is stock's own (`appbar.contrast` lists them
-    -- Contrast, Saturation, ... Dithering), so a reader who knows a PDF's tone tab
-    -- finds the same things in the same places.
-    local tone_options = { CONTRAST_ROW }
-    if Image.colorEnabled() then
-        tone_options[#tone_options + 1] = SATURATION_ROW
-    end
-    if ditheringOffered() then
-        tone_options[#tone_options + 1] = DITHERING_ROW
-    end
+    -- **The long-press, in one row: the three views and Off.** The three labels
+    -- are the ones the viewer's switch carries (`ui/panelzoom`), so a reader meets
+    -- the same three words in both places; Off is not a fourth view at all but
+    -- KOReader's own per-book answer for whether there is a panel zoom, which is
+    -- why neither the display nor the write here is a plain assignment — see
+    -- `current_func` and `onMeguruPanelViewUpdate`.
+    --
+    -- One row for both questions because that is the question a reader has: what
+    -- happens when I hold on a page. Splitting them is how a row ends up showing a
+    -- view while the long-press does nothing. Last in this tab because it is what
+    -- a *touch* does, where the rows above are what a page turn does.
+    reading_options[#reading_options + 1] = {
+        name = "panel_view",
+        name_text = _("Long-press"),
+        toggle = {
+            C_("Long-press", "off"),
+            _("Panel Cut"),
+            _("Pan & Zoom"),
+            _("Free View"),
+        },
+        values = { "off", "crop", "window", "zoom" },
+        args = { "off", "crop", "window", "zoom" },
+        default_value = "window",
+        event = "MeguruPanelViewUpdate",
+        -- The two keys this row answers for, read as one value: the book's own
+        -- answer for whether there is a panel zoom (its stash, not the live
+        -- field — see `meguruPanelZoomWanted` for why), and then the view.
+        current_func = function()
+            local hl = ui and ui.highlight
+            if hl and not meguruPanelZoomWanted(hl) then
+                return "off"
+            end
+            return Reader.panelViewMode(ui)
+        end,
+        help_text = _([[What holding on a page does. Panel Cut shows the panels the detector found, one at a time; Pan & Zoom keeps the page whole and moves a window over it; Free View shows the page alone. "off" leaves the long-press to KOReader, and applies to this book only. Long-press this row to make a view the default for new books. This is Meguru's own panel view — a panel plugin that answers the long-press itself is its own.]]),
+    }
 
+    -- **Three tabs of this plugin's own, and the order is a reader's**: what a
+    -- page turn does, what the page looks like, and how a page is turned. Stock's
+    -- four do not come back — the crop and the three tone rows are one tab here,
+    -- because a reader changing how a page is *shown* is not served by having the
+    -- crop and the contrast two tabs apart — and neither do stock's icons, which
+    -- is the other thing `meguru/icons` is for.
     return {
         prefix = "kopt",
-        { icon = rotation_tab.icon, options = rotation_options },
-        { icon = crop_tab.icon, options = crop_options },
-        {
-            icon = (pageview_tab and pageview_tab.icon) or "appbar.pageview",
-            options = reading_options,
-        },
-        -- Its own tab, which is where stock puts a page's tone as well: the three
-        -- above are about the *shape* of what is shown — how it is turned, what
-        -- is cut off it, how it is fitted — and this is the only one that is
-        -- about the picture rather than its frame.
-        {
-            icon = (contrast_tab and contrast_tab.icon) or "appbar.contrast",
-            options = tone_options,
-        },
+        { icon = Icons.tab("reading"), options = reading_options },
+        { icon = Icons.tab("page"), options = page_options },
+        { icon = Icons.tab("rotation"), options = rotation_options },
     }
 end
 
@@ -2573,6 +2624,14 @@ function Reader.install(plugin)
         end
         setSpreadOffset(ui, anchor,
             anchor > 0 and _("Page offset: from here") or _("Page offset: off"))
+        return true
+    end
+
+    plugin.onMeguruSpreadGutterUpdate = function(self, value)
+        -- Compared, never tested: 0 is truthy in Lua (see the row).
+        value = (value == 1 or value == "1" or value == true) and 1 or 0
+        setSpreadGutter(self.ui, value,
+            value == 1 and _("Flexible gutter: on") or _("Flexible gutter: off"))
         return true
     end
 

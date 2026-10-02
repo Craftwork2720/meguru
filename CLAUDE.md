@@ -46,6 +46,7 @@ meguru/
   credential.lua          what a credential looks like in a URL: redact / restore
   seriescover.lua         the series' artwork, written once into its folder
   rowcover.lua            the "Meguru this series" row's own artwork, decoded once
+  icons.lua               the bottom menu's tab icons, from assets/icons/; optional
   progress.lua            the reader's position, sent back to the server
   pse.lua                 OPDS-PSE: link extraction, template -> URL, page fetch
   feed.lua                reading a series feed: the rel=next walk, identity, order,
@@ -75,18 +76,23 @@ meguru/
 
 assets/
   meguru-this-series.png  optional; the cover drawn on the series row
+  icons/                  optional; the bottom menu's tab icons, one per tab
+    reading.svg  page.svg  rotation.svg
 
 .github/workflows/release.yml   a tag builds meguru.koplugin.zip and publishes it
 ```
 
-`assets/meguru-this-series.png` is the one file the plugin ships rather than
-writes, and it is **optional** — `meguru/rowcover` answers nil without it and the
-browser draws its ordinary placeholder. It is portrait, authored at 2:3 (what
-zen-os fits a cover into by default); any size decodes, and a larger one costs
-only bytes on disk. The plugin has had artwork before and it was deleted on
-purpose — an error-page drawing whose headline named the wrong fault — so the
-distinction is worth keeping: this file is the row's *identity*, not a claim
-about something that went wrong.
+**Two things the plugin ships rather than writes, and both are optional.**
+`assets/meguru-this-series.png` is the cover drawn on the series row —
+`meguru/rowcover` answers nil without it and the browser draws its ordinary
+placeholder. It is portrait, authored at 2:3 (what zen-os fits a cover into by
+default); any size decodes, and a larger one costs only bytes on disk.
+`assets/icons/*.svg` are the bottom menu's tab icons, one per tab — the same
+rule, with `meguru/icons` answering KOReader's own icon name when a file is not
+there (see `docs/menus-and-lifecycle.md`). The plugin has had artwork before and
+it was deleted on purpose — an error-page drawing whose headline named the wrong
+fault — so the distinction is worth keeping: these are the row's *identity* and
+the menu's, not a claim about something that went wrong.
 
 `tools/check.py` is a development aid, not part of the plugin.
 
@@ -200,7 +206,7 @@ nor an agent has to load 3500 lines to find one answer. Read the one you need.
   thrown away and the rule that gives it back, and how it shares a book with the
   wide-page rotation.
 - [docs/menus-and-lifecycle.md](docs/menus-and-lifecycle.md) — the menu rows, the curated
-  config dialog and its four tabs, the plugin lifecycle facts, and the plugins that replace
+  config dialog and its three tabs, the plugin lifecycle facts, and the plugins that replace
   our wraps.
 - [docs/updating.md](docs/updating.md) — the GitHub release updater: the one artifact both
   ends name, the install transaction, and what is remembered between checks.

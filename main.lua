@@ -6,6 +6,7 @@ local logger = require("logger")
 local Association = require("meguru/association")
 local Defaults = require("meguru/doc/defaults")
 local Hook = require("meguru/hook")
+local Icons = require("meguru/icons")
 local MeguruDocument = require("meguru/doc/document")
 local Menu = require("meguru/ui/menu")
 local Open = require("meguru/ui/open")
@@ -55,6 +56,11 @@ function Meguru:init()
     Hook.install()
     Open.setFallbackHost(self)
     self:registerProvider()
+
+    -- The bottom menu's tab icons. Class-level and once per process like the
+    -- footer hook below, and installed here for the same reason: the dialog can
+    -- be built for any book, so the wrap has to be in place before one is opened.
+    Icons.install()
 
     -- Class-level and once per process: the hook lives on ReaderFooter and
     -- there is no instance to hang it on. Installed from whichever instance

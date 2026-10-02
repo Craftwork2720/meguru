@@ -71,6 +71,7 @@ Defaults.PREFERENCE_FOR = {
     sw_dithering          = "dither",
     spread                = "spread",
     spread_offset         = "spread_offset",
+    spread_gutter         = "spread_gutter",
 }
 local PREFERENCE_FOR = Defaults.PREFERENCE_FOR
 
@@ -142,7 +143,7 @@ function Defaults.seedGeometry(ui, configurable)
     local ds = ui.doc_settings
     for _, name in ipairs{
         "trim_page", "rotate_wide_pages", "panel_view",
-        "spread", "spread_offset",
+        "spread", "spread_offset", "spread_gutter",
     } do
         local value = seedRowValue(ds, name)
         if value ~= nil then
