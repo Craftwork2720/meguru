@@ -596,6 +596,14 @@ Each step must pass before the next:
     Cross back and forth three times: no fetch and no decode after the first. Finally a
     page that cannot be decoded (wifi off, bytes aged out) shows the page and **no
     viewer**, logging `no page (…)`.
+    **And with the two-page view on, that crossing is a spread question too**: browse one
+    page of a pair, step across the boundary *inside* the panel view, and come out — the
+    spread on screen must be the one containing the page just browsed, not the next one.
+    (Browsing page 4 of the spread 4+5 and stepping to 5's panels used to come out on 6+7:
+    the viewer's `GotoPage` was read as a turn and stepped a whole unit. It is a landing,
+    and `tools/spreadcheck.py` checks the rule — but only a device shows the reader's own
+    gesture and the viewer's crossing in the same session, which is what the pair of them
+    needs.)
 
 21. **A turned panel turns the book's way.** One book with a wide spread *and* a page
     carrying a panel wider than the screen. The check is a **comparison**, so it cannot

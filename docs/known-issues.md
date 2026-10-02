@@ -408,15 +408,18 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   synthetic control is the gate: a dark page with a small light element must come back whole, and
   it does.
 
-- **A jump to the second page of the spread already on screen reads as "one further".**
-  `MeguruDocument:spreadSnap` tells a relative turn from a jump by whether the target page
-  falls inside the unit already showing: inside means the reader's gesture, outside means a
-  table of contents, a percentage or a resume. A jump onto the *second* page of that same
-  unit is the one case the two are indistinguishable — page 8 while 7+8 is on screen looks
-  exactly like a forward turn from page 7 — and it lands on the next unit rather than staying.
-  What would settle it is a `GotoPage` that says where it came from (the reader fires the
-  same event for both); what a wrong answer costs is one extra turn, on a jump to a page
-  already visible. Turning the page and back fixes it, and it is the only way the two differ.
+- **A jump to the second page of the spread on screen used to read as "one further", and
+  is now told apart.** `MeguruDocument:spreadSnap` could only guess: a relative turn and an
+  absolute landing arrive as the same `_gotoPage` call with the same target, so it read a
+  target inside the unit already showing as the reader's gesture — and a page *inside* the
+  spread became the next spread. **The panel viewer is where that cost something visible**:
+  browsing page 4's panels and stepping to page 5's left the reader on 6+7 when they came
+  out, one spread further on than the page they had been looking at. It is settled by
+  marking the two callers that mean a turn (`onGotoPageRel`, the gesture funnel, and
+  `pageFlipping`, the skim step) where they are wrapped in `ui/reader.lua` and answering
+  everything else as a landing — the unit that contains the page — rather than by inferring
+  intent from the number. `tools/spreadcheck.py` checks both answers, and the landing rule
+  was self-tested by injecting the old behaviour back (2456 failing cases).
 
 - **Two-page view and `pagenumbercrop.koplugin` both on: that plugin's wide-page rotation can
   turn the screen for a pair, and the flip-flop is not caught.** Meguru's own guard stands

@@ -26,6 +26,10 @@ What it checks, and why each one is a property rather than an example:
   exactly the un-anchored ones, so **a wide page ends an offset by itself**; and
   inside it the run's first page stands alone, which is what makes setting the row
   again past a wide page re-anchor the offset there.
+* **A page change is a turn or a landing, and the two are answered differently** —
+  a turn whose target is inside the unit on screen steps a whole unit, a landing on
+  that same page stays on the unit that contains it. The panel viewer's crossing is
+  the landing that matters, and it is the one this rule was written wrong.
 * **The gutter's four rules** — over a grid of artwork sizes, margins and screen
   shapes: never wider than the page's own margin, never a term in the scale (the
   artwork's fit is reproduced exactly by the pair's own fit), the pair never
@@ -127,6 +131,32 @@ def prev_start(n, count, wides, anchor):
         return None
     prev = unit_for(unit[0] - 1, count, wides, anchor)
     return prev[0] if prev else None
+
+
+def spread_snap(number, current, count, wides, anchor, turn):
+    """`MeguruDocument:spreadSnap` — the imposition's rule as the pager asks it.
+
+    Ported here rather than left to the device because the *same* target answers
+    differently in the two modes, which is what the panel viewer's page crossing got
+    wrong: a turn into the unit already on screen steps a whole unit, and a landing
+    on that same page stays on the unit that contains it. It does not model the
+    second return value (whether a forward turn ran off the end of the book), which
+    the pager uses to say `EndOfBook`."""
+    if number is None or count is None:
+        return number
+    if number < 1:
+        return number
+    if number > count:
+        number = count
+    here = unit_for(current, count, wides, anchor) if current else None
+    there = unit_for(number, count, wides, anchor)
+    if turn and here and there and here[0] == there[0] and current != number:
+        if number >= current:
+            target = next_start(current, count, wides, anchor)
+        else:
+            target = prev_start(current, count, wides, anchor)
+        return target if target is not None else current
+    return there[0] if there else number
 
 
 def gutter(content_w, content_h, inner_left, inner_right, screen_w, screen_h):
@@ -238,6 +268,34 @@ def check_walk(count, wides, anchor, fails):
         fails.append(("backward walk skipped or stalled", tag, back, starts))
 
 
+def check_snap(count, wides, anchor, fails):
+    """A landing never leaves the unit that contains the page; a turn does."""
+    units = units_of(count, wides, anchor)
+    if not units:
+        return
+    tag = (count, tuple(sorted(wides)), anchor)
+    for i, unit in enumerate(units):
+        a, b = unit
+        # A landing: the pager hands over a page — a bookmark, a search hit, the
+        # panel viewer crossing from one page's panels to the other's — and the unit
+        # that contains it is what must be shown. This is the crossing the plugin
+        # got wrong: page 5 of the spread 4+5 used to arrive on 6+7.
+        for page in (a, b):
+            if page is None:
+                continue
+            landed = spread_snap(page, a, count, wides, anchor, False)
+            if landed != a:
+                fails.append(("a landing left its unit", tag, page, a, landed))
+                return
+        # A turn: the counter crosses the unit, and the view steps a whole one.
+        if b is not None:
+            turned = spread_snap(b, a, count, wides, anchor, True)
+            expected = units[i + 1][0] if i + 1 < len(units) else a
+            if turned != expected:
+                fails.append(("a turn inside the unit did not step", tag, (a, b), turned, expected))
+                return
+
+
 def check_offset(count, wides, anchor, fails):
     """The offset is in force in the run it is anchored in and nowhere else.
 
@@ -333,6 +391,7 @@ def main():
                 check_units(count, wides, anchor, fails)
                 check_walk(count, wides, anchor, fails)
                 check_offset(count, wides, anchor, fails)
+                check_snap(count, wides, anchor, fails)
 
     # A few longer books, where a run can restart more than once -- and where the
     # anchor's run is not the first one.
@@ -344,6 +403,7 @@ def main():
             check_units(count, wides, anchor, fails)
             check_walk(count, wides, anchor, fails)
             check_offset(count, wides, anchor, fails)
+            check_snap(count, wides, anchor, fails)
 
     # The gutter: artwork sizes, margins and screen shapes, exhaustively crossed.
     screens = [(1680, 1264), (1920, 1080), (1000, 1000), (800, 1280),

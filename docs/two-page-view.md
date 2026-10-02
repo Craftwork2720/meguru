@@ -81,10 +81,12 @@ The pair's geometry is decided in one place, `MeguruDocument:_pairLayout`, and `
 
 **One gesture turns a whole spread, and the counter is what makes that necessary.** `ReaderPaging` moves `current_page` by one and knows nothing about pairs; left alone, a reader on a spread would spend a turn on its second page and see the same two pages painted again. So `_gotoPage` is wrapped (`ui/reader`'s `installSpread`) and the target goes through `spreadSnap`:
 
-- a turn that stops **inside the unit already on screen** is a relative step — the reader's gesture, not a jump — and it means the neighbouring unit;
-- a turn to a page **outside** the current unit is a jump (a table of contents, a percentage, a resume) and lands on the start of the unit holding it.
+- a **turn** — the reader's gesture, and the page-flipping step — that stops *inside the unit already on screen* is a relative step, and it means the neighbouring unit;
+- a **landing** — a `GotoPage`: the panel viewer's page crossing, a bookmark, a search hit, a resume — is answered with the unit that *contains* the page, so a page inside the spread on screen keeps that spread.
 
-**The page number on screen, in the sidecar and in the progress report is the unit's first page.** `current_page` therefore never holds the second page of a pair, `meguru/progress` needed no change at all, and a resume lands on a pair rather than beside it. The flip side is the case `spreadSnap` cannot tell apart — a *jump* to the second page of the spread already showing reads as "one further" — which is in `docs/known-issues.md`.
+**Which of the two a page change is, the caller says, and it cannot be inferred from the page.** The two arrive as the same call with the same target — the counter on 4, the target 5, whether the reader's gesture crossed the spread or the panel viewer stepped from page 4's panels to page 5's — so `ui/reader` marks the two callers that mean a turn (`onGotoPageRel`, `pageFlipping`) and everything else is a landing. That marking is what the panel viewer's crossing needed: it used to arrive on 6+7, one spread further on, because a landing was read as a turn and stepped a whole unit. `tools/spreadcheck.py` checks both answers, and the landing rule is the one it was written for.
+
+**The page number on screen, in the sidecar and in the progress report is the unit's first page.** `current_page` therefore never holds the second page of a pair, `meguru/progress` needed no change at all, and a resume lands on a pair rather than beside it.
 
 At the end of the book the counter never passes the last page while the last unit is a pair, so nothing would announce the end; the wrapper says `EndOfBook` itself when a forward step has no unit to land on.
 

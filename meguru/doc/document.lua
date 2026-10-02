@@ -2320,20 +2320,25 @@ function MeguruDocument:prepareSpread(pageno)
     end
 end
 
---- Where a turn to `number` lands once two pages are shown at a time, and
+--- Where a page change to `number` lands once two pages are shown at a time, and
 --- whether it ran off the end of the book.
 ---
---- A turn that stops *inside the unit already on screen* is a relative step —
---- the reader's gesture, not a jump — and it means the neighbouring unit. That
---- is the whole of why this exists: the counter moves by one page, the reader
---- sees a spread, and the two must not be the same thing. A turn to a page
---- outside the current unit is a jump (a table of contents, a percentage, a
---- resume) and lands on the start of the unit holding it.
+--- **`turn` is the whole of what makes this decidable, and it is the caller's
+--- answer rather than a guess**: `ui/reader.lua` marks the two ways into
+--- `_gotoPage` that mean "the next one from where I am" (a gesture through
+--- `onGotoPageRel`, and the page-flipping step), and everything else names a page
+--- and means it.
 ---
---- The one case it cannot tell apart is a jump to the *second* page of the
---- spread already on screen, which reads as "one further" — recorded in
---- `docs/known-issues.md`.
-function MeguruDocument:spreadSnap(number, current)
+---  * **A turn** stops inside the unit already on screen whenever the counter
+---    crosses it: the reader's one gesture moves the counter by a page and the view
+---    by a *unit*, which is the whole reason this exists.
+---  * **A landing** — a `GotoPage`, and that is the panel viewer's handoff, a
+---    bookmark, a search hit, a resume — is answered with the unit that *contains*
+---    the page, so a page inside the spread on screen keeps that spread. The
+---    crossing this exists for is the panel viewer's: browsing page 4's panels and
+---    stepping to page 5's used to arrive on 6+7, one spread further on, because
+---    the landing was read as a turn.
+function MeguruDocument:spreadSnap(number, current, turn)
     if not self:spreadActive() then
         return number, false
     end
@@ -2349,7 +2354,7 @@ function MeguruDocument:spreadSnap(number, current)
     local anchor = self:_spreadAnchor()
     local here = self:spreadUnitFor(current)
     local there = self:spreadUnitFor(number)
-    if here and there and here.a == there.a and current ~= number then
+    if turn and here and there and here.a == there.a and current ~= number then
         local target
         if number >= current then
             target = Spread.nextStart(current, count, self.wide_list, anchor)

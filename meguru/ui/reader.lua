@@ -479,11 +479,50 @@ local function installSpread(ui)
 
     if not paging._meguru_spread_patched then
         paging._meguru_spread_patched = true
+
+        -- **Which page changes are *turns* and which are *landings*.** Everything
+        -- else in KOReader hands `_gotoPage` a page and means it; these two name
+        -- the next page *from where the reader is*, and the difference is what
+        -- `spreadSnap` needs (see its own comment): a turn whose target is inside
+        -- the unit on screen steps a whole unit, and a landing on that same target
+        -- stays on the spread that contains it.
+        --
+        -- Two marks, and both are the callers that mean it. `onGotoPageRel` is the
+        -- one funnel every tap, swipe and key goes through; `pageFlipping` is the
+        -- skim step, which is relative in the same way and calls `_gotoPage`
+        -- directly, so it has to be marked here or a forward flip inside a spread
+        -- would land back where it started.
+        --
+        -- **And it is cleared whatever the call does** — a `pcall` and a re-raise
+        -- rather than a line after it. A throw from inside a turn would otherwise
+        -- leave the mark set, and the next ordinary landing, a bookmark or a
+        -- handoff pages later, would behave like a turn.
+        local function marked(orig)
+            return function(pg, ...)
+                paging._meguru_spread_turn = true
+                local ok, a, b = pcall(orig, pg, ...)
+                paging._meguru_spread_turn = nil
+                if not ok then
+                    error(a, 0)
+                end
+                return a, b
+            end
+        end
+        if type(paging.onGotoPageRel) == "function" then
+            paging.onGotoPageRel = marked(paging.onGotoPageRel)
+        end
+        if type(paging.pageFlipping) == "function" then
+            paging.pageFlipping = marked(paging.pageFlipping)
+        end
+
         local orig_goto = paging._gotoPage
         paging._gotoPage = function(pg, number, orig_mode)
             local doc = ui.document
             if number ~= nil and doc and type(doc.spreadSnap) == "function" then
-                local target, finished = doc:spreadSnap(number, pg.current_page)
+                -- Consumed here, so nothing later can read a stale mark.
+                local turn = paging._meguru_spread_turn
+                paging._meguru_spread_turn = nil
+                local target, finished = doc:spreadSnap(number, pg.current_page, turn)
                 if finished then
                     -- The last unit is on screen and the reader turned past the
                     -- end of the book. `onGotoPageRel` announces that itself only
