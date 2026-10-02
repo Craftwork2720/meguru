@@ -1,6 +1,6 @@
 # Development and verification
 
-`tools/check.py`'s eleven passes and what each has actually caught, and the step-by-step checklist for verifying a change on a device.
+`tools/check.py`'s eleven passes and what each has actually caught, the two modules mirrored in Python to be run without a Lua interpreter, and the step-by-step checklist for verifying a change on a device.
 
 Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
 
@@ -132,6 +132,18 @@ pass was self-tested by injecting the real failure and confirming the checker re
 — including at the right line. Do the same before trusting a green run, and this is not
 a formality: of the passes written across this project, four were wrong on the first
 attempt and passed on the very bug they existed to catch.
+
+**Two modules are mirrored rather than reasoned about**, and both are mirrored
+because they are pure arithmetic with rules that are easy to state and easy to
+get wrong: `tools/panelprobe.py` for the panel detector, and `tools/spreadcheck.py`
+for `meguru/spread.lua` — the two-page imposition and the rule that gives a spread
+its gutter. The second checks *properties* rather than fixtures: that the units
+tile a book exactly once for every set of wide pages and both offsets, that asking
+from either page of a pair answers the same pair, that turning walks the units
+without stalling at the last pair, and the gutter's four rules over a grid of
+artwork sizes, margins and screen shapes. Run it as `python tools/spreadcheck.py`;
+it prints a walk of the page it is checking, which is the only way to read what
+the imposition does without a device.
 
 A Python mirror of Lua logic models values, not Lua's evaluation rules, and the
 difference has shipped a crash. `meguru/credential.lua`'s `restoreTemplate` ended

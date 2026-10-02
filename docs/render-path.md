@@ -540,3 +540,8 @@ going through `renderPage`, the tile cache, the dithering decision and the `pain
 line above, keyed by its own page number. A half that could not be loaded gets its
 own `paintMissingPage`, so a broken page shows its placeholder beside a page that
 worked.
+
+The seam is not the crop's outer edge: a half is the page's crop *plus whatever
+inner margin the pair keeps as its gutter* (`docs/two-page-view.md`), so a half's
+`region` in the paint line is wider than its content, and that is the one place
+the gap between two pages is visible in a log.

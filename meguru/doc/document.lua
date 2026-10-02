@@ -2062,18 +2062,20 @@ function MeguruDocument:spreadPageAt(pageno, x, y)
     if not (pair and pair.b) then
         return pageno, x, y
     end
-    local left_page, right_page = self:_pairSides(pair)
-    local left, right = self:_pageBox(left_page), self:_pageBox(right_page)
-    if x >= left.w then
-        return right_page, (x - left.w) + right.x, y + right.y
+    local layout = self:_pairLayout(pair)
+    local left, right = layout.left, layout.right
+    -- The seam is where the two halves meet, which the gutter has moved: a press
+    -- on the blank gutter counts for the page it belongs to, whose margin it is.
+    if x >= left.box.w then
+        return right.page, (x - left.box.w) + right.box.x, y + right.box.y
     end
-    return left_page, x + left.x, y + left.y
+    return left.page, x + left.box.x, y + left.box.y
 end
 
 --- One page's content box, `{x, y, w, h}`, in its own native coordinates.
 ---
 --- The corruption guard is the base `getUsedBBoxDimensions`': a box that does
---- not describe an area is the whole page (which is also what "Page Crop: none"
+--- not describe an area is the whole page (which is also whatprzeePage Crop: none"
 --- answers, and what a blank page answers).
 function MeguruDocument:_pageBox(pageno)
     local geom = self:_pageGeom(pageno)
@@ -2089,20 +2091,81 @@ function MeguruDocument:_pageBox(pageno)
     }
 end
 
+--- The screen a pair is laid out against.
+---
+--- `CanvasContext:getSize()` and not a bare screen read, for the reason the panel
+--- viewer gives beside its own use of it: it is the framebuffer's *rotated*
+--- surface, so a page laid out in landscape is measured against a landscape
+--- screen. A gutter computed against the wrong one of the two would be wrong by
+--- the whole difference between them.
+function MeguruDocument:_spreadScreen()
+    local canvas = CanvasContext:getSize()
+    if canvas and canvas.w and canvas.h and canvas.w > 0 and canvas.h > 0 then
+        return { w = canvas.w, h = canvas.h }
+    end
+    return { w = Screen:getWidth(), h = Screen:getHeight() }
+end
+
+--- The pair's two halves as they are drawn: each page's crop box widened on the
+--- side that faces the other one, by the gutter that page keeps.
+---
+--- **This is the one place the pair's geometry is decided**, and everything that
+--- needs to know where the seam is asks it: `_pairGeom` for the box the reader
+--- lays out, `drawPage` for the split, `spreadPageAt` for the long-press. They
+--- have to agree to the pixel, and asking one function is how they do.
+---
+--- The rule is `meguru/spread`'s, and it is worth restating in the terms this
+--- function works in. Each page's **inner** margin is the whole distance from its
+--- cropped content to its own edge — the most the gutter may ever be, because
+--- that is the paper the page actually has (`dims.w` is the full uncropped page,
+--- so the margin the crop took off is exactly what is left over). The two
+--- margins, the artwork's own size and the screen go to `Spread.gutter`, which
+--- answers with how much each half widens. Everything else here is bookkeeping.
+---
+--- Two cases answer with no gutter at all without this function having to know
+--- about them. A page whose crop came back whole — "Page Crop: none", a
+--- mostly-blank page, a page that would not load and was given the screen's own
+--- size as a stand-in — has its content edge *at* its page edge, so its margin is
+--- zero. And a pair whose artwork already fills the screen width leaves no slack
+--- for a gutter to take.
+function MeguruDocument:_pairLayout(pair)
+    local left_page, right_page = self:_pairSides(pair)
+    local l, r = self:_pageBox(left_page), self:_pageBox(right_page)
+    local inner_left = math.max(0, self:_pageGeom(left_page).w - (l.x + l.w))
+    local inner_right = math.max(0, r.x)
+    local screen = self:_spreadScreen()
+    local gutter = Spread.gutter(l.w + r.w, math.max(l.h, r.h),
+        inner_left, inner_right, screen.w, screen.h)
+    local left = { x = l.x, y = l.y, w = l.w + gutter.left, h = l.h }
+    local right = { x = r.x - gutter.right, y = r.y, w = r.w + gutter.right, h = r.h }
+    return {
+        left = { page = left_page, box = left },
+        right = { page = right_page, box = right },
+        w = left.w + right.w,
+        h = math.max(left.h, right.h),
+    }
+end
+
 --- The pair's content box — the space the reader lays the pair out in, and the
 --- space `drawPage` splits.
 ---
---- The two pages' crop boxes sit side by side with their tops aligned, page a's
---- crop corner at the origin and page b's at the left page's width. **The vertical
---- alignment is the one approximation here**: two pages cropped to slightly
---- different heights cannot both be flush top and bottom, so the taller sets the
---- box and the shorter one carries the blank beneath it. Two pages of one scan
---- are the same size and it never shows; a spread mixed with a differently
---- cropped page is the case to look at if a seam ever looks wrong.
+--- The two pages' crop boxes sit side by side with their tops aligned, each
+--- widened towards the seam by its own gutter (`_pairLayout`), page a's left edge
+--- at the origin. **The vertical alignment is the one approximation here**: two
+--- pages cropped to slightly different heights cannot both be flush top and
+--- bottom, so the taller sets the box and the shorter one carries the blank
+--- beneath it. Two pages of one scan are the same size and it never shows; a
+--- spread mixed with a differently cropped page is the case to look at if a seam
+--- ever looks wrong.
+---
+--- **The gutter never grows the box past the page it came from.** Each half is
+--- widened only into its own page's margin, so the pair still fits inside the
+--- two full pages — which is what `getNativePageDimensions` answers with, and
+--- what the reader's fit is measured against (`getZoom` refuses a bounding box
+--- larger than the page).
 function MeguruDocument:_pairGeom(pair)
-    local left, right = self:_pairSides(pair)
-    local l, r = self:_pageBox(left), self:_pageBox(right)
-    return Geom:new{ x = 0, y = 0, w = l.w + r.w, h = math.max(l.h, r.h) }
+    local layout = self:_pairLayout(pair)
+    return Geom:new{ x = 0, y = 0, w = layout.w, h = layout.h }
 end
 
 --- The pair's *full* box — both pages whole, side by side, tops aligned. The
@@ -4024,11 +4087,11 @@ end
 --
 -- **The view asks for one page and gets two.** It has laid the pair out as a
 -- single page twice as wide (see `getUsedBBoxDimensions` and `_pairGeom`), so
--- `rect` is a window into that pair's space, with the left page's content corner
--- at the pair's origin and the right page's one left-page-width along. Splitting
--- it is then arithmetic: cut the window at the seam, translate each half back
--- into its own page's coordinates, and hand each to the ordinary single-page
--- path.
+-- `rect` is a window into that pair's space, with the left page's left edge at
+-- the pair's origin and the seam one left-half along — a half being the page's
+-- crop plus whatever gutter it keeps (`_pairLayout`). Splitting it is then
+-- arithmetic: cut the window at the seam, translate each half back into its own
+-- page's coordinates, and hand each to the ordinary single-page path.
 --
 -- Nothing about drawing a page is re-implemented here. Tone, dithering, night
 -- mode's invert, the tile cache and the "could not load" placeholder are all
@@ -4048,10 +4111,13 @@ function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gam
     end
 
     local safe_zoom = (zoom and zoom > 0) and zoom or 1
-    local left_page, right_page = self:_pairSides(pair)
-    local left, right = self:_pageBox(left_page), self:_pageBox(right_page)
+    local layout = self:_pairLayout(pair)
+    local left, right = layout.left, layout.right
     -- Where the two halves meet in the pair's space, and the window's own edges.
-    local seam = left.w * safe_zoom
+    -- The seam carries the gutter: the left page's box has already been widened
+    -- into the margin it keeps, so the split follows from the same layout the
+    -- reader was handed rather than from the crop alone.
+    local seam = left.box.w * safe_zoom
     local x0, x1 = rect.x, rect.x + rect.w
 
     -- `origin` is where this page begins in the pair's space — the left page at 0,
@@ -4077,8 +4143,8 @@ function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gam
         self:drawOnePage(target, x + (from - x0), y, src, page, zoom, rotation, gamma, saturation)
     end
 
-    half(left_page, left, 0, x0, math.min(x1, seam))
-    half(right_page, right, seam, math.max(x0, seam), x1)
+    half(left.page, left.box, 0, x0, math.min(x1, seam))
+    half(right.page, right.box, seam, math.max(x0, seam), x1)
 end
 
 -- drawOnePage / drawPageInverted: same as Document's, but our renderPage may

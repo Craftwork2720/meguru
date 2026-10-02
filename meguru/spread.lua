@@ -61,14 +61,57 @@ by one page rather than a correction for its front — and it is why the rule is
 not "only the run that holds page 1": **a reader past a wide page would turn the
 row and see nothing happen**, which is exactly what the row cannot do.
 
-The cost of the rule is two single pages in a row where a wide page meets the
-offset (9 alone, then 10 alone). That is the honest shape of "leave this run's
+The cost of the rule is singles in a row where a wide page meets the offset. Page
+8 stands alone already, because its would-be partner is the spread; page 9 is the
+spread; and with the offset on, page 10 is the new run's first page. So a book
+reads 8 · 9 (wide) · 10 · 11+12. That is the honest shape of "leave this run's
 first page standing alone, and this run starts at a spread", and it is the one to
 look at if the pairing after a wide page ever reads wrong.
+(`tools/spreadcheck.py` prints this walk, and checks the rules behind it.)
 
 **The stored value is 0/1 and 0 is truthy in Lua**, so `offset` is normalised by
 comparison here and nowhere else — the trap `meguru/doc/defaults`' `seedRowValue`
 documents at length.
+
+## The gutter
+
+A pair drawn from two tightly cropped pages has its artwork butted together at
+the seam, and a book does not look like that: the pages are printed with a margin
+on the side that goes into the binding, and when the two pages of a spread are
+cropped to their panels that margin is thrown away. `gutter` gives it back —
+**as much of it as the screen has room for, and never more than the page had.**
+
+The rule is four sentences, and the order of them is the whole of it:
+
+1. The **outer** edges of the pair stay tight to the artwork. They are the crop's
+   business and this does not touch them.
+2. The **scale comes first**, and it is the fit of the artwork *alone* — the two
+   cropped pages side by side, fitted to the screen. The gutter is not part of
+   that sum, so it can never make the artwork smaller.
+3. The **gutter is the leftover**: whatever horizontal space is still going spare
+   once the artwork is at that scale. It is a *consequence* of the scale rather
+   than a term in it, which is why the two cannot disagree.
+4. It is **clamped to the margins the pages actually have** — each half of the
+   pair to its own page's inner margin, and neither may grow past it. A page
+   cropped flush to its inner edge keeps a gutter of zero, and a screen with more
+   slack than margin leaves the excess at the sides rather than inventing paper.
+
+Two consequences worth stating because they are visible. On a screen whose shape
+matches the pair's artwork — a 4:3 panel and two 2:3 pages, say — the leftover is
+small, so the gutter is small and the artwork spans the screen exactly. On a very
+wide screen the leftover is larger than the page's own margin, and then the margin
+is all the gutter gets and the rest is letterbox: **the artwork is never blown up
+to fill a gutter it does not have.**
+
+The split between the two halves is proportional to the two margins. A page with
+no inner margin contributes nothing, so the whole gutter lands on the other page's
+side of the seam — which is also the right answer for the commonest scan of all,
+where only one of the two pages has any margin at the inner edge to begin with.
+
+The arithmetic is one function over plain numbers precisely so it can be checked
+without a device — everything above is a `min` and a ratio, and
+`tools/spreadcheck.py` is that check, the way `tools/panelprobe.py` is the panel
+detector's.
 --]]
 
 local Spread = {}
@@ -182,6 +225,59 @@ function Spread.prevStart(n, count, list, offset)
     end
     local prev_unit = Spread.unitFor(unit.a - 1, count, list, offset)
     return prev_unit and prev_unit.a or nil
+end
+
+--- How far each half of a pair may widen into its own page's inner margin, in the
+--- pages' own units. The header's four sentences, as arithmetic.
+---
+--- `content_w`/`content_h` are the two *cropped* pages side by side — the artwork
+--- the scale is fitted to. `inner_left`/`inner_right` are what each page has to
+--- give: the distance from its content to its own edge on the side that faces the
+--- other page (so the left page's right margin and the right page's left margin).
+--- The screen is the one the pair is being laid out against.
+---
+--- Returns `{ left = , right = }` in the same units as the margins it was handed,
+--- so the caller widens each page's box by them and needs to know nothing about
+--- the scale. Both are zero when there is nothing to do — no margin measured, no
+--- room going spare, or nothing to measure at all.
+function Spread.gutter(content_w, content_h, inner_left, inner_right, screen_w, screen_h)
+    local nothing = { left = 0, right = 0 }
+    content_w, content_h = tonumber(content_w), tonumber(content_h)
+    screen_w, screen_h = tonumber(screen_w), tonumber(screen_h)
+    if not (content_w and content_h and screen_w and screen_h)
+        or content_w <= 0 or content_h <= 0
+        or screen_w <= 0 or screen_h <= 0 then
+        return nothing
+    end
+    local max_left = math.max(0, tonumber(inner_left) or 0)
+    local max_right = math.max(0, tonumber(inner_right) or 0)
+    local total_max = max_left + max_right
+    if total_max <= 0 then
+        return nothing
+    end
+
+    -- The artwork's own fit. The gutter comes out of what is left of the screen
+    -- after it and is never a term in front of it, which is what keeps the two
+    -- from disagreeing about how big the pages are.
+    local scale = math.min(screen_w / content_w, screen_h / content_h)
+    local spare = math.max(0, screen_w - content_w * scale)
+    -- And never wider than the margins the pages actually have: a screen with
+    -- more slack than that leaves the excess at the sides rather than widening a
+    -- margin the source has not got.
+    local total = math.min(spare, total_max * scale)
+    if total <= 0 then
+        return nothing
+    end
+
+    -- Split in proportion to the two margins, so a page with no inner margin of
+    -- its own puts the whole gutter on the other page's side of the seam.
+    local left = total * (max_left / total_max)
+    -- The right is the remainder rather than a second product: two ratios of the
+    -- same rounded number can come back a hair over the cap they were clamped to,
+    -- and a gutter that is a hair over its own page's margin would draw paper the
+    -- page does not have.
+    local right = total - left
+    return { left = left / scale, right = right / scale }
 end
 
 return Spread

@@ -1694,7 +1694,9 @@ local function buildCuratedOptions(ui)
         args = { "off", "auto", "on" },
         default_value = "off",
         event = "MeguruSpreadUpdate",
-        help_text = _([[Shows two pages side by side, the way a printed book falls open. "in landscape" does it only while the screen is turned on its side, "always" in either orientation. A page the artist drew as one wide image is always shown whole and on its own, and the pairing starts again after it, so a printed spread never lands halfway through a pair. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+        help_text = _([[Shows two pages side by side, the way a printed book falls open. "in landscape" does it only while the screen is turned on its side, "always" in either orientation. A page the artist drew as one wide image is always shown whole and on its own, and the pairing starts again after it, so a printed spread never lands halfway through a pair.
+
+The crop trims the pages' inner margins away, which would butt the two pages together at the middle; instead the space left over once they are fitted to the screen goes back into that gutter, up to the margin the page itself has. So a spread keeps the white space of its binding, and a page cropped flush to its inner edge keeps none. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
     }
     reading_options[#reading_options + 1] = {
         name = "spread_offset",

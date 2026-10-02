@@ -19,7 +19,7 @@ The unit a page belongs to is therefore *not* a function of the page's own parit
 **The offset answer shifts every run by one page — a wide page's run included.** Off pairs from the run's first page — (1,2), (3,4), and (10,11) after a wide page 9. On leaves that first page standing alone and pairs (2,3), (4,5) — so a reader on page 7 sees 6+7, and page 9 wide gives 10 alone, **(11,12)**, (13,14). Two things follow, and both are deliberate:
 
 - It is a shift of the whole book rather than a correction for its front. The rejected rule — "the offset shapes only the run that holds page 1" — left a reader past the first wide page turning the row and watching *nothing happen*, which is the one thing a row may not do.
-- Where a wide page meets the offset there are **two single pages in a row** (9 alone, then 10 alone). That is the honest shape of "this run's first page stands alone, and this run starts at a spread", and it is where to look if the pairing after a wide page ever reads wrong.
+- Where a wide page meets the offset there are **several single pages in a row**: page 8 stands alone because its would-be partner is the spread, page 9 *is* the spread, and with the offset on page 10 is the new run's first page — 8 · 9 · 10 · 11+12. That is the honest shape of "this run's first page stands alone, and this run starts at a spread", and it is where to look if the pairing after a wide page ever reads wrong. `tools/spreadcheck.py` prints that walk and checks the rules behind it.
 
 It is also the reader's correction for the approximate case below.
 
@@ -42,9 +42,34 @@ Everything else about a page keeps answering for one page, through `_pageGeom`: 
 Two decisions inside that are worth keeping:
 
 - **Which page goes on the left is the reading direction's.** In a right-to-left book — manga, this plugin's default — the earlier page of a pair is the right-hand one. The document keeps its own copy of the answer (`spread_rtl`), seeded from the same sidecar key `ReaderView` reads and kept in step by the Manga mode row, because the document is the one that draws the pair and the document is opened before the reader exists.
-- **Two pages cropped to different heights are top-aligned**, and the taller one sets the box. A single rectangle cannot express "this page cropped *and* that one cropped differently" without per-page offsets in the split maths; two pages of one scan are the same size, and the mixed case is where to look if a seam ever looks wrong.
+- **Two pages cropped to different heights are top-aligned**, and the taller one sets the box. A single rectangle cannot express "this page cropped *and* that one cropped differently" *vertically* without per-page offsets in the split maths — the horizontal half of that problem is the gutter, below; two pages of one scan are the same size, and the mixed case is where to look if a seam ever looks wrong.
 
 *A combined bitmap was rejected*: building one `BlitBuffer` twice as wide and blitting it once costs a full-page allocation per pair, needs its own cache and its own key, and gives nothing the two blits into the target do not — the split is strictly better on e-ink memory.
+
+## The gutter
+
+**The crop trims the pages' inner margins away, and the pair puts them back — as much of them as the screen has room for, and never more than the page had.** A page cropped tight to its artwork has nothing between it and the other page of a spread, so the two pages butt together at the middle; a printed book has white there, on the side that goes into the binding. This is the one place the pair's drawing is not simply two crops side by side.
+
+The rule is `Spread.gutter` (`meguru/spread.lua`), and **the order of its four sentences is the whole of it**:
+
+1. The **outer** edges stay tight to the artwork. They are the crop's business and this does not touch them.
+2. The **scale comes first**, and it is the fit of the artwork *alone* — the two cropped pages side by side, fitted to the screen. The gutter is not part of that sum, so it can never make the artwork smaller.
+3. The **gutter is the leftover**: whatever horizontal space is still spare once the artwork is at that scale.
+4. It is **clamped to the margins the pages actually have** — each half to its own page's inner margin. A screen with more slack than that leaves the excess at the sides rather than widening a margin the source has not got.
+
+The two margins are read off the crop rather than assumed: `getPageDims` reports the *full* page and `getPageBBox` the content, so `dims.w - (box.x + box.w)` is exactly the margin the crop took off the left page's inner edge, and `box.x` is the right page's. **Nothing is assumed about which side of a scan carries a margin** — the commonest case of all is a margin on the inner edge of one page of the pair and none on the other, where the whole gutter lands on that page's side of the seam because the split is proportional to the two margins.
+
+**Two cases answer zero without being special-cased, and both are right.** A page whose crop came back whole — "Page Crop: none", a mostly-blank page, a page that failed to load and was given the screen's own size as a stand-in — has its content edge *at* its page edge, so it has no margin to give. And a pair whose artwork already fills the screen width leaves no slack for a gutter to take.
+
+The consequence to look for on a wide screen: **when the spare space is larger than the page's own margin, the margin is all the gutter gets and the rest is letterbox at the sides.** The artwork is never scaled up to fill a gutter the source does not have.
+
+*Rejected: making the gutter part of the fit.* Fitting the pair *with* its margins would let a book with wide inner margins shrink its own artwork to make room for paper — the reader would lose page size to a margin. Ordering the scale first is exactly what makes the two impossible to disagree: the gutter is a consequence of the fit, not a term in it.
+
+The screen the gutter is measured against is `CanvasContext:getSize()` — the framebuffer's *rotated* surface — because a pair laid out in landscape must be measured against a landscape screen. Being killed by the wrong one of the two is the whole difference between them, and it is the same source `meguru/ui/panelzoom` uses for its own orientation decisions.
+
+It is the whole screen and not the area a visible status bar leaves, so a reader who keeps the footer gets a pair measured very slightly too wide: the reader then fits it by width, which scales the gutter down along with the artwork. Nothing is violated — the gutter only ever gets smaller than the margin it is clamped to — and the plugin hides the status bar by default, which is why this is a sentence and not a seam.
+
+The pair's geometry is decided in one place, `MeguruDocument:_pairLayout`, and `_pairGeom` (the box the reader lays out), `drawPage` (the split) and `spreadPageAt` (the long-press) all ask it — they have to agree about where the seam is to the pixel, and asking one function is how they do. The seam is already visible in the existing paint line: each half's `region` is the widened one, so a log shows the extension the gutter added without a line of its own.
 
 ## Turning the page
 
