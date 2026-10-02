@@ -10,7 +10,8 @@ Meguru books share KOReader's per-book `kopt_*` settings, so the bottom `ConfigD
 is **curated** rather than replaced: rows the engine does not implement (page margins,
 auto-straighten, the reflow and zoom-matrix family) are dropped, because each would set
 a value with no visible effect. Four tabs come back: stock's **rotation** and **crop**
-tabs with this engine's rows in them, a **page-view** tab (fit, page scroll, manga), and
+tabs with this engine's rows in them, a **page-view** tab (fit, page scroll, manga, the
+two-page view and its page offset — see [docs/two-page-view.md](two-page-view.md)), and
 
 a fourth **tone** tab — placed on its own because the first three are about the *shape*
 of what is shown and this is the only one about the picture. It holds three rows, and all

@@ -69,6 +69,8 @@ Defaults.PREFERENCE_FOR = {
     contrast              = "contrast",
     saturation            = "saturation",
     sw_dithering          = "dither",
+    spread                = "spread",
+    spread_offset         = "spread_offset",
 }
 local PREFERENCE_FOR = Defaults.PREFERENCE_FOR
 
@@ -115,10 +117,16 @@ function Defaults.seedLayout(ui, configurable)
     end
 end
 
---- The crop itself, wide-page rotation, and which view a long-press opens. All
---- three are rows of the curated dialog; the page-number and blank-page rules used
---- to be rows too and are now part of what "Page Crop: auto" means, so there is
---- nothing to seed for them.
+--- The crop itself, wide-page rotation, which view a long-press opens, and how
+--- many pages are shown at once together with its offset. All are rows of the
+--- curated dialog; the page-number and blank-page rules used to be rows too and
+--- are now part of what "Page Crop: auto" means, so there is nothing to seed for
+--- them.
+---
+--- `spread` is one of the two rows here whose value is a *string* — `panel_view`
+--- is the other — and the offset beside it is 0-or-1. `seedRowValue` copies
+--- either through untouched, which is what a stored "off" and a stored 0 both
+--- need; see its own comment for the `value and 1 or 0` this replaced.
 ---
 --- **`panel_view` seeds from the preference of the same name**, which is why it
 --- needs no entry in `PREFERENCE_FOR` to be seeded — `seedRowValue` falls back to
@@ -131,6 +139,7 @@ function Defaults.seedGeometry(ui, configurable)
     local ds = ui.doc_settings
     for _, name in ipairs{
         "trim_page", "rotate_wide_pages", "panel_view",
+        "spread", "spread_offset",
     } do
         local value = seedRowValue(ds, name)
         if value ~= nil then

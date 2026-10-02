@@ -205,6 +205,36 @@ local function currentPage(ui)
     return ui.paging and ui.paging.current_page
 end
 
+--- Re-derive the page box when the two-page view starts or stops.
+---
+--- **Nothing else has to happen on a page turn**, and that is worth saying because
+--- it looks like an omission: the document answers "one page or two" from the
+--- live mode and the live orientation every time it is asked (`spreadActive`), so
+--- turning a page picks up the pair on its own. What does *not* happen on its own
+--- is a re-layout at the moment the answer changes — a rotation, or the reader
+--- flipping the row. The page box the reader derived a moment ago is the old
+--- shape, and it stays the old shape until something asks it to derive again;
+--- `ReZoom` is that verb, and the one the crop rows and `Defaults.apply` use.
+---
+--- The last answer is kept on the reader UI so this fires on a change and not on
+--- every rotation of every book.
+local function syncSpread(ui)
+    local doc = ui and ui.document
+    if not (doc and doc.provider == "meguru"
+        and type(doc.spreadActive) == "function") then
+        return
+    end
+    local active = doc:spreadActive() and true or false
+    if active == (ui._meguru_spread_active or false) then
+        return
+    end
+    ui._meguru_spread_active = active
+    if type(ui.handleEvent) == "function" then
+        ui:handleEvent(Event:new("ReZoom"))
+    end
+    logger.dbg("Meguru: two-page view", active and "on" or "off")
+end
+
 --- Turn the screen to `mode` through KOReader's own rotation machinery — the
 --- same shape as `ReaderView:onSetRotationMode`, minus the notification. A
 --- change of portrait/landscape *parity* is a real geometry change, so the UI
@@ -225,6 +255,11 @@ local function rotateTo(ui, mode)
         end
         ui:handleEvent(Event:new("InitScrollPageStates"))
     end
+    -- A rotation is the one thing that starts or stops the two-page view by
+    -- itself (in "auto" it is the whole of the condition), so the box has to be
+    -- derived again after one. This is the plugin's own rotation; the reader's
+    -- own goes through `ReaderView:rotate` and is caught by `installSpread`.
+    syncSpread(ui)
     logger.dbg("Meguru: wide page, screen rotation", cur, "->", mode)
 end
 
@@ -251,13 +286,22 @@ local function updatePageRotation(state, ui, page)
     local document = ui and ui.document
     local view = ui and ui.view
     local configurable = document and document.configurable
-    if not (view and configurable and document.getNativePageDimensions) then
+    if not (view and configurable and document.pageIsWide) then
         return
     end
     if view.flipping_visible or view.page_scroll then
         return
     end
     if view.state and view.state.page ~= nil and view.state.page ~= page then
+        return
+    end
+    -- **While two pages are showing, this does nothing at all** — it neither
+    -- turns nor restores. In landscape the pair is already the shape a wide page
+    -- wants, so a turn would be pointless; and an undo would take the screen to
+    -- portrait, which stops the pair, which makes the next page narrow again,
+    -- which undoes the undo. That flip-flop is the whole reason for the guard,
+    -- and it is why the two features can share a book without fighting.
+    if type(document.spreadActive) == "function" and document:spreadActive() then
         return
     end
 
@@ -270,11 +314,11 @@ local function updatePageRotation(state, ui, page)
         return
     end
 
-    local size = document:getNativePageDimensions(page)
-    if not (size and size.w > 0 and size.h > 0) then
-        return
-    end
-    if size.w <= size.h then
+    -- **One page's shape, never the pair's.** `getNativePageDimensions` answers
+    -- with the pair while two pages are showing, and a pair is wider than tall by
+    -- construction — so asking it here would turn the screen for two pages that
+    -- are only wide because they are lying side by side.
+    if not document:pageIsWide(page) then
         restoreWideRotate(state, ui)
         return
     end
@@ -329,9 +373,8 @@ local function reconcileWideRotation(state, ui)
         local enabled = configurable.text_wrap ~= 1
             and (value == ROTATE_RIGHT or value == ROTATE_LEFT
                 or value == tostring(ROTATE_RIGHT) or value == tostring(ROTATE_LEFT))
-        if enabled and document.getNativePageDimensions then
-            local size = document:getNativePageDimensions(page)
-            keep = size ~= nil and size.w > size.h
+        if enabled and type(document.pageIsWide) == "function" then
+            keep = document:pageIsWide(page)
         end
     end
     if keep then
@@ -379,6 +422,142 @@ local function installWideRotate(state, ui)
             return ret
         end
     end
+end
+
+--- Install the two-page view's seams for this ReaderUI. Once per reader.
+---
+--- **One gesture turns a whole spread, and this is the whole of how.** KOReader's
+--- counter moves by one page and knows nothing about pairs; left alone, a reader
+--- on a spread would spend a turn on the second page of it and see the same two
+--- pages painted again. So the target is passed through the document's
+--- imposition, which answers with the page that *unit* starts at — `spreadSnap`,
+--- which also says what a jump means, and what the end of the book looks like
+--- when the last unit is a pair.
+---
+--- The other seam here is rotation. The reader's own rotation never comes through
+--- this plugin's `rotateTo` — it goes through ReaderView's own machinery — so the
+--- re-derivation `syncSpread` does is hung on `ReaderView:rotate`, which is where
+--- that rotation's geometry change lands. Both are needed: `rotateTo` catches the
+--- plugin's own wide-page turns, this catches the reader's hand.
+local function installSpread(ui)
+    local paging, view = ui and ui.paging, ui and ui.view
+    if not (paging and view) then
+        return false
+    end
+    if ui._meguru_spread_installed then
+        return true
+    end
+    ui._meguru_spread_installed = true
+
+    if not paging._meguru_spread_patched then
+        paging._meguru_spread_patched = true
+        local orig_goto = paging._gotoPage
+        paging._gotoPage = function(pg, number, orig_mode)
+            local doc = ui.document
+            if number ~= nil and doc and type(doc.spreadSnap) == "function" then
+                local target, finished = doc:spreadSnap(number, pg.current_page)
+                if finished then
+                    -- The last unit is on screen and the reader turned past the
+                    -- end of the book. `onGotoPageRel` announces that itself only
+                    -- when the counter passes the last page, which it never does
+                    -- while the last unit is a pair — so nothing else would.
+                    ui:handleEvent(Event:new("EndOfBook"))
+                    return true
+                end
+                if target ~= nil then
+                    number = target
+                    -- Warm the page the pair needs *before* the reader lays the
+                    -- page out: that pass asks the document for the pair's box,
+                    -- and a fetch from in there would freeze the paint.
+                    if type(doc.prepareSpread) == "function" then
+                        doc:prepareSpread(number)
+                    end
+                end
+            end
+            return orig_goto(pg, number, orig_mode)
+        end
+    end
+
+    if not view._meguru_spread_rotate_patched and type(view.rotate) == "function" then
+        view._meguru_spread_rotate_patched = true
+        local orig_rotate = view.rotate
+        view.rotate = function(vw, ...)
+            local ret = orig_rotate(vw, ...)
+            syncSpread(ui)
+            return ret
+        end
+    end
+
+    -- And the other way the answer can change without a page turn: continuous
+    -- scroll switches the two-page view off (see `spreadActive`), so the box has
+    -- to be derived again when the reader leaves or enters it.
+    if not view._meguru_spread_scroll_patched
+        and type(view.onSetScrollMode) == "function" then
+        view._meguru_spread_scroll_patched = true
+        local orig_scroll = view.onSetScrollMode
+        view.onSetScrollMode = function(vw, page_scroll)
+            local ret = orig_scroll(vw, page_scroll)
+            syncSpread(ui)
+            return ret
+        end
+    end
+
+    -- Whether two pages are on is decided by `spreadActive`, from the book's own
+    -- value and the screen — so nothing has to be *pushed* here. What this does
+    -- need is a first look, and it is taken at `ReaderReady` and not here:
+    -- `ReadSettings` has not run yet at this point, so a book whose `spread` the
+    -- seeding is about to write still reads as off. See the callback in
+    -- `Reader.install`.
+    return true
+end
+
+--- Apply a new two-page value to the live document and this book's own settings,
+--- then lay the page out again in the new shape.
+---
+--- The value is written where the couple that reads it will find it — the
+--- document's configurable, which is the live answer, and the book's sidecar,
+--- which is the one it opens with next time — and `syncSpread` is what turns the
+--- change into a re-layout. The stored domain is the row's own: "off", "auto",
+--- "on".
+local function setSpread(ui, value, text)
+    local configurable = ui and ui.document and ui.document.configurable
+    if not (configurable and configurable.spread ~= nil) then
+        return false
+    end
+    configurable.spread = value
+    if ui.doc_settings then
+        ui.doc_settings:saveSetting("kopt_spread", value)
+        ui.doc_settings:flush()
+    end
+    syncSpread(ui)
+    if text then
+        UIManager:show(Notification:new{ text = text, timeout = 2 })
+    end
+    return true
+end
+
+--- The offset beside it. Same shape, and it needs no re-layout of its own beyond
+--- `syncSpread`'s: the offset changes *which* pages a unit holds, never the shape
+--- of a unit, so the page box the reader derived is still the right one.
+local function setSpreadOffset(ui, value, text)
+    local configurable = ui and ui.document and ui.document.configurable
+    if not (configurable and configurable.spread_offset ~= nil) then
+        return false
+    end
+    configurable.spread_offset = value
+    if ui.doc_settings then
+        ui.doc_settings:saveSetting("kopt_spread_offset", value)
+        ui.doc_settings:flush()
+    end
+    -- The unit under the reader has almost certainly changed — pairing from a
+    -- different page is the whole of the setting — so the page is laid out again.
+    if type(ui.handleEvent) == "function" then
+        ui:handleEvent(Event:new("ReZoom"))
+    end
+    if text then
+        UIManager:show(Notification:new{ text = text, timeout = 2 })
+    end
+    return true
 end
 
 --- Apply a new wide-page rotation value to the live document and this book's own
@@ -585,6 +764,15 @@ local function meguruPanelZoom(self, arg, ges, fallback)
     -- fetch page `nil`, which is a socket call rather than an error.
     if not (pos and pos.page) then
         fallback(self, arg, ges)
+    end
+    -- **The press belongs to the page under the finger.** `pos` is measured in
+    -- the space the view laid out, which with two pages showing is the pair's —
+    -- so page `pos.page` is the unit's first page and `pos.x` runs across both.
+    -- The document maps the point onto the page it is really on, which is the
+    -- page whose panels, page size and crop box everything below then asks for.
+    -- With one page showing this answers what it was handed.
+    if pos and type(doc.spreadPageAt) == "function" then
+        pos.page, pos.x, pos.y = doc:spreadPageAt(pos.page, pos.x, pos.y)
     end
 
     local mode = Reader.panelZoomMode(ui)
@@ -1485,6 +1673,48 @@ local function buildCuratedOptions(ui)
         help_text = _([[Right-to-left page turning, so the book reads like Japanese manga. Remembered for this book; new Meguru books start with it on — long-press this row to change that default.]]),
     }
 
+    -- Whether two pages are shown at once, and which one a pair starts on.
+    --
+    -- Both are here, on the tab about *how a page is shown*, rather than beside
+    -- the rotation and the crop: they describe the shape of what is on the
+    -- screen, which is what `Fit` and `Page scroll` above describe too.
+    --
+    -- **"off" is the default**, so nothing about an existing book changes until
+    -- a reader asks — and the offset below is inert until they do, which is what
+    -- its `enabled_func` is for.
+    reading_options[#reading_options + 1] = {
+        name = "spread",
+        name_text = _("Two pages"),
+        toggle = {
+            C_("Two pages", "off"),
+            _("in landscape"),
+            _("always"),
+        },
+        values = { "off", "auto", "on" },
+        args = { "off", "auto", "on" },
+        default_value = "off",
+        event = "MeguruSpreadUpdate",
+        help_text = _([[Shows two pages side by side, the way a printed book falls open. "in landscape" does it only while the screen is turned on its side, "always" in either orientation. A page the artist drew as one wide image is always shown whole and on its own, and the pairing starts again after it, so a printed spread never lands halfway through a pair. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+    }
+    reading_options[#reading_options + 1] = {
+        name = "spread_offset",
+        name_text = _("Page offset"),
+        toggle = {
+            _("7 + 8"),
+            _("6 + 7"),
+        },
+        values = { 0, 1 },
+        args = { 0, 1 },
+        default_value = 0,
+        event = "MeguruSpreadOffsetUpdate",
+        -- Inert while there is only ever one page on the screen — a switch that
+        -- changes nothing is what this curated menu exists to keep out.
+        enabled_func = function(configurable)
+            return configurable.spread ~= nil and configurable.spread ~= "off"
+        end,
+        help_text = _([[Which page a pair starts on: 7 + 8 pairs from page 1, 6 + 7 leaves page 1 standing alone and pairs from page 2. Turn it on for a book whose first page is its own — a cover, a title page — where every spread would otherwise be one page out. It applies to the front of the book only: a pair that begins after a wide page always begins with the first two pages after it.]]),
+    }
+
     -- The tone tab: what the page looks like, where the three above are about the
     -- shape of what is shown. Contrast is the one row that is always here; the
     -- other two are each about *this screen* rather than about the page —
@@ -2150,6 +2380,18 @@ function Reader.install(plugin)
         end
     end
 
+    -- The two-page view's own seams, and unlike the rotation above this is
+    -- installed whatever else is: it is not a second answer to a question
+    -- another plugin answers, it is a question nothing else asks at all.
+    --
+    -- **One interaction is left open and is recorded in `docs/known-issues.md`:**
+    -- with `pagenumbercrop.koplugin` installed *and* the two-page view on, that
+    -- plugin's own wide-page rotation reads a pair through this document's
+    -- geometry, sees something wider than tall, and turns the screen — which
+    -- stops the pair, which makes the next page narrow again. Our guard cannot
+    -- catch it, because that path never comes through our rotation.
+    installSpread(ui)
+
     -- Installed here, before the `ReadSettings` event reaches ReaderHighlight,
     -- so the value the reader sees is the one this decides and not the one
     -- stock read out of the book's sidecar a moment later.
@@ -2250,6 +2492,16 @@ function Reader.install(plugin)
             -- (`meguru/doc/defaults`).
             ui:handleEvent(Event:new("ReZoom"))
         end)
+
+        -- And the two-page view's first look, here rather than at install for
+        -- the reason the take-back above is here: every plugin's seeding has run
+        -- by now, so a book the plugin preference gives "on" to is laid out two-
+        -- up from its first paint instead of staying one page until something
+        -- else asks. `syncSpread` fires nothing when the answer is off, which is
+        -- every book that has not asked for it.
+        ui:registerPostReaderReadyCallback(function()
+            syncSpread(ui)
+        end)
     end
 
     installEndOfBookHook(plugin)
@@ -2264,6 +2516,29 @@ function Reader.install(plugin)
             _("Rotate wide pages: left 90°"),
         }
         setWideRotate(rotate_state, self.ui, value, texts[value + 1])
+        return true
+    end
+
+    plugin.onMeguruSpreadUpdate = function(self, value)
+        if value ~= "off" and value ~= "auto" and value ~= "on" then
+            value = "off"
+        end
+        local texts = {
+            off = _("Two pages: off"),
+            auto = _("Two pages: in landscape"),
+            on = _("Two pages: always"),
+        }
+        setSpread(self.ui, value, texts[value])
+        return true
+    end
+
+    plugin.onMeguruSpreadOffsetUpdate = function(self, value)
+        -- Compared, never tested: the row's stored domain is 0-or-1 and `0` is
+        -- truthy in Lua, so `value and 1 or 0` here would read a stored "off" as
+        -- on — the trap `meguru/doc/defaults`' `seedRowValue` documents at length.
+        value = (value == 1 or value == "1" or value == true) and 1 or 0
+        setSpreadOffset(self.ui, value,
+            value == 1 and _("Page offset: 6 + 7") or _("Page offset: 7 + 8"))
         return true
     end
 
@@ -2298,6 +2573,16 @@ function Reader.install(plugin)
         local view = self.ui.view
         if view and type(view.onToggleReadingOrder) == "function" then
             view:onToggleReadingOrder(enabled)
+        end
+        -- **And the document is told, because it is the one that draws a pair.**
+        -- Which page of a pair goes on which side is the reading direction's
+        -- business, and the document cannot read `view.inverse_reading_order`
+        -- (it is not a configurable, and the document is opened before the
+        -- reader exists) — so it keeps its own copy, seeded from the same
+        -- sidecar key at open and kept in step here.
+        local doc = self.ui and self.ui.document
+        if doc then
+            doc.spread_rtl = enabled
         end
         return true
     end

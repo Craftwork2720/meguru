@@ -180,6 +180,29 @@ local DEFAULTS = {
     page_scroll       = 0,            -- 0 = page view, 1 = continuous
     trim_page         = 1,            -- 1 = auto crop (margins, number, blank), 3 = none
     rotate_wide       = 1,            -- 0 = off, 1 = right, 2 = left
+
+    -- How many pages are shown at once: "off", "auto" (two only while the screen
+    -- is in landscape), "on" (two always).
+    --
+    -- **"off" is the default, and the reason is that everything above it is a
+    -- change to how a book reads.** One page at a time is what this plugin has
+    -- always done and what the reader bought; two at a time is a preference a
+    -- reader has to state. "auto" is the one worth reaching for — held in
+    -- landscape the screen has the room for two pages, held upright it does not,
+    -- and the orientation says which without a menu.
+    --
+    -- A page drawn as one wide image is never half of a pair, whatever this
+    -- says; see `meguru/spread` for the imposition and the vertical alignment it
+    -- costs.
+    spread            = "off",
+
+    -- Whether a pair is anchored a page back: pages 6+7 rather than 7+8.
+    --
+    -- For a book whose first page stands alone — a cover, a title page — where
+    -- pairing from page 1 would put every spread one page out. 0 is "pair from
+    -- page 1". Read by comparison everywhere it is consulted: 0 is truthy in
+    -- Lua, so `if spread_offset then` would read a stored "off" as on.
+    spread_offset     = 0,
     night_mode        = true,         -- pre-invert pages instead of a stark negative
 
     -- Page tone, as MuPDF's contrast: 1.0 is the page as it arrived, above it

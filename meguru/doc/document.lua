@@ -49,6 +49,7 @@ local Naming = require("meguru/naming")
 local PSE = require("meguru/pse")
 local Settings = require("meguru/settings")
 local Sources = require("meguru/sources")
+local Spread = require("meguru/spread")
 local util = require("util")
 local ffiutil = require("ffi/util")
 
@@ -566,7 +567,10 @@ end
 -- and the detector is not the part to swap.
 --
 -- Coordinates: ReaderView hands the touch in *full native* page space — the
--- space getNativePageDimensions/getPageDims report. A margin crop only makes
+-- space getPageDims reports (`_pageGeom`; the instance's
+-- getNativePageDimensions answers with a pair while two pages are showing, which
+-- is why `spreadPageAt` maps the point onto one page before this is reached).
+-- A margin crop only makes
 -- ReaderView zoom in; it never shifts tap coordinates (content sits at the
 -- bbox origin, already accounted for by ReaderView), so both the touch point
 -- and the returned panel are in plain native page coordinates, and what
@@ -799,9 +803,11 @@ installRenderPageShim()
 -- virtual document that base slot would crash on the missing engine
 -- (_document is nil: document.lua "attempt to index field '_document'"). The
 -- slot is redirected once per process, exactly like the renderPage shim above:
--- our own documents answer from their getNativePageDimensions override (the
--- full native page — the coordinate space the plugin's probe grid and our
--- getPanelFromPage share), every other document keeps the pristine base
+-- our own documents answer with **one page's** size — `_pageGeom`, the space the
+-- plugin's probe grid and our `getPanelFromPage` share, and deliberately not the
+-- instance's `getNativePageDimensions`, which answers with a *pair* while the
+-- reader is being shown two pages (see "Two pages at once" below) — and every
+-- other document keeps the pristine base
 -- behaviour bit-for-bit. With the slot answered, the plugin's batched KOPT
 -- path bails out on its own `not document._document` guard and falls back to
 -- probing `document:getPanelFromPage` — this document's conservative panel
@@ -815,12 +821,23 @@ local function installNativePageDimensionsShim()
     local base_get_native_page_dimensions = Document.getNativePageDimensions
     Document.getNativePageDimensions = function(self, pageno, ...)
         if self.provider == "meguru" then
-            return self:getNativePageDimensions(pageno, ...)
+            -- **One page, always**, even while the reader is being shown two:
+            -- an external plugin asks this to decide whether to turn the screen
+            -- for a wide page, and a pair is wide by construction — handing it
+            -- the pair would have it fighting this plugin's own two-page view
+            -- for the screen. See `_pageGeom`.
+            return Geom:new(self:_pageGeom(pageno))
         end
         return base_get_native_page_dimensions(self, pageno, ...)
     end
 end
 installNativePageDimensionsShim()
+
+-- The base bbox seam, captured before this class replaces it. `getUsedBBoxDimensions`
+-- below is virtual while the reader is shown two pages at once (it composes the
+-- pair's box), and the single-page answer still has to be reachable from inside
+-- that override.
+local base_get_used_bbox_dimensions = Document.getUsedBBoxDimensions
 
 local MeguruDocument = Document:extend{
     _document = nil, -- we have no engine instance
@@ -882,6 +899,21 @@ local MeguruDocument = Document:extend{
                     --            false == full page (no margin trimmed); a nil
                     --            *returned* box means the same (see autoContentBox)
     desc = nil,     -- the stream descriptor read from the marker file
+
+    -- Ascending page numbers this session has found to be wider than tall —
+    -- the pages an artist drew as one spread. One bit per page, no LRU, and
+    -- **only ever written where a page was really decoded** (`_noteWide`): a
+    -- page whose fetch failed is given the screen's own dimensions as a
+    -- stand-in (`getPageDims`), and on a landscape screen that stand-in would
+    -- read as "wide" and re-anchor the whole pairing around a page that does
+    -- not exist. The imposition itself is `meguru/spread`.
+    wide_list = nil,
+
+    -- Whether this book reads right to left, so the earlier page of a pair goes
+    -- on the *right*. Mirrors `ReaderView.inverse_reading_order`, which is a
+    -- reader-side setting rather than a configurable one; seeded from the same
+    -- sidecar key at open and kept in step by the reader's Manga mode row.
+    spread_rtl = false,
 }
 
 -- ---------------------------------------------------------------------------
@@ -920,6 +952,7 @@ function MeguruDocument:init()
     self.stamp = 0
     self.page_bytes = {}
     self.dims = {}
+    self.wide_list = {}
     self.crops = {}
     self.panels = {}
     -- Pages whose decode has failed (or that were refused as too large to
@@ -1123,6 +1156,15 @@ function MeguruDocument:init()
             if ds:readSetting("inverse_reading_order") == nil then
                 ds:saveSetting("inverse_reading_order", Settings.get("manga_order"))
                 ds:flush()
+            end
+            -- The same key says which way a pair is laid out: read right to
+            -- left, the earlier page of a pair belongs on the right. Read here
+            -- rather than asked of the reader because the document draws the
+            -- pair and the reader is not always there (the mosaic's cover path
+            -- opens one too) — and it is read *after* the seed above, so a book
+            -- with no key of its own answers the plugin preference's value.
+            if type(ds.isTrue) == "function" then
+                self.spread_rtl = ds:isTrue("inverse_reading_order") and true or false
             end
             -- The recorded page is used exactly as recorded. It is *not* trimmed
             -- back past the prefetch lead, even though a book read here is
@@ -1891,9 +1933,352 @@ function MeguruDocument:getPageText()
     return nil
 end
 
+-- ---------------------------------------------------------------------------
+-- Two pages at once
+-- ---------------------------------------------------------------------------
+--
+-- When the reader asks for it — `spread` at "on", or "auto" while the screen is
+-- in landscape — two pages are shown side by side. The whole of how they pair
+-- lives in `meguru/spread`; what lives here is the *geometry*, and the shape it
+-- takes is worth stating once:
+--
+-- **A pair is presented to the reader as one page, twice as wide.** KOReader has
+-- no two-page mode for a paged document (its `getVisiblePageCount` is a reflow
+-- engine's, and `ReaderPaging` never asks for two), so the alternative would be
+-- to drive the layout ourselves. Instead the document answers two of the
+-- reader's geometry questions with the pair's box — `ReaderView:getPageArea`
+-- reads exactly those two — and then splits the one rectangle it is asked to
+-- draw into the two pages it is made of. Zoom, fit, panning, the page box and
+-- the visible area are all the reader's own, unchanged, because from its side
+-- there is only ever one page.
+--
+-- Three things must stay truthful while that is going on, and they are the
+-- reason the pair is composed here rather than the box being faked wholesale:
+-- a page's **own** size (`_pageGeom` — the crop analysis and the panel detector
+-- ask for it, and a pair-wide answer would move a printed page number's strip
+-- and shrink the probe grid), the pair's **full** size (the fit is measured
+-- against it, and the reader refuses a bounding box bigger than the page), and
+-- every **external** reader of the geometry (the process-wide shim above), which
+-- is handed one page for the reason given there.
+
+--- The page's own full size, never the pair's.
+---
+--- Every part of this document that means *one page* asks through here: the
+--- blank-page rule and the page-number strip (`getPageBBox`), which measure a
+--- band of the printed page, and `ui/reader`'s wide-page rotation, which decides
+--- by a page's shape whether to turn the screen. A pair is wider than tall by
+--- construction, so any of them reading the virtual seam would decide for two
+--- pages what only makes sense for one.
+function MeguruDocument:_pageGeom(pageno)
+    local dims = self:getPageDims(pageno)
+    return { w = dims.w, h = dims.h }
+end
+
+--- Whether the reader is being shown two pages at a time right now.
+---
+--- Read from the configurable and the screen rather than from a flag the reader
+--- sets, so there is no ordering to get wrong between the reader installing and
+--- the first layout pass: "auto" is landscape only, and landscape is the parity
+--- of the rotation mode — the same definition `ui/reader`'s `rotateTo` rotates
+--- by, and the same one this plugin already reasons about everywhere else.
+function MeguruDocument:spreadActive()
+    local configurable = self.configurable
+    local value = configurable and configurable.spread
+    if value ~= "off" and value ~= "auto" and value ~= "on" then
+        return false
+    end
+    -- Continuous scroll lays the pages out one after another in a strip, and two
+    -- side by side there would not be a pair at all but a page in two slots. The
+    -- row is inert while the reader is scrolling — the same shape as the
+    -- reader's own per-page rotation, which is meaningless in that mode too.
+    if configurable.page_scroll == 1 or configurable.page_scroll == "1" then
+        return false
+    end
+    if value == "on" then
+        return true
+    end
+    if value == "off" then
+        return false
+    end
+    return (Screen:getRotationMode() % 2) == 1
+end
+
+--- The per-book offset answer, read by comparison. `0` is truthy in Lua, so an
+--- `if value then` here would read a stored "off" as on — the trap
+--- `meguru/doc/defaults`' `seedRowValue` documents at length.
+function MeguruDocument:_spreadOffset()
+    local value = self.configurable and self.configurable.spread_offset
+    return value == 1 or value == true or value == "1"
+end
+
+--- The unit `pageno` is being shown in: nil when two pages were not asked for,
+--- `{ a = n }` for a page shown alone (a wide page, or one whose partner is
+--- wide), `{ a = n, b = m }` for a pair.
+---
+--- **A pair is only offered once both pages' sizes are known.** Those sizes come
+--- from a fetch and a decode, and this is asked from inside the reader's layout
+--- pass — answering "pair" for a page whose partner has not been decoded would
+--- have to fetch right there, which is a freeze on the paint. What warms the
+--- partner is `prepareSpread` (on the page turn) and `hintPage` (after a paint);
+--- until one of them has, the page is shown alone, exactly as it is today.
+function MeguruDocument:spreadUnitFor(pageno)
+    if not self:spreadActive() then
+        return nil
+    end
+    local count = self.info and self.info.number_of_pages
+    if not count then
+        return nil
+    end
+    local unit = Spread.unitFor(pageno, count, self.wide_list, self:_spreadOffset())
+    if unit and unit.b and not self.dims[unit.b] then
+        return { a = unit.a }
+    end
+    return unit
+end
+
+--- The pair's two pages in screen order: the left one first.
+---
+--- The reading direction is the whole of what decides this. In a right-to-left
+--- book — manga, and this plugin's own default — the *earlier* page of a pair
+--- belongs on the right, which is what makes a spread read the way the artist
+--- drew it.
+function MeguruDocument:_pairSides(pair)
+    if self.spread_rtl then
+        return pair.b, pair.a
+    end
+    return pair.a, pair.b
+end
+
+--- Which page of the spread on screen a point falls on, and where in that page
+--- it is.
+---
+--- The point arrives in the space the reader laid out — the pair's, while two
+--- pages are showing, exactly as `drawPage` splits it — and comes back in the
+--- page's own, which is the space the panel detector, the crop box and the
+--- page's size are all measured in. With one page showing it answers what it was
+--- handed, so the long-press has one path and not two.
+function MeguruDocument:spreadPageAt(pageno, x, y)
+    local pair = self:spreadUnitFor(pageno)
+    if not (pair and pair.b) then
+        return pageno, x, y
+    end
+    local left_page, right_page = self:_pairSides(pair)
+    local left, right = self:_pageBox(left_page), self:_pageBox(right_page)
+    if x >= left.w then
+        return right_page, (x - left.w) + right.x, y + right.y
+    end
+    return left_page, x + left.x, y + left.y
+end
+
+--- One page's content box, `{x, y, w, h}`, in its own native coordinates.
+---
+--- The corruption guard is the base `getUsedBBoxDimensions`': a box that does
+--- not describe an area is the whole page (which is also what "Page Crop: none"
+--- answers, and what a blank page answers).
+function MeguruDocument:_pageBox(pageno)
+    local geom = self:_pageGeom(pageno)
+    local box = self:getPageBBox(pageno)
+    if not (box and box.x1 and box.y1) or box.x0 >= box.x1 or box.y0 >= box.y1 then
+        return { x = 0, y = 0, w = geom.w, h = geom.h }
+    end
+    return {
+        x = box.x0,
+        y = box.y0,
+        w = box.x1 - box.x0,
+        h = box.y1 - box.y0,
+    }
+end
+
+--- The pair's content box — the space the reader lays the pair out in, and the
+--- space `drawPage` splits.
+---
+--- The two pages' crop boxes sit side by side with their tops aligned, page a's
+--- crop corner at the origin and page b's at the left page's width. **The vertical
+--- alignment is the one approximation here**: two pages cropped to slightly
+--- different heights cannot both be flush top and bottom, so the taller sets the
+--- box and the shorter one carries the blank beneath it. Two pages of one scan
+--- are the same size and it never shows; a spread mixed with a differently
+--- cropped page is the case to look at if a seam ever looks wrong.
+function MeguruDocument:_pairGeom(pair)
+    local left, right = self:_pairSides(pair)
+    local l, r = self:_pageBox(left), self:_pageBox(right)
+    return Geom:new{ x = 0, y = 0, w = l.w + r.w, h = math.max(l.h, r.h) }
+end
+
+--- The pair's *full* box — both pages whole, side by side, tops aligned. The
+--- uncropped counterpart of `_pairGeom`, and the size the fit is measured
+--- against; see `getNativePageDimensions`.
+function MeguruDocument:_pairFullGeom(pair)
+    local a, b = self:_pageGeom(pair.a), self:_pageGeom(pair.b)
+    return { w = a.w + b.w, h = math.max(a.h, b.h) }
+end
+
+--- Note that a page is wider than tall, for the imposition.
+---
+--- Called from the two places `getPageDims` really decodes a page, and **never**
+--- from its failure branches: those cache the *screen's* own size as a stand-in
+--- for a page that would not load, and on a landscape screen that stand-in reads
+--- as "wide" — which would re-anchor the pairing around a page nobody has seen.
+function MeguruDocument:_noteWide(pageno, dims)
+    if not (dims and dims.w and dims.h and dims.w > dims.h) then
+        return
+    end
+    local list = self.wide_list
+    local n = #list
+    if n > 0 and list[n] == pageno then
+        return
+    end
+    if n == 0 or list[n] < pageno then
+        list[n + 1] = pageno
+        return
+    end
+    -- Out of order: a prefetch or a panel warm can learn a later page first, and
+    -- the list has to stay ascending for the imposition's search.
+    local i = n
+    while i >= 1 and list[i] > pageno do
+        i = i - 1
+    end
+    if i >= 1 and list[i] == pageno then
+        return
+    end
+    table.insert(list, i + 1, pageno)
+end
+
+--- Is this one page wider than tall? The truthful test, and the one the
+--- reader's own wide-page rotation must use: it must not read a *pair* through
+--- `getNativePageDimensions` and decide to turn the screen for two pages that
+--- are only wide because they are lying side by side.
+function MeguruDocument:pageIsWide(pageno)
+    local geom = self:_pageGeom(pageno)
+    return geom.w > geom.h
+end
+
+--- Warm the one page the pairing needs for `pageno`, before the reader lays the
+--- page out.
+---
+--- This is what keeps the fetch out of the layout pass. Sequentially read, the
+--- page ahead is already warm from `hintPage`; this is for the rest — a jump, a
+--- resume, the first page of an open — and it warms a single page, the partner,
+--- or nothing at all when the pairing does not need one. Silent with no
+--- connection, like `analyseAhead`, and for the same reason: a fetch from here
+--- would otherwise sit through its timeout before every page turn of an offline
+--- book. A local `.cbz` needs no connection and is warmed regardless.
+function MeguruDocument:prepareSpread(pageno)
+    if not self:spreadActive() then
+        return
+    end
+    local count = self.info and self.info.number_of_pages
+    if not (count and pageno and pageno >= 1 and pageno <= count) then
+        return
+    end
+    if not self.local_cbz and not self:hasConnection() then
+        return
+    end
+    local candidates = { pageno + 1 }
+    if self:_spreadOffset() then
+        -- The offset pairs backwards, so the partner is the page before.
+        candidates[#candidates + 1] = pageno - 1
+    end
+    for _, target in ipairs(candidates) do
+        if target >= 1 and target <= count and not self.dims[target]
+            and not self.dead_pages[target] then
+            -- pcall: this runs on the page-turn path, and a fetch that throws
+            -- must cost a pair, not the turn.
+            pcall(self.getPageDims, self, target)
+            pcall(self.analyseAhead, self, target)
+        end
+    end
+end
+
+--- Where a turn to `number` lands once two pages are shown at a time, and
+--- whether it ran off the end of the book.
+---
+--- A turn that stops *inside the unit already on screen* is a relative step —
+--- the reader's gesture, not a jump — and it means the neighbouring unit. That
+--- is the whole of why this exists: the counter moves by one page, the reader
+--- sees a spread, and the two must not be the same thing. A turn to a page
+--- outside the current unit is a jump (a table of contents, a percentage, a
+--- resume) and lands on the start of the unit holding it.
+---
+--- The one case it cannot tell apart is a jump to the *second* page of the
+--- spread already on screen, which reads as "one further" — recorded in
+--- `docs/known-issues.md`.
+function MeguruDocument:spreadSnap(number, current)
+    if not self:spreadActive() then
+        return number, false
+    end
+    local count = self.info and self.info.number_of_pages
+    number = math.floor(tonumber(number) or 0)
+    current = tonumber(current) or 0
+    if number < 1 then
+        return number, false
+    end
+    if count and number > count then
+        number = count
+    end
+    local offset = self:_spreadOffset()
+    local here = self:spreadUnitFor(current)
+    local there = self:spreadUnitFor(number)
+    if here and there and here.a == there.a and current ~= number then
+        local target
+        if number >= current then
+            target = Spread.nextStart(current, count, self.wide_list, offset)
+        else
+            target = Spread.prevStart(current, count, self.wide_list, offset)
+        end
+        if target then
+            return target, false
+        end
+        -- No unit that way. Backwards that is the start of the book and the
+        -- gesture is simply spent; forwards it is the end, which the reader
+        -- has to be told — the counter never passes the last page while the
+        -- last unit is a pair, so nothing else would say so.
+        return current, number >= current
+    end
+    return (there and there.a) or number, false
+end
+
+--- The page's size as the *reader* asks for it: the pair's when two are being
+--- shown, this page's own otherwise.
+---
+--- **This is the seam the two-page view hangs off, and it is a deliberate lie.**
+--- `ReaderZooming:getZoom` measures the fit from it and refuses a bounding box
+--- larger than it, so a document reporting one page here would have the pair's
+--- box rejected and the view fitted to a single page — the pair would overflow
+--- the screen and the reader would pan across it rather than see two pages. The
+--- answer is the *full* pair; the box the view actually lays out is the cropped
+--- one (`_pairGeom`), and the fit is measured against the larger of the two,
+--- which is what keeps the crop alive in a pair.
 function MeguruDocument:getNativePageDimensions(pageno)
+    local pair = self:spreadUnitFor(pageno)
+    if pair and pair.b then
+        local geom = self:_pairFullGeom(pair)
+        return Geom:new{ w = geom.w, h = geom.h }
+    end
     local dims = self:getPageDims(pageno)
     return Geom:new{ w = dims.w, h = dims.h }
+end
+
+--- The pair's cropped box — the "no bbox" half of `ReaderView:getPageArea`, and
+--- the coordinate space `drawPage` splits.
+function MeguruDocument:getPageDimensions(pageno, zoom, rotation)
+    local pair = self:spreadUnitFor(pageno)
+    if pair and pair.b then
+        return self:transformRect(self:_pairGeom(pair), zoom, rotation)
+    end
+    return Document.getPageDimensions(self, pageno, zoom, rotation)
+end
+
+--- The pair's cropped box again, for the path that *does* use the bounding box —
+--- which is the one this plugin takes whenever the crop is on. Both halves of
+--- `getPageArea` have to answer the same box, or the pair would be drawn in a
+--- space the view never laid it out in.
+function MeguruDocument:getUsedBBoxDimensions(pageno, zoom, rotation)
+    local pair = self:spreadUnitFor(pageno)
+    if pair and pair.b then
+        return self:transformRect(self:_pairGeom(pair), zoom, rotation)
+    end
+    return base_get_used_bbox_dimensions(self, pageno, zoom, rotation)
 end
 
 -- Used-BBox is the *full* page. Cropping is never baked into geometry: the
@@ -1961,12 +2346,14 @@ function MeguruDocument:getPageBBox(pageno)
     -- small element. Asked *before* the strip, which is what keeps such a page
     -- from paying for a strip render at all.
     if self:_meguruPageMostlyBlank(pageno) then
-        local page_size = self:getNativePageDimensions(pageno)
+        local page_size = self:_pageGeom(pageno)
         return { x0 = 0, y0 = 0, x1 = page_size.w, y1 = page_size.h }
     end
     local crop_y = self:_meguruPagenumStrip(pageno)
     if crop_y and crop_y > bbox.y0 and crop_y < bbox.y1 then
-        local page_size = self:getNativePageDimensions(pageno)
+        -- One page, always: these two rules measure a band of the *printed* page,
+        -- and a pair's box would move the strip up the other page's height.
+        local page_size = self:_pageGeom(pageno)
         local min_removal = page_size and math.max(1, page_size.h * 0.001) or 1
         if bbox.y1 - crop_y >= min_removal then
             local out = { x0 = bbox.x0, y0 = bbox.y0, x1 = bbox.x1, y1 = bbox.y1 }
@@ -2519,7 +2906,7 @@ function MeguruDocument:_meguruPagenumStrip(pageno)
         return cached
     end
     self._meguru_pagenum_cache[pageno] = 0 -- "busy / none yet" mark
-    local page_size = self:getNativePageDimensions(pageno)
+    local page_size = self:_pageGeom(pageno)
     if not (page_size and page_size.w > 0 and page_size.h > 0) then
         logger.dbg("Meguru: page", pageno, "no page number [no render: page size]")
         return 0
@@ -2624,7 +3011,7 @@ function MeguruDocument:_meguruPageMostlyBlank(pageno)
         return cached
     end
     self._meguru_pagenum_blank_cache[pageno] = false
-    local page_size = self:getNativePageDimensions(pageno)
+    local page_size = self:_pageGeom(pageno)
     if not (page_size and page_size.w > 0 and page_size.h > 0) then
         logger.dbg("Meguru: page", pageno, "blank check skipped [no render: page size]")
         return false
@@ -2944,6 +3331,7 @@ function MeguruDocument:getPageDims(pageno)
             h = math.max(1, native_bb:getHeight()),
         }
         self.dims[pageno] = dims
+        self:_noteWide(pageno, dims)
         -- Logged before the GC below, so `prepared in` is exactly the fetch and
         -- the decode: the parts then sum to the whole, and a line where they do
         -- not is a line that has drifted from what it measures.
@@ -2985,6 +3373,12 @@ function MeguruDocument:getPageDims(pageno)
         h = math.max(1, bb:getHeight()),
     }
     self.dims[pageno] = dims
+    -- The two `_noteWide` calls in this function are the only ones there are, and
+    -- they sit on the two paths that hold a *decoded* page. The three failure
+    -- branches above cache the screen's own size instead; on a landscape screen
+    -- that stand-in is wider than tall, and noting it would anchor the pairing
+    -- around a page that never loaded.
+    self:_noteWide(pageno, dims)
 
     -- Keep the working-resolution decode (capped by decodeNative) so every
     -- later render of this page reuses it instead of re-rendering the scan:
@@ -3415,8 +3809,12 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
         excerpt_x, excerpt_y = rect.x, rect.y
     else
         -- No rect (thumbnail/hint-ish call): render the whole page at the
-        -- requested zoom.
-        local page_size = self:getPageDimensions(pageno, safe_zoom, rotation or 0)
+        -- requested zoom. From the page's *own* size and never the virtual
+        -- pair's — this branch draws one page into one tile, and a pair-sized
+        -- box here would stretch it (see `_pageGeom`).
+        local own = self:_pageGeom(pageno)
+        local page_size = self:transformRect(
+            Geom:new{ w = own.w, h = own.h }, safe_zoom, rotation or 0)
         nx = page_size.x / safe_zoom
         ny = page_size.y / safe_zoom
         nw = page_size.w / safe_zoom
@@ -3558,7 +3956,18 @@ function MeguruDocument:hintPage(pageno, zoom, rotation, gamma, saturation)
     -- PdfDocument:hintPage, which renders exactly `pageno`. Counting from it
     -- fetched the page AFTER the next one, so the page the reader was about to
     -- turn to had nothing waiting and paid for its fetch on the turn.
-    for i = 0, self.prefetch_count - 1 do
+    --
+    -- Two pages at a time want one page more of lead. The pairing cannot be
+    -- decided without the *next* page's size, and ReaderHinting fires this one
+    -- page behind the turn (`state.page + i`), so a lead of two is what has the
+    -- partner decoded by the time the reader turns to it — see `spreadUnitFor`,
+    -- which refuses to pair a page whose partner is not known so that the
+    -- layout pass never has to fetch.
+    local lead = self.prefetch_count
+    if self:spreadActive() and lead < 2 then
+        lead = 2
+    end
+    for i = 0, lead - 1 do
         local target = pageno + i
         if target <= self.info.number_of_pages then
             -- A local cbz needs no prefetch: each page renders on demand from
@@ -3611,9 +4020,74 @@ function MeguruDocument:analyseAhead(pageno)
     pcall(self.getPageBBox, self, pageno)
 end
 
--- drawPage / drawPageInverted: same as Document's, but our renderPage may
+-- The pair, drawn as two pages.
+--
+-- **The view asks for one page and gets two.** It has laid the pair out as a
+-- single page twice as wide (see `getUsedBBoxDimensions` and `_pairGeom`), so
+-- `rect` is a window into that pair's space, with the left page's content corner
+-- at the pair's origin and the right page's one left-page-width along. Splitting
+-- it is then arithmetic: cut the window at the seam, translate each half back
+-- into its own page's coordinates, and hand each to the ordinary single-page
+-- path.
+--
+-- Nothing about drawing a page is re-implemented here. Tone, dithering, night
+-- mode's invert, the tile cache and the "could not load" placeholder are all
+-- `drawOnePage`'s, per half — which is what makes a half that failed to fetch
+-- show its own placeholder beside a page that loaded, and what keeps each half's
+-- tile keyed by its own page number.
+--
+-- Two small pieces of care are worth naming. A half is clipped to *its own*
+-- page's height as well as to the seam, so a pair of unequal pages does not
+-- stretch the shorter one's last rows into the taller one's space. And the
+-- halves are laid out left-to-right in `_pairSides`' order, which is the reading
+-- direction's — in a right-to-left book the earlier page is the right-hand one.
+function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
+    local pair = rect and self:spreadUnitFor(pageno) or nil
+    if not (pair and pair.b) then
+        return self:drawOnePage(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
+    end
+
+    local safe_zoom = (zoom and zoom > 0) and zoom or 1
+    local left_page, right_page = self:_pairSides(pair)
+    local left, right = self:_pageBox(left_page), self:_pageBox(right_page)
+    -- Where the two halves meet in the pair's space, and the window's own edges.
+    local seam = left.w * safe_zoom
+    local x0, x1 = rect.x, rect.x + rect.w
+
+    -- `origin` is where this page begins in the pair's space — the left page at 0,
+    -- the right one at the seam — so that `from - origin` lands the window in the
+    -- page's *own* coordinates, which is the space `renderPage` reads it in.
+    local function half(page, box, origin, from, to)
+        local width = to - from
+        if width <= 0 then
+            return
+        end
+        -- Clip to this page's own height: the pair's box is the taller page's.
+        local bottom = math.min(rect.y + rect.h, box.h * safe_zoom)
+        local height = bottom - rect.y
+        if height <= 0 then
+            return
+        end
+        local src = Geom:new{
+            x = (from - origin) + box.x * safe_zoom,
+            y = rect.y + box.y * safe_zoom,
+            w = width,
+            h = height,
+        }
+        self:drawOnePage(target, x + (from - x0), y, src, page, zoom, rotation, gamma, saturation)
+    end
+
+    half(left_page, left, 0, x0, math.min(x1, seam))
+    half(right_page, right, seam, math.max(x0, seam), x1)
+end
+
+-- drawOnePage / drawPageInverted: same as Document's, but our renderPage may
 -- return nil (network/decode failure), in which case we paint a neutral tile
 -- instead of crashing the UI.
+--
+-- `drawPageInverted` is left on one page deliberately: nothing calls it (the
+-- reader inverts through `drawPage`'s night-mode branch), so a pair split here
+-- would be a path no book has ever run.
 --
 -- drawPage also honours the "Invert Document" setting
 -- (configurable.nightmode_document), mirroring the dispatch KoptInterface:drawPage
@@ -3643,7 +4117,7 @@ end
 -- "incompatible bb" throw out of blitbuffer.c for a tile format that did not
 -- match, which is a frozen renderer mid-paint, whereas this shape cannot be
 -- affected by the tile's format at all.
-function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
+function MeguruDocument:drawOnePage(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
     local tile = self:renderPage(pageno, rect, zoom, rotation, gamma, saturation)
     if not tile then
         self:paintMissingPage(target, rect, x, y, pageno)

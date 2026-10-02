@@ -52,6 +52,7 @@ meguru/
                           neighbour
   panel.lua               the panels on a page, and the order they are read in
   viewport.lua            the window over a page, for the panel view that crops nothing
+  spread.lua              the imposition: which pages are shown together, two at a time
   hook.lua                runtime wraps on OPDSBrowser (sniff, "Meguru this series")
   updater.lua             GitHub releases: check for one, download it, install it
 
@@ -162,7 +163,9 @@ that question — the predicate the decode itself asks — and asking it anywher
 be a second answer that could drift from the first. The one
 directory listing in the plugin lives there, and it is `util.findFiles`, KOReader's
 own — not an edge in this graph, for the reason the network manager is not one
-either.
+either. `meguru/spread` is required by `doc/document` and by nothing else, and it
+requires nothing: the imposition is arithmetic over a page number and a list of wide
+pages, so it is a leaf, and the geometry that uses it stays where the geometry lives.
 
 
 ## Where the detail lives
@@ -191,6 +194,10 @@ nor an agent has to load 3500 lines to find one answer. Read the one you need.
 - [docs/panel-zoom.md](docs/panel-zoom.md) — the panel preference and its stock cascade,
   the detector, the three views a long-press can open, and why a panel is toned like the
   page it came from without this file knowing about it.
+- [docs/two-page-view.md](docs/two-page-view.md) — the landscape two-page view: the
+  imposition that decides which pages pair and where a run starts again, the pair
+  presented to the reader as one page, and how it shares a book with the wide-page
+  rotation.
 - [docs/menus-and-lifecycle.md](docs/menus-and-lifecycle.md) — the menu rows, the curated
   config dialog and its four tabs, the plugin lifecycle facts, and the plugins that replace
   our wraps.

@@ -407,3 +407,25 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   silently cut page on exactly those, since nothing in the log tells them from a correct crop. The
   synthetic control is the gate: a dark page with a small light element must come back whole, and
   it does.
+
+- **A jump to the second page of the spread already on screen reads as "one further".**
+  `MeguruDocument:spreadSnap` tells a relative turn from a jump by whether the target page
+  falls inside the unit already showing: inside means the reader's gesture, outside means a
+  table of contents, a percentage or a resume. A jump onto the *second* page of that same
+  unit is the one case the two are indistinguishable — page 8 while 7+8 is on screen looks
+  exactly like a forward turn from page 7 — and it lands on the next unit rather than staying.
+  What would settle it is a `GotoPage` that says where it came from (the reader fires the
+  same event for both); what a wrong answer costs is one extra turn, on a jump to a page
+  already visible. Turning the page and back fixes it, and it is the only way the two differ.
+
+- **Two-page view and `pagenumbercrop.koplugin` both on: that plugin's wide-page rotation can
+  turn the screen for a pair, and the flip-flop is not caught.** Meguru's own guard stands
+  down while two pages are showing (`ui/reader`'s `updatePageRotation`), but when that plugin
+  is installed Meguru does not install its rotation at all — so that path is untouched, and a
+  pair reads to it as one wide page, which starts a rotation, which stops the pair, which makes
+  the next page narrow again. The shim that answers external readers with one page's size
+  (`installNativePageDimensionsShim`) covers the shape of the question, not every call site
+  that plugin has. What would settle it is a device with both installed and a wide page in a
+  pair; what it costs is a screen turning back and forth on those pages, which the reader can
+  stop by turning the row off. No book has been read that way here, so how it actually behaves
+  is unmeasured rather than known.

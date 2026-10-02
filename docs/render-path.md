@@ -529,3 +529,14 @@ asset was deleted with the code that drew it.
 the failure was already logged once where it happened (`fetchPage`,
 `ensureNativeBB`) — the same frequency argument that moved `crop skip`.
 
+
+## Two pages at once
+
+When the reader asks for two pages at a time (`docs/two-page-view.md`), nothing in
+the path above changes. The document answers the reader's geometry questions with
+the pair's box, so the view zooms, fits and pans a spread exactly as it does a
+page, and then splits the rectangle it is asked to draw at the seam — each half
+going through `renderPage`, the tile cache, the dithering decision and the `paint`
+line above, keyed by its own page number. A half that could not be loaded gets its
+own `paintMissingPage`, so a broken page shows its placeholder beside a page that
+worked.
