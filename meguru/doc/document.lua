@@ -914,6 +914,13 @@ local MeguruDocument = Document:extend{
     -- reader-side setting rather than a configurable one; seeded from the same
     -- sidecar key at open and kept in step by the reader's Reading direction row.
     spread_rtl = false,
+
+    -- Whether the landscape the screen is in was put there by *this plugin* — a
+    -- wide-page rotation — rather than by the reader holding the device that way.
+    -- Written by `ui/reader.lua` just before it asks `spreadActive` (see
+    -- `publishScreenRotation`), and false until a rotation happens, which is the
+    -- right answer for a reader who has turned nothing.
+    spread_rotated_by_plugin = false,
 }
 
 -- ---------------------------------------------------------------------------
@@ -1998,6 +2005,16 @@ function MeguruDocument:spreadActive()
         return true
     end
     if value == "off" then
+        return false
+    end
+    -- **"in landscape" is about the reader, not about the screen.** A screen this
+    -- plugin has just turned for a wide page is landscape to `Screen` and portrait
+    -- to the reader — who is holding the device upright and wants one page at a
+    -- time back the moment the wide image is past. Reading the screen alone is what
+    -- put a wide page's neighbours into two-page mode and *left* them there:
+    -- a pair being active is exactly what stops the wide rotation being restored.
+    -- See `ui/reader.lua`'s `publishScreenRotation`, which is where this is set.
+    if self.spread_rotated_by_plugin then
         return false
     end
     return (Screen:getRotationMode() % 2) == 1

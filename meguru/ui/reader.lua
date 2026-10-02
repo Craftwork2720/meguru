@@ -206,6 +206,32 @@ local function currentPage(ui)
     return ui.paging and ui.paging.current_page
 end
 
+--- Tell the document whether the landscape it can see is one this plugin turned
+--- the screen into, for a wide page.
+---
+--- **The two are the same screen and two different questions.** "in landscape" asks
+--- whether the *reader* is holding the device that way; `Screen` answers whether the
+--- framebuffer is rotated, and `updatePageRotation` rotates it for a wide page and
+--- back on the next ordinary one. A reader in portrait with a wide image therefore
+--- had the screen turned under them and their next page drawn two-up — and it
+--- stayed two-up, because a pair being active is exactly what stops the wide
+--- rotation being restored (`updatePageRotation`'s first guard). Telling the
+--- document which rotation it is looking at is what lets the pair stand down and
+--- the rotation come back.
+---
+--- Asked of the live state rather than remembered from the last call: the answer is
+--- only "ours" while the screen is still on the mode this plugin set, so a reader
+--- who turns the device themselves — even to that same mode — takes it over.
+local function publishScreenRotation(ui)
+    local doc = ui and ui.document
+    local state = ui and ui._meguru_rotate_state
+    if not (doc and type(doc.spreadActive) == "function") then
+        return
+    end
+    doc.spread_rotated_by_plugin = state ~= nil and state.active ~= nil
+        and Screen:getRotationMode() == state.active
+end
+
 --- Re-derive the page box when the two-page view starts or stops.
 ---
 --- **Nothing else has to happen on a page turn**, and that is worth saying because
@@ -225,6 +251,7 @@ local function syncSpread(ui)
         and type(doc.spreadActive) == "function") then
         return
     end
+    publishScreenRotation(ui)
     local active = doc:spreadActive() and true or false
     if active == (ui._meguru_spread_active or false) then
         return
@@ -2444,6 +2471,9 @@ function Reader.install(plugin)
 
     local rotate_state = {}
     plugin._meguru_rotate_state = rotate_state
+    -- The same table on the reader, because `syncSpread` is ui-scoped and has to be
+    -- able to ask whether a rotation is still this plugin's (`publishScreenRotation`).
+    ui._meguru_rotate_state = rotate_state
 
     -- Standalone wide-page rotation, unless pagenumbercrop.koplugin is already
     -- driving this document — one owner of a screen's rotation, not two. Both of
@@ -2467,6 +2497,11 @@ function Reader.install(plugin)
         if session_wide_rotate.base ~= nil then
             UIManager:scheduleIn(0.1, function()
                 pcall(reconcileWideRotation, rotate_state, ui)
+                -- The reconcile either *keeps* a rotation a previous book left
+                -- active or puts the screen back, and both change what the two-page
+                -- view is looking at — so the document is told which it is
+                -- (`publishScreenRotation`) before the first layout is trusted.
+                syncSpread(ui)
             end)
         end
     end
