@@ -196,12 +196,14 @@ local DEFAULTS = {
     -- costs.
     spread            = "off",
 
-    -- Whether a pair is anchored a page back: pages 6+7 rather than 7+8.
+    -- Whether every pair is shifted one page back: pages 6+7 rather than 7+8.
     --
-    -- For a book whose first page stands alone — a cover, a title page — where
-    -- pairing from page 1 would put every spread one page out. 0 is "pair from
-    -- page 1". Read by comparison everywhere it is consulted: 0 is truthy in
-    -- Lua, so `if spread_offset then` would read a stored "off" as on.
+    -- For a book whose spreads all read one page out — a cover or a title page
+    -- that is its own page — where pairing from the first page would put every
+    -- spread wrong by one. It applies to every run, so it also shifts the pairs
+    -- after a wide page; see `meguru/spread`. 0 is "pair as the pages fall".
+    -- Read by comparison everywhere it is consulted: 0 is truthy in Lua, so
+    -- `if spread_offset then` would read a stored "off" as on.
     spread_offset     = 0,
     night_mode        = true,         -- pre-invert pages instead of a stark negative
 

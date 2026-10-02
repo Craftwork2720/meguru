@@ -1700,8 +1700,8 @@ local function buildCuratedOptions(ui)
         name = "spread_offset",
         name_text = _("Page offset"),
         toggle = {
-            _("7 + 8"),
-            _("6 + 7"),
+            C_("Page offset", "off"),
+            C_("Page offset", "on"),
         },
         values = { 0, 1 },
         args = { 0, 1 },
@@ -1712,7 +1712,7 @@ local function buildCuratedOptions(ui)
         enabled_func = function(configurable)
             return configurable.spread ~= nil and configurable.spread ~= "off"
         end,
-        help_text = _([[Which page a pair starts on: 7 + 8 pairs from page 1, 6 + 7 leaves page 1 standing alone and pairs from page 2. Turn it on for a book whose first page is its own — a cover, a title page — where every spread would otherwise be one page out. It applies to the front of the book only: a pair that begins after a wide page always begins with the first two pages after it.]]),
+        help_text = _([[Shifts every pair one page back: with it off the pairs run 1+2, 3+4, 5+6; with it on the first page of each run stands alone and they run 2+3, 4+5, so a reader on page 7 sees 6+7 rather than 7+8. A page the artist drew as one wide image starts a run of its own, and the shift applies there too. Turn it on for a book whose spreads all read one page out — a cover or a title page that is its own page, or a printed spread the file counts as one.]]),
     }
 
     -- The tone tab: what the page looks like, where the three above are about the

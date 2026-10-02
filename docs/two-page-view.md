@@ -12,11 +12,16 @@ Three rules, and the third is the one that makes it worth having:
 
 - A page drawn as one wide image is a spread already. It is shown **alone**.
 - So is a page whose *neighbour* is wide — a printed spread is never cut in half across two screens. Both fall out of the same test rather than being two cases.
-- **The pairing starts again after a wide page.** Reading forward: (1,2), (3,4) … until page 9 is wide, and then 9 alone, **(10,11)**, (12,13). A wide page consumes one slot and the run continues from the page after it.
+- **The pairing starts again after a wide page.** Reading forward: (1,2), (3,4) … until page 9 is wide, and then 9 alone, **(10,11)**, (12,13) — the offset off, which is the default. A wide page consumes one slot and the run continues from the page after it.
 
 The unit a page belongs to is therefore *not* a function of the page's own parity — it is a function of the last wide page before it, which is why `unitFor` takes the wide-page list rather than a page number's parity. There is no walk: the run start is the greatest known wide page below `n`, found by binary search.
 
-**The offset answer shapes only the run that holds page 1.** Off pairs from page 1 — (1,2), (3,4); on leaves page 1 standing alone and pairs (2,3), (4,5), so a reader on page 7 sees 6+7. A run that starts after a wide page always begins pairing at its first two pages, offset or not (page 9 wide gives (10,11) either way). That is what makes the offset a correction for the front of a book rather than a second, competing imposition — and it is the reader's correction for the case below.
+**The offset answer shifts every run by one page — a wide page's run included.** Off pairs from the run's first page — (1,2), (3,4), and (10,11) after a wide page 9. On leaves that first page standing alone and pairs (2,3), (4,5) — so a reader on page 7 sees 6+7, and page 9 wide gives 10 alone, **(11,12)**, (13,14). Two things follow, and both are deliberate:
+
+- It is a shift of the whole book rather than a correction for its front. The rejected rule — "the offset shapes only the run that holds page 1" — left a reader past the first wide page turning the row and watching *nothing happen*, which is the one thing a row may not do.
+- Where a wide page meets the offset there are **two single pages in a row** (9 alone, then 10 alone). That is the honest shape of "this run's first page stands alone, and this run starts at a spread", and it is where to look if the pairing after a wide page ever reads wrong.
+
+It is also the reader's correction for the approximate case below.
 
 **What the imposition cannot know is everything it was not shown.** The feed carries no page dimensions at all: a page's size is known only once its image has been fetched and decoded (`MeguruDocument:getPageDims`). Reading in order is exact — by the time a page is reached, it and its neighbour have been decoded — but a *jump* can land past wide pages nobody saw, and the run is then the one page 1 would have given. What the reader sees is a **parity flip**: two spreads shown the other way round, each page individually correct, until the next known wide page re-anchors the run. What settles it is the offset row, which moves every pairing by one page.
 

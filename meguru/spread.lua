@@ -21,9 +21,11 @@ page in a pair.
 
 **This is the rule that makes the whole thing worth having.** Reading forward
 from page 1, the pairs are (1,2), (3,4), (5,6) — until a wide page arrives. Page
-9 wide gives: 9 alone, then **(10,11)**, then (12,13). The wide page consumes one
-slot and the pairing continues from the page after it, which is what a reader
-sees in the book: the printed spread is where the imposition starts again.
+9 wide gives: 9 alone, then **(10,11)**, then (12,13) — the offset off, which is
+what a reader sees by default and what "the pairing starts again" means. The wide
+page consumes one slot and the pairing continues from the page after it, which is
+what a reader sees in the book: the printed spread is where the imposition starts
+again. What the offset does to that is below.
 
 So the unit a page belongs to is *not* a function of the page's own parity. It is
 a function of the last wide page before it — the run — and this module computes
@@ -48,13 +50,21 @@ next to each other.
 
 ## The offset
 
-Offset off pairs (1,2), (3,4)…; offset on leaves **page 1 alone** and pairs
-(2,3), (4,5), (6,7) — so a reader on page 7 sees 6+7 rather than 7+8, which is
-what a book whose first page stands alone needs. It shapes *only the run that
-contains page 1*: a run that starts after a wide page always begins pairing at
-its first two pages (page 9 wide means (10,11), offset or not). That is the
-behaviour that makes the offset a correction for the front of the book rather
-than a second, competing imposition.
+Offset off pairs (1,2), (3,4)…; offset on leaves the **first page of every run**
+standing alone and pairs (2,3), (4,5), (6,7) — so a reader on page 7 sees 6+7
+rather than 7+8, which is what a book whose first page stands alone needs.
+
+**It applies to every run, and a wide page starts one too.** Page 9 wide with the
+offset on means 10 stands alone and (11,12) follow, where the offset off would
+give (10,11) and (12,13). That is what makes the answer a shift of the whole book
+by one page rather than a correction for its front — and it is why the rule is
+not "only the run that holds page 1": **a reader past a wide page would turn the
+row and see nothing happen**, which is exactly what the row cannot do.
+
+The cost of the rule is two single pages in a row where a wide page meets the
+offset (9 alone, then 10 alone). That is the honest shape of "leave this run's
+first page standing alone, and this run starts at a spread", and it is the one to
+look at if the pairing after a wide page ever reads wrong.
 
 **The stored value is 0/1 and 0 is truthy in Lua**, so `offset` is normalised by
 comparison here and nowhere else — the trap `meguru/doc/defaults`' `seedRowValue`
@@ -126,11 +136,12 @@ function Spread.unitFor(n, count, list, offset)
     local wide = lastBelow(list, n)
     local run = wide and (wide + 1) or 1
 
-    -- The offset only shapes the run that holds page 1 (the header's rule).
-    local first = (run == 1 and offsetOn(offset)) and 1 or 0
+    -- The offset leaves the *first* page of the run standing alone — in every
+    -- run, so a wide page starts one as well (the header's rule).
+    local first = offsetOn(offset) and 1 or 0
     local idx = n - run
     if idx < first then
-        return { a = n }              -- page 1, offset on: it stands alone
+        return { a = n }              -- the run's first page, offset on
     end
 
     if ((idx - first) % 2) ~= 0 then
