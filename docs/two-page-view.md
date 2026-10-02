@@ -6,7 +6,7 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
 
 ## The imposition
 
-**Which pages are shown together is decided by an imposition, and the imposition starts again after every wide page.** `meguru/spread.lua` is the whole of it, and it is pure: a page number, the page count, the ascending list of pages this session has found to be wider than tall, and the offset answer go in; the unit that page belongs to comes out — `{ a = n }` for a page shown alone, `{ a = n, b = m }` for a pair.
+**Which pages are shown together is decided by an imposition, and the imposition starts again after every wide page.** `meguru/spread.lua` is the whole of it, and it is pure: a page number, the page count, the ascending list of pages this session has found to be wider than tall, and the page the offset is anchored at go in; the unit that page belongs to comes out — `{ a = n }` for a page shown alone, `{ a = n, b = m }` for a pair.
 
 Three rules, and the third is the one that makes it worth having:
 
@@ -16,14 +16,18 @@ Three rules, and the third is the one that makes it worth having:
 
 The unit a page belongs to is therefore *not* a function of the page's own parity — it is a function of the last wide page before it, which is why `unitFor` takes the wide-page list rather than a page number's parity. There is no walk: the run start is the greatest known wide page below `n`, found by binary search.
 
-**The offset answer shifts every run by one page — a wide page's run included.** Off pairs from the run's first page — (1,2), (3,4), and (10,11) after a wide page 9. On leaves that first page standing alone and pairs (2,3), (4,5) — so a reader on page 7 sees 6+7, and page 9 wide gives 10 alone, **(11,12)**, (13,14). Two things follow, and both are deliberate:
+**The offset is held as the page it is anchored at, and it is the run that page belongs to which is offset.** A switch cannot carry that, so the row *shows* the live answer (`spreadOffsetHere`) while the book *stores* a page — which is what makes one switch do both halves of what a reader asked for:
 
-- It is a shift of the whole book rather than a correction for its front. The rejected rule — "the offset shapes only the run that holds page 1" — left a reader past the first wide page turning the row and watching *nothing happen*, which is the one thing a row may not do.
-- Where a wide page meets the offset there are **several single pages in a row**: page 8 stands alone because its would-be partner is the spread, page 9 *is* the spread, and with the offset on page 10 is the new run's first page — 8 · 9 · 10 · 11+12. That is the honest shape of "this run's first page stands alone, and this run starts at a spread", and it is where to look if the pairing after a wide page ever reads wrong. `tools/spreadcheck.py` prints that walk and checks the rules behind it.
+- **A wide page ends the offset by itself.** Anchored at the front, a book with page 9 wide reads: 1 alone, 2+3, 4+5, 6+7, 8 alone, **9** (the spread), then **(10,11)**, (12,13). The run after a spread is not offset, because the anchor is not in it — a printed spread has already shifted the pairing by the one page an offset exists to correct, and carrying it across would put the rest of the book out by one instead.
+- **The reader can anchor it again from where they are.** Setting the row on page 10 anchors it *there*: 1+2, 3+4, 5+6, 7+8, 9, **10 alone**, (11,12), (13,14). That is the whole of "the reader has control" — the offset applies to the run it was set in and to no other.
+
+The rejected rule was a flag that offsets **every** run, which reads 9 (spread), 10 alone, (11,12) — a reader who set the offset at the front of a book being told that every spread after a printed one goes out by a page as well. And the rule before *that* — "the offset shapes only the run that holds page 1" — left a reader past the first wide page turning the row and watching nothing happen, which is the one thing a row may not do. `tools/spreadcheck.py` prints these walks and checks that the offset reaches exactly one run.
+
+Where a re-anchored offset meets the wide page before it, there are two single pages in a row: 9 is the spread, 10 is the run's first page. That is the shape to look at if the pairing after a wide page ever reads wrong.
 
 It is also the reader's correction for the approximate case below.
 
-**What the imposition cannot know is everything it was not shown.** The feed carries no page dimensions at all: a page's size is known only once its image has been fetched and decoded (`MeguruDocument:getPageDims`). Reading in order is exact — by the time a page is reached, it and its neighbour have been decoded — but a *jump* can land past wide pages nobody saw, and the run is then the one page 1 would have given. What the reader sees is a **parity flip**: two spreads shown the other way round, each page individually correct, until the next known wide page re-anchors the run. What settles it is the offset row, which moves every pairing by one page.
+**What the imposition cannot know is everything it was not shown.** The feed carries no page dimensions at all: a page's size is known only once its image has been fetched and decoded (`MeguruDocument:getPageDims`). Reading in order is exact — by the time a page is reached, it and its neighbour have been decoded — but a *jump* can land past wide pages nobody saw, and the run is then the one page 1 would have given. What the reader sees is a **parity flip**: two spreads shown the other way round, each page individually correct, until the next known wide page re-anchors the run. What settles it is the offset row, which moves the pairing of the run it is set in by one page.
 
 ## The page the reader is shown
 

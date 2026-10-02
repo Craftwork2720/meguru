@@ -2003,12 +2003,40 @@ function MeguruDocument:spreadActive()
     return (Screen:getRotationMode() % 2) == 1
 end
 
---- The per-book offset answer, read by comparison. `0` is truthy in Lua, so an
---- `if value then` here would read a stored "off" as on — the trap
---- `meguru/doc/defaults`' `seedRowValue` documents at length.
-function MeguruDocument:_spreadOffset()
+--- The page the offset is anchored at, or 0 for off.
+---
+--- **The stored value is a page number and not a flag**, and it is read by
+--- comparison: `0` and `"0"` are both *truthy* in Lua, so a truth test here would
+--- read a stored "off" as on — the trap `meguru/doc/defaults`' `seedRowValue`
+--- documents at length. A stored `1` means page 1 — which is what the row wrote
+--- when it was a flag, and the front of the book either way, so no book written
+--- before this changes behaviour; `true` is accepted for the same reason.
+function MeguruDocument:_spreadAnchor()
     local value = self.configurable and self.configurable.spread_offset
-    return value == 1 or value == true or value == "1"
+    if value == true then
+        return 1
+    end
+    local anchor = tonumber(value)
+    if not anchor or anchor < 1 then
+        return 0
+    end
+    return math.floor(anchor)
+end
+
+--- Whether the offset is in force for `pageno`: the run it is anchored in being
+--- the run that page is in.
+---
+--- This is what the row shows rather than the stored anchor, and the difference is
+--- the whole point of anchoring at a page: **a wide page ends the offset by
+--- itself**, so a reader who crosses one finds the row off again without having
+--- touched it — and can set it again for the run they are in.
+function MeguruDocument:spreadOffsetHere(pageno)
+    local anchor = self:_spreadAnchor()
+    if anchor <= 0 then
+        return false
+    end
+    return Spread.runStart(anchor, self.wide_list)
+        == Spread.runStart(pageno or 0, self.wide_list)
 end
 
 --- The unit `pageno` is being shown in: nil when two pages were not asked for,
@@ -2029,7 +2057,7 @@ function MeguruDocument:spreadUnitFor(pageno)
     if not count then
         return nil
     end
-    local unit = Spread.unitFor(pageno, count, self.wide_list, self:_spreadOffset())
+    local unit = Spread.unitFor(pageno, count, self.wide_list, self:_spreadAnchor())
     if unit and unit.b and not self.dims[unit.b] then
         return { a = unit.a }
     end
@@ -2238,8 +2266,10 @@ function MeguruDocument:prepareSpread(pageno)
         return
     end
     local candidates = { pageno + 1 }
-    if self:_spreadOffset() then
-        -- The offset pairs backwards, so the partner is the page before.
+    if self:spreadOffsetHere(pageno) then
+        -- The offset pairs backwards, so the partner is the page before — but
+        -- only in the run it is anchored in, which is why this asks the document
+        -- rather than the stored value.
         candidates[#candidates + 1] = pageno - 1
     end
     for _, target in ipairs(candidates) do
@@ -2279,15 +2309,15 @@ function MeguruDocument:spreadSnap(number, current)
     if count and number > count then
         number = count
     end
-    local offset = self:_spreadOffset()
+    local anchor = self:_spreadAnchor()
     local here = self:spreadUnitFor(current)
     local there = self:spreadUnitFor(number)
     if here and there and here.a == there.a and current ~= number then
         local target
         if number >= current then
-            target = Spread.nextStart(current, count, self.wide_list, offset)
+            target = Spread.nextStart(current, count, self.wide_list, anchor)
         else
-            target = Spread.prevStart(current, count, self.wide_list, offset)
+            target = Spread.prevStart(current, count, self.wide_list, anchor)
         end
         if target then
             return target, false

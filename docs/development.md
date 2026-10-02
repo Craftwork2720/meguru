@@ -143,7 +143,13 @@ from either page of a pair answers the same pair, that turning walks the units
 without stalling at the last pair, and the gutter's four rules over a grid of
 artwork sizes, margins and screen shapes. Run it as `python tools/spreadcheck.py`;
 it prints a walk of the page it is checking, which is the only way to read what
-the imposition does without a device.
+the imposition does without a device. It checks the rules, not fixtures: that the
+units tile a book exactly once for every set of wide pages and every page the
+offset can be anchored at, that asking from either page of a pair answers the same
+pair, that turning walks the units without stalling at the last pair, that the
+offset reaches exactly the one run it is anchored in — which is both "a wide page
+ends an offset" and "setting it again past one re-anchors it there" — and the
+gutter's four rules over a grid of artwork sizes, margins and screen shapes.
 
 A Python mirror of Lua logic models values, not Lua's evaluation rules, and the
 difference has shipped a crash. `meguru/credential.lua`'s `restoreTemplate` ended

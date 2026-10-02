@@ -4,8 +4,8 @@ Which pages are shown together, when the reader has asked for two at a time.
 The reader's page number and the thing on the screen stop being the same once a
 book is read two-up: page 7 is drawn beside page 8, and the *pair* is the unit.
 This module is the whole of that rule. It is pure — it takes a page number, the
-page count, the list of pages already known to be wide, and whether the offset
-answer is on, and returns the unit that page belongs to. Nothing here fetches,
+page count, the list of pages already known to be wide, and the page the offset
+is anchored at, and returns the unit that page belongs to. Nothing here fetches,
 renders or remembers anything; the document owns the answers and this owns the
 arithmetic.
 
@@ -44,34 +44,46 @@ that were never seen, and the run is then the one page 1 would have given.
 
 What the reader sees when that happens is **a parity flip**: two spreads shown
 the other way round, each page individually correct, from then on until the next
-known wide page re-anchors the run. The offset answer is the reader's correction
-for it — it moves every pairing by one page — which is why the two settings sit
-next to each other.
+known wide page re-anchors the run. The offset row is the reader's correction for
+it — set where they are and that run's pairing moves one page — which is why the
+two settings sit next to each other.
 
 ## The offset
 
-Offset off pairs (1,2), (3,4)…; offset on leaves the **first page of every run**
+Offset off pairs (1,2), (3,4)…; offset on leaves the **first page of a run**
 standing alone and pairs (2,3), (4,5), (6,7) — so a reader on page 7 sees 6+7
-rather than 7+8, which is what a book whose first page stands alone needs.
+rather than 7+8, which is what a book whose pages are laid out that way needs.
 
-**It applies to every run, and a wide page starts one too.** Page 9 wide with the
-offset on means 10 stands alone and (11,12) follow, where the offset off would
-give (10,11) and (12,13). That is what makes the answer a shift of the whole book
-by one page rather than a correction for its front — and it is why the rule is
-not "only the run that holds page 1": **a reader past a wide page would turn the
-row and see nothing happen**, which is exactly what the row cannot do.
+**The offset is held as the page it is anchored at, and it is the run that page
+belongs to which is offset.** One sentence, doing two jobs, and both of them are
+things a reader asked for:
 
-The cost of the rule is singles in a row where a wide page meets the offset. Page
-8 stands alone already, because its would-be partner is the spread; page 9 is the
-spread; and with the offset on, page 10 is the new run's first page. So a book
-reads 8 · 9 (wide) · 10 · 11+12. That is the honest shape of "leave this run's
-first page standing alone, and this run starts at a spread", and it is the one to
-look at if the pairing after a wide page ever reads wrong.
-(`tools/spreadcheck.py` prints this walk, and checks the rules behind it.)
+* **A wide page ends the offset by itself.** Anchored at the front of a book with
+  page 9 wide, the walk is: 1 alone, 2+3, 4+5, 6+7, 8 alone, **9** (the spread),
+  then **(10,11)** — the run after a spread is not offset, because the anchor is
+  not in it. A printed spread has already shifted the pairing by that one page,
+  which is what the offset exists to correct; carrying it across the spread would
+  put the rest of the book out by one instead.
+* **The reader can anchor it again from where they are.** Setting the row on page
+  10 anchors it *there*, so that run is the offset one: 10 alone, then (11,12).
+  That is the whole of what "the reader has control" means here — the offset
+  applies to the run it was set in and to no other.
 
-**The stored value is 0/1 and 0 is truthy in Lua**, so `offset` is normalised by
-comparison here and nowhere else — the trap `meguru/doc/defaults`' `seedRowValue`
-documents at length.
+The alternative was written first and rejected: a flag that offsets **every** run,
+so a wide page means 9 (spread), 10 alone, (11,12). That is a reader who set the
+offset at the front of a book being told that every spread after a printed one
+goes out by a page as well — a rule that keeps answering after it has stopped
+being true.
+
+Where a re-anchored offset meets the wide page before it, there are two single
+pages in a row: 9 is the spread, 10 is the run's first page. That is the shape to
+look at if the pairing after a wide page ever reads wrong, and
+`tools/spreadcheck.py` prints these walks and checks the rules behind them.
+
+**An anchor of 0 is "off"**, and it is read by comparison: `0` and `"0"` are both
+*truthy* in Lua, so a truth test would read a stored "off" as on. A stored `1` —
+which is what this row wrote back when it was a flag — means page 1, the front of
+the book, which is exactly the behaviour it had then.
 
 ## The gutter
 
@@ -148,10 +160,21 @@ local function lastBelow(list, n)
     return found
 end
 
---- The offset answer's domain, read explicitly. `0` and `"0"` are both "off",
---- and both are *truthy* — an `if offset then` here would read a stored 0 as on.
-local function offsetOn(offset)
-    return offset == true or offset == 1 or offset == "1"
+--- The page a *run* starts at: the stretch of pages between two wide ones, which
+--- is what the offset is anchored in. A wide page is a run of its own, and
+--- anything below page 1 answers 0 — which is also "no anchor", so an offset of 0
+--- can never match a run and `unitFor` needs no case for it.
+function Spread.runStart(page, list)
+    list = list or {}
+    page = tonumber(page) or 0
+    if page < 1 then
+        return 0
+    end
+    if isWide(list, page) then
+        return page
+    end
+    local wide = lastBelow(list, page)
+    return wide and (wide + 1) or 1
 end
 
 --- The unit `n` belongs to: `{ a = n }` for a page shown alone, `{ a = a, b = b }`
@@ -159,10 +182,11 @@ end
 --- left is the reading direction's business, not this module's.
 ---
 --- `list` must be ascending and hold every page this session knows to be wide;
---- `offset` is the per-book answer described in the header.
+--- `anchor` is the page the offset is anchored at, or 0 for off — the per-book
+--- answer described in the header.
 ---
 --- Returns nil only for a page number outside the book.
-function Spread.unitFor(n, count, list, offset)
+function Spread.unitFor(n, count, list, anchor)
     n = tonumber(n)
     if not n or not count or n < 1 or n > count then
         return nil
@@ -179,9 +203,11 @@ function Spread.unitFor(n, count, list, offset)
     local wide = lastBelow(list, n)
     local run = wide and (wide + 1) or 1
 
-    -- The offset leaves the *first* page of the run standing alone — in every
-    -- run, so a wide page starts one as well (the header's rule).
-    local first = offsetOn(offset) and 1 or 0
+    -- **The offset is the run it is anchored in and no other**, which is what
+    -- makes a wide page end it by itself: the anchor is not in the new run. An
+    -- anchor of 0 answers a run start of 0, and no run starts at 0, so "off"
+    -- needs no case here. See the header.
+    local first = (Spread.runStart(anchor, list) == run) and 1 or 0
     local idx = n - run
     if idx < first then
         return { a = n }              -- the run's first page, offset on
@@ -204,8 +230,8 @@ end
 --- The page a forward turn from `n` lands on — the start of the *next* unit, or
 --- nil at the end of the book. This is what makes one gesture turn a whole
 --- spread rather than a page.
-function Spread.nextStart(n, count, list, offset)
-    local unit = Spread.unitFor(n, count, list, offset)
+function Spread.nextStart(n, count, list, anchor)
+    local unit = Spread.unitFor(n, count, list, anchor)
     if not unit then
         return nil
     end
@@ -213,17 +239,17 @@ function Spread.nextStart(n, count, list, offset)
     if after > count then
         return nil
     end
-    local next_unit = Spread.unitFor(after, count, list, offset)
+    local next_unit = Spread.unitFor(after, count, list, anchor)
     return next_unit and next_unit.a or nil
 end
 
 --- The page a backward turn from `n` lands on, or nil at the start of the book.
-function Spread.prevStart(n, count, list, offset)
-    local unit = Spread.unitFor(n, count, list, offset)
+function Spread.prevStart(n, count, list, anchor)
+    local unit = Spread.unitFor(n, count, list, anchor)
     if not unit or unit.a <= 1 then
         return nil
     end
-    local prev_unit = Spread.unitFor(unit.a - 1, count, list, offset)
+    local prev_unit = Spread.unitFor(unit.a - 1, count, list, anchor)
     return prev_unit and prev_unit.a or nil
 end
 

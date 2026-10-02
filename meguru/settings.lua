@@ -196,14 +196,19 @@ local DEFAULTS = {
     -- costs.
     spread            = "off",
 
-    -- Whether every pair is shifted one page back: pages 6+7 rather than 7+8.
+    -- Whether a pair is shifted one page back, and **from where**: 0 is "as the
+    -- pages fall", and any other value is the page the offset is anchored at.
     --
-    -- For a book whose spreads all read one page out — a cover or a title page
-    -- that is its own page — where pairing from the first page would put every
-    -- spread wrong by one. It applies to every run, so it also shifts the pairs
-    -- after a wide page; see `meguru/spread`. 0 is "pair as the pages fall".
+    -- For a book whose spreads read one page out — a cover or a title page that is
+    -- its own page — where pairing from the run's first page would put it wrong by
+    -- one. The anchor, rather than a flag, is what makes the answer to "is it on?"
+    -- depend on the pages in front of the reader: the run the anchor is in is the
+    -- offset one, so a wide page ends it by itself and the reader can set it again
+    -- past one. See `meguru/spread`, and `spreadOffsetHere` for the live answer.
     -- Read by comparison everywhere it is consulted: 0 is truthy in Lua, so
-    -- `if spread_offset then` would read a stored "off" as on.
+    -- `if spread_offset then` would read a stored "off" as on. `1` means page 1,
+    -- which is both the front of the book and what this row stored when it was a
+    -- flag — a book written then keeps exactly the behaviour it had.
     spread_offset     = 0,
     night_mode        = true,         -- pre-invert pages instead of a stark negative
 

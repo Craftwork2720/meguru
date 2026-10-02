@@ -124,9 +124,12 @@ end
 --- them.
 ---
 --- `spread` is one of the two rows here whose value is a *string* — `panel_view`
---- is the other — and the offset beside it is 0-or-1. `seedRowValue` copies
---- either through untouched, which is what a stored "off" and a stored 0 both
---- need; see its own comment for the `value and 1 or 0` this replaced.
+--- is the other — and the offset beside it is a page number, 0 for off, which is
+--- what the row's *book* stores (the row itself is a switch: "on" anchors the
+--- offset at the page the reader is on). `seedRowValue` copies either through
+--- untouched, which is what a stored "off" and a stored 0 both need; see its own
+--- comment for the `value and 1 or 0` this replaced. A preference of 1 means page
+--- 1, so a new book that takes the plugin-wide "on" starts offset from its front.
 ---
 --- **`panel_view` seeds from the preference of the same name**, which is why it
 --- needs no entry in `PREFERENCE_FOR` to be seeded — `seedRowValue` falls back to

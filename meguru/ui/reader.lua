@@ -536,17 +536,22 @@ local function setSpread(ui, value, text)
     return true
 end
 
---- The offset beside it. Same shape, and it needs no re-layout of its own beyond
---- `syncSpread`'s: the offset changes *which* pages a unit holds, never the shape
---- of a unit, so the page box the reader derived is still the right one.
-local function setSpreadOffset(ui, value, text)
+--- The offset beside it. Its value is the **page the offset is anchored at** (0
+--- for off) rather than a flag — the rule is in `meguru/spread`, and what this
+--- does is write it where the document reads it: the live configurable and the
+--- book's own sidecar.
+---
+--- It needs no re-layout of its own beyond the `ReZoom` below: the anchor changes
+--- *which* pages a unit holds, never the shape of a unit, so the page box the
+--- reader derived is still the right one.
+local function setSpreadOffset(ui, anchor, text)
     local configurable = ui and ui.document and ui.document.configurable
     if not (configurable and configurable.spread_offset ~= nil) then
         return false
     end
-    configurable.spread_offset = value
+    configurable.spread_offset = anchor
     if ui.doc_settings then
-        ui.doc_settings:saveSetting("kopt_spread_offset", value)
+        ui.doc_settings:saveSetting("kopt_spread_offset", anchor)
         ui.doc_settings:flush()
     end
     -- The unit under the reader has almost certainly changed — pairing from a
@@ -1709,12 +1714,26 @@ The crop trims the pages' inner margins away, which would butt the two pages tog
         args = { 0, 1 },
         default_value = 0,
         event = "MeguruSpreadOffsetUpdate",
+        -- **The row shows the run the reader is in, not the value in the book.**
+        -- The stored answer is a *page* (see `meguru/spread`), and it says nothing
+        -- by itself about the pages on screen: a wide page ends an offset without
+        -- the stored value changing at all. So the switch is answered live, which
+        -- is what makes "the offset ended" something the reader can see rather
+        -- than something they have to infer from the pairing.
+        current_func = function()
+            local doc = ui and ui.document
+            local page = ui and ui.paging and ui.paging.current_page
+            if not (doc and page and type(doc.spreadOffsetHere) == "function") then
+                return 0
+            end
+            return doc:spreadOffsetHere(page) and 1 or 0
+        end,
         -- Inert while there is only ever one page on the screen — a switch that
         -- changes nothing is what this curated menu exists to keep out.
         enabled_func = function(configurable)
             return configurable.spread ~= nil and configurable.spread ~= "off"
         end,
-        help_text = _([[Shifts every pair one page back: with it off the pairs run 1+2, 3+4, 5+6; with it on the first page of each run stands alone and they run 2+3, 4+5, so a reader on page 7 sees 6+7 rather than 7+8. A page the artist drew as one wide image starts a run of its own, and the shift applies there too. Turn it on for a book whose spreads all read one page out — a cover or a title page that is its own page, or a printed spread the file counts as one.]]),
+        help_text = _([[Shifts the pairs of the run you are reading one page back: off pairs 1+2, 3+4; on leaves the run's first page standing alone and pairs 2+3, 4+5, so on page 7 you see 6+7 rather than 7+8. It applies from where you set it. A page the artist drew as one wide image ends it by itself — the pairs after a spread are as they fall unless you set it again there — which is also the row's way of telling you where you are. Turn it on for a book whose spreads read one page out: a cover or a title page that is its own page, or a printed spread the file counts as one.]]),
     }
 
     -- The tone tab: what the page looks like, where the three above are about the
@@ -2534,13 +2553,26 @@ function Reader.install(plugin)
         return true
     end
 
+    -- The offset row, whose value is *where* rather than *whether*.
+    --
+    -- The row is a switch — off and on — and "on" means **from here**: the offset
+    -- is anchored at the page the reader is on, so it applies to the run they are
+    -- reading and no other. That single rule is what makes it do both things the
+    -- reader asked for at once: a wide page ends the offset by itself (the anchor
+    -- is not in the new run), and setting the row again past one anchors it there.
+    -- See `meguru/spread` for the rule and what was rejected in its place.
+    --
+    -- Compared, never tested: `value` arrives in the row's 0/1 domain and `0` is
+    -- truthy in Lua, so `value and …` would read a stored "off" as on — the trap
+    -- `meguru/doc/defaults`' `seedRowValue` documents at length.
     plugin.onMeguruSpreadOffsetUpdate = function(self, value)
-        -- Compared, never tested: the row's stored domain is 0-or-1 and `0` is
-        -- truthy in Lua, so `value and 1 or 0` here would read a stored "off" as
-        -- on — the trap `meguru/doc/defaults`' `seedRowValue` documents at length.
-        value = (value == 1 or value == "1" or value == true) and 1 or 0
-        setSpreadOffset(self.ui, value,
-            value == 1 and _("Page offset: 6 + 7") or _("Page offset: 7 + 8"))
+        local ui = self.ui
+        local anchor = 0
+        if value == 1 or value == "1" or value == true then
+            anchor = (ui and ui.paging and ui.paging.current_page) or 1
+        end
+        setSpreadOffset(ui, anchor,
+            anchor > 0 and _("Page offset: from here") or _("Page offset: off"))
         return true
     end
 
