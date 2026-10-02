@@ -622,7 +622,7 @@ end
 --- Which of the panel views a long-press opens: `"crop"`, `"window"` or `"zoom"`.
 ---
 --- **The book's own answer, seeded from the plugin-wide preference** — the same
---- cascade as the Fit row and Page Crop, read from the configurable the way its
+--- cascade as the Fit row and Crop, read from the configurable the way its
 --- sibling `panelZoomDirection` below reads the reading direction and for the same
 --- reason: `meguru/doc/defaults` writes the book's value at open, so the preference
 --- is what a book with no answer of its own gets, not what every book is stuck
@@ -633,12 +633,12 @@ end
 ---
 --- **Asked only when there *is* a panel view.** Whether there is one is a different
 --- question with a different answer — KOReader's own per-book `panel_zoom_enabled`,
---- which the crop tab's *Long-press* row and KOReader's own row both write, and which
+--- which the *Reading* tab's *Panel view* row and KOReader's own row both write, and which
 --- refuses the press before this is reached (`meguruPanelZoomWanted`). So the three
 --- values are the whole domain here, and anything else is a store this build does
 --- not know and gets the default.
 --- Whether `mode` is one of the three views — the one place the domain is spelled
---- out, asked by `panelViewMode` below and by the crop tab's *Long-press* row, which
+--- out, asked by `panelViewMode` below and by the *Reading* tab's *Panel view* row, which
 --- carries a fourth answer (Off) that is not a view at all.
 local function panelViewIsView(mode)
     return mode == "crop" or mode == "window" or mode == "zoom"
@@ -666,7 +666,7 @@ end
 --- The panel sequence orders a page's panels by this and picks its tap and swipe
 --- sides from it, and there is exactly one source: the same value `ReaderView`
 --- turns pages with. `ui.view.inverse_reading_order` is KOReader's per-book
---- answer, and Meguru's `Manga mode` row and the plugin-wide `manga_order`
+--- answer, and the *Reading direction* row and the plugin-wide `manga_order`
 --- preference both end there — the document seeds the book's own key from the
 --- preference at open time, before `ReadSettings`, and `onMeguruMangaRead` keeps
 --- the live value current. So the cascade is already applied, and reading it
@@ -1426,7 +1426,7 @@ local ROTATE_WIDE_ROW = {
 }
 
 --- Page tone. A row written here rather than lifted from the stock table — which
---- on this menu is not unusual (`Fit`, `Invert read` and the crop row are ours
+--- on this menu is not unusual (`Fit`, `Reading direction` and the crop row are ours
 --- too), but this is the only one whose *values* are the reason: stock's presets
 --- are the wrong shape for a streamed page.
 ---
@@ -1580,12 +1580,10 @@ local function buildCuratedOptions(ui)
     -- and every one of those lookups already tolerates nil — and costs them
     -- silently, which is the price of the rows this file owns being enough to
     -- build a working menu without it.
-    local rotation_tab, crop_tab, pageview_tab
+    local rotation_tab, pageview_tab
     for _, tab in ipairs(KoptOptions) do
         if tab.icon == "appbar.rotation" and not rotation_tab then
             rotation_tab = tab
-        elseif tab.icon == "appbar.crop" and not crop_tab then
-            crop_tab = tab
         elseif tab.icon == "appbar.pageview" and not pageview_tab then
             pageview_tab = tab
         end
@@ -1611,10 +1609,6 @@ local function buildCuratedOptions(ui)
     -- own (`appbar.contrast` lists them Contrast, Saturation, ... Dithering), so a
     -- reader who knows a PDF's tone tab finds the same things in the same places.
     --
-    -- `stock_trim` is read for its *name text* and for nothing else — a build that
-    -- renamed the row still gets a sensible label — which is why the lookup is
-    -- here and the row it names is below.
-    local stock_trim = stockOptionRow(crop_tab, "trim_page")
     local page_options = {
         -- Computed live from the reader's own zoom mode, so the row reflects what
         -- the book is actually showing even after a manual pinch, and falls back
@@ -1646,7 +1640,7 @@ local function buildCuratedOptions(ui)
             end,
             help_text = _([[How a page is zoomed to the screen: full shows the whole cropped page, width fills the screen width, height fills the screen height.]]),
         },
-        -- Our own "Page Crop" row, not the stock one: the stock row carries the
+        -- Our own *Crop* row, not the stock one: the stock row carries the
         -- semi-manual define-an-area flow, which needs a crop box to persist and a
         -- streamed page has none. Only the two states the engine realises are
         -- offered, and both fire the core "ReZoom" so the new box applies to the
@@ -1660,8 +1654,10 @@ local function buildCuratedOptions(ui)
         -- place a reader can still learn what the crop does.
         {
             name = "trim_page",
-            name_text = (stock_trim and stock_trim.name_text) or _("Page Crop"),
-            toggle = { C_("Page crop", "none"), C_("Page crop", "auto") },
+            -- **"Crop", not "Page Crop"**: the tab this row is on is already the
+            -- page's, so the word was saying it twice.
+            name_text = _("Crop"),
+            toggle = { C_("Crop", "none"), C_("Crop", "auto") },
             values = { 3, 1 },
             args = { 3, 1 },
             default_value = 1,
@@ -1688,13 +1684,20 @@ local function buildCuratedOptions(ui)
     local reading_options = {}
     reading_options[#reading_options + 1] = {
         name = "opdsbook_manga",
-        name_text = _("Invert read (manga mode)"),
-        toggle = { C_("Manga mode", "off"), C_("Manga mode", "on") },
+        -- **Named for the question, not for one of its two answers**: the row was
+        -- "Invert read (manga mode)", which told a reader who reads manga what they
+        -- already knew and told everyone else nothing. `values` and `args` are
+        -- unchanged — 0 is left to right, 1 is manga — so nothing stored moves.
+        name_text = _("Reading direction"),
+        toggle = {
+            C_("Reading direction", "left to right"),
+            C_("Reading direction", "manga (right to left)"),
+        },
         values = { 0, 1 },
         args = { false, true },
         default_value = 1,
         event = "MeguruMangaRead",
-        help_text = _([[Right-to-left page turning, so the book reads like Japanese manga. Remembered for this book; new Meguru books start with it on — long-press this row to change that default.]]),
+        help_text = _([[Which way the pages are read. "left to right" is a western book; "manga (right to left)" is a Japanese one, where the pages turn the other way and the earlier page of a spread is the right-hand one. Remembered for this book; new Meguru books start in manga order — long-press this row to change that default.]]),
     }
     local page_view = stockOptionRow(pageview_tab, "page_scroll")
     if page_view then
@@ -1714,21 +1717,24 @@ local function buildCuratedOptions(ui)
         name_text = _("Two pages"),
         toggle = {
             C_("Two pages", "off"),
-            _("in landscape"),
-            _("always"),
+            C_("Two pages", "landscape"),
+            C_("Two pages", "always"),
         },
         values = { "off", "auto", "on" },
         args = { "off", "auto", "on" },
         default_value = "off",
         event = "MeguruSpreadUpdate",
-        help_text = _([[Shows two pages side by side, the way a printed book falls open. "in landscape" does it only while the screen is turned on its side, "always" in either orientation. A page the artist drew as one wide image is always shown whole and on its own, and the pairing starts again after it, so a printed spread never lands halfway through a pair. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+        help_text = _([[Shows two pages side by side, the way a printed book falls open. "landscape" does it only while the screen is turned on its side, "always" in either orientation. A page the artist drew as one wide image is always shown whole and on its own, and the pairing starts again after it, so a printed spread never lands halfway through a pair. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
     }
     reading_options[#reading_options + 1] = {
         name = "spread_offset",
-        name_text = _("Page offset"),
+        -- **"Pair", not "Page"**: what the row moves is where a *pair* starts, and
+        -- a reader who has just read "Two pages" above it needs the word that ties
+        -- the two together.
+        name_text = _("Pair offset"),
         toggle = {
-            C_("Page offset", "off"),
-            C_("Page offset", "on"),
+            C_("Pair offset", "off"),
+            C_("Pair offset", "on"),
         },
         values = { 0, 1 },
         args = { 0, 1 },
@@ -1771,11 +1777,9 @@ local function buildCuratedOptions(ui)
         help_text = _([[The crop trims each page's inner margin, which would butt the two pages of a spread together at the middle. With this on, the space left over once the artwork is fitted to the screen goes back into that gutter — never more than the margin the page itself has, and never enough to make the artwork smaller. With it off, a pair is drawn exactly as the crop left it. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
     }
 
-    -- **The long-press, in one row: the three views and Off.** The three labels
-    -- are the ones the viewer's switch carries (`ui/panelzoom`), so a reader meets
-    -- the same three words in both places; Off is not a fourth view at all but
-    -- KOReader's own per-book answer for whether there is a panel zoom, which is
-    -- why neither the display nor the write here is a plain assignment — see
+    -- **One row for the three views and Off**, and Off is not a fourth view at all
+    -- but KOReader's own per-book answer for whether there is a panel zoom — which
+    -- is why neither the display nor the write here is a plain assignment; see
     -- `current_func` and `onMeguruPanelViewUpdate`.
     --
     -- One row for both questions because that is the question a reader has: what
@@ -1784,12 +1788,17 @@ local function buildCuratedOptions(ui)
     -- a *touch* does, where the rows above are what a page turn does.
     reading_options[#reading_options + 1] = {
         name = "panel_view",
-        name_text = _("Long-press"),
+        -- **Named for what it sets, not for the gesture that sets it**: "Long-press"
+        -- named the way in, which the row's own help text has to explain anyway, and
+        -- said nothing to a reader who had not tried it. The three answers are
+        -- short and lower case for the same reason — they are the names of the
+        -- views, and the switch inside the viewer carries the same three words.
+        name_text = _("Panel view"),
         toggle = {
-            C_("Long-press", "off"),
-            _("Panel Cut"),
-            _("Pan & Zoom"),
-            _("Free View"),
+            C_("Panel view", "off"),
+            C_("Panel view", "cut"),
+            C_("Panel view", "pan & zoom"),
+            C_("Panel view", "free"),
         },
         values = { "off", "crop", "window", "zoom" },
         args = { "off", "crop", "window", "zoom" },
@@ -1805,7 +1814,7 @@ local function buildCuratedOptions(ui)
             end
             return Reader.panelViewMode(ui)
         end,
-        help_text = _([[What holding on a page does. Panel Cut shows the panels the detector found, one at a time; Pan & Zoom keeps the page whole and moves a window over it; Free View shows the page alone. "off" leaves the long-press to KOReader, and applies to this book only. Long-press this row to make a view the default for new books. This is Meguru's own panel view — a panel plugin that answers the long-press itself is its own.]]),
+        help_text = _([[What holding on a page does. "cut" shows the panels the detector found, one at a time; "pan & zoom" keeps the page whole and moves a window over it; "free" shows the page alone. "off" leaves the long-press to KOReader, and applies to this book only. Long-press this row to make a view the default for new books. This is Meguru's own panel view — a panel plugin that answers the long-press itself is its own.]]),
     }
 
     -- **Three tabs of this plugin's own, and the order is a reader's**: what a
@@ -2319,7 +2328,7 @@ end
 --- Ask the document for the margin this page's crop took off, remember it, and
 --- paint the surround with it. Called on a page turn and once at install.
 ---
---- Inert wherever the crop is not: with "Page Crop" off, or on a page the scan
+--- Inert wherever the crop is not: with "Crop" off, or on a page the scan
 --- refused or found no margin on, `cropMarginColor` answers nil and the reader's
 --- own surround colour is restored. That is also what keeps this from arguing
 --- with `meguru/doc/image`, whose panel mask is white by a written decision — the
@@ -2496,7 +2505,7 @@ function Reader.install(plugin)
     -- And the page the book opens on, which no page turn announces.
     applyCropMarginColor(plugin, ui, currentPage(ui))
 
-    -- And whenever the crop moves with no turn in it. The Page Crop row fires the
+    -- And whenever the crop moves with no turn in it. The Crop row fires the
     -- reader's own `ReZoom` rather than a page turn, so switching it — `none` to
     -- `auto` most visibly — left the newly cropped page inside the colour the
     -- *uncropped* one answered: invisible on a white margin, where the reader's own
@@ -2623,7 +2632,7 @@ function Reader.install(plugin)
             anchor = (ui and ui.paging and ui.paging.current_page) or 1
         end
         setSpreadOffset(ui, anchor,
-            anchor > 0 and _("Page offset: from here") or _("Page offset: off"))
+            anchor > 0 and _("Pair offset: from here") or _("Pair offset: off"))
         return true
     end
 
@@ -2690,7 +2699,7 @@ function Reader.install(plugin)
         return true
     end
 
-    -- The crop tab's *Long-press* row: one of the three views, or off.
+    -- The *Reading* tab's *Panel view* row: one of the three views, or off.
     --
     -- **Two keys, one answer, which is why this is more than an assignment.**
     -- `panel_view` holds a view and nothing else, so Off cannot be stored in it —

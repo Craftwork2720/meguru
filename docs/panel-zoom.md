@@ -687,12 +687,12 @@ call may throw, or a viewer is left on the stack while the caller is told the op
 panels cut out of the page, each its own image, quad-masked. Or *window*: the page
 stays whole and a rectangle moves over it at one fixed zoom, anchored to the panel's
 edges. The value is the book's `kopt_panel_view`, and there are **two controls for it: the
-switch at the front of the viewer's own button row, and the crop tab's *Long-press* row**
-(bottom menu → *Page Crop* tab), which is the one a reader can reach without opening the
+switch at the front of the viewer's own button row, and the *Reading* tab's *Panel view*
+row** (bottom menu → the *Reading* tab), which is the one a reader can reach without opening the
 viewer — and the only one there is for a reader whose long-press another panel plugin
 answers. `meguru/settings.lua`'s `panel_view` is now only the **seed**: what a book with
-no value of its own is opened with. The switch names the three views `Panel Cut`,
-`Pan & Zoom` and `Free View`, and the row uses the same three words plus `off`; this document
+no value of its own is opened with. The switch names the three views `cut`,
+`pan & zoom` and `free`, and the row uses the same three words plus `off`; this document
 calls them the cropped view, the window view and the free view, and they are the same three — the
 label is what a reader reads and the prose is what the code is called, so neither is a rename of
 the other.
@@ -735,7 +735,7 @@ stop one origin mistake away from naming the wrong rectangle, for no gain the fi
 give.
 
 **The box comes from `getPageBBox`, and that is the reader's own answer rather than ours.**
-That seam is `autoContentBox`'s margin scan when *Page Crop* is auto, a detected page-number
+That seam is `autoContentBox`'s margin scan when *Crop* is auto, a detected page-number
 strip when that row is on, and **the whole page when the reader has cropping off** — so the
 two views follow the setting instead of second-guessing it, and switch themselves off exactly
 when the reader asked for no crop. `contentDims` is the whole of it, and its three refusals are
@@ -861,12 +861,12 @@ The constant is a guess at where a reader stops noticing the shrink and starts w
 zoom, and it is the one number to move if that judgement is wrong. **Zero switches the whole
 mechanism off**, which is what to reach for first if a page ever looks wrong here.
 
-**The row has two shapes, one per view, and both carry the view switch.** *Pan & Zoom*
-holds `[Pan & Zoom] [-] [1.7x] [+] [Close]`; *Panel Cut* keeps stock's three and gains the
-switch in front — `[Panel Cut] [Rotate] [Close]`. **The switch's
+**The row has two shapes, one per view, and both carry the view switch.** *pan & zoom*
+holds `[pan & zoom] [-] [1.7x] [+] [Close]`; *cut* keeps stock's three and gains the
+switch in front — `[cut] [Rotate] [Close]`. **The switch's
 label names the view the reader is in**, not the one the press leads to: it is the shape
 the zoom button beside it already has (that one shows the level it is on) and the shape
-the crop tab's *Long-press* row has, so the button and the setting name the same
+the *Reading* tab's *Panel view* row has, so the button and the setting name the same
 thing. The first version named the destination, which is defensible for a button and was
 not what a reader wanted — three controls saying different things about one state is the
 thing to avoid. The zoom button is
@@ -875,7 +875,7 @@ writes the preference, so the next page, the next book and the next start keep i
 why there is no menu row for the level — the choice moved into the viewer, the store did
 not, and `ui/reader` still reads it and hands the number in.
 
-**The two buttons beside that one are the same pair Free View has, with this view's own step and
+**The two buttons beside that one are the same pair *free* has, with this view's own step and
 its own range.** `-` and `+` move the level by a **tenth**, so a reader can reach 1.5 or 2.1 rather
 than only the three presets; the value button still *cycles*, and because a tenth leaves
 numbers that are on no list it walks **up** from wherever the reader is — 1.8 answers 1.9,
@@ -905,14 +905,14 @@ before it is replaced and its callback passed straight back in, which is no upst
 and upstream's own `update` re-letters it by id so its label stays true. Scale went for the reason
 the row above gives at length — what it sets is the *viewer's* `scale_factor`, and a panel is
 already rendered at the panel's own size — and it applies here most directly, since a panel *is*
-the size that button was claiming to change. The removal was first asked for in Pan & Zoom; this
+the size that button was claiming to change. The removal was first asked for in *pan & zoom*; this
 is the same argument reaching the view it fits best.
 
 Dropping it has one requirement that is not optional. `ImageViewer:update` re-letters the buttons
 it expects **by id and without checking that they are there**, so a row without one is a nil call
 inside a paint: `installRow` seeds the map those lookups read with a sink for every button its row
 does not carry — `scale` here, and both of them in the two views that have neither. The switch writes
-the same per-book `kopt_panel_view` the crop tab's *Long-press* row does, from a
+the same per-book `kopt_panel_view` the *Reading* tab's *Panel view* row does, from a
 close-and-reopen that keeps the reader's
 panel, which is `steps[cur].panel` in the window view and the bare step index in the crop
 one — read from *that* view's shape rather than from the step, whose `panel` field is nil

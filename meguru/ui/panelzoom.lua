@@ -1279,12 +1279,12 @@ end
 -- carries the panel each of its windows belongs to — and a point to re-enter the two
 -- window-shaped views at, which is the middle of whatever they are looking at.
 --
--- **The book's own value**, which is what the crop tab's *Long-press* row reads and
+-- **The book's own value**, which is what the *Reading* tab's *Panel view* row reads and
 -- writes too — so the two controls cannot disagree. It used to be the plugin-wide
 -- `panel_view` preference, and that is still what a book with no value of its own is
 -- seeded with (`meguru/doc/defaults`); what moved is where a *choice* lands, because a
 -- reader can now make it per book in the dialog. Nothing writes the preference from
--- here any more: cycling is choosing for *this* book, and the crop tab's row is where a
+-- here any more: cycling is choosing for *this* book, and that row is where a
 -- reader makes a view the default for the books after it (its long-press). The
 -- preference is what a new book starts from.
 function PanelViewer:meguruCycleView()
@@ -1358,7 +1358,7 @@ end
 
 -- The row, and it has two shapes: one per view, because what is worth a button differs.
 --
--- **Pan & Zoom** holds the zoom and Close. Stock's *Scale / Original size* sets the
+-- ***pan & zoom*** holds the zoom and Close. Stock's *Scale / Original size* sets the
 -- *viewer's* scale factor — one image pixel to one screen pixel — and every step in this
 -- view is already a screen-sized render shown at best fit, so it changed nothing while
 -- its label promised something else; *Rotate* turns a picture, and nothing turns here,
@@ -1366,7 +1366,7 @@ end
 -- side. What a reader of this view actually wants to change is how close the window
 -- sits, so that is what the row holds.
 --
--- **Panel Cut keeps stock's three**, because there they mean what they say: the
+-- ***cut*** keeps stock's three, because there they mean what they say: the
 -- tile is the panel at its own size, so Original size is the panel's own pixels, and a
 -- wide panel is one a Rotate can turn. They are *forwarded* rather than re-implemented —
 -- `Button` calls `self.callback`, so the existing objects are read out of the table
@@ -1424,11 +1424,15 @@ local function installRow(viewer)
         id = "view",
         -- **The label names the view the reader is *in*.** It is the shape the zoom
         -- button beside it already has — that one shows the level it is on — and the
-        -- shape the crop tab's *Long-press* row has, so the switch and the row name the
-        -- same thing rather than one of them naming the destination. With three views it
-        -- also has to cycle rather than toggle.
-        text = free and _("Free View")
-            or (window and _("Pan & Zoom") or _("Panel Cut")),
+        -- shape the *Reading* tab's *Panel view* row has, so the switch and the row
+        -- name the same thing rather than one of them naming the destination. With
+        -- three views it also has to cycle rather than toggle.
+        --
+        -- The three words are the row's, letter for letter
+        -- (`ui/reader.lua`'s `Panel view`): a reader meets them in both places, and
+        -- two spellings of one view is how a switch and a row come to disagree.
+        text = free and _("free")
+            or (window and _("pan & zoom") or _("cut")),
         callback = function()
             viewer:meguruCycleView()
         end,
@@ -1564,7 +1568,7 @@ end
 -- (native pixels), from a foreign `pagenumbercrop`, or from anywhere else measures the same.
 --
 -- It comes from `getPageBBox`, and that is a decision rather than a convenience: that seam is
--- the reader's own answer — `autoContentBox`'s margin scan when *Page Crop* is auto, a detected
+-- the reader's own answer — `autoContentBox`'s margin scan when *Crop* is auto, a detected
 -- page-number strip when that row is on, and the whole page whenever the reader has cropping
 -- off — so this follows the setting instead of second-guessing it, and switches itself off
 -- exactly when the reader asked for no crop.

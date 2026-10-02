@@ -338,7 +338,7 @@ Each step must pass before the next:
     of the store still shows a panel, softer, through the `Document:drawPagePart`
     fallback.
 
-    Then the same page in the **window view** (*Long-press: Pan & Zoom*), which is the
+    Then the same page in the **window view** (*Panel view: pan & zoom*), which is the
     second half of this item because it is the same crop question asked the other way.
     Long-press a point in a large panel: **the panel opens at its own beginning**, not at
     the point under the finger — a panel taller than the window pressed in its lower half
@@ -378,7 +378,7 @@ Each step must pass before the next:
     turns the page or moves the reading position behind a viewer the reader cannot see past.
 
     Then the **content crop**, which these two views work their zoom out from and the cropped
-    view does not touch at all. With *Page Crop* at `auto` (⋮ → **Page crop** → *auto*),
+    view does not touch at all. With *Crop* at `auto` (bottom menu → the *Page* tab → *auto*),
     long-press the same page and compare it against the same page with the crop off:
     **the same level is now closer.** The margin was in the denominator of every level — a tenth
     of the page given to paper was a tenth of the magnification given away — so taking it out
@@ -390,7 +390,7 @@ Each step must pass before the next:
     the reader can reach.
     **The margin must still be reachable**: pan the free view towards a page edge and the paper
     must come into view, because only the fit was cropped and the window is still the page's.
-    Then set *Page Crop* to `none` and long-press again: everything must be **exactly** as it
+    Then set *Crop* to `none` and long-press again: everything must be **exactly** as it
     was before this existed — same steps, same count, the same level buying the same
     magnification — because the mechanism is required to be inert when the reader asked for no
     crop. The free view carries the same pair: with the crop on, its bottom stop is the content;
@@ -401,11 +401,11 @@ Each step must pass before the next:
     still be *Meguru's* row** — the re-open paints the row it was built with, so a
     `[1.7x]` that turns into `[Original size]` is the `update()`-after-the-swap bug, not a
     preference going missing. The **view switch** sits at the front of the row in both
-    views and names the view the reader is **in** — `Pan & Zoom` while in pan & zoom,
-    `Panel Cut` while cut — the same thing the setting behind it says;
+    views and names the view the reader is **in** — `pan & zoom` while in pan & zoom,
+    `cut` while cut — the same thing the setting behind it says;
     pressing it changes what the page is cut into, keeps the panel the reader is
-    on, and leaves the row open — and it writes the **book's** value, so the crop tab's
-    *Long-press* row (bottom menu → the crop tab) must read back the view the switch
+    on, and leaves the row open — and it writes the **book's** value, so the *Reading*
+    tab's *Panel view* row (bottom menu → the *Reading* tab) must read back the view the switch
     just left the reader in. **The row is the other half of that pair**, and it is the
     only control there is for a reader whose long-press another panel plugin answers:
     each of the three views must open on the next long-press, `off` must give the press
@@ -424,10 +424,10 @@ Each step must pass before the next:
 
     **A dark border is cropped by the same rule, and the pair to walk is a black-margined
     book.** On a page printed with a black frame — the letterboxed manga this crop exists for —
-    *Page Crop* at `auto` must trim that frame on **all four** screen edges, flush with the
+    *Crop* at `auto` must trim that frame on **all four** screen edges, flush with the
     artwork, and an asymmetric frame must come out trimmed asymmetrically rather than centred.
     The white number printed in the black margin must go with the crop, leaving the panel at the
-    edge, and *Page Crop* at `none` must bring both the frame and the number back — that pair is
+    edge, and *Crop* at `none` must bring both the frame and the number back — that pair is
     the whole of the claim, because the number is *content* against a black margin and the margin
     crop alone stops on it. It is one row now: the number has no toggle of its own
     (`docs/menus-and-lifecycle.md`).
@@ -502,7 +502,7 @@ Each step must pass before the next:
     under the buttons ✓, and in the free view a tap and a spread must still land where they
     should ✓ — that mapping reads the picture area, which the row is what changes.
 
-    Then the third view (*Long-press: Free View*, or the row's switch twice). Long-press a
+    Then the third view (*Panel view: free*, or the row's switch twice). Long-press a
     point: the page must open **centred on that point**, sharp at 2× and 3× — it is a render
     from the file, not a magnified tile — and then: pinch changes the scale ✓, drag moves the
     window ✓ **in every direction — down, and on the diagonal**, which is the one a drag is
@@ -545,9 +545,9 @@ Each step must pass before the next:
     its **end** — the bottom of it, the corner nearest where the reader came from. It
     used to open the previous page at its first panel, from the top, and then at the
     last panel's top, and both were wrong for the same reason. Then the
-    direction: in Manga mode a panel too wide for the window must be walked from its
+    direction: in manga order a panel too wide for the window must be walked from its
     **right** edge to its left, and in Comic mode from left to right — the same thing
-    `Manga mode` already does to the panel order. And a splash page the detector refuses
+    the reading direction already does to the panel order. And a splash page the detector refuses
     must open whole, cropped, whatever this preference says.
 19. **A book that cannot get its pages says why, once, and stops asking.** With the wifi
     off, open a marker: the page area holds *Can't load this page / You're offline right
@@ -586,7 +586,7 @@ Each step must pass before the next:
     and **a forward gesture from a middle panel stays on the page** and shows the next
     panel — if it turns the page instead, the navigation bound was taken from
     `_images_list_nb`, which is now the bar's switch and not a count, and nothing
-    automated can catch that. Then **toggle Manga mode with a page open
+    automated can catch that. Then **toggle the reading direction with a page open
     and long-press it twice** — the second press must give the mirrored order, which is
     the whole job of the cache key; and **long-press, close, long-press the same page** —
     the second must be instant and log the same count (the LRU hit), with nothing new on

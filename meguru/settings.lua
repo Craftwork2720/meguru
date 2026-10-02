@@ -71,12 +71,12 @@ local DEFAULTS = {
     -- a time, the page kept whole with a window moved over it, or the page alone with
     -- no panels at all. `"crop"` | `"window"` | `"zoom"`, and it says nothing about
     -- *whether* there is a panel view — a book has one unless the reader turned it off
-    -- for that book, which the crop tab's *Long-press* row and KOReader's own row both
+    -- for that book, which the *Reading* tab's *Panel view* row and KOReader's own row both
     -- do, and this is only reached when it is on.
     --
     -- **A seed, not the answer.** The view is a per-book value (`kopt_panel_view`),
-    -- chosen in the crop tab under *Page Crop* or by the switch inside the panel
-    -- viewer, and this is what a book with no value of its own is seeded with
+    -- chosen by the *Reading* tab's *Panel view* row or by the switch inside the
+    -- panel viewer, and this is what a book with no value of its own is seeded with
     -- (`meguru/doc/defaults`) — so a long-press on that row is what sets it, as on
     -- every other row. The row's fourth answer, Off, is not a view but KOReader's own
     -- per-book `panel_zoom_enabled`, which has no default of its own by design: a

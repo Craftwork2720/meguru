@@ -54,7 +54,7 @@ Defaults.FIT_TO_ZOOM_MODE = FIT_TO_ZOOM_MODE
 ---
 --- **Only rows that still exist are here.** The two page-number/blank toggles
 --- used to be, and the argument for them was the same one as for `trim_page`:
---- they were rows of the curated crop tab. They are rules of the engine now
+--- they were rows of the curated crop tab — the *Page* tab now. They are rules of the engine now
 --- (`document.lua`'s getPageBBox), not rows, so there is no value to seed into a
 --- book and nothing that would read one — a book that carries
 --- `kopt_page_number_crop_auto` keeps it and is never asked about it again.
@@ -121,7 +121,7 @@ end
 --- The crop itself, wide-page rotation, which view a long-press opens, and how
 --- many pages are shown at once together with its offset. All are rows of the
 --- curated dialog; the page-number and blank-page rules used to be rows too and
---- are now part of what "Page Crop: auto" means, so there is nothing to seed for
+--- are now part of what "Crop: auto" means, so there is nothing to seed for
 --- them.
 ---
 --- `spread` is one of the two rows here whose value is a *string* — `panel_view`

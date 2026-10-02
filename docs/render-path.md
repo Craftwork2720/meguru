@@ -344,12 +344,12 @@ refused, both answer nil and the reader's own surround colour comes back; that i
 the difference between this value and the `backgroundFor` estimate
 `meguru/doc/image` refuses by name for the panel mask. And it is screen-level only:
 the panel viewer's frame and the panel mask keep their white, by that same written
-decision. One interaction is worth knowing: stock's own Page Crop dialog reads these
+decision. One interaction is worth knowing: KOReader's own crop dialog reads these
 fields when it opens and restores them when it closes, so a reader who crops by hand
 mid-book gets their own colour back until the next page turn re-applies this.
 
 **There is a second way the margin changes with no turn in it: the crop mode itself.**
-The colour is remembered from the turn, so the Page Crop row — which fires the
+The colour is remembered from the turn, so the Crop row — which fires the
 reader's own `ReZoom`, not a turn — left the new box inside the old colour. Switching
 it from `none` to `auto` is where a reader meets it: the page is cropped and the
 surround still carries the *uncropped* page's answer, which reads as the crop not

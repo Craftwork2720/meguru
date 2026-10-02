@@ -75,7 +75,7 @@ end
 -- or rendered black edge on some. Cropping such a page is done like a
 -- KOpt-engine document would: the page size stays the *full* (capped) native
 -- page and the crop lives only in the document's bounding box. `getPageBBox`
--- (below) returns the trimmed content box when the "Page Crop" ConfigDialog
+-- (below) returns the trimmed content box when the "Crop" ConfigDialog
 -- choice is "auto" (configurable.trim_page == 1) and the full page otherwise,
 -- and ReaderZooming/ReaderView crop through that box for every "content" fit
 -- mode ("content", "contentwidth", "contentheight"), which is what this
@@ -111,7 +111,7 @@ end
 -- this document's own getPageBBox whether or not that plugin is installed: its
 -- own patch of the same seam is taken back at ReaderReady
 -- (`takeBackPageBBox`), because the ported analysis carries a width bound the
--- original has no counterpart of. They are not rows: "Page Crop" at "auto" is
+-- original has no counterpart of. They are not rows: "Crop" at "auto" is
 -- what turns them on (`getPageBBox` below), so a reader who has that plugin
 -- installed — with its two extra rows — sees them folded into the same choice.
 -- Only the plugin's screen-level "Rotate wide pages" is left to it.
@@ -912,7 +912,7 @@ local MeguruDocument = Document:extend{
     -- Whether this book reads right to left, so the earlier page of a pair goes
     -- on the *right*. Mirrors `ReaderView.inverse_reading_order`, which is a
     -- reader-side setting rather than a configurable one; seeded from the same
-    -- sidecar key at open and kept in step by the reader's Manga mode row.
+    -- sidecar key at open and kept in step by the reader's Reading direction row.
     spread_rtl = false,
 }
 
@@ -1122,13 +1122,13 @@ function MeguruDocument:init()
     -- Two things are seeded into this book's own DocSettings, and they want the
     -- same sidecar.
     --
-    -- 1. The plugin-wide "Manga mode" (invert read) choice — KOReader's
+    -- 1. The plugin-wide "Reading direction" answer (manga order) — KOReader's
     --    ReaderView only reads "inverse_reading_order" per book, falling back to
     --    its *global* default otherwise, a global this plugin deliberately never
     --    touches. Books that already carry an explicit reading order (set
-    --    through the bottom-menu Manga mode row or elsewhere) are left alone;
+    --    through the bottom-menu Reading direction row or elsewhere) are left alone;
     --    only books with none are seeded, so existing markers honour the plugin
-    --    setting too. The bottom-menu Manga mode toggle keeps this key in sync.
+    --    setting too. The bottom-menu Reading direction toggle keeps this key in sync.
     --
     -- 2. The page the *server* says the reader stopped on — but **only** for a
     --    book never opened on this device, because a book opened before carries
@@ -2117,7 +2117,7 @@ end
 --- One page's content box, `{x, y, w, h}`, in its own native coordinates.
 ---
 --- The corruption guard is the base `getUsedBBoxDimensions`': a box that does
---- not describe an area is the whole page (which is also whatprzeePage Crop: none"
+--- not describe an area is the whole page (which is also what "Crop: none"
 --- answers, and what a blank page answers).
 function MeguruDocument:_pageBox(pageno)
     local geom = self:_pageGeom(pageno)
@@ -2165,7 +2165,7 @@ end
 --- answers with how much each half widens. Everything else here is bookkeeping.
 ---
 --- Two cases answer with no gutter at all without this function having to know
---- about them. A page whose crop came back whole — "Page Crop: none", a
+--- about them. A page whose crop came back whole — "Crop: none", a
 --- mostly-blank page, a page that would not load and was given the screen's own
 --- size as a stand-in — has its content edge *at* its page edge, so its margin is
 --- zero. And a pair whose artwork already fills the screen width leaves no slack
@@ -2399,14 +2399,14 @@ end
 -- bounding box getPageBBox returns (below) — the base
 -- Document:getUsedBBoxDimensions goes through getPageBBox, so returning the
 -- whole page here is simply the "nothing cropped" fallback (e.g. when
--- "Page Crop" is "none", trim_page == 3).
+-- "Crop" is "none", trim_page == 3).
 function MeguruDocument:getUsedBBox(pageno)
     local dims = self:getPageDims(pageno)
     return { x0 = 0, y0 = 0, x1 = dims.w, y1 = dims.h }
 end
 
 -- The bounding box ReaderZooming/ReaderView crop through ("used bbox"
--- mechanism): the auto content box when the bottom-menu "Page Crop" choice is
+-- mechanism): the auto content box when the bottom-menu "Crop" choice is
 -- "auto" (configurable.trim_page == 1), else the whole page. This is what
 -- makes a KOpt-style crop work while the page size (getPageDims) stays the
 -- full native page. The base getUsedBBoxDimensions mutates the table it is
@@ -2428,7 +2428,7 @@ end
 -- installs this plugin's own rotation only for a document that plugin has not
 -- patched at all.
 --
--- **"Page Crop" at "auto" is the whole of the switch.** The two finer crops are
+-- **"Crop" at "auto" is the whole of the switch.** The two finer crops are
 -- built in here (see the "Page-number / blank-page analysis" section below) and
 -- have no rows of their own: with the box being auto, a detected printed
 -- page-number band trims its bottom edge, and a page whose content area is below
@@ -2450,7 +2450,7 @@ function MeguruDocument:getPageBBox(pageno)
     end
     local c = self.configurable
     if not c or c.text_wrap == 1 or c.trim_page ~= 1 then
-        -- "Page Crop" at "none" — nothing finer is offered as a separate choice,
+        -- "Crop" at "none" — nothing finer is offered as a separate choice,
         -- so this is the only gate the two rules below have.
         return bbox
     end
@@ -2587,7 +2587,7 @@ end
 -- a port of the pagenumbercrop plugin's own analysis (its main.lua), renamed
 -- `_meguru*`, and this document runs them itself whether or not that plugin is
 -- installed (`takeBackPageBBox` above). They are only ever consulted from
--- getPageBBox, and only when the gate there holds: "Page Crop" at auto — they
+-- getPageBBox, and only when the gate there holds: "Crop" at auto — they
 -- have no rows of their own, so that one choice is the whole of the gate.
 --
 -- All state is per-page memo tables (`_meguru_pagenum_cache` etc.), created
@@ -3228,7 +3228,7 @@ end
 -- the same one written there.
 --
 -- The key carries the reading direction because the direction reorders the
--- list: flipping ⋮ Manga mode and long-pressing the same page must not be
+-- list: flipping the reading direction and long-pressing the same page must not be
 -- answered from the other direction's order. It carries nothing else — there is
 -- one detector, and no border plane for a variant of one.
 local function panelCacheKey(pageno, manga)

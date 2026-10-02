@@ -99,7 +99,7 @@ threshold reads.
 
 **And both of the ported rules are the crop, not rows beside it.** They were two toggles of their
 own — "Page Number Crop" and "No crop on blank pages" — mirroring that plugin's rows one for one;
-they are now what *Page Crop* at `auto` means, so the crop tab has a single row and there is no way
+they are now what *Crop* at `auto` means, so the *Page* tab has a single row and there is no way
 to have the margin trim without the other two. The argument is the one this file keeps making
 about what a reader is choosing: nobody wants a printed number back, and nobody wants a chapter
 divider zoomed into a title, so offering those separately was offering the *symptom* as a

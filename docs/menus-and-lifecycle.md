@@ -28,8 +28,8 @@ and KOReader's are not interchangeable, so a tab of ours has to name its own.
 **Three tabs come back, and they are this plugin's own rather than stock's four:**
 
 - **Reading** — what a page turn does, how many pages are on the screen, and what a
-  long-press does: manga mode, page scroll, the two-page view with its page offset
-  and its gutter beside it, and the long-press. See
+  long-press does: the reading direction, page scroll, the two-page view with its
+  pair offset and its gutter beside it, and the panel view. See
   [docs/two-page-view.md](two-page-view.md).
 - **Page** — the page's own shape and its picture: fit, crop, and the three tone
   rows, which are the tab stock keeps apart and this one does not.
@@ -38,10 +38,11 @@ and KOReader's are not interchangeable, so a tab of ours has to name its own.
 The regrouping is deliberate: a reader changing how a page is *shown* is not served
 by having the crop and the contrast two tabs apart, and stock's page-margin and
 reflow tabs have nothing here to hold. Stock's tabs are still **where the rows come
-from** (`buildCuratedOptions` lifts `rotation_mode`, `page_scroll` and the crop row's
-name text out of them by name) — a tab is a place to find a row, not a shape to
-reuse — which is why the lookup still happens even though none of stock's tab objects
-is handed back.
+from** (`buildCuratedOptions` lifts `rotation_mode` and `page_scroll` out of them by
+name) — a tab is a place to find a row, not a shape to reuse — which is why the
+lookup still happens even though none of stock's tab objects is handed back. The crop
+is no longer lifted at all: its row is this plugin's, name and all (`Crop`, where
+stock calls it "Page Crop", the tab already being the page's).
 
 **The two rows under "Two pages" belong to it and are dimmed until it is on, and
 that is as close to a group as this menu can come.** *The bottom menu has no
@@ -80,7 +81,7 @@ three rules are what cropping a page means here. The cost is that neither can be
 alone, and that a book carrying `kopt_page_number_crop_auto` or `kopt_no_crop_blank_pages`
 from an earlier version keeps the key and gets the rule back — nothing reads either again.
 
-**The *Long-press* row — the last of the *Reading* tab — is the first row in this dialog
+**The *Panel view* row — the last of the *Reading* tab — is the first row in this dialog
 that is not one value in one key.** Its three views are the book's `kopt_panel_view` — the switch inside the
 panel viewer writes the same one, so the two controls cannot disagree — and its fourth answer,
 `off`, is KOReader's own per-book `panel_zoom_enabled`, which is a different question with a
@@ -135,7 +136,7 @@ Invariants when touching these rows:
   them**, and that is a decision rather than an omission: the panel choices are per book,
   and a preference row here would be a plugin-wide answer to a per-book question. Two live
   in the viewer's own button row, where the reader can see what they do while looking at
-  the page they do it to, and the view is the bottom dialog's *Long-press* row — see
+  the page they do it to, and the view is the bottom dialog's *Panel view* row — see
   `docs/panel-zoom.md`. The FileManager's depth is a deliberate
   cost, paid so the two menus read the same. No `sorting_hint` exists below the top-level
   `meguru` item — the sorter only ever orders a page's own rows.
@@ -231,7 +232,7 @@ Invariants when touching these rows:
   **`rotate_wide_pages` row stays**, because that one drives that rotation and is a
   `KoptOptions` entry the curated dialog reads from there in preference to its own. Its
   two crop toggles are not read by anything here any more — they are rules of this
-  engine, folded into *Page Crop* (`document.lua`'s getPageBBox). The take-back fires
+  engine, folded into *Crop* (`document.lua`'s getPageBBox). The take-back fires
   `ReZoom` when it took something back — the box for the page a book opens on is derived
   during `ReadSettings`, with the plugin's wrapper already in place.
 - Every menu surface Meguru writes is a `TouchMenu`; the plugin no longer has a

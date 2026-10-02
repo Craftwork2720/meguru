@@ -45,7 +45,7 @@ Everything else about a page keeps answering for one page, through `_pageGeom`: 
 
 Two decisions inside that are worth keeping:
 
-- **Which page goes on the left is the reading direction's.** In a right-to-left book — manga, this plugin's default — the earlier page of a pair is the right-hand one. The document keeps its own copy of the answer (`spread_rtl`), seeded from the same sidecar key `ReaderView` reads and kept in step by the Manga mode row, because the document is the one that draws the pair and the document is opened before the reader exists.
+- **Which page goes on the left is the reading direction's.** In a right-to-left book — manga, this plugin's default — the earlier page of a pair is the right-hand one. The document keeps its own copy of the answer (`spread_rtl`), seeded from the same sidecar key `ReaderView` reads and kept in step by the *Reading direction* row, because the document is the one that draws the pair and the document is opened before the reader exists.
 - **Two pages cropped to different heights are top-aligned**, and the taller one sets the box. A single rectangle cannot express "this page cropped *and* that one cropped differently" *vertically* without per-page offsets in the split maths — the horizontal half of that problem is the gutter, below; two pages of one scan are the same size, and the mixed case is where to look if a seam ever looks wrong.
 
 *A combined bitmap was rejected*: building one `BlitBuffer` twice as wide and blitting it once costs a full-page allocation per pair, needs its own cache and its own key, and gives nothing the two blits into the target do not — the split is strictly better on e-ink memory.
@@ -65,7 +65,7 @@ The rule is `Spread.gutter` (`meguru/spread.lua`), and **the order of its four s
 
 The two margins are read off the crop rather than assumed: `getPageDims` reports the *full* page and `getPageBBox` the content, so `dims.w - (box.x + box.w)` is exactly the margin the crop took off the left page's inner edge, and `box.x` is the right page's. **Nothing is assumed about which side of a scan carries a margin** — the commonest case of all is a margin on the inner edge of one page of the pair and none on the other, where the whole gutter lands on that page's side of the seam because the split is proportional to the two margins.
 
-**Two cases answer zero without being special-cased, and both are right.** A page whose crop came back whole — "Page Crop: none", a mostly-blank page, a page that failed to load and was given the screen's own size as a stand-in — has its content edge *at* its page edge, so it has no margin to give. And a pair whose artwork already fills the screen width leaves no slack for a gutter to take.
+**Two cases answer zero without being special-cased, and both are right.** A page whose crop came back whole — "Crop: none", a mostly-blank page, a page that failed to load and was given the screen's own size as a stand-in — has its content edge *at* its page edge, so it has no margin to give. And a pair whose artwork already fills the screen width leaves no slack for a gutter to take.
 
 The consequence to look for on a wide screen: **when the spare space is larger than the page's own margin, the margin is all the gutter gets and the rest is letterbox at the sides.** The artwork is never scaled up to fill a gutter the source does not have.
 
@@ -94,7 +94,7 @@ At the end of the book the counter never passes the last page while the last uni
 
 The rotation also reads `pageIsWide`, never `getNativePageDimensions`: that seam answers with the pair, and a pair is wider than tall by construction, so asking it would turn the screen for two pages that are only wide because they are lying side by side.
 
-The shape this leaves is the one worth stating: in **portrait** with the view on "in landscape", nothing about this feature is active and `rotate_wide` behaves exactly as it did before it existed — a wide page still turns the screen. In **landscape** the pair is what the screen is for, and the wide page inside it is simply shown whole.
+The shape this leaves is the one worth stating: in **portrait** with the view on "landscape", nothing about this feature is active and `rotate_wide` behaves exactly as it did before it existed — a wide page still turns the screen. In **landscape** the pair is what the screen is for, and the wide page inside it is simply shown whole.
 
 Two other live conditions switch the view off, both because "two pages" would not mean what it says: **continuous scroll**, where pages are laid out one after another in a strip and would be a page in two slots, and any value of the row other than the three it names.
 

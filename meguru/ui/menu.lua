@@ -16,7 +16,7 @@ It holds the series-navigation rows and a `Settings` submenu holding all seven
 rows. The per-book *rendering* choices — crop, fit, reading direction —
 deliberately live in the bottom ConfigDialog instead, where every other stock
 per-book option lives; see `ui/reader.lua`. The panel view is one of them — the crop
-tab's *Long-press* row, and with it whether there is a panel view at all, which is
+tab's *Panel view* row, and with it whether there is a panel view at all, which is
 KOReader's own per-book answer — so nothing about the panel choices is a preference of
 this plugin's any more except the level and the seed a new book starts from.
 
@@ -465,14 +465,15 @@ function Menu.addReaderItems(plugin, menu_items)
     -- the store — `ui/reader` reads it and hands the number in, `ui/panelzoom` writes it back —
     -- so nothing here is needed to reach it.
     --
-    -- **The view has a row, and it is in the crop tab** (`ui/reader.lua`'s *Long-press*), because
+    -- **The view has a row, and it is in the *Reading* tab** (`ui/reader.lua`'s *Panel
+    -- view*), because
     -- that is the tab of per-book geometry — and because this surface is the ⋮ menu, whose rows
     -- are plugin-wide preferences, while the view is a per-book answer. Whether there is a panel
     -- zoom at all is per book too: it joins the same row rather than sitting here.
     --
     -- The view row that *used* to sit on this surface was removed for a reason worth keeping: a
     -- reader with another panel plugin installed gets that plugin's long-press, so the row read
-    -- one way while the panels behaved another. The crop tab's row has the same exposure and says
+    -- one way while the panels behaved another. That row has the same exposure and says
     -- so in its own help text — what it governs is Meguru's own panel view, and a row that says
     -- which one it is can be wrong in public rather than silently.
 
