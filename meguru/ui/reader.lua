@@ -255,14 +255,39 @@ local function syncSpread(ui)
     end
     publishScreenRotation(ui)
     local active = doc:spreadActive() and true or false
-    if active == (ui._meguru_spread_active or false) then
+
+    -- **The partner has to be decoded before the layout that follows**, and this is the
+    -- place that can promise it for the *first* paint. A pair is not offered until both
+    -- pages' sizes are known (`spreadUnitFor`), those sizes come from a decode, and the
+    -- other warm is on the page turn (`_gotoPage`'s `prepareSpread`) — but at open that
+    -- turn happens *before* the book's own answer has been read out of its sidecar, so
+    -- it warms nothing, and the first layout is derived for one page: a single page's
+    -- zoom applied to a pair's box, which overflows the screen and paints one page of
+    -- the two. The first turn then fixes it, because by then the warm works — which is
+    -- the shape of the bug this exists for.
+    --
+    -- **Asked before the change test, not inside it.** The test is about the re-layout,
+    -- and a reader can reach this with the answer already recorded — a book whose
+    -- `rotation_mode` is set runs the same code from the rotation seeding, long before
+    -- `ReaderReady` — in which case there is no *change* to fire on and the warm would
+    -- never run. It is idempotent and one fetch at most: `prepareSpread` does nothing
+    -- for a page it already has.
+    local warmed = active and doc:prepareSpread(currentPage(ui)) or false
+
+    local changed = active ~= (ui._meguru_spread_active or false)
+    if not (changed or warmed) then
         return
     end
     ui._meguru_spread_active = active
+    -- A warm without a change is a pair that has just become *possible* — the sizes it
+    -- needed are in hand now where they were not a moment ago — and the layout derived
+    -- without them is the one that has to go.
     if type(ui.handleEvent) == "function" then
         ui:handleEvent(Event:new("ReZoom"))
     end
-    logger.dbg("Meguru: two-page view", active and "on" or "off")
+    if changed then
+        logger.dbg("Meguru: two-page view", active and "on" or "off")
+    end
 end
 
 --- Turn the screen to `mode` through KOReader's own rotation machinery — the

@@ -2386,17 +2386,21 @@ end
 --- connection, like `analyseAhead`, and for the same reason: a fetch from here
 --- would otherwise sit through its timeout before every page turn of an offline
 --- book. A local `.cbz` needs no connection and is warmed regardless.
+--- Returns whether it learned anything — a page it did not have before — because a
+--- caller that has just made the pair *possible* owes the reader a re-layout
+--- (`ui/reader.lua`'s `syncSpread`), and only this knows whether it did.
 function MeguruDocument:prepareSpread(pageno)
     if not self:spreadActive() then
-        return
+        return false
     end
     local count = self.info and self.info.number_of_pages
     if not (count and pageno and pageno >= 1 and pageno <= count) then
-        return
+        return false
     end
     if not self.local_cbz and not self:hasConnection() then
-        return
+        return false
     end
+    local warmed = false
     local candidates = { pageno + 1 }
     if self:spreadOffsetHere(pageno) then
         -- The offset pairs backwards, so the partner is the page before — but
@@ -2411,8 +2415,10 @@ function MeguruDocument:prepareSpread(pageno)
             -- must cost a pair, not the turn.
             pcall(self.getPageDims, self, target)
             pcall(self.analyseAhead, self, target)
+            warmed = true
         end
     end
+    return warmed
 end
 
 --- Where a page change to `number` lands once two pages are shown at a time, and
