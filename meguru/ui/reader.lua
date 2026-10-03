@@ -1757,6 +1757,18 @@ local function buildCuratedOptions(ui)
         },
     }
 
+    -- *View mode* — stock's own `page_scroll` row, and the one row in this dialog
+    -- whose label does not say what it does until a reader tries both — belongs on
+    -- *Page*, directly under *Fit*: they are the same question asked of two axes, how
+    -- much of the page is on the screen and whether the next one is beside it or below
+    -- it. Inserted rather than appended, because the crop row follows *Fit* and has to
+    -- keep following it; a build whose stock `pageview` tab is missing simply has no
+    -- such row to offer, which is why this is a lookup and not a row of ours.
+    local page_view = stockOptionRow(pageview_tab, "page_scroll")
+    if page_view then
+        table.insert(page_options, 2, page_view)
+    end
+
     -- **Tone**: what the page looks like, where the three tabs before it are about the
     -- shape of what is shown. It is the tab this plugin's dialog had before its rows
     -- were regrouped, and it is back for the reason it was chosen then: a reader who
@@ -1803,11 +1815,6 @@ local function buildCuratedOptions(ui)
         event = "MeguruMangaRead",
         help_text = _([[Which way the pages are read. "left to right" is a western book; "manga (right to left)" is a Japanese one, where the pages turn the other way and the earlier page of a spread is the right-hand one. Remembered for this book; new Meguru books start in manga order — long-press this row to change that default.]]),
     }
-    local page_view = stockOptionRow(pageview_tab, "page_scroll")
-    if page_view then
-        reading_options[#reading_options + 1] = page_view
-    end
-
     -- **The two-page group, in the order a reader meets it.** "Two pages" is the
     -- switch; the two rows under it are what it makes available, and both are
     -- inert while it is off (`enabled_func`) — which is the only thing telling a

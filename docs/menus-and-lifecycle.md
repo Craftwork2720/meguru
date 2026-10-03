@@ -32,10 +32,12 @@ silently wear `appbar.pageview`, which is the *Reading* tab's.
 **Four tabs come back, and they are this plugin's own rather than stock's:**
 
 - **Reading** — what a page turn does, how many pages are on the screen, and what a
-  long-press does: the reading direction, page scroll, the two-page view with its
-  pair offset and its gutter beside it, and the panel view. See
+  long-press does: the reading direction, the two-page view with its pair offset and
+  its gutter beside it, and the panel view. See
   [docs/two-page-view.md](two-page-view.md).
-- **Page** — the page's own shape: fit, and crop.
+- **Page** — the page's own shape: fit, *View mode* (stock's `page_scroll` row — how
+  much of the page is on the screen, and whether the next one is beside it or below it
+  — directly under *Fit*, the same question asked of the other axis) and crop.
 - **Rotation** — rotation mode and the wide-page rotation.
 - **Tone** — contrast, saturation and dithering: what the page *looks like*, where the
   three before it are about its shape. It had a tab of its own before the rows were
