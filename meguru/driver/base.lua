@@ -78,6 +78,17 @@ function Base.kinds()
     return kinds
 end
 
+--- The reader-facing name of a server kind: `"kavita"` -> `"Kavita"`.
+---
+--- Not wrapped for translation: it is a proper noun, and a translated one would
+--- name a different product. It lives with the registry rather than beside a
+--- caller because three surfaces now say a server's name — the two `Settings`
+--- rows and the Info popup — and `ui/menu` cannot be the home of it, since it
+--- requires `ui/reader` and the edge runs the other way.
+function Base.kindLabel(kind)
+    return kind:sub(1, 1):upper() .. kind:sub(2)
+end
+
 --- The server kind a feed's own `<author>` names, or nil.
 ---
 --- Every feed the supported servers emit names its software there, which is the

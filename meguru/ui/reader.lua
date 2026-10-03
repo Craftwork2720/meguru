@@ -48,10 +48,12 @@ local C_ = _.pgettext
 local ffiutil = require("ffi/util")
 local T = ffiutil.template
 
+local Base = require("meguru/driver/base")
 local Feed = require("meguru/feed")
 local Icons = require("meguru/icons")
 local Defaults = require("meguru/doc/defaults")
 local Image = require("meguru/doc/image")
+local Info = require("meguru/ui/info")
 local Local = require("meguru/local")
 local Open = require("meguru/ui/open")
 local Panel = require("meguru/panel")
@@ -1899,13 +1901,29 @@ local function buildCuratedOptions(ui)
     -- because a reader changing how a page is *shown* is not served by having the
     -- crop and the contrast two tabs apart — and neither do stock's icons, which
     -- is the other thing `meguru/icons` is for.
+    --
+    -- **The fourth entry is not a tab and has no panel.** It is the Info popup's
+    -- button, and `installInfoPanel` intercepts the panel switch its icon would
+    -- otherwise cause — so `options` is empty rather than absent, which is what
+    -- keeps a stray `panel_index` from indexing nil. `CURATED_PANELS` is the
+    -- count of the entries that *are* panels, and is what the remembered panel
+    -- index is clamped against.
     return {
         prefix = "kopt",
         { icon = Icons.tab("reading"), options = reading_options },
         { icon = Icons.tab("page"), options = page_options },
         { icon = Icons.tab("rotation"), options = rotation_options },
+        { icon = Icons.tab("info"), options = {} },
     }
 end
+
+--- How many tabs the curated dialog actually has panels for.
+---
+--- Not `#config_options`, which counts the Info button as well. The two were the
+--- same number while every entry was a panel, and they stopped being the same
+--- number the moment one of them was a button — which is also when the clamp
+--- below would have started opening the dialog on an empty panel.
+local CURATED_PANELS = 3
 
 --- Long-press a curated row to set it as the default for *future* Meguru books.
 ---
@@ -1965,6 +1983,56 @@ local function redirectDefaults(config)
     end
 end
 
+--- Make the last menubar icon open the Info popup instead of switching panels.
+---
+--- **A tab that is not a tab.** The dialog's tab bar is built from
+--- `config_options`, one icon per entry, and every icon dispatches the same
+--- `ShowConfigPanel` event — so the only way to add a button to that bar is to
+--- add an entry and answer the event for it. Swallowing it here is that answer:
+--- the popup is shown and `true` goes back, which is "handled" as far as
+--- `handleEvent` is concerned, and `panel_index` is deliberately **not** written.
+---
+--- Not writing it is both the behaviour and the safety. The highlight stays on
+--- the tab the reader was on, dismissing the popup leaves them on that tab, and
+--- `ReaderConfig:onSaveSettings` — which writes `config_dialog.panel_index` back
+--- into the sidecar as `config_panel_index` — can never record an index that
+--- names no panel.
+---
+--- **Installed on the instance, and it needs no guard**, which is why it
+--- belongs beside `redirectDefaults` above rather than on the class: `orig`
+--- builds a new dialog on every open, and this runs once on each one, so there
+--- is nothing to accumulate and nothing that outlives the menu it was installed
+--- for. (`curateConfigMenu`'s own guard is a different problem — a foreign plugin
+--- *replacing* the handler it installed — and cannot arise here, because nobody
+--- outside this file knows the name of this method's wrapper.)
+---
+--- It is installed *after* `orig` returns, and that ordering is load-bearing:
+--- `ReaderConfig:onShowConfigMenu` calls `onShowConfigPanel(last_panel_index)`
+--- itself, to reopen on the remembered tab, and that call must reach the stock
+--- method. Installed before it, a book that remembered the last tab would open
+--- its menu on the popup.
+local function installInfoPanel(config)
+    local dialog = config and config.config_dialog
+    if not (dialog and type(dialog.onShowConfigPanel) == "function") then
+        return
+    end
+    -- The last icon, which is the entry `buildCuratedOptions` adds for it. Taken
+    -- off the table the dialog was actually built from rather than written down
+    -- as a number here, so the button and the icon cannot come apart.
+    local info_index = #dialog.config_options
+    local orig = dialog.onShowConfigPanel
+    dialog.onShowConfigPanel = function(self, index, ...)
+        if index == info_index then
+            -- `config.ui` is this ReaderUI, the same one the rows are built for
+            -- — so the popup reads the document that is on the screen now,
+            -- rather than whatever a plugin instance was last handed.
+            Info.show(Reader.infoFields(config.ui))
+            return true
+        end
+        return orig(self, index, ...)
+    end
+end
+
 --- Reported once per process, not once per repair: the second installation is a
 --- decision a reader might ask about ("why does this menu look different"), and
 --- the answer is worth one line rather than one per book.
@@ -2008,14 +2076,19 @@ local function curateConfigMenu(plugin)
         cfg.options = buildCuratedOptions(cfg.ui)
         -- The remembered panel index was stored against the *full* stock list,
         -- so an index past the end of the curated one would show the wrong tab
-        -- or crash.
+        -- or crash. **Clamped to the panels rather than to the entries**, because
+        -- the entries now include the Info button: a book read with stock
+        -- KOReader can carry a `config_panel_index` anywhere up to stock's seven
+        -- (that clamp is `ReaderConfig:onReadSettings`), and one landing on the
+        -- button would open the menu on an empty panel.
         if type(cfg.last_panel_index) ~= "number" or cfg.last_panel_index < 1 then
             cfg.last_panel_index = 1
-        elseif cfg.last_panel_index > #cfg.options then
-            cfg.last_panel_index = #cfg.options
+        elseif cfg.last_panel_index > CURATED_PANELS then
+            cfg.last_panel_index = CURATED_PANELS
         end
         local ret = orig(cfg, ...)
         redirectDefaults(cfg)
+        installInfoPanel(cfg)
         -- The dialog keeps its own reference to the curated set; hand the
         -- module's field back so nothing else ever sees the subset.
         cfg.options = stock_options
@@ -2060,6 +2133,68 @@ function Reader.localSeriesOf(ui)
         return nil
     end
     return doc:localSeries()
+end
+
+--- Everything the Info popup shows, gathered where each answer already lives.
+---
+--- **The page comes from `currentPage` above rather than from a second read of
+--- `ui.paging`.** That helper is this file's answer to "the page on screen" —
+--- the progress report is built on the same call — and a popup holding its own
+--- copy is a popup that can disagree with the number being sent to the server.
+---
+--- The metadata is whatever the document already publishes about itself, so
+--- neither shape is served a fiction: `getDocumentProps` is the `doc_props` seam
+--- (ComicInfo for an archive, the title alone for a marker — see its own note on
+--- why a streamed book is given no author), and the marker's descriptor carries
+--- the series and the server.
+---
+--- **A local `.cbz` is not given its folder as a series, and that is a decision
+--- this popup made rather than an omission.** `localSeriesOf` above would name it
+--- — the plugin treats a folder holding two same-extension books as the series
+--- so that "open next in series" has somewhere to go — but that is a rule about
+--- *navigation*, and it names any such folder, a flat library included. Asked as
+--- metadata it would answer `Series: Books` for a folder of fifty unrelated
+--- books, and on a folder that is simply called `empty` it produced a row that
+--- reads as a placeholder rather than as a name. What this popup reports is what
+--- the file carries, so a `.cbz` with no ComicInfo has no series to show.
+---
+--- Fields with nothing behind them are **absent rather than empty**, and the
+--- popup drops them. A streamed book has no author and a local one has no
+--- server, and neither is an omission worth a row saying so.
+---
+--- Nil for anything that is not a Meguru book, which is the gate every handler
+--- in this file uses.
+function Reader.infoFields(ui)
+    local doc = ui and ui.document
+    if not (doc and doc.provider == "meguru") then
+        return nil
+    end
+    local props = type(doc.getDocumentProps) == "function" and doc:getDocumentProps() or {}
+    local fields = {
+        title = props.title,
+        page  = currentPage(ui),
+        total = type(doc.getPageCount) == "function" and doc:getPageCount() or nil,
+    }
+    if doc.local_cbz then
+        fields.series      = props.series
+        fields.volume      = props.series_index
+        fields.authors     = props.authors
+        fields.language    = props.language
+        fields.description = props.description
+    else
+        local desc = doc.desc or {}
+        fields.series   = desc.series_name
+        fields.language = desc.lang
+        -- The server, as the kind of server it is — "Kavita", not "Kavita dom".
+        -- `desc.server_name` is the catalogue's *title* in `settings/opds.lua`,
+        -- which is the key its credentials are found under and a name the reader
+        -- chose for their own bookkeeping rather than anything about this book;
+        -- two catalogues on one server differ by it, and nothing else here does.
+        -- Which server a book came from is a fact about the book; what the reader
+        -- called that catalogue is not, so only the kind is shown.
+        fields.server   = desc.server_kind and Base.kindLabel(desc.server_kind) or nil
+    end
+    return fields
 end
 
 --- The one refusal, in the one wording, for both ways of having no neighbour.

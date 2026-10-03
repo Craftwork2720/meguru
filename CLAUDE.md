@@ -73,12 +73,13 @@ meguru/
     open.lua              "Meguru this series": resume dialog, marker write, open
     reader.lua            everything grafted onto a running ReaderUI
     panelzoom.lua         the panel sequence viewer: nav, pre-warm, page boundary
+    info.lua              the popup the bottom menu's Info icon opens
     menu.lua              the two menu surfaces
 
 assets/
   meguru-this-series.png  optional; the cover drawn on the series row
   icons/                  optional; the bottom menu's tab icons, one per tab
-    reading.svg  page.svg  rotation.svg
+    reading.svg  page.svg  rotation.svg  info.svg
 
 .github/workflows/release.yml   a tag builds meguru.koplugin.zip and publishes it
 ```
@@ -88,9 +89,10 @@ assets/
 `meguru/rowcover` answers nil without it and the browser draws its ordinary
 placeholder. It is portrait, authored at 2:3 (what zen-os fits a cover into by
 default); any size decodes, and a larger one costs only bytes on disk.
-`assets/icons/*.svg` are the bottom menu's tab icons, one per tab — the same
-rule, with `meguru/icons` answering KOReader's own icon name when a file is not
-there (see `docs/menus-and-lifecycle.md`). The plugin has had artwork before and
+`assets/icons/*.svg` are the bottom menu's tab icons, one per tab — plus
+`info.svg`, which belongs to the one icon in that bar that is a button rather
+than a tab — the same rule, with `meguru/icons` answering KOReader's own icon
+name when a file is not there (see `docs/menus-and-lifecycle.md`). The plugin has had artwork before and
 it was deleted on purpose — an error-page drawing whose headline named the wrong
 fault — so the distinction is worth keeping: these are the row's *identity* and
 the menu's, not a claim about something that went wrong.
@@ -158,7 +160,14 @@ where these modules are loaded, and the image backends are dead weight until a
 row's artwork has actually been found on disk.) `ui/panelzoom` requires no `meguru/` module at all — it is handed panels
 as arguments, and with them the reading direction and the rotation direction, both
 as plain strings: the *domain* of those settings stays in `ui/reader` and the viewer
-is told the word. The edges that do exist between the panel modules are `ui/reader` ->
+is told the word. `ui/info` is the same shape of leaf and for the same reason — the
+Info popup is handed a plain table of fields (`Reader.infoFields` gathers them, so
+"the page on screen" keeps its one answer in `ui/reader`) and requires no `meguru/`
+module at all, which is what makes `ui/reader` -> `ui/info` a leaf edge like the
+panel one. `ui/reader` also requires `meguru/driver/base` now, for `Base.kindLabel`
+— the label of a server kind, which moved there from `ui/menu` when a third surface
+needed it and `ui/menu` could not be the home of it (it requires `ui/reader`).
+The edges that do exist between the panel modules are `ui/reader` ->
 `ui/panelzoom`, `doc/document` -> `panel`, `ui/panelzoom` -> `viewport`, and `panel` ->
 `doc/image`. `doc/document`
 and `ui/reader` both require `meguru/local` eagerly — it is a module of ours, it

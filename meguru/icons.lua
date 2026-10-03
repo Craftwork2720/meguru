@@ -63,6 +63,13 @@ local FALLBACK = {
     reading  = "appbar.pageview",
     page     = "appbar.crop",
     rotation = "appbar.rotation",
+    -- The one tab whose stock name is not an `appbar.*`. There is no `appbar.info`,
+    -- and the nearest thing KOReader draws for this meaning is the bare `info`
+    -- glyph it gives `InfoMessage` — the one that is a *filled* badge, where the
+    -- other three are outlines. It is the fallback only; the shipped file is an
+    -- outline like its neighbours, so the mismatch is what an install missing the
+    -- artwork looks like rather than what a reader normally sees.
+    info     = "info",
 }
 
 --- The shipped artwork for a tab kind, or nil when it is not there.

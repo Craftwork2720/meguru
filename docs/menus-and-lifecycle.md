@@ -23,7 +23,11 @@ user's storage at startup for something it already ships. The artwork itself is
 optional, like the series row's: `Icons.tab` answers the stock name when a file is
 missing, so an install without the SVGs draws KOReader's own icons, and `FALLBACK`
 in that module is the table that says which of KOReader's each tab wears — our names
-and KOReader's are not interchangeable, so a tab of ours has to name its own.
+and KOReader's are not interchangeable, so a tab of ours has to name its own. The
+Info entry below is the case that proves it: `info` is not an `appbar.*` name at all,
+because KOReader has no `appbar.info` — the nearest glyph it draws for that meaning is
+the bare `info` it gives `InfoMessage` — so a kind whose fallback was left unset would
+silently wear `appbar.pageview`, which is the *Reading* tab's.
 
 **Three tabs come back, and they are this plugin's own rather than stock's four:**
 
@@ -34,6 +38,50 @@ and KOReader's are not interchangeable, so a tab of ours has to name its own.
 - **Page** — the page's own shape and its picture: fit, crop, and the three tone
   rows, which are the tab stock keeps apart and this one does not.
 - **Rotation** — rotation mode and the wide-page rotation.
+
+**A fourth icon sits beside them and is not a tab.** It opens the Info popup — the page,
+how far through the book that is, and what the book says about itself — and it carries no
+panel at all. The dialog offers no other way to put a *button* in that bar: the bar is
+built from `config_options`, one `IconButton` per entry, and every one of them dispatches
+the same `ShowConfigPanel` event. So the entry is added and the event is answered for it
+— `installInfoPanel`, a wrap on the dialog *instance* installed in `curateConfigMenu`
+right after `redirectDefaults`, and for the same reason (the dialog is built fresh inside
+`orig`, so there is nothing to accumulate and nothing outliving the menu). The ordering
+is load-bearing: `ReaderConfig:onShowConfigMenu` calls `onShowConfigPanel(last_panel_index)`
+itself, to reopen on the remembered tab, and that call has to reach the stock method —
+installed any earlier, a book that remembered its last tab would open its menu on the
+popup. The wrapper shows the popup and returns true, and **writes no `panel_index`**: the
+highlight stays on the tab the reader was on, dismissing the popup leaves them there, and
+`config_panel_index` can never be saved as an index that names no panel. That is also why
+the clamp below counts *panels* (`CURATED_PANELS`) rather than entries: a book read with
+stock KOReader can carry an index anywhere up to that dialog's seven.
+
+`meguru/ui/info` draws it, and it is the one surface in this plugin handed a plain table:
+`Reader.infoFields` does the gathering, so that "the page on screen" keeps its single
+answer here (`ui/reader`'s own `currentPage`, which the progress report is built on) and
+the popup module requires no `meguru/` module at all. It shows the title, `Page N of M`, a
+progress bar with the percentage under it, and the metadata the document can answer —
+series, volume, author, language and server — the *kind* of server, `Kavita`, and not
+the catalogue's own title, which is the key its credentials live under rather than
+anything about the book — plus the ComicInfo summary for a
+local `.cbz`, capped rather than scrolled because `ButtonDialog` scrolls only its button
+table and never the title group an added widget lives in. **Absent values are absent
+rows**: a streamed book has no author to show and a local one no server, and neither is
+worth a row saying so.
+
+**A local `.cbz` is not given its folder as a series**, and that is the one place this
+popup refuses a value the plugin has to hand. `Local.seriesOf` — the same answer the ⋮
+menu's "open next in series" rows are drawn on — names any folder holding two books of the
+same extension, because for navigation that is exactly the question. As *metadata* it
+answers `Series: Books` for a flat library, and on a folder that happens to be called
+`empty` it produced a row that reads as a placeholder rather than as a name. What the
+popup reports is what the file carries, so a `.cbz` with no ComicInfo has no series to
+show — and the folder name stays where it means something, in the navigation rows.
+
+Nothing is written and nothing is fetched — no sidecar key, no
+marker field, no request — and dismissing it is `ButtonDialog`'s own tap-outside. The
+popup consumes every tap while it is up, which is also why that icon cannot open a second
+one.
 
 The regrouping is deliberate: a reader changing how a page is *shown* is not served
 by having the crop and the contrast two tabs apart, and stock's page-margin and

@@ -220,15 +220,6 @@ local function updateRow()
     }
 end
 
---- The name of a server, shown as it spells itself.
----
---- Not wrapped for translation: it is a proper noun, and a translated one would
---- name a different product. Extracted when a second row grew a reason to say a
---- server's name, so the rule exists once.
-local function kindLabel(kind)
-    return kind:sub(1, 1):upper() .. kind:sub(2)
-end
-
 --- One row: which servers get a `.cover.jpg` in their series folders.
 ---
 --- A submenu rather than one row per server, and it is the only place below
@@ -245,7 +236,7 @@ local function coverRow()
     for _, kind in ipairs(SeriesCover.KINDS) do
         local key = SeriesCover.settingFor(kind)
         rows[#rows + 1] = {
-            text = kindLabel(kind),
+            text = Base.kindLabel(kind),
             keep_menu_open = true,
             checked_func = function() return Settings.get(key) end,
             callback = function() Settings.toggle(key) end,
@@ -279,7 +270,7 @@ local function progressRows()
         local kind = Progress.KINDS[i]
         local key = Progress.settingFor(kind)
         rows[#rows + 1] = {
-            text = T(_("Report reading progress to %1"), kindLabel(kind)),
+            text = T(_("Report reading progress to %1"), Base.kindLabel(kind)),
             help_text = _("Sends the page you have reached to the server as you read, so that server's own app keeps your place. Only a page you have actually turned to is sent: re-reading an earlier page never moves the server backwards, and a book the server has finished is never marked unread."),
             keep_menu_open = true,
             checked_func = function() return Settings.get(key) end,
