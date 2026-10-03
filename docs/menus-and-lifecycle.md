@@ -11,7 +11,7 @@ is **curated** rather than replaced: rows the engine does not implement (page ma
 auto-straighten, the reflow and zoom-matrix family) are dropped, because each would set
 a value with no visible effect.
 
-**The three tabs carry this plugin's icons, and a PDF's carry KOReader's**, which is
+**The four tabs carry this plugin's icons, and a PDF's carry KOReader's**, which is
 worth knowing before anyone "simplifies" it. `meguru/icons` gives the tabs names of
 its own (`meguru.rotation`) and wraps `IconWidget` to resolve *only those names* to
 the SVGs in `assets/icons/`; a PDF's dialog asks for the stock `appbar.*` names and
@@ -29,17 +29,21 @@ because KOReader has no `appbar.info` — the nearest glyph it draws for that me
 the bare `info` it gives `InfoMessage` — so a kind whose fallback was left unset would
 silently wear `appbar.pageview`, which is the *Reading* tab's.
 
-**Three tabs come back, and they are this plugin's own rather than stock's four:**
+**Four tabs come back, and they are this plugin's own rather than stock's:**
 
 - **Reading** — what a page turn does, how many pages are on the screen, and what a
   long-press does: the reading direction, page scroll, the two-page view with its
   pair offset and its gutter beside it, and the panel view. See
   [docs/two-page-view.md](two-page-view.md).
-- **Page** — the page's own shape and its picture: fit, crop, and the three tone
-  rows, which are the tab stock keeps apart and this one does not.
+- **Page** — the page's own shape: fit, and crop.
 - **Rotation** — rotation mode and the wide-page rotation.
+- **Tone** — contrast, saturation and dithering: what the page *looks like*, where the
+  three before it are about its shape. It had a tab of its own before the rows were
+  regrouped, was folded into *Page* for a while, and is back — a reader who knows a
+  PDF's contrast tab looks for these three in one place, and the crop is not one of
+  them. The three are stock's own wiring, below.
 
-**A fourth icon sits beside them and is not a tab.** It opens the Info popup — the page,
+**One more icon sits beside them and is not a tab.** It opens the Info popup — the page,
 how far through the book that is, and what the book says about itself — and it carries no
 panel at all. The dialog offers no other way to put a *button* in that bar: the bar is
 built from `config_options`, one `IconButton` per entry, and every one of them dispatches
@@ -92,9 +96,11 @@ marker field, no request — and dismissing it is `ButtonDialog`'s own tap-outsi
 popup consumes every tap while it is up, which is also why that icon cannot open a second
 one.
 
-The regrouping is deliberate: a reader changing how a page is *shown* is not served
-by having the crop and the contrast two tabs apart, and stock's page-margin and
-reflow tabs have nothing here to hold. Stock's tabs are still **where the rows come
+**The split between *Page* and *Tone* is the one thing to keep straight when moving a
+row**: the three tabs before *Tone* are about the *shape* of what is shown — how it is
+turned, what is fitted, what is cut off — and *Tone* is the only one about the picture,
+which is also where stock puts a PDF's. Stock's page-margin and reflow tabs have
+nothing here to hold. Stock's tabs are still **where the rows come
 from** (`buildCuratedOptions` lifts `rotation_mode` and `page_scroll` out of them by
 name) — a tab is a place to find a row, not a shape to reuse — which is why the
 lookup still happens even though none of stock's tab objects is handed back. The crop

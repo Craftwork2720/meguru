@@ -2,7 +2,7 @@
 The bottom menu's tab icons, from the plugin's own artwork.
 
 KOReader's config dialog draws its tab bar from `icon` **names** —
-`appbar.rotation` and its three siblings — which `IconWidget` resolves against
+`appbar.rotation` and its siblings — which `IconWidget` resolves against
 the icon directories in `resources/` (`ui/widget/iconwidget.lua`). Those are the
 *stock* names, and a PDF's dialog asks for them too: a plugin that replaced the
 files, or shadowed the names, would have changed every book's menu.
@@ -17,16 +17,16 @@ and **optional in the same way** (`meguru/rowcover`): `Icons.tab` answers the st
 name when a file is not there, so a hand-copied install that missed them draws
 KOReader's own icons and says nothing.
 
-Each file is named for the **tab** it belongs to — `reading`, `page`, `rotation` —
-and `FALLBACK` beside them says which stock icon each tab wears when its file is
-missing. That table is not ceremony: our names and KOReader's are not
+Each file is named for the **tab** it belongs to — `reading`, `page`, `rotation`,
+`tone` — and `FALLBACK` beside them says which stock icon each tab wears when its
+file is missing. That table is not ceremony: our names and KOReader's are not
 interchangeable, and asking for `meguru.reading` with nothing behind it answers
 KOReader's *not-found* glyph rather than a sensible icon. A tab that is ours has to
 name its own fallback, and there is nowhere else it could.
 
 *What was rejected:* writing the icons into the icon directory KOReader searches
 (`<data dir>/icons`, which comes first in `ICONS_DIRS`). It is the drop-in way and
-it is wrong twice over — it replaces those four icons for every document, MuPDF
+it is wrong twice over — it replaces those icons for every document, MuPDF
 included, and it makes a plugin that writes to the user's storage at startup for
 something it already ships.
 
@@ -63,10 +63,11 @@ local FALLBACK = {
     reading  = "appbar.pageview",
     page     = "appbar.crop",
     rotation = "appbar.rotation",
+    tone     = "appbar.contrast",
     -- The one tab whose stock name is not an `appbar.*`. There is no `appbar.info`,
     -- and the nearest thing KOReader draws for this meaning is the bare `info`
     -- glyph it gives `InfoMessage` — the one that is a *filled* badge, where the
-    -- other three are outlines. It is the fallback only; the shipped file is an
+    -- others are outlines. It is the fallback only; the shipped file is an
     -- outline like its neighbours, so the mismatch is what an install missing the
     -- artwork looks like rather than what a reader normally sees.
     info     = "info",

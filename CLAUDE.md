@@ -79,7 +79,7 @@ meguru/
 assets/
   meguru-this-series.png  optional; the cover drawn on the series row
   icons/                  optional; the bottom menu's tab icons, one per tab
-    reading.svg  page.svg  rotation.svg  info.svg
+    reading.svg  page.svg  rotation.svg  tone.svg  info.svg
 
 .github/workflows/release.yml   a tag builds meguru.koplugin.zip and publishes it
 ```
@@ -218,7 +218,7 @@ nor an agent has to load 3500 lines to find one answer. Read the one you need.
   thrown away and the rule that gives it back, and how it shares a book with the
   wide-page rotation.
 - [docs/menus-and-lifecycle.md](docs/menus-and-lifecycle.md) — the menu rows, the curated
-  config dialog and its three tabs, the one action offered to KOReader's gesture editor,
+  config dialog and its four tabs, the one action offered to KOReader's gesture editor,
   the plugin lifecycle facts, and the plugins that replace our wraps.
 - [docs/updating.md](docs/updating.md) — the GitHub release updater: the one artifact both
   ends name, the install transaction, and what is remembered between checks.

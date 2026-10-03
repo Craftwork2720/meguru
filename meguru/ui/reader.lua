@@ -1698,18 +1698,8 @@ local function buildCuratedOptions(ui)
     rotation_options[#rotation_options + 1] =
         stockOptionRow(rotation_tab, "rotate_wide_pages") or ROTATE_WIDE_ROW
 
-    -- **Page**: the page's own shape and its picture. How it is fitted, what is
-    -- cut off it, and the three tone rows — which had a tab of their own until the
-    -- tabs were regrouped into these three, and belong here because every one of
-    -- them is about the page rather than about how many of them are on the screen.
-    --
-    -- Contrast is the one tone row that is always offered; the other two are each
-    -- about *this screen* rather than about the page — saturation is a colour
-    -- operation, and a dither is how the page is written to an 8-bit framebuffer —
-    -- so each appears only where the screen can honour it. Their order is stock's
-    -- own (`appbar.contrast` lists them Contrast, Saturation, ... Dithering), so a
-    -- reader who knows a PDF's tone tab finds the same things in the same places.
-    --
+    -- **Page**: the page's own shape — how it is fitted and what is cut off it. The
+    -- picture is the *tone* tab's business, next door.
     local page_options = {
         -- Computed live from the reader's own zoom mode, so the row reflects what
         -- the book is actually showing even after a manual pinch, and falls back
@@ -1765,13 +1755,26 @@ local function buildCuratedOptions(ui)
             event = "ReZoom",
             help_text = _([[Trims the empty margins around the artwork. "auto" also removes a printed page number from the bottom gutter when one is found, and leaves an almost-blank page — a chapter divider, a title page — entirely uncropped instead of zooming into a small element. Nothing is cropped if nothing is found.]]),
         },
-        CONTRAST_ROW,
     }
+
+    -- **Tone**: what the page looks like, where the three tabs before it are about the
+    -- shape of what is shown. It is the tab this plugin's dialog had before its rows
+    -- were regrouped, and it is back for the reason it was chosen then: a reader who
+    -- knows a PDF's contrast tab looks for these three in one place, and the crop is
+    -- not one of them.
+    --
+    -- Contrast is the one that is always offered; the other two are each about *this
+    -- screen* rather than about the page — saturation is a colour operation, and a
+    -- dither is how the page is written to an 8-bit framebuffer — so each appears only
+    -- where the screen can honour it. Their order is stock's own (`appbar.contrast`
+    -- lists them Contrast, Saturation, ... Dithering), so a reader who knows that tab
+    -- finds the same things in the same places.
+    local tone_options = { CONTRAST_ROW }
     if Image.colorEnabled() then
-        page_options[#page_options + 1] = SATURATION_ROW
+        tone_options[#tone_options + 1] = SATURATION_ROW
     end
     if ditheringOffered() then
-        page_options[#page_options + 1] = DITHERING_ROW
+        tone_options[#tone_options + 1] = DITHERING_ROW
     end
 
     -- **Reading**: what a page turn does, how many pages are on the screen, and
@@ -1920,12 +1923,11 @@ local function buildCuratedOptions(ui)
         help_text = _([[What holding on a page does. "panel cut" shows the panels the detector found, one at a time; "pan & zoom" keeps the page whole and moves a window over it; "free view" shows the page alone. "off" leaves the long-press to KOReader, and applies to this book only. Long-press this row to make a view the default for new books. This is Meguru's own panel view — a panel plugin that answers the long-press itself is its own.]]),
     }
 
-    -- **Three tabs of this plugin's own, and the order is a reader's**: what a
-    -- page turn does, what the page looks like, and how a page is turned. Stock's
-    -- four do not come back — the crop and the three tone rows are one tab here,
-    -- because a reader changing how a page is *shown* is not served by having the
-    -- crop and the contrast two tabs apart — and neither do stock's icons, which
-    -- is the other thing `meguru/icons` is for.
+    -- **Four tabs of this plugin's own, and the order is a reader's**: what a page
+    -- turn does, what shape the page is, how it is turned, and what it looks like.
+    -- Stock's own four do not come back — the rows are this plugin's, the fit row and
+    -- the crop row among them — and neither do stock's icons, which is the other thing
+    -- `meguru/icons` is for.
     --
     -- **The fourth entry is not a tab and has no panel.** It is the Info popup's
     -- button, and `installInfoPanel` intercepts the panel switch its icon would
@@ -1938,6 +1940,7 @@ local function buildCuratedOptions(ui)
         { icon = Icons.tab("reading"), options = reading_options },
         { icon = Icons.tab("page"), options = page_options },
         { icon = Icons.tab("rotation"), options = rotation_options },
+        { icon = Icons.tab("tone"), options = tone_options },
         { icon = Icons.tab("info"), options = {} },
     }
 end
@@ -1948,7 +1951,7 @@ end
 --- same number while every entry was a panel, and they stopped being the same
 --- number the moment one of them was a button — which is also when the clamp
 --- below would have started opening the dialog on an empty panel.
-local CURATED_PANELS = 3
+local CURATED_PANELS = 4
 
 --- Long-press a curated row to set it as the default for *future* Meguru books.
 ---
