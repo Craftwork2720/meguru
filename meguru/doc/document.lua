@@ -2221,45 +2221,61 @@ end
 --- zero. And a pair whose artwork already fills the screen width leaves no slack
 --- for a gutter to take.
 ---
---- **Then the half that is cropped shorter grows into what is left over**
---- (`Spread.grow`), which is the same spare asked a second time — and it is why
---- each half leaves here with a `scale` as well as a box. The box stays in the
---- page's *own* units; the scale says how much larger than those units the half
---- is drawn. **The two are separate on purpose**, because they answer different
---- questions: the box is what `renderPage` cuts out of the page, the scale is what
---- it is cut *for*, and every caller that draws or hit-tests a half carries both.
+--- **The half that is cropped shorter grows into the room the pair is not using**
+--- (`Spread.grow`), which is why each half leaves here with a `scale` as well as
+--- a box. The box stays in the page's *own* units; the scale says how much larger
+--- than those units the half is drawn. **The two are separate on purpose**,
+--- because they answer different questions: the box is what `renderPage` cuts out
+--- of the page, the scale is what it is cut *for*, and every caller that draws or
+--- hit-tests a half carries both.
 ---
---- **The gutter is asked first and the growth second, and that order is how the
---- two share the one spare.** The gutter is clamped to the margin the page really
---- has, so a pair whose pages kept their inner margins spends the room on paper —
---- which is what such a pair is *missing* — and only a pair cropped flush leaves
---- room for a page to grow into. A pair fitted by width has no spare at all
---- (`_spreadFitByWidth`), and neither has one with a page that failed to load:
---- that page's size is the screen's stand-in rather than a page anybody has seen,
---- which is the same reason `_noteWide` is never asked about one.
+--- **The growth comes first and the gutter second, and that order is the whole of
+--- how the two share the one spare.** The growth is not a claim on the room beside
+--- the pair — it is part of how large the artwork *is*, and the gutter's own rule
+--- already puts the artwork's fit ahead of itself: the pair is fitted to the screen
+--- with the short page already evened up, and the gutter is the leftover of *that*
+--- fit. Asked the other way round the gutter takes the spare up to the page's own
+--- margin, so a pair whose pages have any inner margin at all leaves the shorter
+--- page nothing to grow into — which is backwards, a reader looking at a page
+--- cropped short being owed the page rather than the paper.
+---
+--- A pair fitted by width has no spare at all (`_spreadFitByWidth`), and neither
+--- has one with a page that failed to load: that page's size is the screen's
+--- stand-in rather than a page anybody has seen, which is the same reason
+--- `_noteWide` is never asked about one.
 function MeguruDocument:_pairLayout(pair)
     local left_page, right_page = self:_pairSides(pair)
     local l, r = self:_pageBox(left_page), self:_pageBox(right_page)
     local screen = self:_spreadScreen()
-    -- The row first, then the rule: with "Flexible gutter" off a pair is drawn
-    -- exactly as the crop left it, which is the only thing this row decides —
-    -- `meguru/spread`'s four sentences are unchanged by it.
-    local gutter = { left = 0, right = 0 }
-    if self:_spreadGutterOn() then
-        local inner_left = math.max(0, self:_pageGeom(left_page).w - (l.x + l.w))
-        local inner_right = math.max(0, r.x)
-        gutter = Spread.gutter(l.w + r.w, math.max(l.h, r.h),
-            inner_left, inner_right, screen.w, screen.h)
-    end
-    local left = { x = l.x, y = l.y, w = l.w + gutter.left, h = l.h }
-    local right = { x = r.x - gutter.right, y = r.y, w = r.w + gutter.right, h = r.h }
 
     local scales = { left = 1, right = 1 }
     if not (self.dead_pages[left_page] or self.dead_pages[right_page]
         or self.fetch_failed[left_page] or self.fetch_failed[right_page]) then
-        scales = Spread.grow(left.w, left.h, right.w, right.h,
+        scales = Spread.grow(l.w, l.h, r.w, r.h,
             screen.w, screen.h, self:_spreadFitByWidth())
     end
+
+    -- The row next, then the rule: with "Flexible gutter" off a pair is drawn
+    -- exactly as the crop and the growth left it, which is the only thing this row
+    -- decides — `meguru/spread`'s four sentences are unchanged by it.
+    --
+    -- Measured on the pair **at the scales it is drawn at**, because that is what
+    -- the leftover is a leftover of. The paper comes back in those units, and a
+    -- half's own are one division away — its box being in its own.
+    local gutter = { left = 0, right = 0 }
+    if self:_spreadGutterOn() then
+        local sl, sr = scales.left, scales.right
+        local paper = Spread.gutter(
+            l.w * sl + r.w * sr,
+            math.max(l.h * sl, r.h * sr),
+            math.max(0, self:_pageGeom(left_page).w - (l.x + l.w)) * sl,
+            math.max(0, r.x) * sr,
+            screen.w, screen.h)
+        gutter = { left = paper.left / sl, right = paper.right / sr }
+    end
+
+    local left = { x = l.x, y = l.y, w = l.w + gutter.left, h = l.h }
+    local right = { x = r.x - gutter.right, y = r.y, w = r.w + gutter.right, h = r.h }
 
     return {
         left = { page = left_page, box = left, scale = scales.left },

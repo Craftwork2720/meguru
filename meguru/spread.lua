@@ -145,10 +145,15 @@ ask of every pair rather than a feature with a row of its own:
   had. Two pages cropped alike — two pages of one scan, the overwhelmingly common
   case — come back with two 1s, so **a book that never had a blank under a page
   reads exactly as it did before this rule existed.**
-* **The room is the width the pair is not using.** The pair is fitted to the
-  screen, so what is left over is horizontal, and it is left over exactly while
-  the pair's *height* is what limits its fit. The shorter page grows until it is
-  as tall as the other or until the room runs out, whichever comes first.
+* **The room is the width the pair is not using**, and the growth has the first
+  claim on it. The pair is fitted to the screen, so what is left over is
+  horizontal, and it is left over exactly while the pair's *height* is what limits
+  its fit; the shorter page grows until it is as tall as the other or until the
+  room runs out, whichever comes first. **The gutter is asked afterwards**, on
+  what is left, and that is the gutter's own rule rather than an exception to it —
+  the artwork's fit comes before the gutter, and a page evened up is part of how
+  large the artwork is. Asked the other way round the gutter takes the room up to
+  the page's own margin and a page cropped short never grows at all.
 * **It cannot change the fit.** The growth stops at the width the pair's own
   height allows, so the pair is limited by its height before and after alike and
   the taller page is drawn at the same size — the promise is one equation:
@@ -300,11 +305,13 @@ end
 --- How far each half of a pair may widen into its own page's inner margin, in the
 --- pages' own units. The header's four sentences, as arithmetic.
 ---
---- `content_w`/`content_h` are the two *cropped* pages side by side — the artwork
---- the scale is fitted to. `inner_left`/`inner_right` are what each page has to
---- give: the distance from its content to its own edge on the side that faces the
---- other page (so the left page's right margin and the right page's left margin).
---- The screen is the one the pair is being laid out against.
+--- `content_w`/`content_h` are the two pages' boxes side by side **as they are
+--- being drawn** — the artwork the scale is fitted to, which is the crops with
+--- whatever `grow` gave them already in. `inner_left`/`inner_right` are what each
+--- page has to give: the distance from its content to its own edge on the side that
+--- faces the other page (so the left page's right margin and the right page's left
+--- margin), in the same units. The screen is the one the pair is being laid out
+--- against.
 ---
 --- Returns `{ left = , right = }` in the same units as the margins it was handed,
 --- so the caller widens each page's box by them and needs to know nothing about

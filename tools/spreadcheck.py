@@ -43,6 +43,14 @@ What it checks, and why each one is a property rather than an example:
   one's height first has filled the width its height allows; and — the promise
   itself — **the pair's own fit is unchanged**, which is what says the taller page
   is drawn at exactly the size it had.
+* **The two rules composed**, in `_pairLayout`'s order, over the same pairs crossed
+  with the margins the gutter lives on: the fit is still the artwork's own, nothing
+  leaves the screen, no half's paper passes its own margin, a pair of equal heights
+  reproduces the gutter's own answer exactly — which is what "invisible in a book
+  that never had a blank" means, stated where it can be checked — and **the gutter
+  row does not decide whether a page is grown**. That last one is the property the
+  first version of this got wrong: asked the other way round, the paper took the
+  room the short page needed, so the growth showed only with the row turned off.
 * **The stated examples** — the ones the rules were written from, printed below.
 
 **What this models, and what it does not**, per `docs/development.md`'s rule about
@@ -224,6 +232,26 @@ def grow(lw, lh, rw, rh, screen_w, screen_h, fits_by_width):
     if rh < lh:
         return (1.0, min(h_max / rh, 1 + free / rw))
     return nothing()
+
+
+def pair_layout(lw, lh, rw, rh, ml, mr, sw, sh, by_width, gutter_on=True):
+    """`MeguruDocument:_pairLayout`'s composition — where the two rules meet, and
+    where their *order* lives. The growth is part of how large the artwork is, so
+    it is asked first and the gutter is the leftover of the pair it leaves; asked
+    the other way round the paper takes the room the short page needs.
+
+    `ml`/`mr` are the two pages' inner margins, in their own units. Returns
+    `((box_w, box_h, paper, scale), (...))` for the left and right halves, each
+    box being that half's crop plus the paper it keeps, and the paper in the
+    page's own units as `_pairLayout` builds them.
+    """
+    sl, sr = grow(lw, lh, rw, rh, sw, sh, by_width)
+    gl = gr = 0.0
+    if gutter_on:
+        gl, gr = gutter(lw * sl + rw * sr, max(lh * sl, rh * sr),
+                        ml * sl, mr * sr, sw, sh)
+        gl, gr = gl / sl, gr / sr
+    return ((lw + gl, lh, gl, sl), (rw + gr, rh, gr, sr))
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +499,57 @@ def check_grow(lw, lh, rw, rh, sw, sh, by_width, fails):
             fails.append(("the room was left unused", tag, W2 * sh / H, sw))
 
 
+def check_pair_layout(lw, lh, rw, rh, ml, mr, sw, sh, by_width, fails):
+    """The two rules composed, in `_pairLayout`'s order: the growth first, the
+    gutter on what the grown pair leaves.
+
+    The property worth the grid is the last one — **the gutter row does not decide
+    whether a page is grown** — because that is what the first version of this got
+    wrong: with the gutter on, the paper took the room the short page needed, so
+    the growth was visible only with the row turned off.
+    """
+    tag = (lw, lh, rw, rh, ml, mr, sw, sh, by_width)
+    (lw2, _, gl, sl), (rw2, _, gr, sr) = pair_layout(lw, lh, rw, rh, ml, mr, sw, sh, by_width)
+
+    # The promise survives the composition: the pair's fit is still the artwork's
+    # own fit, so the taller half is drawn at exactly the size it had.
+    W0, H0 = lw + rw, max(lh, rh)
+    fit0 = min(sw / W0, sh / H0)
+    W, H = lw2 * sl + rw2 * sr, max(lh * sl, rh * sr)
+    fit = min(sw / W, sh / H)
+    if abs(fit - fit0) > 1e-9 * max(1.0, fit0):
+        fails.append(("the composition changed the pair's fit", tag, fit0, fit))
+        return
+    # Nothing leaves the screen, and no half's paper passes its own margin at the
+    # scale that page is drawn at.
+    if W * fit > sw + 1e-6 or H * fit > sh + 1e-6:
+        fails.append(("the pair overflows the screen", tag, W * fit, H * fit))
+        return
+    if gl > ml + 1e-6 or gr > mr + 1e-6:
+        fails.append(("the paper grew past the page's margin", tag, gl, gr))
+        return
+    if gl < -1e-9 or gr < -1e-9:
+        fails.append(("negative paper", tag, gl, gr))
+        return
+    # With equal heights there is no growth, so the composition has to reproduce
+    # the gutter's own answer exactly -- that is what "invisible in a book that
+    # never had a blank" means, stated where it can be checked.
+    if lh == rh:
+        if sl != 1.0 or sr != 1.0:
+            fails.append(("a pair of equal heights was grown", tag, sl, sr))
+            return
+        own = gutter(lw + rw, max(lh, rh), ml, mr, sw, sh)
+        if abs(gl - own[0]) > 1e-12 or abs(gr - own[1]) > 1e-12:
+            fails.append(("the composition changed the gutter's own answer",
+                          tag, (gl, gr), own))
+            return
+    # The row does not decide whether a page is grown.
+    off = pair_layout(lw, lh, rw, rh, ml, mr, sw, sh, by_width, gutter_on=False)
+    if abs(off[0][3] - sl) > 1e-12 or abs(off[1][3] - sr) > 1e-12:
+        fails.append(("the gutter row changed the growth", tag, (sl, sr),
+                      (off[0][3], off[1][3])))
+
+
 def main():
     fails = []
     checked = 0
@@ -519,6 +598,14 @@ def main():
         checked += 1
         check_grow(lw, lh, rw, rh, sw, sh, by_width, fails)
 
+    # The two rules composed, over the same pairs crossed with the margins the
+    # gutter lives on and both answers of the row.
+    margins2 = [(0, 0), (10, 40), (60, 60), (120, 0), (400, 400)]
+    for (sw, sh), (lw, lh), (rw, rh), (ml, mr), by_width in itertools.product(
+            screens, halves, halves, margins2, (False, True)):
+        checked += 1
+        check_pair_layout(lw, lh, rw, rh, ml, mr, sw, sh, by_width, fails)
+
     if fails:
         for fail in fails[:20]:
             print("  ", fail)
@@ -555,6 +642,16 @@ def print_examples():
         fit0 = min(sw / (lw + rw), sh / max(lh, rh))
         print(f"  {sw}x{sh}: scale {gl:.3f} -> shorter drawn {lh * gl * fit:.0f}px tall "
               f"(was {lh * fit0:.0f}), taller {rh * fit:.0f} (was {rh * fit0:.0f})")
+
+    print("\n-- and with inner margins of 60 each, both answers of the row --")
+    for gutter_on in (True, False):
+        for sw, sh in [(1920, 1080), (1680, 1264)]:
+            (lw2, _, gl, sl), (rw2, _, gr, sr) = pair_layout(
+                780, 820, 780, 1150, 60, 60, sw, sh, False, gutter_on=gutter_on)
+            W, fit = lw2 * sl + rw2 * sr, min(sw / (lw2 * sl + rw2 * sr), sh / 1150.0)
+            print(f"  gutter {'on ' if gutter_on else 'off'} {sw}x{sh}: shorter x{sl:.3f}, "
+                  f"paper {gl:.0f}+{gr:.0f} of the 60+60 it may keep, "
+                  f"pair {W * fit:.0f}px wide of {sw}")
 
 
 def show_walk(count, wides, anchor):

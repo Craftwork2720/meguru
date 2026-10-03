@@ -142,9 +142,14 @@ using. The second checks *properties* rather than fixtures: that the units
 tile a book exactly once for every set of wide pages and both offsets, that asking
 from either page of a pair answers the same pair, that turning walks the units
 without stalling at the last pair, the gutter's four rules over a grid of
-artwork sizes, margins and screen shapes, and the growth's three — the taller half
+artwork sizes, margins and screen shapes, the growth's three — the taller half
 untouched, the shorter one stopping at its height and at the room there is, and the
-pair's own fit unchanged — over a grid of unevenly cropped pairs and both fits.
+pair's own fit unchanged — over a grid of unevenly cropped pairs and both fits, and
+**the two rules composed in `_pairLayout`'s order**, where the property that earns
+the grid is that the *Flexible gutter* row does not decide whether a page is grown:
+asked the other way round, the paper took the room the short page needed and the
+growth showed only with the row turned off, which is exactly what the first version
+of it did.
 Run it as `python tools/spreadcheck.py`;
 it prints a walk of the page it is checking, which is the only way to read what
 the imposition does without a device. It checks the rules, not fixtures: that the
@@ -153,8 +158,9 @@ offset can be anchored at, that asking from either page of a pair answers the sa
 pair, that turning walks the units without stalling at the last pair, that the
 offset reaches exactly the one run it is anchored in — which is both "a wide page
 ends an offset" and "setting it again past one re-anchors it there" — the gutter's
-four rules over a grid of artwork sizes, margins and screen shapes, and the growth's
-three over a grid of unevenly cropped pairs.
+four rules over a grid of artwork sizes, margins and screen shapes, the growth's
+three over a grid of unevenly cropped pairs, and the two of them composed in
+`_pairLayout`'s order, where the row must not decide whether a page is grown.
 
 A Python mirror of Lua logic models values, not Lua's evaluation rules, and the
 difference has shipped a crash. `meguru/credential.lua`'s `restoreTemplate` ended
