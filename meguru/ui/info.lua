@@ -23,10 +23,20 @@ with the widget, and nothing that has to be persisted on the way out. The dialog
 is shown *over* the bottom menu rather than after closing it, so dismissing the
 popup puts the reader back on the tab they opened it from. The popup consumes
 every tap while it is up, which is also why the icon cannot open a second one.
+
+**The description is the one row that is not just read.** A `ComicInfo` summary
+can run to pages, and this dialog cannot scroll, so the popup carries an excerpt
+and the excerpt takes a tap — which opens the whole thing in KOReader's own
+`TextViewer`, the window the file manager shows a description in. `SummaryItem`
+below is what makes that tap possible at all; a plain `TextBoxWidget` takes no
+events, and a tap on one would close the popup instead.
 --]]
 
 local ButtonDialog   = require("ui/widget/buttondialog")
 local Font           = require("ui/font")
+local Geom           = require("ui/geometry")
+local GestureRange   = require("ui/gesturerange")
+local InputContainer = require("ui/widget/container/inputcontainer")
 local ProgressWidget = require("ui/widget/progresswidget")
 local Screen         = require("device").screen
 local Size           = require("ui/size")
@@ -39,14 +49,14 @@ local T              = require("ffi/util").template
 
 local Info = {}
 
---- How much of a ComicInfo summary the popup will carry, in bytes.
+--- How much of the description the popup carries before it is cut, in bytes.
 ---
---- A cap rather than a scroller, and the reason is structural: `ButtonDialog`
---- wraps its *button table* in a `ScrollableContainer` when it overflows, never
---- its title group — which is where an added widget lives — so an unbounded body
---- would push the Close button off the bottom of the screen rather than scroll.
---- The summary is the only free text here, and so the only thing that can run
---- long: every other row is a name.
+--- The popup caps it and the reader taps through for the rest, and the reason is
+--- structural: `ButtonDialog` wraps its *button table* in a `ScrollableContainer`
+--- when it overflows, never its title group — which is where an added widget
+--- lives — so an unbounded body would push the Close button off the bottom of the
+--- screen rather than scroll. The description is the only free text here and so
+--- the only thing that can run long: every other row is a name.
 local SUMMARY_LIMIT = 300
 
 --- The `Page N of M` line, or nil when the page is not known.
@@ -118,29 +128,84 @@ local function metaLines(fields)
     add(_("Author"), fields.authors)
     add(_("Language"), fields.language)
     add(_("Server"), fields.server)
-
-    -- The same collapsing as every row above, for the same reason: a ComicInfo
-    -- summary is HTML-ish free text with newlines and runs of spaces in it, and
-    -- a popup is not the place to honour either.
-    local summary = plainText(fields.description)
-    if summary then
-        if #summary > SUMMARY_LIMIT then
-            summary = summary:sub(1, SUMMARY_LIMIT)
-            -- Cut on a character boundary: the tail of a UTF-8 sequence is a
-            -- byte in 0x80..0xBF, and half a character is what a rasteriser is
-            -- entitled to draw as anything at all.
-            while #summary > 0 do
-                local byte = summary:byte(-1)
-                if byte < 128 or byte >= 192 then
-                    break
-                end
-                summary = summary:sub(1, -2)
-            end
-            summary = summary .. "…"
-        end
-        lines[#lines + 1] = summary
-    end
     return lines
+end
+
+--- As much of the description as the popup carries, cut on a character boundary.
+---
+--- The tail of a UTF-8 sequence is a byte in 0x80..0xBF, and half a character is
+--- what a rasteriser is entitled to draw as anything at all — so the cut walks
+--- back to the lead byte before the ellipsis goes on.
+local function excerpt(text)
+    if #text <= SUMMARY_LIMIT then
+        return text
+    end
+    text = text:sub(1, SUMMARY_LIMIT)
+    while #text > 0 do
+        local byte = text:byte(-1)
+        if byte < 128 or byte >= 192 then
+            break
+        end
+        text = text:sub(1, -2)
+    end
+    return text .. "…"
+end
+
+--- The whole description, in a window of its own.
+---
+--- `TextViewer` is KOReader's own answer to "this text does not fit in a popup":
+--- it scrolls, it carries a title bar, and it is what the file manager opens a
+--- book's description in. Shown *over* the popup rather than instead of it, so
+--- closing it puts the reader back on the row they tapped.
+local function showDescription(text)
+    -- Required here rather than at the top: it drags in the scroll widgets, the
+    -- title bar and the HTML view behind them, and an install that never taps a
+    -- truncated summary should not pay for those at startup. The same reasoning
+    -- `rowcover` defers `ui/renderimage` for.
+    local TextViewer = require("ui/widget/textviewer")
+    UIManager:show(TextViewer:new{
+        title = _("Description"),
+        text = text,
+        text_type = "book_info",
+    })
+end
+
+--- The description's excerpt, as something a reader can tap.
+---
+--- **A `TextBoxWidget` cannot be a tap target on its own.** It takes no events,
+--- so a tap on the text would fall past it to the dialog's own tap-outside and
+--- *close* the popup — the opposite of what a reader tapping the text means. This
+--- wraps one and claims the tap: an `InputContainer` with a gesture range over
+--- its own box, which is the shape KOReader gives a `KeyValueItem` row.
+local SummaryItem = InputContainer:extend{}
+
+function SummaryItem:init()
+    self[1] = TextBoxWidget:new{
+        text = self.text,
+        width = self.width,
+        face = Font:getFace("smallinfofont"),
+    }
+    -- A `Geom` of its own rather than the size table `getSize` hands back:
+    -- `InputContainer:paintTo` writes the painted x and y onto `self.dimen`, and
+    -- the range below is that same object — which is what makes the tap land
+    -- where the text is drawn rather than at the origin.
+    local size = self[1]:getSize()
+    self.dimen = Geom:new{ x = 0, y = 0, w = size.w, h = size.h }
+    self.ges_events = {
+        Tap = {
+            GestureRange:new{
+                ges = "tap",
+                range = self.dimen,
+            },
+        },
+    }
+end
+
+function SummaryItem:onTap()
+    if self.tap_callback then
+        self.tap_callback()
+    end
+    return true
 end
 
 --- The popup, or nil when there is nothing to show one for.
@@ -222,6 +287,20 @@ function Info.show(fields)
             text = table.concat(lines, "\n"),
             width = width,
             face = Font:getFace("smallinfofont"),
+        })
+    end
+
+    -- The description last, under the rows, and tappable through to the whole of
+    -- it. Collapsed like every row above, for the same reason: a ComicInfo
+    -- summary is HTML-ish free text with newlines and runs of spaces in it, and
+    -- neither a popup row nor a scrolled window wants to honour them.
+    local description = plainText(fields.description)
+    if description then
+        table.insert(body, VerticalSpan:new{ width = Size.padding.default })
+        table.insert(body, SummaryItem:new{
+            text = excerpt(description),
+            width = width,
+            tap_callback = function() showDescription(description) end,
         })
     end
 

@@ -64,10 +64,19 @@ progress bar with the percentage under it, and the metadata the document can ans
 series, volume, author, language and server — the *kind* of server, `Kavita`, and not
 the catalogue's own title, which is the key its credentials live under rather than
 anything about the book — plus the ComicInfo summary for a
-local `.cbz`, capped rather than scrolled because `ButtonDialog` scrolls only its button
-table and never the title group an added widget lives in. **Absent values are absent
-rows**: a streamed book has no author to show and a local one no server, and neither is
-worth a row saying so.
+local `.cbz`. **Absent values are absent rows**: a streamed book has no author to show
+and a local one no server, and neither is worth a row saying so.
+
+**The description is the one row that is not just read.** It is capped and the excerpt
+takes a tap, which opens the whole thing in KOReader's own `TextViewer` — the window the
+file manager already opens a book's description in. The popup cannot scroll it: a
+`ButtonDialog` scrolls only its button table and never the title group an added widget
+lives in, so an unbounded description would push the Close button off the screen. The tap
+needs a widget of its own for the same reason the cap exists — a `TextBoxWidget` takes no
+events, so a tap on the text would fall through to the dialog's tap-outside and *close*
+the popup, the opposite of what tapping the text means. `SummaryItem` in `ui/info` is that
+widget, and it is laid out by the same rule as everything else here: it knows its own box
+and claims the tap inside it.
 
 **A local `.cbz` is not given its folder as a series**, and that is the one place this
 popup refuses a value the plugin has to hand. `Local.seriesOf` — the same answer the ⋮
