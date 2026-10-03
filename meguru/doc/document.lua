@@ -2054,6 +2054,28 @@ function MeguruDocument:_spreadGutterOn()
     return value == 1 or value == "1" or value == true
 end
 
+--- Whether the fit in force limits the pair by its *width* — the one fit with no
+--- room in it for the growth `meguru/spread`'s `grow` offers a short half.
+---
+--- Read from the configurable, which is where `ReaderZooming:_updateConfigurable`
+--- writes the pair of numbers KOReader names a zoom mode by, on every change of
+--- the mode: genus 3 is "content" — the genus this plugin's *Fit* row writes, as
+--- full/width/height — and type 1 is its "width". Type 2 is full and 0 is height,
+--- and those two are the fits a pair's own height limits, which is what the
+--- growth needs.
+---
+--- **Everything else answers true, and the default is deliberately the answer
+--- that stands the growth down**: a page-fit and manual are KOReader's own modes
+--- rather than this row's, and a configurable nobody has set a mode on is not a
+--- mode to grow inside of. A pair drawn under one of them is drawn exactly as it
+--- is today.
+function MeguruDocument:_spreadFitByWidth()
+    local configurable = self.configurable
+    local genus = configurable and tonumber(configurable.zoom_mode_genus)
+    local kind = configurable and tonumber(configurable.zoom_mode_type)
+    return not (genus == 3 and (kind == 2 or kind == 0))
+end
+
 --- Whether the offset is in force for `pageno`: the run it is anchored in being
 --- the run that page is in.
 ---
@@ -2116,6 +2138,12 @@ end
 --- page's own, which is the space the panel detector, the crop box and the
 --- page's size are all measured in. With one page showing it answers what it was
 --- handed, so the long-press has one path and not two.
+---
+--- **It is the exact inverse of `drawPage`'s split, half's scale included**, which
+--- is what it has to be: a point on the enlarged page has to land where the panel
+--- under the finger is, and the page in the box is the same picture at a bigger
+--- `zoom` there. Dividing by the half's scale first is the whole of it, and with
+--- both scales at 1 it is the arithmetic this has always done.
 function MeguruDocument:spreadPageAt(pageno, x, y)
     local pair = self:spreadUnitFor(pageno)
     if not (pair and pair.b) then
@@ -2123,12 +2151,15 @@ function MeguruDocument:spreadPageAt(pageno, x, y)
     end
     local layout = self:_pairLayout(pair)
     local left, right = layout.left, layout.right
-    -- The seam is where the two halves meet, which the gutter has moved: a press
-    -- on the blank gutter counts for the page it belongs to, whose margin it is.
-    if x >= left.box.w then
-        return right.page, (x - left.box.w) + right.box.x, y + right.box.y
+    -- The seam is where the two halves meet, which the gutter has moved and the
+    -- growth has moved again: a press on the blank gutter counts for the page it
+    -- belongs to, whose margin it is.
+    local seam = left.box.w * left.scale
+    if x >= seam then
+        return right.page, (x - seam) / right.scale + right.box.x,
+            y / right.scale + right.box.y
     end
-    return left.page, x + left.box.x, y + left.box.y
+    return left.page, x / left.scale + left.box.x, y / left.scale + left.box.y
 end
 
 --- One page's content box, `{x, y, w, h}`, in its own native coordinates.
@@ -2166,7 +2197,9 @@ function MeguruDocument:_spreadScreen()
 end
 
 --- The pair's two halves as they are drawn: each page's crop box widened on the
---- side that faces the other one, by the gutter that page keeps.
+--- side that faces the other one by the gutter that page keeps, the shorter half
+--- scaled up by however much of the room left over it can use, and — because the
+--- last of those is a scale and not a box — each half's `scale` beside its box.
 ---
 --- **This is the one place the pair's geometry is decided**, and everything that
 --- needs to know where the seam is asks it: `_pairGeom` for the box the reader
@@ -2187,9 +2220,27 @@ end
 --- size as a stand-in — has its content edge *at* its page edge, so its margin is
 --- zero. And a pair whose artwork already fills the screen width leaves no slack
 --- for a gutter to take.
+---
+--- **Then the half that is cropped shorter grows into what is left over**
+--- (`Spread.grow`), which is the same spare asked a second time — and it is why
+--- each half leaves here with a `scale` as well as a box. The box stays in the
+--- page's *own* units; the scale says how much larger than those units the half
+--- is drawn. **The two are separate on purpose**, because they answer different
+--- questions: the box is what `renderPage` cuts out of the page, the scale is what
+--- it is cut *for*, and every caller that draws or hit-tests a half carries both.
+---
+--- **The gutter is asked first and the growth second, and that order is how the
+--- two share the one spare.** The gutter is clamped to the margin the page really
+--- has, so a pair whose pages kept their inner margins spends the room on paper —
+--- which is what such a pair is *missing* — and only a pair cropped flush leaves
+--- room for a page to grow into. A pair fitted by width has no spare at all
+--- (`_spreadFitByWidth`), and neither has one with a page that failed to load:
+--- that page's size is the screen's stand-in rather than a page anybody has seen,
+--- which is the same reason `_noteWide` is never asked about one.
 function MeguruDocument:_pairLayout(pair)
     local left_page, right_page = self:_pairSides(pair)
     local l, r = self:_pageBox(left_page), self:_pageBox(right_page)
+    local screen = self:_spreadScreen()
     -- The row first, then the rule: with "Flexible gutter" off a pair is drawn
     -- exactly as the crop left it, which is the only thing this row decides —
     -- `meguru/spread`'s four sentences are unchanged by it.
@@ -2197,17 +2248,24 @@ function MeguruDocument:_pairLayout(pair)
     if self:_spreadGutterOn() then
         local inner_left = math.max(0, self:_pageGeom(left_page).w - (l.x + l.w))
         local inner_right = math.max(0, r.x)
-        local screen = self:_spreadScreen()
         gutter = Spread.gutter(l.w + r.w, math.max(l.h, r.h),
             inner_left, inner_right, screen.w, screen.h)
     end
     local left = { x = l.x, y = l.y, w = l.w + gutter.left, h = l.h }
     local right = { x = r.x - gutter.right, y = r.y, w = r.w + gutter.right, h = r.h }
+
+    local scales = { left = 1, right = 1 }
+    if not (self.dead_pages[left_page] or self.dead_pages[right_page]
+        or self.fetch_failed[left_page] or self.fetch_failed[right_page]) then
+        scales = Spread.grow(left.w, left.h, right.w, right.h,
+            screen.w, screen.h, self:_spreadFitByWidth())
+    end
+
     return {
-        left = { page = left_page, box = left },
-        right = { page = right_page, box = right },
-        w = left.w + right.w,
-        h = math.max(left.h, right.h),
+        left = { page = left_page, box = left, scale = scales.left },
+        right = { page = right_page, box = right, scale = scales.right },
+        w = left.w * scales.left + right.w * scales.right,
+        h = math.max(left.h * scales.left, right.h * scales.right),
     }
 end
 
@@ -2215,30 +2273,51 @@ end
 --- space `drawPage` splits.
 ---
 --- The two pages' crop boxes sit side by side with their tops aligned, each
---- widened towards the seam by its own gutter (`_pairLayout`), page a's left edge
---- at the origin. **The vertical alignment is the one approximation here**: two
---- pages cropped to slightly different heights cannot both be flush top and
---- bottom, so the taller sets the box and the shorter one carries the blank
---- beneath it. Two pages of one scan are the same size and it never shows; a
---- spread mixed with a differently cropped page is the case to look at if a seam
---- ever looks wrong.
+--- widened towards the seam by its own gutter and the shorter one enlarged by its
+--- own scale (`_pairLayout`), page a's left edge at the origin. **The vertical
+--- alignment is the one approximation that survives all of that**: two pages
+--- cropped to different heights cannot both be flush top and bottom, so the taller
+--- sets the box and the shorter carries whatever blank is left under it once the
+--- growth has taken its share — none at all where the room was there. Two pages of
+--- one scan are the same size and it never shows; a spread mixed with a
+--- differently cropped page is the case to look at if a seam ever looks wrong.
 ---
---- **The gutter never grows the box past the page it came from.** Each half is
---- widened only into its own page's margin, so the pair still fits inside the
---- two full pages — which is what `getNativePageDimensions` answers with, and
---- what the reader's fit is measured against (`getZoom` refuses a bounding box
---- larger than the page).
+--- **Neither the gutter nor the growth takes the box past the pages it came
+--- from.** Each half is widened only into its own page's margin and enlarged only
+--- where the pair is not using the room, so the pair still fits inside the two
+--- full pages — which is the box `getNativePageDimensions` answers with, and the
+--- ceiling `ReaderZooming:getZoom` holds the box the reader lays out under.
 function MeguruDocument:_pairGeom(pair)
     local layout = self:_pairLayout(pair)
     return Geom:new{ x = 0, y = 0, w = layout.w, h = layout.h }
 end
 
---- The pair's *full* box — both pages whole, side by side, tops aligned. The
---- uncropped counterpart of `_pairGeom`, and the size the fit is measured
---- against; see `getNativePageDimensions`.
+--- The pair's *full* box — both pages whole, side by side, tops aligned, at the
+--- scales the pair is being drawn at. The uncropped counterpart of `_pairGeom`,
+--- and the size the fit is measured against; see `getNativePageDimensions`.
+---
+--- **The same per-half scales, and that is load-bearing rather than tidy.** The
+--- reader will not lay out a bounding box larger than this one — `getZoom` meets
+--- one by falling back to the whole page — and the cropped pair is inside the full
+--- pair only while both are drawn at the same scales: each half's crop is a
+--- sub-box of its own page, and multiplying both ends of that by one factor, 1 or
+--- more, leaves it a sub-box, term by term. The factor is the growth's, so this is
+--- what the pair would be if the crop gave the pages back.
+---
+--- It asks `_pairLayout` for those scales rather than keeping its own copy, and
+--- the cost of that is the reason to say so: inside `getZoom` this call and the
+--- one that asks for the box are one after the other on the same pair, so the
+--- layout is worked out twice where once would do. A memo would be cheaper and is
+--- not worth it — it would have to be invalidated by the canvas, the tone, the
+--- gutter row and the fit, which is four chances to answer with a stale box.
 function MeguruDocument:_pairFullGeom(pair)
-    local a, b = self:_pageGeom(pair.a), self:_pageGeom(pair.b)
-    return { w = a.w + b.w, h = math.max(a.h, b.h) }
+    local layout = self:_pairLayout(pair)
+    local a = self:_pageGeom(layout.left.page)
+    local b = self:_pageGeom(layout.right.page)
+    return {
+        w = a.w * layout.left.scale + b.w * layout.right.scale,
+        h = math.max(a.h * layout.left.scale, b.h * layout.right.scale),
+    }
 end
 
 --- Note that a page is wider than tall, for the imposition.
@@ -4176,6 +4255,14 @@ end
 -- stretch the shorter one's last rows into the taller one's space. And the
 -- halves are laid out left-to-right in `_pairSides`' order, which is the reading
 -- direction's — in a right-to-left book the earlier page is the right-hand one.
+--
+-- **A half that was cropped shorter is drawn at its own zoom**, which is the
+-- pair's times the scale `_pairLayout` gave it: one page of the pair is a bigger
+-- picture than the other, and `renderPage` has to divide by the same factor it
+-- was multiplied by or the half would be cut out of the wrong place. Everything
+-- about *placing* a half — the seam, the window, where it lands on the target —
+-- stays in the pair's zoom, because the pair's box is what the reader laid out;
+-- only the page's own coordinates carry the half's.
 function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
     local pair = rect and self:spreadUnitFor(pageno) or nil
     if not (pair and pair.b) then
@@ -4186,37 +4273,40 @@ function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gam
     local layout = self:_pairLayout(pair)
     local left, right = layout.left, layout.right
     -- Where the two halves meet in the pair's space, and the window's own edges.
-    -- The seam carries the gutter: the left page's box has already been widened
-    -- into the margin it keeps, so the split follows from the same layout the
-    -- reader was handed rather than from the crop alone.
-    local seam = left.box.w * safe_zoom
+    -- The seam carries the gutter and the growth: the left page's box has already
+    -- been widened into the margin it keeps and, if it is the shorter page,
+    -- scaled up, so the split follows from the same layout the reader was handed
+    -- rather than from the crop alone.
+    local left_zoom = safe_zoom * left.scale
+    local right_zoom = safe_zoom * right.scale
+    local seam = left.box.w * left_zoom
     local x0, x1 = rect.x, rect.x + rect.w
 
     -- `origin` is where this page begins in the pair's space — the left page at 0,
     -- the right one at the seam — so that `from - origin` lands the window in the
     -- page's *own* coordinates, which is the space `renderPage` reads it in.
-    local function half(page, box, origin, from, to)
+    local function half(page, box, half_zoom, origin, from, to)
         local width = to - from
         if width <= 0 then
             return
         end
         -- Clip to this page's own height: the pair's box is the taller page's.
-        local bottom = math.min(rect.y + rect.h, box.h * safe_zoom)
+        local bottom = math.min(rect.y + rect.h, box.h * half_zoom)
         local height = bottom - rect.y
         if height <= 0 then
             return
         end
         local src = Geom:new{
-            x = (from - origin) + box.x * safe_zoom,
-            y = rect.y + box.y * safe_zoom,
+            x = (from - origin) + box.x * half_zoom,
+            y = rect.y + box.y * half_zoom,
             w = width,
             h = height,
         }
-        self:drawOnePage(target, x + (from - x0), y, src, page, zoom, rotation, gamma, saturation)
+        self:drawOnePage(target, x + (from - x0), y, src, page, half_zoom, rotation, gamma, saturation)
     end
 
-    half(left.page, left.box, 0, x0, math.min(x1, seam))
-    half(right.page, right.box, seam, math.max(x0, seam), x1)
+    half(left.page, left.box, left_zoom, 0, x0, math.min(x1, seam))
+    half(right.page, right.box, right_zoom, seam, math.max(x0, seam), x1)
 end
 
 -- drawOnePage / drawPageInverted: same as Document's, but our renderPage may

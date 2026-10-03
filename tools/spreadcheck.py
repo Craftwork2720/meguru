@@ -35,16 +35,25 @@ What it checks, and why each one is a property rather than an example:
   artwork's fit is reproduced exactly by the pair's own fit), the pair never
   overflows the screen, and the spare width is what the gutter takes when the
   margin allows it.
+* **The growth's one promise** — over a grid of unevenly cropped pairs, screens and
+  both fits: every factor is 1 or more and the taller half's is exactly 1, so
+  nothing is ever drawn smaller; the shorter half stops at the taller one's height
+  and at the room the pair has; the pair never leaves the screen; a fit by width
+  grows nothing; the room is *used*, so a half that grew without reaching the other
+  one's height first has filled the width its height allows; and — the promise
+  itself — **the pair's own fit is unchanged**, which is what says the taller page
+  is drawn at exactly the size it had.
 * **The stated examples** — the ones the rules were written from, printed below.
 
 **What this models, and what it does not**, per `docs/development.md`'s rule about
-mirrors. It models the module's *arithmetic* — the run walk, the anchor and the
-four gutter sentences — because that is what a check can settle. It does not model
-Lua's evaluation rules, and one of them is in the code it mirrors: `unitFor` folds
-`(run_start(...) == run) and 1 or 0`, safe only because the middle value is `1` —
-a change to a value that could be `false` would not be mirrored here. The wide
-list is searched as a binary search where this asks membership and the greatest
-element below. A divergence in either is a divergence this cannot see.
+mirrors. It models the module's *arithmetic* — the run walk, the anchor, the four
+gutter sentences and the growth's three — because that is what a check can settle.
+It does not model Lua's evaluation rules, and one of them is in the code it
+mirrors: `unitFor` folds `(run_start(...) == run) and 1 or 0`, safe only because
+the middle value is `1` — a change to a value that could be `false` would not be
+mirrored here. The wide list is searched as a binary search where this asks
+membership and the greatest element below. A divergence in either is a divergence
+this cannot see.
 """
 
 import itertools
@@ -187,6 +196,34 @@ def gutter(content_w, content_h, inner_left, inner_right, screen_w, screen_h):
     # reason it gives there.
     right = total - left
     return (left / scale, right / scale)
+
+
+def grow(lw, lh, rw, rh, screen_w, screen_h, fits_by_width):
+    """`Spread.grow`: how far each half of a pair grows into the room the pair is
+    not using, when its two pages are cropped to different heights. Returns
+    `(left, right)`, each 1 or more, in the same units as the boxes it was handed."""
+    def nothing():
+        return (1.0, 1.0)
+    if fits_by_width:
+        return nothing()
+    try:
+        lw, lh = float(lw), float(lh)
+        rw, rh = float(rw), float(rh)
+        screen_w, screen_h = float(screen_w), float(screen_h)
+    except (TypeError, ValueError):
+        return nothing()
+    if lw <= 0 or lh <= 0 or rw <= 0 or rh <= 0 or screen_w <= 0 or screen_h <= 0:
+        return nothing()
+
+    h_max = max(lh, rh)
+    free = max(0.0, screen_w * h_max / screen_h - (lw + rw))
+    if free <= 0:
+        return nothing()
+    if lh < rh:
+        return (min(h_max / lh, 1 + free / lw), 1.0)
+    if rh < lh:
+        return (1.0, min(h_max / rh, 1 + free / rw))
+    return nothing()
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +413,64 @@ def check_gutter(cw, ch, ml, mr, sw, sh, fails):
         fails.append(("a page with no margin gave some", tag, gl, gr))
 
 
+def check_grow(lw, lh, rw, rh, sw, sh, by_width, fails):
+    """The growth, asked of one pair: the three sentences in `Spread.grow`'s header.
+
+    The one that matters is the third, the fit: `min(sw/W, sh/H)` before and after.
+    It is *the* promise — the taller half is drawn at the size it had — and the
+    other four checks here are what keep it from being true by accident.
+    """
+    tag = (lw, lh, rw, rh, sw, sh, by_width)
+    gl, gr = grow(lw, lh, rw, rh, sw, sh, by_width)
+
+    # (1) it only ever enlarges, and the taller half not at all.
+    if gl < 1 - 1e-9 or gr < 1 - 1e-9:
+        fails.append(("the growth shrank a half", tag, gl, gr))
+        return
+    if lh >= rh and gl != 1.0:
+        fails.append(("the taller half was scaled", tag, gl, gr))
+        return
+    if rh >= lh and gr != 1.0:
+        fails.append(("the taller half was scaled", tag, gl, gr))
+        return
+    # A width-bound fit has no room in it, which is the whole of the caller's flag.
+    if by_width and (gl != 1.0 or gr != 1.0):
+        fails.append(("a width-bound fit was grown", tag, gl, gr))
+        return
+
+    W, H = lw + rw, max(lh, rh)
+    W2, H2 = lw * gl + rw * gr, max(lh * gl, rh * gr)
+
+    # The box never gets smaller, and never taller: the taller half sets the pair's
+    # height on both sides of the growth, and the shorter one stops at it.
+    if W2 < W - 1e-9 or H2 != H:
+        fails.append(("the grown box is not the box with a wider half", tag, W, H, W2, H2))
+        return
+    if (lh < rh and lh * gl > rh * (1 + 1e-9)) or (rh < lh and rh * gr > lh * (1 + 1e-9)):
+        fails.append(("the shorter half outgrew the taller", tag, gl, gr))
+        return
+
+    # (3) the fit is unchanged -- the promise, and the reason the taller page is
+    # drawn at exactly the size it had.
+    fit = min(sw / W, sh / H)
+    if abs(min(sw / W2, sh / H2) - fit) > 1e-9 * max(1.0, fit):
+        fails.append(("the growth changed the pair's fit", tag, fit, min(sw / W2, sh / H2)))
+        return
+    # And nothing leaves the screen.
+    if W2 * fit > sw + 1e-6 or H2 * fit > sh + 1e-6:
+        fails.append(("the grown pair does not fit the screen", tag, W2 * fit, H2 * fit))
+        return
+    # (2) the room is the width the pair is not using, and it is *used*: unless the
+    # shorter half stopped at the other's height first, the pair has grown to fill
+    # the width its own height allows. Measured in the pair's units, so it is the
+    # same equation the fit check above is, read from the other end.
+    if not by_width and W * sh / H <= sw and lh != rh:
+        capped = (lh < rh and abs(lh * gl - rh) < 1e-9) \
+            or (rh < lh and abs(rh * gr - lh) < 1e-9)
+        if not capped and abs(W2 * sh / H - sw) > 1e-6 * sw:
+            fails.append(("the room was left unused", tag, W2 * sh / H, sw))
+
+
 def main():
     fails = []
     checked = 0
@@ -415,6 +510,15 @@ def main():
         checked += 1
         check_gutter(cw, ch, ml, mr, sw, sh, fails)
 
+    # The growth: unequally cropped pairs over the same screens, with and without
+    # the fit that has room in it.
+    halves = [(900, 1400), (900, 700), (900, 300), (1400, 1400), (300, 1400),
+              (1000, 1000)]
+    for (sw, sh), (lw, lh), (rw, rh), by_width in itertools.product(
+            screens, halves, halves, (False, True)):
+        checked += 1
+        check_grow(lw, lh, rw, rh, sw, sh, by_width, fails)
+
     if fails:
         for fail in fails[:20]:
             print("  ", fail)
@@ -441,6 +545,16 @@ def print_examples():
         pair_w = 1800 + gl + gr
         print(f"  {sw}x{sh}, margins {ml}+{mr}: gutter {gl:.1f}+{gr:.1f} -> "
               f"pair {pair_w:.0f} native at {scale:.4f} = {pair_w * scale:.0f}px of {sw}px")
+
+    print("\n-- a pair cropped unevenly: taller 900x1400, shorter 900x700 --")
+    for sw, sh in [(1680, 1264), (1920, 1080), (2560, 1600), (800, 1280)]:
+        lw, lh, rw, rh = 900, 700, 900, 1400
+        gl, gr = grow(lw, lh, rw, rh, sw, sh, False)
+        W, H = lw * gl + rw * gr, max(lh * gl, rh * gr)
+        fit = min(sw / W, sh / H)
+        fit0 = min(sw / (lw + rw), sh / max(lh, rh))
+        print(f"  {sw}x{sh}: scale {gl:.3f} -> shorter drawn {lh * gl * fit:.0f}px tall "
+              f"(was {lh * fit0:.0f}), taller {rh * fit:.0f} (was {rh * fit0:.0f})")
 
 
 def show_walk(count, wides, anchor):

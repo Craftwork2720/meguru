@@ -129,6 +129,45 @@ The arithmetic is one function over plain numbers precisely so it can be checked
 without a device — everything above is a `min` and a ratio, and
 `tools/spreadcheck.py` is that check, the way `tools/panelprobe.py` is the panel
 detector's.
+
+## A page cropped smaller grows into what the pair is not using
+
+A pair whose two pages are cropped to different heights has a blank under the
+shorter one, and the shorter one grows into it — **as far as the room beside the
+pair goes and no further, and never at the other page's expense.** `grow` is the
+whole of it.
+
+Three things about it are worth stating, because they are what makes it safe to
+ask of every pair rather than a feature with a row of its own:
+
+* **It only ever enlarges.** Each factor comes back 1 or more, and the taller
+  half's is exactly 1: the page the reader already had is drawn at the size it
+  had. Two pages cropped alike — two pages of one scan, the overwhelmingly common
+  case — come back with two 1s, so **a book that never had a blank under a page
+  reads exactly as it did before this rule existed.**
+* **The room is the width the pair is not using.** The pair is fitted to the
+  screen, so what is left over is horizontal, and it is left over exactly while
+  the pair's *height* is what limits its fit. The shorter page grows until it is
+  as tall as the other or until the room runs out, whichever comes first.
+* **It cannot change the fit.** The growth stops at the width the pair's own
+  height allows, so the pair is limited by its height before and after alike and
+  the taller page is drawn at the same size — the promise is one equation:
+  `min(screen_w / W, screen_h / H)` is the same on both sides of it.
+
+**A pair fitted by width is not offered the growth at all**, and that falls out
+of the second sentence rather than being a case of its own: a fit limited by the
+width *is* the pair filling the screen's width, so there is nothing left to grow
+into — and a page grown into a width-bound pair would take its room from the
+other page, because the fit would shrink to make it. The caller says which fit is
+in force, because the mode is the reader's and this module is arithmetic.
+
+The screen is the one the gutter is measured against, and for the reason given
+there; a footer the reader has kept makes the pair's own fit very slightly
+smaller than this sum assumes, which leaves the room *under*-estimated rather
+than over-, so nothing above is violated by it.
+
+Like the gutter, it is plain numbers so it can be checked without a device:
+`tools/spreadcheck.py` asks the same three sentences of a grid of pairs.
 --]]
 
 local Spread = {}
@@ -309,6 +348,57 @@ function Spread.gutter(content_w, content_h, inner_left, inner_right, screen_w, 
     -- page does not have.
     local right = total - left
     return { left = left / scale, right = right / scale }
+end
+
+--- How far each half of a pair grows into the room the pair is not using, when
+--- its two pages are cropped to different heights.
+---
+--- The header's three sentences, as arithmetic. `lw`/`lh` and `rw`/`rh` are the
+--- two halves as they are drawn — each page's crop widened by whatever gutter it
+--- keeps, in the pair's own units — and `fits_by_width` says whether the fit in
+--- force limits the pair by its width, which is the one case with no room in it.
+---
+--- Returns a factor for each half, always 1 or more and exactly 1 for the half
+--- that is not the shorter one, so the caller multiplies a box by it and needs to
+--- know nothing about the scale. Both are 1 when there is nothing to do: equal
+--- heights, no room going spare, a fit by width, or nothing to measure at all.
+function Spread.grow(lw, lh, rw, rh, screen_w, screen_h, fits_by_width)
+    local nothing = { left = 1, right = 1 }
+    if fits_by_width then
+        return nothing
+    end
+    lw, lh = tonumber(lw), tonumber(lh)
+    rw, rh = tonumber(rw), tonumber(rh)
+    screen_w, screen_h = tonumber(screen_w), tonumber(screen_h)
+    if not (lw and lh and rw and rh and screen_w and screen_h)
+        or lw <= 0 or lh <= 0 or rw <= 0 or rh <= 0
+        or screen_w <= 0 or screen_h <= 0 then
+        return nothing
+    end
+
+    -- **The room is the width the pair is not using**: what is left of the screen
+    -- once the pair is at the height that limits its fit, which is nought for a
+    -- pair that already fills the width. Measured from this end it is the spare
+    -- the growth may spend; measured from the other it is the promise in the
+    -- header — the fit is `screen_h / h_max` on both sides of the growth, so the
+    -- taller half is drawn at the size it had.
+    local h_max = math.max(lh, rh)
+    local free = math.max(0, screen_w * h_max / screen_h - (lw + rw))
+    if free <= 0 then
+        return nothing
+    end
+
+    -- The shorter half grows until it is as tall as the other and no further than
+    -- the room allows: the first term is the whole of the blank under it, the
+    -- second what the screen has left. Neither half is scaled down, and the taller
+    -- one's factor is not computed at all — which is what makes that a property of
+    -- the function rather than something the caller has to keep true.
+    if lh < rh then
+        return { left = math.min(h_max / lh, 1 + free / lw), right = 1 }
+    elseif rh < lh then
+        return { left = 1, right = math.min(h_max / rh, 1 + free / rw) }
+    end
+    return nothing
 end
 
 return Spread

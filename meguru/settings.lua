@@ -192,8 +192,9 @@ local DEFAULTS = {
     -- and the orientation says which without a menu.
     --
     -- A page drawn as one wide image is never half of a pair, whatever this
-    -- says; see `meguru/spread` for the imposition and the vertical alignment it
-    -- costs.
+    -- says; see `meguru/spread` for the imposition, the blank a pair of unevenly
+    -- cropped pages starts with, and the growth that closes as much of it as the
+    -- room beside the pair allows.
     spread            = "off",
 
     -- Whether a pair is shifted one page back, and **from where**: 0 is "as the

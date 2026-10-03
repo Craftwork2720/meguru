@@ -53,7 +53,8 @@ meguru/
                           neighbour
   panel.lua               the panels on a page, and the order they are read in
   viewport.lua            the window over a page, for the panel view that crops nothing
-  spread.lua              the imposition: which pages shown together, and the gutter a pair keeps
+  spread.lua              the imposition: which pages shown together, the gutter a
+                          pair keeps, and the growth of a page cropped shorter
   hook.lua                runtime wraps on OPDSBrowser (sniff, "Meguru this series")
   updater.lua             GitHub releases: check for one, download it, install it
 
@@ -171,7 +172,9 @@ directory listing in the plugin lives there, and it is `util.findFiles`, KOReade
 own — not an edge in this graph, for the reason the network manager is not one
 either. `meguru/spread` is required by `doc/document` and by nothing else, and it
 requires nothing: the imposition is arithmetic over a page number and a list of wide
-pages, so it is a leaf, and the geometry that uses it stays where the geometry lives.
+pages, so it is a leaf, and the two rules it owns about the pair's own fit — the gutter
+a spread keeps and the scale a page cropped short grows by — are numbers in and numbers
+out, the boxes themselves staying where the geometry lives.
 
 
 ## Where the detail lives

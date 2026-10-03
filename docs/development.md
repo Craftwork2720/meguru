@@ -136,20 +136,25 @@ attempt and passed on the very bug they existed to catch.
 **Two modules are mirrored rather than reasoned about**, and both are mirrored
 because they are pure arithmetic with rules that are easy to state and easy to
 get wrong: `tools/panelprobe.py` for the panel detector, and `tools/spreadcheck.py`
-for `meguru/spread.lua` — the two-page imposition and the rule that gives a spread
-its gutter. The second checks *properties* rather than fixtures: that the units
+for `meguru/spread.lua` — the two-page imposition, the rule that gives a spread its
+gutter, and the rule that grows a page cropped short into what the pair is not
+using. The second checks *properties* rather than fixtures: that the units
 tile a book exactly once for every set of wide pages and both offsets, that asking
 from either page of a pair answers the same pair, that turning walks the units
-without stalling at the last pair, and the gutter's four rules over a grid of
-artwork sizes, margins and screen shapes. Run it as `python tools/spreadcheck.py`;
+without stalling at the last pair, the gutter's four rules over a grid of
+artwork sizes, margins and screen shapes, and the growth's three — the taller half
+untouched, the shorter one stopping at its height and at the room there is, and the
+pair's own fit unchanged — over a grid of unevenly cropped pairs and both fits.
+Run it as `python tools/spreadcheck.py`;
 it prints a walk of the page it is checking, which is the only way to read what
 the imposition does without a device. It checks the rules, not fixtures: that the
 units tile a book exactly once for every set of wide pages and every page the
 offset can be anchored at, that asking from either page of a pair answers the same
 pair, that turning walks the units without stalling at the last pair, that the
 offset reaches exactly the one run it is anchored in — which is both "a wide page
-ends an offset" and "setting it again past one re-anchors it there" — and the
-gutter's four rules over a grid of artwork sizes, margins and screen shapes.
+ends an offset" and "setting it again past one re-anchors it there" — the gutter's
+four rules over a grid of artwork sizes, margins and screen shapes, and the growth's
+three over a grid of unevenly cropped pairs.
 
 A Python mirror of Lua logic models values, not Lua's evaluation rules, and the
 difference has shipped a crash. `meguru/credential.lua`'s `restoreTemplate` ended
