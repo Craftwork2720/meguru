@@ -440,27 +440,46 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   path is `pcall`ed, which catches a throw and not a corrupted argument list. What would settle
   it is a compatibility note naming the version this was written against, and the habit of
   checking it when that plugin releases; what it costs today is, in the worst case, a crash in
-  the render path of a device that has both plugins installed rather than a filtered page.
+  the render path of a device that has both plugins installed rather than a filtered page. The
+  prototypes as written **do** work against the release they were taken from — both symbols
+  resolve and run, on the desktop, on a real page — so this is a warning about the next
+  release rather than about this one.
 
-- **The `bpp` rules the filter is gated on are a reading of the other plugin's C, not a
+- **Whether the rainbow actually goes away has never been seen.** Every link in the chain has
+  now been run — the row is offered, the value is written and stamped, `renderPage` calls the
+  filter, the filter runs on a real page and returns — but the one thing the feature is *for*
+  is the appearance of a Kaleido 3 panel, and no such panel has been in front of this code.
+  What has been shown is that the page comes back changed (26.4% of bytes on a synthetic fine
+  line pattern) and that colour survives it; what has not is that the shimmer is what changed.
+  A filter that runs, costs 40 ms a tile and removes nothing would look exactly like this from
+  here. What would settle it is one reader on a colour device, before and after.
+
+- **The `bpp` rules for the *rejected* formats are a reading of the other plugin's C, not a
   measurement here.** `remove_moire` derives its bytes-per-pixel as `stride / width`, and the
   claim behind the `TYPE_BBRGB32`-only gate is that `bpp == 3` falls into the grayscale branch
-  (a colour page comes back grey) while `bpp == 2` overruns a two-byte pixel. Both are latent
-  rather than live, because no Meguru tile is ever RGB24 or BB8A — the gate exists so that
-  stays true if one ever is. What would settle it is a colour device and a hand-built buffer of
-  each shape; what a wrong answer would cost is a page that is silently the wrong colour, or a
+  (a colour page comes back grey) while `bpp == 2` overruns a two-byte pixel. **The accepted
+  path has since been measured and is sound**: the filter was run under KOReader's own LuaJIT
+  on an RGB32 buffer — type 5, `stride == w * 4`, no rotation — both synthetic (fine black
+  linework over colour blocks: 49.9% of pixels coloured before and after, mean RGB unmoved)
+  and real (a page of a local `.cbz`, filtered through `renderPage` with no `skipped` line).
+  The rejection side is measured too, so far as it goes: RGB24 and BB8 buffers come back
+  **byte-identical** from `apply`. What is *not* measured is what the raw library does when
+  handed those shapes directly — the gate is what makes that unobservable from Meguru, and
+  deliberately so. What a wrong answer would cost is a page silently the wrong colour, or a
   heap overrun, in a path nothing here has ever produced.
 
-- **The filter's cost per tile is unmeasured on a real colour device.** The other plugin's
-  README says filtering makes a page's first render slower, which is the whole of the claim
-  that has been checked. Its `init_moire_resources` is reported to reallocate at image size on
-  essentially every call — its guard compares a padded length against the raw dimensions — and
-  if that holds, each filtered tile carries a transient in the tens of MB, doubled for a
-  two-page spread, on the page-turn path. What would settle it is the `Meguru: derainbow
-  WxH = N ms` line on a Kaleido device with a large page, read against the paint line beside
-  it; what it costs is a page turn that stutters, or an OOM on a low-memory one. Nothing in
-  Meguru can fix it — it is the library's own behaviour, and the honest workaround would be
-  bounding the tile size, which is a worse trade.
+- **The filter's cost is measured on the desktop and unmeasured on the target device.** On
+  x86-64 under KOReader's SDL build, an 806×1132 tile takes **35–51 ms** — the first tile of a
+  page, then the second, from the `Meguru: derainbow WxH = N ms` line. That is a real cost on
+  the page-turn path, and it is roughly what a low-powered e-ink CPU can be expected to
+  multiply rather than match. The other plugin's `init_moire_resources` is reported to
+  reallocate at image size on essentially every call — its guard compares a padded length
+  against the raw dimensions — which would put a transient in the tens of MB behind each of
+  those figures, doubled for a two-page spread. What would settle it is the same line on a
+  Kaleido device with a large page, read against the paint line beside it; what it costs is a
+  page turn that stutters, or an OOM on a low-memory one. Nothing in Meguru can fix it — it is
+  the library's own behaviour, and the honest workaround would be bounding the tile size,
+  which is a worse trade.
 
 - **On Android the filter may simply be unavailable, and that is the current answer rather
   than a plan.** `derainbowify.koplugin` stages its `.so` files out of the APK into its own
