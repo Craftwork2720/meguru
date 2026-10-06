@@ -68,6 +68,7 @@ Defaults.PREFERENCE_FOR = {
     rotation_mode         = "rotation_mode",
     contrast              = "contrast",
     saturation            = "saturation",
+    derainbow             = "derainbow",
     sw_dithering          = "dither",
     spread                = "spread",
     spread_offset         = "spread_offset",
@@ -177,6 +178,29 @@ function Defaults.seedTone(ui, configurable)
         if value ~= nil then
             configurable[name] = value
         end
+    end
+end
+
+--- Whether the page goes through the moiré filter, seeded like the rows above.
+---
+--- **Simpler than the two beside it, and the difference is worth writing down.**
+--- `contrast` and `saturation` are stock `kopt_*` rows that
+--- `Configurable:loadDefaults` has already filled from the *global* settings, so
+--- `seedTone`'s whole job is to overwrite that; `dither` has no answer of its own
+--- and may decide nothing at all. This one has neither problem: the plugin
+--- preference always holds a value (`Settings.DEFAULTS.derainbow` is `0`, not
+--- `UNSET`), and the key is not one stock has ever heard of, so there is no
+--- global to displace. A book with nothing stored simply gets the plugin-wide
+--- answer.
+---
+--- What this writes is only the book's *starting* value. Whether the filter
+--- exists on this device at all is asked per paint, by the document's own
+--- `derainbow()` — see `meguru/derainbow` — which is why a book can carry a
+--- stored `1` and still open unfiltered where the other plugin is not installed.
+function Defaults.seedDerainbow(ui, configurable)
+    local value = seedRowValue(ui.doc_settings, "derainbow")
+    if value ~= nil then
+        configurable.derainbow = value
     end
 end
 
@@ -335,6 +359,7 @@ function Defaults.apply(ui, doc)
     Defaults.seedLayout(ui, configurable)
     Defaults.seedGeometry(ui, configurable)
     Defaults.seedTone(ui, configurable)
+    Defaults.seedDerainbow(ui, configurable)
     Defaults.seedDither(ui, configurable)
     Defaults.seedScrollMode(ui, configurable)
     Defaults.seedRotation(ui, configurable)

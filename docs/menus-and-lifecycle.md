@@ -39,11 +39,12 @@ silently wear `appbar.pageview`, which is the *Reading* tab's.
   much of the page is on the screen, and whether the next one is beside it or below it
   — directly under *Fit*, the same question asked of the other axis) and crop.
 - **Rotation** — rotation mode and the wide-page rotation.
-- **Tone** — contrast, saturation and dithering: what the page *looks like*, where the
-  three before it are about its shape. It had a tab of its own before the rows were
-  regrouped, was folded into *Page* for a while, and is back — a reader who knows a
-  PDF's contrast tab looks for these three in one place, and the crop is not one of
-  them. The three are stock's own wiring, below.
+- **Tone** — contrast, saturation, dithering and Derainbow: what the page *looks like*,
+  where the three before it are about its shape. It had a tab of its own before the rows
+  were regrouped, was folded into *Page* for a while, and is back — a reader who knows a
+  PDF's contrast tab looks for these in one place, and the crop is not one of them. The
+  first three are stock's own wiring; Derainbow is this plugin's and is the one row here
+  that needs something installed beside us ([derainbow](derainbow.md)), below.
 
 **One more icon sits beside them and is not a tab.** It opens the Info popup — the page,
 how far through the book that is, and what the book says about itself — and it carries no
@@ -116,10 +117,10 @@ sub-items at all*: `sub_item_table` is the ⋮ menu's, `ui/widget/menu.lua` and
 and its children can be ordered and gated here, never indented — the ordering and
 the two `enabled_func`s are the grouping.
 
-Three tone rows are all stock's own wiring with `name` and `event` left alone, so none
-has a handler in this plugin at all: `ReaderKoptListener` writes the row's value into
-the configurable and `ReaderView` is what acts on the event (see `docs/render-path.md`
-for what each does).
+The three stock tone rows leave `name` and `event` alone, so none has a handler in this
+plugin at all: `ReaderKoptListener` writes the row's value into the configurable and
+`ReaderView` is what acts on the event (see `docs/render-path.md` for what each does).
+**The fourth is not stock's and is the exception**, below.
 
 - **Contrast** is stock's contrast row with the presets stopped at 3.0, where stock's run
   to 50 for a badly scanned text page — the one curated row written here for its *values*
@@ -135,6 +136,13 @@ for what each does).
   every other one. Its default is neither on nor off but "whatever this device decided"
   (`Settings.dither` is deliberately unset), which is why the row reads back the value the
   page is actually drawn with rather than a stored one.
+- **Derainbow** is this plugin's own row, on its own `MeguruDerainbowUpdate` event, and it
+  is the only row in the whole dialog that can be **absent because something is not
+  installed**: it needs `derainbowify.koplugin` beside us, and it is offered only where
+  `Derainbow.available()` says its libraries are there *and* `Image.colorEnabled()` says
+  the pages are decoded in colour. It cannot borrow that plugin's own switch — that one is
+  inserted into `KoptOptions`, which a Meguru book never reads, and its handler reaches for
+  a `rolling` view this reader does not have. See [derainbow](derainbow.md).
 
 **The crop is one row of the *Page* tab, and it is `none` or
 `auto`; `auto` is the whole of the feature: the margin box, the printed page number and the

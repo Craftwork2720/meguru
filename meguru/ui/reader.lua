@@ -49,6 +49,7 @@ local ffiutil = require("ffi/util")
 local T = ffiutil.template
 
 local Base = require("meguru/driver/base")
+local Derainbow = require("meguru/derainbow")
 local Feed = require("meguru/feed")
 local Icons = require("meguru/icons")
 local Defaults = require("meguru/doc/defaults")
@@ -624,6 +625,45 @@ local function setSpread(ui, value, text)
         ui.doc_settings:flush()
     end
     syncSpread(ui)
+    if text then
+        UIManager:show(Notification:new{ text = text, timeout = 2 })
+    end
+    return true
+end
+
+--- Apply a new moiré-filter value to the live document and this book's own
+--- settings, then repaint.
+---
+--- The value is written where the two readers of it will find it — the
+--- document's configurable, which `derainbow()` asks per paint, and the book's
+--- sidecar, which is what it opens with next time — in the row's own 0/1 domain,
+--- exactly as `setSpread` writes its own.
+---
+--- **The repaint is the whole of the invalidation here, and that is worth saying
+--- because the rows beside it do far more.** A tone is baked into the *decode*,
+--- so moving one drops the entire native cache (`syncTone`); this filter runs on
+--- the tile a paint has just produced, so the decodes are still exactly right and
+--- the only stale thing is the tiles. Those are refused by their stamp, and
+--- `ReZoom` is what asks for them to be produced again — the same verb the crop
+--- rows and `Defaults.apply` use.
+---
+--- Normalised on the way in, because the row's domain is 0/1 and `0` is truthy:
+--- a value arriving as a boolean or a string would otherwise be stored as
+--- something no row matches, the trap `doc/defaults` documents at length.
+local function setDerainbow(ui, value, text)
+    local configurable = ui and ui.document and ui.document.configurable
+    if not (configurable and configurable.derainbow ~= nil) then
+        return false
+    end
+    value = (value == 1 or value == "1" or value == true) and 1 or 0
+    configurable.derainbow = value
+    if ui.doc_settings then
+        ui.doc_settings:saveSetting("kopt_derainbow", value)
+        ui.doc_settings:flush()
+    end
+    if type(ui.handleEvent) == "function" then
+        ui:handleEvent(Event:new("ReZoom"))
+    end
     if text then
         UIManager:show(Notification:new{ text = text, timeout = 2 })
     end
@@ -1600,6 +1640,34 @@ local DITHERING_ROW = {
     help_text = _([[Dithers the page into sixteen grey levels as it is written to the screen, which is how a scanned page has been shown here so far. Off writes each pixel flat instead — smoother on a screen whose controller dithers an 8-bit framebuffer itself, banded on one that does not. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
 }
 
+--- The moiré filter, offered only where it can actually run.
+---
+--- **Not a stock row, and deliberately not the other plugin's row either.**
+--- `derainbowify.koplugin` hangs its own switch off `KoptOptions`' contrast
+--- section, which a Meguru book never reads — that plugin is inert here, which
+--- is the whole reason `meguru/derainbow` exists — and its handler reaches for
+--- `self.ui.rolling`, which a page-turning reader does not have. So this is the
+--- plugin's own row on its own event, answered by `setDerainbow` below.
+---
+--- **Gated on two questions, both asked live.** `Derainbow.available()` is
+--- whether this device has that plugin's libraries at all — a colour panel, a
+--- platform it builds for, and both `.so` files on disk; `Image.colorEnabled()`
+--- is whether pages are being decoded in colour right now. The second is not
+--- belt-and-braces: the filter's C refuses anything that is not an RGB32 buffer,
+--- and that refusal is a *safety* rule rather than a preference (see
+--- `meguru/derainbow`). This is the menu agreeing with the render path rather
+--- than offering a switch whose effect the next paint would decline to produce.
+local DERAINBOW_ROW = {
+    name = "derainbow",
+    name_text = _("Derainbow"),
+    toggle = { C_("Derainbow", "off"), C_("Derainbow", "on") },
+    values = { 0, 1 },
+    args = { false, true },
+    default_value = 0,
+    event = "MeguruDerainbowUpdate",
+    help_text = _([[Removes the rainbow shimmer that fine black-and-white artwork picks up on a colour e-ink screen, by filtering the page as it is painted. Needs the derainbowify plugin installed; without it this row is not offered. Costs a moment on each page's first paint. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+}
+
 --- Colour intensity, for the screens that can show it.
 ---
 --- Stock's row again, and its own preset list kept as it is — where the Contrast
@@ -1772,21 +1840,26 @@ local function buildCuratedOptions(ui)
     -- **Tone**: what the page looks like, where the three tabs before it are about the
     -- shape of what is shown. It is the tab this plugin's dialog had before its rows
     -- were regrouped, and it is back for the reason it was chosen then: a reader who
-    -- knows a PDF's contrast tab looks for these three in one place, and the crop is
+    -- knows a PDF's contrast tab looks for these in one place, and the crop is
     -- not one of them.
     --
-    -- Contrast is the one that is always offered; the other two are each about *this
-    -- screen* rather than about the page — saturation is a colour operation, and a
-    -- dither is how the page is written to an 8-bit framebuffer — so each appears only
-    -- where the screen can honour it. Their order is stock's own (`appbar.contrast`
+    -- Contrast is the one that is always offered; the other three are each about *this
+    -- screen* rather than about the page — saturation is a colour operation, a
+    -- dither is how the page is written to an 8-bit framebuffer, and Derainbow is a
+    -- filter for a colour panel's own artefact — so each appears only where the
+    -- screen can honour it. The first three are in stock's order (`appbar.contrast`
     -- lists them Contrast, Saturation, ... Dithering), so a reader who knows that tab
-    -- finds the same things in the same places.
+    -- finds the same things in the same places; Derainbow is this plugin's own and
+    -- goes last, where it costs nothing to a reader who is not looking for it.
     local tone_options = { CONTRAST_ROW }
     if Image.colorEnabled() then
         tone_options[#tone_options + 1] = SATURATION_ROW
     end
     if ditheringOffered() then
         tone_options[#tone_options + 1] = DITHERING_ROW
+    end
+    if Derainbow.available() and Image.colorEnabled() then
+        tone_options[#tone_options + 1] = DERAINBOW_ROW
     end
 
     -- **Reading**: what a page turn does, how many pages are on the screen, and
@@ -2914,6 +2987,18 @@ function Reader.install(plugin)
         value = (value == 1 or value == "1" or value == true) and 1 or 0
         setSpreadGutter(self.ui, value,
             value == 1 and _("Flexible gutter: on") or _("Flexible gutter: off"))
+        return true
+    end
+
+    -- The moiré switch. `DERAINBOW_ROW` is this plugin's own row, so this is its
+    -- only handler: the other plugin answers its own switch by reaching for
+    -- `self.ui.rolling` and a `document.buffer`, neither of which a page-turning
+    -- reader here has.
+    plugin.onMeguruDerainbowUpdate = function(self, value)
+        -- Compared, never tested: 0 is truthy in Lua (see the row).
+        value = (value == 1 or value == "1" or value == true) and 1 or 0
+        setDerainbow(self.ui, value,
+            value == 1 and _("Derainbow: on") or _("Derainbow: off"))
         return true
     end
 

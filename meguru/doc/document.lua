@@ -40,6 +40,7 @@ do
 end
 local logger = require("logger")
 local ComicInfo = require("meguru/comicinfo")
+local Derainbow = require("meguru/derainbow")
 local FS = require("meguru/fs")
 local Image = require("meguru/doc/image")
 local Local = require("meguru/local")
@@ -1300,11 +1301,44 @@ function MeguruDocument:saturation()
     return value
 end
 
+--- Whether a painted page goes through the moiré filter — and whether it can.
+---
+--- **Two questions in one answer, and the second is the one worth reading
+--- twice.** `configurable.derainbow` is the book's own stored choice, seeded
+--- from the plugin preference (`doc/defaults`); `Derainbow.available()` is
+--- whether this device has `derainbowify.koplugin`'s libraries at all. A book
+--- carrying a stored `1`, opened where they are missing, answers **false** — and
+--- that is what lets the value travel: it is the reader's and stays in the book,
+--- while what it *means* here is "filter every page", which this device cannot
+--- do. Nothing else has to know which of the two said no.
+---
+--- Like `saturation()`, asked live rather than cached at open, so the answer
+--- follows the stored value wherever it moves. `Derainbow.available()` is
+--- memoised for the session — it is a fact about an installation, not about a
+--- device state — so a reader who installs the other plugin mid-book sees this
+--- turn true after a restart.
+---
+--- The value arrives in the row's own **0/1** domain and is therefore
+--- *compared*: `0` is truthy in Lua, so `value and …` would read a stored "off"
+--- as on — the trap `doc/defaults` documents at length.
+function MeguruDocument:derainbow()
+    if not Derainbow.available() then
+        return false
+    end
+    return self.configurable ~= nil and self.configurable.derainbow == 1
+end
+
 --- Drop everything a *tone* change invalidates, on the change itself.
 ---
 --- **The tone is two values, not one**: contrast and saturation, both of which are
 --- applied by MuPDF while rendering (see `meguru/doc/image`). Either of them moving
 --- is the same event here, and this is the one place that decides what it costs.
+---
+--- **The moiré switch is a third value watched here, and it is not a third
+--- tone.** It is read and stamped beside the pair because it rides the same
+--- mechanism — a per-book render setting baked into the pixels of a tile, which
+--- `tileAtTone` has to be able to refuse — but it is deliberately not allowed to
+--- cost what a tone change costs. See the note on `tone_moved` below.
 ---
 --- The working decode in `native` has the tone of the moment it was made baked
 --- into its pixels — and so does every tile cut from it, every content box and
@@ -1332,28 +1366,46 @@ end
 --- idempotent: two reads and two comparisons while nothing has moved.
 function MeguruDocument:syncTone()
     local contrast, saturation = self:contrast(), self:saturation()
-    if contrast == self._tone_contrast and saturation == self._tone_saturation then
+    local derainbow = self:derainbow()
+    if contrast == self._tone_contrast and saturation == self._tone_saturation
+            and derainbow == self._tone_derainbow then
         return contrast, saturation
     end
     -- The first call is the book's opening tone rather than a change, and it is
     -- provably the first: every path that fills a cache below runs this at its
     -- top, so there is nothing to drop yet and nothing to say about it.
     local first = self._tone_contrast == nil
+    -- **Only the tone pair costs the decodes; the moiré switch does not.** The
+    -- filter runs on the tile a paint has just produced, not on the decode that
+    -- fed it (`renderPage`), so the working buffer in `native` is the same
+    -- unfiltered pixels whichever way this switch is set — and so is everything
+    -- computed from them: the content boxes, the panel lists, and the
+    -- page-number and blank memos that scan them. Dropping those here would
+    -- re-fetch and re-decode bytes the filter never touched.
+    --
+    -- What the switch *does* invalidate is every tile, and a tile is stamped
+    -- rather than dropped — the asymmetry the header above sets out. So the
+    -- stamp is written unconditionally below and the decodes are not.
+    local tone_moved = contrast ~= self._tone_contrast
+        or saturation ~= self._tone_saturation
     self._tone_contrast, self._tone_saturation = contrast, saturation
-    freeCacheEntries(self.native)
-    self.native = {}
-    -- The memos are created lazily on first use, so a book that never turned
-    -- either feature on has nothing here to drop, and nil is the same answer as
-    -- an empty table for all of them.
-    self.crops = {}
-    self.panels = {}
-    self._meguru_pagenum_cache = nil
-    self._meguru_pagenum_blank_cache = nil
-    self._meguru_pagenum_history = nil
+    self._tone_derainbow = derainbow
+    if tone_moved then
+        freeCacheEntries(self.native)
+        self.native = {}
+        -- The memos are created lazily on first use, so a book that never turned
+        -- either feature on has nothing here to drop, and nil is the same answer as
+        -- an empty table for all of them.
+        self.crops = {}
+        self.panels = {}
+        self._meguru_pagenum_cache = nil
+        self._meguru_pagenum_blank_cache = nil
+        self._meguru_pagenum_history = nil
+    end
     if not first then
         logger.dbg(string.format(
-            "Meguru: tone is now contrast %s, saturation %s - decode, crops and panels dropped",
-            tostring(contrast), tostring(saturation)))
+            "Meguru: render is now contrast %s, saturation %s, derainbow %s",
+            tostring(contrast), tostring(saturation), tostring(derainbow)))
     end
     return contrast, saturation
 end
@@ -1402,6 +1454,13 @@ end
 --- served: they stay in the LRU, unservable, until the LRU turns over or
 --- `cacheTile` renders that key again — which is also when they are freed.
 ---
+--- **The moiré switch is stamped and compared here too**, for exactly the same
+--- reason and by exactly the same rule: it is baked into the tile a paint
+--- produced, so a tile rendered with it on is not the tile this key means once
+--- the reader turns it off. It joins the comparison rather than getting a
+--- mechanism of its own — the stamp is one fact about a tile, and splitting it
+--- would be two places to remember.
+---
 --- Freeing them at the change instead is the obvious thing and the wrong one. The
 --- panel viewer holds a tile across paints (`image_disposable = false`), and the
 --- only code in this plugin that may free a tile something is still painting is
@@ -1412,7 +1471,8 @@ local function tileAtTone(self, key)
     local tile = self.tiles[key]
     if tile and tile.bb_free ~= true
             and tile.contrast == self._tone_contrast
-            and tile.saturation == self._tone_saturation then
+            and tile.saturation == self._tone_saturation
+            and tile.derainbow == self._tone_derainbow then
         return tile
     end
     -- Only an already-freed entry is dropped here; a live one the tone has
@@ -1429,10 +1489,13 @@ function MeguruDocument:cacheTile(key, tile)
         self.tiles[key].bb:free()
     end
     tile.bb_free = false
-    -- The tone this tile was rendered at — both halves of it — for `tileAtTone`
-    -- above.
+    -- The tone this tile was rendered at — both halves of it — and the moiré
+    -- switch it was rendered under, for `tileAtTone` above. All three are
+    -- written here and nowhere else, so the stamp cannot come to describe a
+    -- tile by halves.
     tile.contrast = self._tone_contrast
     tile.saturation = self._tone_saturation
+    tile.derainbow = self._tone_derainbow
     self.tiles[key] = tile
     bump(self, key)
     evictOldest(self, self.tiles, self.max_cached_tiles)
@@ -3872,6 +3935,20 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation, tw, th)
         return nil, rotate
     end
 
+    -- Panel zoom is the one view that never passes through `renderPage`, so the
+    -- filter has to run here as well — this is the buffer the ImageViewer
+    -- magnifies, and it carries the moiré the reader long-pressed to get away
+    -- from. Same seam, same ownership: `renderRegionDirect` has just rendered it
+    -- and nothing else holds it, and it is filtered before `cacheTile` below, so
+    -- the cached panel is the filtered one.
+    --
+    -- The stock fallback above is deliberately **not** filtered: it returns
+    -- KOReader's own image out of `Document.drawPagePart`, which this document
+    -- neither owns nor may write to.
+    if self._tone_derainbow then
+        bb = Derainbow.apply(bb)
+    end
+
     local tw, th = bb:getWidth(), bb:getHeight()
     -- The **steepest edge** of the crop, and the one number that says whether
     -- the region printed here is the panel or only its bounding box: a panel
@@ -4168,6 +4245,30 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
 
     if not bb then
         return nil
+    end
+
+    -- The moiré filter, on the tile this paint has just produced and before it
+    -- is cached. **This is the seam, not the decode**, and that is the whole
+    -- design: the buffer here is freshly rendered and owned by nothing else —
+    -- either `renderRegionDirect`'s own `page.draw_new`, or a `decodeRegion`
+    -- that is documented never to hand back the LRU-cached native — so writing
+    -- to it in place is safe, and a cache hit (taken further up) is already
+    -- filtered and is not filtered twice.
+    --
+    -- It also leaves the *retained* decode unfiltered, which is the other half
+    -- of the point: the auto-crop, the panel detector, the page-number strip
+    -- and the blank test all read their pixels off that buffer through
+    -- `Image.rasterFor`, and they were calibrated on the page as it arrived.
+    -- Filtering the source would move every one of those answers.
+    --
+    -- Both halves of a two-page spread arrive here, each through its own
+    -- `drawOnePage` — so a spread is filtered as two pages, which is what it is.
+    --
+    -- Guarded on the *stamp* rather than on `self:derainbow()`: `syncTone` has
+    -- just settled it, so this is the same value the tile below is stamped
+    -- with, and the two cannot come to disagree.
+    if self._tone_derainbow then
+        bb = Derainbow.apply(bb)
     end
 
     tile = {

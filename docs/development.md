@@ -823,3 +823,23 @@ Each step must pass before the next:
     the same HTTP Basic credentials as the OPDS surface, and that `BookDto` carries `seriesId` and
     `seriesTitle` at the top level. If a deployment closes `/api`, every row above degrades to
     `i`, which is the status quo ante rather than a fault.
+
+28. **Derainbow filters what the reader sees and nothing else.** Needs a **colour** device with
+    `derainbowify.koplugin` installed beside Meguru, and a book whose pages are largely
+    black-and-white artwork — which is where the artefacts and the filter both live.
+    [derainbow](derainbow.md) is the design; what follows is what only a device can answer.
+
+    | # | do | expected |
+    |---|---|---|
+    | a | open a Meguru book, bottom menu, **Tone** tab | a **Derainbow** row, last, after Dithering |
+    | b | turn it on | one `Meguru: derainbow WxH = N ms` line, the page repaints, and a **colour** page keeps its colour — if it comes back grey, the `bpp` gate was for nothing and the page was RGB24 |
+    | c | time it against the `page … paint` line beside it | the filter's milliseconds are a fraction of the paint, not a multiple of it. This is the one number `known-issues.md` says has never been measured |
+    | d | pan and zoom | no exception in `crash.log`, and no `derainbow skipped` line — a tile is RGB32 at every zoom, and a skip here means the region render came back as something else |
+    | e | long-press a panel, and step through the cropped sequence | filtered, and no stall on the first tile of each panel |
+    | f | turn **Two pages** on and open a spread | both halves filtered, one `derainbow` line **per half** |
+    | g | the mosaic's cover for this book | **not** filtered, and no `derainbow` line for it. A cover is a decode and never a tile — this is the row that catches a filter put at the decode instead of the seam |
+    | h | change Contrast, then Saturation | the page re-renders and is **still** filtered — the switch joins the tile stamp and survives a tone change, which drops the decodes |
+    | i | turn Derainbow on, then turn **colour rendering** off in KOReader's own settings | the row is **gone** from the Tone tab on the next menu open, and pages decode without a filter or an error |
+    | j | rename `derainbowify.koplugin`, restart, open a book whose `kopt_derainbow` is `1` | it opens **unfiltered**, with no error and no `derainbow` line, and the row is absent. The value is the reader's and it stays in the book |
+    | k | with it renamed, check `crash.log` for `available` | nothing — the probe is silent when the plugin is simply absent, and only a *failed load of files that were there* warns |
+    | l | turn the row off again on a page already shown | it repaints unfiltered immediately. A tile keeps its old pixels until the stamp is compared, and `ReZoom` is what asks for new ones |

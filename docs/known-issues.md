@@ -432,3 +432,48 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   pair; what it costs is a screen turning back and forth on those pages, which the reader can
   stop by turning the row off. No book has been read that way here, so how it actually behaves
   is unmeasured rather than known.
+
+- **Derainbow is bound to an unversioned ABI.** `meguru/derainbow` declares four prototypes
+  from `derainbowify.koplugin`'s current release and calls the symbols by name through its own
+  `ffi.load` handle. Upstream is free to change a signature or the library filenames, and a
+  changed signature is **undefined behaviour rather than a caught error** — everything on this
+  path is `pcall`ed, which catches a throw and not a corrupted argument list. What would settle
+  it is a compatibility note naming the version this was written against, and the habit of
+  checking it when that plugin releases; what it costs today is, in the worst case, a crash in
+  the render path of a device that has both plugins installed rather than a filtered page.
+
+- **The `bpp` rules the filter is gated on are a reading of the other plugin's C, not a
+  measurement here.** `remove_moire` derives its bytes-per-pixel as `stride / width`, and the
+  claim behind the `TYPE_BBRGB32`-only gate is that `bpp == 3` falls into the grayscale branch
+  (a colour page comes back grey) while `bpp == 2` overruns a two-byte pixel. Both are latent
+  rather than live, because no Meguru tile is ever RGB24 or BB8A — the gate exists so that
+  stays true if one ever is. What would settle it is a colour device and a hand-built buffer of
+  each shape; what a wrong answer would cost is a page that is silently the wrong colour, or a
+  heap overrun, in a path nothing here has ever produced.
+
+- **The filter's cost per tile is unmeasured on a real colour device.** The other plugin's
+  README says filtering makes a page's first render slower, which is the whole of the claim
+  that has been checked. Its `init_moire_resources` is reported to reallocate at image size on
+  essentially every call — its guard compares a padded length against the raw dimensions — and
+  if that holds, each filtered tile carries a transient in the tens of MB, doubled for a
+  two-page spread, on the page-turn path. What would settle it is the `Meguru: derainbow
+  WxH = N ms` line on a Kaleido device with a large page, read against the paint line beside
+  it; what it costs is a page turn that stutters, or an OOM on a low-memory one. Nothing in
+  Meguru can fix it — it is the library's own behaviour, and the honest workaround would be
+  bounding the tile size, which is a worse trade.
+
+- **On Android the filter may simply be unavailable, and that is the current answer rather
+  than a plan.** `derainbowify.koplugin` stages its `.so` files out of the APK into its own
+  `libs/` directory at plugin-load time, because a library inside the package cannot be
+  `dlopen`ed. `meguru/derainbow` looks for the staged files and does not duplicate that
+  extraction, so on Android the row appears only if that plugin has already run once — and if
+  it never has, Meguru reports unavailable and the switch is hidden. What would settle it is a
+  colour Android device with the other plugin freshly installed and never opened; what it
+  costs is a missing row on a platform where nobody has yet confirmed the filter works at all.
+
+- **That plugin's own Dispatcher action will crash on a Meguru book.** A gesture bound to
+  `copt_derainbow` runs a handler that reaches for `self.ui.rolling` — a reflowable reader
+  this one does not have. Meguru cannot patch another plugin, and does not try: its own row
+  answers its own event and never takes that path. What would settle it is that plugin guarding
+  the call, which is a one-line fix upstream; what it costs is a crash for a reader who bound
+  the gesture, which is also a reason to say so in the README rather than only here.

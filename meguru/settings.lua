@@ -253,6 +253,20 @@ local DEFAULTS = {
     -- returns nil for this.
     dither            = UNSET,
 
+    -- Whether a page is run through `derainbowify.koplugin`'s moiré filter
+    -- before it is painted, for books that have no value of their own.
+    --
+    -- Off, unlike the two tone values beside it, because this one is a cost
+    -- before it is a look: the filter runs a Fourier pass over every tile and
+    -- is worth its time only on a colour e-ink panel, which is the only place
+    -- the artefacts it removes exist at all. There is no value of it that is
+    -- "the page as it arrived" for a book to fall back to, so a book with
+    -- nothing stored gets the off the row shows.
+    --
+    -- The row's own domain is 0/1, as `trim_page`'s is — see `doc/defaults`
+    -- on why nothing here may be a bare Lua boolean.
+    derainbow         = 0,
+
     -- Deliberately unset: a book with no stored rotation keeps KOReader's own
     -- behaviour until the reader actually chooses a rotation, so the plugin
     -- never imposes one nobody asked for. `Settings.get` returns nil for this.

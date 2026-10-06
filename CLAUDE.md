@@ -57,6 +57,7 @@ meguru/
                           pair keeps, and the growth of a page cropped shorter
   hook.lua                runtime wraps on OPDSBrowser (sniff, "Meguru this series")
   updater.lua             GitHub releases: check for one, download it, install it
+  derainbow.lua           the moiré filter, lent at runtime by derainbowify.koplugin
 
   driver/
     base.lua              driver registry + pure shared helpers
@@ -183,7 +184,12 @@ either. `meguru/spread` is required by `doc/document` and by nothing else, and i
 requires nothing: the imposition is arithmetic over a page number and a list of wide
 pages, so it is a leaf, and the two rules it owns about the pair's own fit — the gutter
 a spread keeps and the scale a page cropped short grows by — are numbers in and numbers
-out, the boxes themselves staying where the geometry lives.
+out, the boxes themselves staying where the geometry lives. `meguru/derainbow` is a leaf of
+the same kind and is required by `doc/document` and by `ui/reader` — the first to run the
+filter, the second to decide whether to offer the row — and it requires only `meguru/fs`
+and KOReader's own modules. It is the one module that loads a **foreign** shared library,
+someone else's, at runtime; that is a dependency of the device's install rather than of
+this graph, and `docs/derainbow.md` says what it is and when it is absent.
 
 
 ## Where the detail lives
@@ -222,6 +228,9 @@ nor an agent has to load 3500 lines to find one answer. Read the one you need.
   the plugin lifecycle facts, and the plugins that replace our wraps.
 - [docs/updating.md](docs/updating.md) — the GitHub release updater: the one artifact both
   ends name, the install transaction, and what is remembered between checks.
+- [docs/derainbow.md](docs/derainbow.md) — the moiré filter borrowed from another plugin:
+  why that plugin is inert here, the two seams the filter runs at, and the one buffer
+  shape it may touch.
 - [docs/development.md](docs/development.md) — `tools/check.py`'s eleven passes, and the
   on-device checklist for verifying a change.
 - [docs/known-issues.md](docs/known-issues.md) — open questions and unverified

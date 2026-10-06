@@ -415,6 +415,17 @@ current one, leaving it for the LRU to free when it turns over or when that key 
 rendered again. That is also why the tile keys say nothing about tone: the cache stays
 keyed by what it stores (the crop), and the tone is a comparison at the lookup.
 
+**A third value rides that stamp without paying that price, and the difference is where
+it is applied.** The moiré filter ([derainbow](derainbow.md)) is a per-book switch that is
+baked into a *tile* and not into the decode: it runs on the buffer `renderPage` or
+`drawPagePart` has just produced, so `self.native` — and every content box, panel list and
+page-number/blank memo computed from it — is the same unfiltered picture whichever way the
+switch is set. So it joins `cacheTile`'s stamp and `tileAtTone`'s comparison, because a
+tile rendered with it on is not the tile that key means once it is turned off; and it joins
+`syncTone`'s watch but **not** its cache-drop, which is now conditional on the tone pair
+having actually moved. The switch's whole cost is the repaint, which is what its row's
+handler does and all it does.
+
 **The alternative was measured and rejected**: a second, tone-free native decode for
 the analysis to read would keep the tone out of the crops and panels, at the price of
 two decodes per page turn whenever a tone row is off its default — on the one path (a
