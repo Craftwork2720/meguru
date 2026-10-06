@@ -29,6 +29,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # **A tag with a hyphen after the version is a development build** —
+      # `v1.5.0-dev-derainbow-filter` — and the only thing that makes it one is
+      # the prerelease flag this decides. It needs no other machinery:
+      # `/releases/latest`, which `meguru/updater.lua` fetches, is documented as
+      # "the most recent non-prerelease, non-draft release", so a prerelease is
+      # invisible to every installed copy and nothing has to be told about it.
+      #
+      # The tag glob in `on.push.tags` matches both kinds, so this is the one
+      # place they are told apart. It is deliberately here rather than beside
+      # the release step: `_meta.lua`'s version has to carry the same suffix,
+      # and the check below is where someone finds out they forgot.
+      - name: Decide whether this tag is a prerelease
+        id: kind
+        run: |
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=true ;;
+            *)   prerelease=false ;;
+          esac
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "Tag $GITHUB_REF_NAME -> prerelease=$prerelease"
+
       # A release whose _meta.lua disagrees with its tag is worse than no
       # release: the updater compares the tag against the *installed*
       # _meta.lua, so a stale version there makes every check report the new
@@ -83,8 +104,14 @@ jobs:
           # ASSET_NAME in meguru/updater.lua, and the updater finds the release
           # asset by name rather than by position.
           #
-          # Deliberately not a prerelease -- /releases/latest returns the newest
-          # non-prerelease release, so marking one would silently make the
-          # updater see the previous release instead.
+          # **A real release must never be marked here, and a development one
+          # must always be.** `/releases/latest` returns the newest
+          # non-prerelease release, so flipping this the wrong way is silent in
+          # both directions: a prerelease real release would make the updater
+          # see the *previous* one forever, and a non-prerelease development
+          # build would be offered to every installed copy. The tag decides it
+          # (`Decide whether this tag is a prerelease` above), so no one has to
+          # remember which kind they are publishing.
+          prerelease: ${{ steps.kind.outputs.prerelease }}
           files: meguru.koplugin.zip
           generate_release_notes: true

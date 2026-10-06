@@ -18,6 +18,16 @@
         the file it fetched is the release it asked for.
 
     So: bump it before tagging, and never let it be absent.
+
+    **A development build carries its branch in the version** —
+    `1.5.0-dev-derainbow-filter` — and that is a tag, a version and a release
+    flag at once: the tag is `v` + this string, the workflow publishes anything
+    with a hyphen after the version as a *prerelease*, and `/releases/latest`
+    skips those, so no installed Meguru is ever offered one. Note the fourth
+    reader this gives the field: `updater.lua`'s `versionLessThan` reads only
+    the digits, so a dev build compares as `1.5.0` and will not be offered the
+    plain `1.5.0` release either. That is the intended trade — a development
+    build is replaced by hand.
 ]]
 
 local _ = require("gettext")
@@ -32,5 +42,5 @@ time over HTTP — no CBZ/ZIP is ever downloaded.
 The marker carries the identity of the book and of its series, and nothing else
 is stored: no database, no page cache. What comes next in a series is read from
 the server's own chapter list when you ask for it.]]),
-    version = "1.4.0",
+    version = "1.5.0-dev-derainbow-filter",
 }
