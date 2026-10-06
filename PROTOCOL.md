@@ -335,6 +335,16 @@ deliberately *not* taken as `page_count`: `pse:count` states that authoritativel
 once the stream is resolved, and a figure scraped out of prose must not displace
 one the server said.)
 
+**The count is zero-based, and zero is exempt.** A chapter on its seventh page
+reports `7`, meaning page 8 is next, and a finished 51-page chapter reports `50`;
+`progressFromSummary` adds one back (Kavita counts from one). A chapter never read
+reports `0` and omits `lastRead` entirely, so zero is left as zero — adding one
+there would give every unopened chapter progress 1 and make "read at all" true of
+the whole series. The total is returned beside the read count because `read` alone
+cannot tell a finished chapter from a started one. One shape is read wrongly and
+knowingly: a fractional first number (`Postęp: 0.5 z 31`) yields 5, since a
+digits-only scan cannot see the dot.
+
 **The first field is the series, not the chapter, and its prefix changes with the
 language** — which is more than localised prose, and is the one thing here that
 a reader of this document could not have guessed:
@@ -591,3 +601,12 @@ Kavita spells the namespace prefix `p5:` (`p5:count`), Suwayomi spells it
 *suffix* (`:count`, `:lastRead`) is therefore load-bearing, not defensive. A
 prefix-stable match would silently see `count = nil` on one of the two servers
 and produce a document with no page count.
+
+## OPDS-PSE substitutable placeholders
+
+A PSE stream href substitutes `{pageNumber}`, and may also carry
+`{width}`/`{maxWidth}` and `{height}`/`{maxHeight}`. `meguru/pse.lua` replaces the
+width pair with the requested width, and the height pair only when a height is
+given, so a caller that knows only its width leaves any `{height}` in the template
+untouched rather than substituting nonsense. A template without `{pageNumber}` is
+rejected outright, since every page would then fetch the same URL.

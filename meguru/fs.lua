@@ -1,24 +1,3 @@
---[[--
-Filesystem predicates and directory creation, plus the one raw write.
-
-Deliberately small. It held whole-file read/write and directory listing for the
-on-disk page and cover caches; both are gone, and marker files were never
-written through here anyway (they go through `LuaSettings`, which owns its own
-I/O). What is left is the question every path decision asks — does this exist,
-is it a directory, can I make it — plus the one attribute the document wants.
-
-**The one listing in the plugin is not here**, and adding a second one is not a
-gap to fill: `meguru/local` lists a `.cbz`'s own folder, through KOReader's own
-`util.findFiles`, because what it wants is not "the files in a directory" but
-"the other books in this series" — a question about names, which belongs with
-the module that reads them.
-
-`writeFile` comes back for one caller and one kind of file: a series' artwork,
-saved beside its markers so that something outside KOReader can find it. It
-writes bytes verbatim and knows nothing about what they mean — see
-`meguru/seriescover`, which is the only thing that calls it.
---]]
-
 local lfs = require("libs/libkoreader-lfs")
 local util = require("util")
 
@@ -32,7 +11,7 @@ function FS.exists(path)
     return lfs.attributes(path, "mode") ~= nil
 end
 
---- Create `dir` and any missing parents. Returns the path, or nil on failure.
+-- util.makePath answers truthy, not a path; nil means a parent failed.
 function FS.ensureDir(dir)
     if FS.isDir(dir) then
         return dir
@@ -40,25 +19,14 @@ function FS.ensureDir(dir)
     return util.makePath(dir) and dir or nil
 end
 
---- Modification time of `path` in seconds, or nil.
 function FS.mtime(path)
     return lfs.attributes(path, "modification")
 end
 
---- Write `data` to `path` verbatim. Returns the path, or nil plus a reason.
----
---- **Binary mode is not a detail.** `"w"` would translate line endings on the
---- way out, which for an image means every `\n` byte in it becomes `\r\n` and
---- the file is silently corrupted — a 53 KB WebP with a few hundred extra bytes
---- and a header that still looks right. `"wb"` writes what it was given.
----
---- The caller is responsible for `path`'s directory existing: this creates the
---- file, not the folder, and `Marker.saveAt` has already made the folder before
---- anything asks for a cover.
----
---- Each step is checked rather than assumed. A full disk fails at `write`, not
---- at `open`, and a `close` that fails has usually lost buffered data — so the
---- two are checked separately and the file is closed either way.
+-- Verbatim bytes: meguru/seriescover is the only caller, for series artwork.
+-- "w" translates newlines and corrupts an image; "wb" writes bytes as given.
+-- The caller must have made the folder: this creates the file, not the dir.
+-- A full disk fails at write, not open; a failed close loses buffered data.
 function FS.writeFile(path, data)
     if type(path) ~= "string" or path == "" then
         return nil, "no path"

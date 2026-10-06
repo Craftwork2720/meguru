@@ -147,7 +147,10 @@ by in `settings/opds.lua`. **No secret is stored in the marker** — `template`,
 `cover_url` and `series_cover_url` have any credential-bearing path segment replaced
 by `<redacted>` on the way to disk, and `Marker.load` puts it back from that catalog.
 One list (`CREDENTIAL_FIELDS`) is read by both halves of the pair, so a URL field
-cannot be redacted on the way out and forgotten on the way in.
+cannot be redacted on the way out and forgotten on the way in. The catalog title is
+the identity a server is stored under rather than its URL, because Kavita's URL
+changes when its API key rotates and every rotation would otherwise fork a second
+server row.
 
 The three fields that identify the series — `series_name`, `server_kind`, `lang` —
 are what let a book opened from History, with no browser and no network, say which

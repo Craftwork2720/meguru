@@ -109,6 +109,11 @@ orders by the server's own **list position** — the `{n}` in Suwayomi's
 titles can be trusted** (`Suwayomi.orderFromTitles`), falling back to the number
 `Naming.deriveSeries` pulls from the title. Everything else gets feed order.
 
+**`Naming.deriveSeries` indexes a hyphenated range (`Volume 1-2`) from its first
+number**, because that is one omnibus stream spanning several originals and the next
+combined volume must still order after it; a decimal (`Volume 7.5`) is kept whole, so
+it orders between its integer neighbours.
+
 That driver flag is the fix for a bug that had no other shape. Kavita feeds are
 already in reading order and routinely mix granularity, so numbering them by
 title sorted `Volume 1…3, Chapter 1…3` into `1, 1, 2, 2, 3, 3` — 25 of 3473
@@ -201,6 +206,12 @@ per entry, and that is the whole reason it is a second hook rather than a reques
 inside `discover`. Browsing `/series` → volume is untouched and pays nothing extra.
 Without the hook a book still opens — it simply has no series, and so no folder and
 no neighbours, which is what an aggregate gave before this existed.
+
+**Komga's own feed order is its reading order**: `OpdsController.kt`'s `getOneSeries`
+emits a series' books sorted by `metadata.numberSort` ascending, so `Komga.orderFromTitles`
+is deliberately unset and `Feed.ordered` gives feed order. Komga also publishes no
+"unread" feed, so `unreadFilter` is unset too — its OPDS read flag is a per-book
+`pse:lastRead`, not a filter.
 
 `discovered_from` records where an identity came from: a series feed, the entry's own
 stream, or an aggregate whose series had to be asked for. An aggregate is not a series,

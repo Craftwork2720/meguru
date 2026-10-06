@@ -1,29 +1,4 @@
---[[--
-HTTP: two synchronous GETs, one synchronous PATCH, and getting a parsed OPDS feed
-out of one of them.
-
-`get` returns the body as a string and `getToFile` writes it to a path. The
-second is not a convenience: it is the only one of the two that can be bounded
-in wall-clock, because `socketutil` enforces its total timeout through its own
-sinks and `get` uses a plain `ltn12.sink.table`. See `Net.getToFile`.
-
-`patch` is the opposite direction and the only write in this plugin: a driver
-describes one request and `meguru/progress` makes it. It is a function of its own
-rather than a `method` option on `get`, for two reasons — its success test
-genuinely differs (see `Net.patch`), and a method parameter on a function whose
-contract is "200 or nothing" would hide the one caller that must not be read that
-way. **The verb belongs to the engine and is not a field a caller passes**, which
-is what keeps a driver from choosing one.
-
-A second verb should arrive as a second function, named for it, when something
-actually needs it. There is one write here.
-
-LuaSocket is synchronous and KOReader has no threads, so every call here blocks
-until it returns. Nothing in this module may be reached from a paint path, and
-callers that fetch in a loop owe the user a bound on how long it can take —
-`Feed` caps a walk by pages and by `Net` timeout for exactly that reason, and
-the update download has its own tier for the same one.
---]]
+-- HTTP for the engine; LuaSocket is synchronous, so nothing here may paint.
 
 local http = require("socket.http")
 local logger = require("logger")
@@ -36,41 +11,14 @@ local Credential = require("meguru/credential")
 
 local Net = {}
 
--- Feed fetches get tighter limits than socketutil.FILE_* (15s block / 60s
--- total), which is sized for pulling one page image. A sync walks tens of feed
--- pages back to back, and at FILE_* limits a single dead request would stall
--- the walk for a minute apiece. A feed page that has delivered nothing in 10s,
--- or has not finished in 30s, is not coming.
+-- Tighter than socketutil.FILE_*: a sync walks tens of feed pages back to back.
 Net.FEED_BLOCK_TIMEOUT = 10
 Net.FEED_TOTAL_TIMEOUT = 30
 
 Net.FEED_ACCEPT = "application/atom+xml;profile=opds-catalog, application/xml;q=0.9, */*;q=0.5"
 Net.IMAGE_ACCEPT = "image/*;q=1, */*;q=0.5"
 
---- A URL safe to log: scheme, host, port, a path with any credential-bearing
---- segment removed, and only the *size* of the query.
----
---- **Every log line that prints a URL prints it through here**, which is why the
---- credential rule lives inside this function rather than beside it. Kavita
---- encodes its API key as a path segment (`/opds/<apiKey>/…`), so a path that is
---- shown verbatim leaks the key into `crash.log` — a file routinely pasted into
---- bug reports. There used to be a separate `Net.redactStreamUrl` for that,
---- defined and called from nowhere while all four call sites here printed the
---- key; one function every caller already reaches for is the only shape of this
---- that survives the fifth log line.
----
---- Two things this output is *already* safe about, said here so nobody "fixes"
---- them:
----
----   * the query is reduced to its byte count, never its contents — that is what
----     covers a server that carries its credential as a token parameter;
----   * `user:pass@host` never appears, because `url.parse` splits those into
----     `parsed.user`/`parsed.password` and `shown` is built from `scheme`, `host`
----     and `port` only.
----
---- What remains is deliberately diagnostic: `…/api/opds/<redacted>/image?97
---- bytes of query` still says which endpoint was asked for, which is the whole
---- reason the URL was logged.
+-- The only way a log line may print a URL: credential segment stripped.
 function Net.redactUrl(str)
     local parsed = url.parse(str)
     if not parsed or not parsed.host then
@@ -87,17 +35,11 @@ function Net.redactUrl(str)
     return Credential.redact(shown)
 end
 
--- A resume lookup happens while the reader waits for a dialog to appear, not
--- while a walk is in progress, so it gets the tightest limits here: a server
--- that has not answered in 4s is not going to improve anyone's afternoon, and
--- the caller has a stale-but-usable answer to fall back on.
+-- A resume lookup runs while a dialog waits, so it gets tight limits.
 Net.RESUME_BLOCK_TIMEOUT = 4
 Net.RESUME_TOTAL_TIMEOUT = 8
 
--- The tightest tier here, and for the opposite reason to `resume`'s: a position
--- report is fired *by a page turn*, so it has to lose to the reader's thumb. A
--- server that has not answered in 2s has lost that race, and another report is
--- coming at the next page anyway, so there is nothing worth waiting for.
+-- Fired by a page turn, so it has to lose to the reader's thumb: 2s/4s.
 Net.PROGRESS_BLOCK_TIMEOUT = 2
 Net.PROGRESS_TOTAL_TIMEOUT = 4
 
@@ -106,29 +48,13 @@ local TIMEOUTS = {
     page = { socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT },
     large = { socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT },
     resume = { Net.RESUME_BLOCK_TIMEOUT, Net.RESUME_TOTAL_TIMEOUT },
-    -- Sized for one archive rather than one page, and the only tier whose total
-    -- is enforced -- see `Net.getToFile` for why that is not a property of the
-    -- numbers but of the sink.
+    -- Only getToFile's total is enforced, being the one with a real sink.
     download = { socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT },
-    -- The block timeout is what actually bounds this one, for the same reason
-    -- `download`'s total is the only total that means anything: `patch` ends in a
-    -- `ltn12.sink.table` too, and `socketutil` honours its total only through
-    -- its own sinks. The number is here for symmetry with every other tier.
+    -- The block timeout is what bounds patch; the total is symmetry.
     progress = { Net.PROGRESS_BLOCK_TIMEOUT, Net.PROGRESS_TOTAL_TIMEOUT },
 }
 
---- Synchronous GET. Returns `code, headers, body`.
----
---- On a transport failure, an unsupported scheme or a timeout, returns
---- `nil, nil, nil` after logging the reason — including LuaSocket's own error
---- string, so a device log explains itself.
----
---- On any non-200 response returns `code, headers, nil`, so a caller walking a
---- paginated feed can tell "the server said 404" from "the network died". Both
---- must stop the walk; only the second is worth retrying later.
----
---- `opts`: { username, password, accept,
----           timeout = "feed"|"page"|"large"|"resume" }.
+-- GET: (code, headers, body); nil on failure; (code, headers, nil) on non-200.
 function Net.get(url_str, opts)
     opts = opts or {}
     local parsed = url.parse(url_str)
@@ -142,26 +68,21 @@ function Net.get(url_str, opts)
         url = url_str,
         headers = {
             ["Accept"] = opts.accept or "*/*",
-            -- Ask for the body uncompressed: the sink is a plain byte table and
-            -- nothing here inflates anything.
+            -- Body asked uncompressed: the sink is a plain byte table.
             ["Accept-Encoding"] = "identity",
         },
         sink = ltn12.sink.table(sink),
     }
     if opts.username and opts.username ~= "" then
         req.user = opts.username
-        -- LuaSocket builds the Basic-auth header as user..":"..password, so a
-        -- nil password raises inside http.request. The built-in OPDS plugin
-        -- defaults to "" for password-less catalogs; do the same.
+        -- LuaSocket builds user..":"..password, so a nil password would raise.
         req.password = opts.password or ""
     end
 
     local timeout = TIMEOUTS[opts.timeout or "page"] or TIMEOUTS.page
     socketutil:set_timeout(timeout[1], timeout[2])
     local ok, code, headers = pcall(function()
-        -- Same call shape as the built-in OPDS plugin: socket.skip(1, ...)
-        -- drops the leading connection status, leaving (http_status,
-        -- response_headers) on success and (err_message, nil) on failure.
+        -- socket.skip(1, ...) drops the leading connection status.
         return socket.skip(1, http.request(req))
     end)
     socketutil:reset_timeout()
@@ -182,35 +103,8 @@ function Net.get(url_str, opts)
     return 200, headers, table.concat(sink)
 end
 
---- Synchronous PATCH. Returns `code, headers, body`.
----
---- **The verb is PATCH because the one endpoint this plugin writes to says so,
---- and that was measured rather than assumed.** `PUT` on
---- `/api/v1/books/{id}/read-progress` is answered **405 Method Not Allowed** by
---- Komga 1.27.0, whose own OpenAPI lists exactly `PATCH` and `DELETE` there. The
---- first version of this was a PUT, derived from the API's shape rather than from
---- a request to a server, and a 405 on a device is what that costs.
----
---- **Success is 200 *or* 204, and this is the one place the contract deliberately
---- departs from `get`'s.** A server that accepts a write and has nothing to say
---- about it answers exactly 204 with an empty body; a client that only knew 200
---- would read a completed write as a failure — and the one caller here reports
---- what it reads as a failure and tries again. So an empty body means success in
---- this function, where in `SeriesCover.save` it is the signature of a broken
---- fetch, and the two must not be reasoned about together.
----
---- On a transport failure, an unsupported scheme or a timeout, returns
---- `nil, nil, nil` after logging the reason, exactly as `get` does. On a non-2xx
---- response it logs the code and returns `code, headers, nil`, so a caller can
---- tell "the server refused" from "the network died" — `meguru/progress` reports
---- those as `"http"` and `"network"`, and they are not the same problem.
----
---- **The body is the caller's, and this module has no encoder.** The one write
---- this plugin makes is one field, and dragging in a JSON library for it would be
---- machinery with one caller.
----
---- `opts`: { username, password, content_type, accept,
----           timeout = "progress"|"feed"|"page"|"large"|"resume" }.
+-- PATCH: 2xx is success (empty 204 is a write); no JSON encoder here.
+-- PATCH not PUT: the endpoint answers PUT with 405 (see reading-position.md).
 function Net.patch(url_str, body, opts)
     opts = opts or {}
     body = type(body) == "string" and body or ""
@@ -226,13 +120,9 @@ function Net.patch(url_str, body, opts)
         method = "PATCH",
         headers = {
             ["Accept"] = opts.accept or "*/*",
-            -- Same reason as `get`'s: the sink is a plain byte table and nothing
-            -- here inflates anything.
             ["Accept-Encoding"] = "identity",
             ["Content-Type"] = opts.content_type or "application/json",
-            -- Stated rather than left to LuaSocket: a request carrying a body and no
-            -- length is answered 411 by some servers and proxies, and counting a
-            -- body this short twice costs nothing.
+            -- Some servers and proxies answer 411 to a body with no length.
             ["Content-Length"] = tostring(#body),
         },
         source = ltn12.source.string(body),
@@ -240,8 +130,7 @@ function Net.patch(url_str, body, opts)
     }
     if opts.username and opts.username ~= "" then
         req.user = opts.username
-        -- As in `get`: LuaSocket concatenates user..":"..password, so a nil
-        -- password raises inside http.request.
+        -- As in get: a nil password would raise inside http.request.
         req.password = opts.password or ""
     end
 
@@ -268,23 +157,9 @@ function Net.patch(url_str, body, opts)
     return code, headers, table.concat(sink)
 end
 
---- Synchronous GET written straight to `path`. Returns `true`, or `nil, reason`
---- where reason is `"network"`, `"http"` or `"write"`.
----
---- **This exists beside `get` rather than inside it, and the reason is that
---- `get` cannot be bounded.** `get` collects its body with `ltn12.sink.table`,
---- and `socketutil`'s total timeout is honoured *only* by its own sinks — the
---- socket-level total is reset on every poll, which `socketutil.lua:38-42` says
---- outright. So everything fetched through `get` is bounded per read and not in
---- wall-clock at all. That is survivable for a feed page and not for an update
---- archive: the reader's device would sit with a frozen UI, no upper bound on
---- how long, and the whole file on the Lua heap. `socketutil.file_sink` is what
---- makes the `total` number mean anything here, and the file is the other half.
----
---- A partial file is removed on every failure path, so a truncated download
---- cannot be mistaken for a complete one by whatever reads that path next.
----
---- `opts`: { accept, timeout = "download"|"feed"|"page"|"large"|"resume" }.
+-- GET to a file: true, or nil plus "network"/"http"/"write".
+-- Exists because get's total timeout cannot bound it (see updating.md).
+-- A partial file is removed on failure, so it cannot read as complete.
 function Net.getToFile(url_str, path, opts)
     opts = opts or {}
     local parsed = url.parse(url_str)
@@ -294,9 +169,7 @@ function Net.getToFile(url_str, path, opts)
     end
     local handle, open_err = io.open(path, "wb")
     if not handle then
-        -- "wb" for the reason `FS.writeFile` gives: "w" would translate line
-        -- endings, and an archive is the one file where a few hundred extra
-        -- bytes still leave a header that looks right.
+        -- "wb": "w" would translate line endings and corrupt the archive.
         logger.warn("Meguru: cannot write to", path, ":", tostring(open_err))
         return nil, "write"
     end
@@ -315,13 +188,7 @@ function Net.getToFile(url_str, path, opts)
     end)
     socketutil:reset_timeout()
 
-    -- `socketutil.file_sink` closes the handle on *every* terminating call, the
-    -- error path included, so this is normally a no-op. It is here for the one
-    -- case the sink never runs at all -- a request that dies before the first
-    -- byte, where `http.request` returns without touching the sink and the
-    -- handle would otherwise leak. `pcall`, because closing an already-closed
-    -- handle raises in Lua 5.1 and that would turn a failed download into a
-    -- thrown one.
+    -- Normally a no-op (file_sink closes); pcall because closing twice raises.
     pcall(handle.close, handle)
 
     if not ok or type(code) ~= "number" or code ~= 200 then
@@ -333,23 +200,7 @@ function Net.getToFile(url_str, path, opts)
     return true
 end
 
---- The document inside a raw `opdsparser` result.
----
---- The parser builds a table named after the document's *root element*, so an
---- Atom feed comes back as `{ feed = { entry = {...}, author = {...} } }` and
---- nothing is at the top level. Callers that read `.entry`, `.title` or
---- `.author` off the raw result therefore find nil everywhere and see a feed
---- with no entries — which is a silent failure, since an "empty" feed and a
---- feed that was never unwrapped look identical.
----
---- `genItemTableFromCatalog` in the built-in browser compensates the same way
---- (`local feed = catalog.feed or catalog`), which is the authority for this
---- shape. `open.lua` reads the browser's parse result directly and so needs it
---- too; `parseFeed` below reads a fetched body. One definition, because two
---- modules must not disagree about what a feed looks like.
----
---- A document whose root element is not `<feed>` — an OpenSearch descriptor — is
---- returned unchanged, which is what lets a caller tell the two apart.
+-- opdsparser names the result after the root element, so unwrap .feed.
 function Net.feedFrom(root)
     if type(root) ~= "table" then
         return nil
@@ -360,26 +211,9 @@ function Net.feedFrom(root)
     return root
 end
 
---- The JSON decoder this build ships, or nil.
----
---- **More than one name, because KOReader promises neither.** Its own code asks for
---- `json` (`frontend/ui/wikipedia.lua`, `frontend/apps/reader/modules/readerdictionary.lua`)
---- and for `rapidjson` (`plugins/exporter.koplugin`, `plugins/calibre.koplugin`), and a
---- build can have one and not the other. That is measured rather than imagined:
---- `require("json")` answered nothing on a ZenOS Kindle where the same plugin's own
---- request to `/api/v1/books/{id}` came back 200 and could not be read — which is why
---- this function exists and why the lookup is not a single `require`.
----
---- **Asked once per process and remembered**, unlike anything that answers a question
---- about a book: what a build can decode does not change under it, and the lookup is
---- three `pcall(require)`s that would otherwise run on every open. The name that
---- answered is logged once, at debug, for whoever has to work out why a decode failed
---- on a device — and the absence is a `warn`, once, because a silent nil here is a
---- feature that quietly does nothing.
----
---- Both functions are required, not just `decode`: `meguru/updater` needs `encode` to
---- cache a release, and a module that could only decode would move the failure rather
---- than fix it.
+-- Several names: KOReader ships json or rapidjson, never guaranteed both.
+-- Looked up once and remembered: what a build can decode does not change.
+-- encode required too, for the updater's release cache.
 local json_decoder, json_looked
 function Net.jsonDecoder()
     if json_looked then
@@ -401,15 +235,7 @@ function Net.jsonDecoder()
     return nil
 end
 
---- Parse an Atom feed body into the flat table shape the built-in OPDS parser
---- produces: `feed.entry` is an array, `entry.link` is an array of
---- `{ rel, href, type, ... }`, and OPDS-PSE attributes sit on the link keyed by
---- a namespaced name (`pse:count`).
----
---- `opdsparser` is required *at call time*, never at load time: a plugin's
---- directory is only appended to `package.path` once all plugins have loaded,
---- so a load-time require of another plugin's module fails on devices where
---- this module is reached earlier (pluginloader.lua:241).
+-- Parses an Atom body to the flat feed shape; opdsparser required at call time.
 function Net.parseFeed(body)
     if type(body) ~= "string" or body == "" or body:match("^%s*{") then
         return nil
@@ -423,18 +249,11 @@ function Net.parseFeed(body)
     if not ok_parse or type(root) ~= "table" then
         return nil
     end
-    -- A feed with no entries is still a feed, and is returned as one. It is not
-    -- `fetchFeed`'s business to call that a parse failure, and for a long time it
-    -- did: Suwayomi answers `filter=unread` on a fully read series with a valid,
-    -- empty feed, and rejecting it here turned "the server says nothing is
-    -- unread" into `"http"` — an HTTP-level failure with no URL logged to look
-    -- at, because there *was* no HTTP error. See `fetchFeed`.
+    -- A valid empty feed is returned as one, not called a parse failure.
     return Net.feedFrom(root)
 end
 
---- Fetch and parse one feed. Returns `feed` or `nil, reason`, where reason is
---- "network" or "http" — the caller needs that distinction to decide whether a
---- failed walk is worth retrying (see the `complete` flag in sync).
+-- Returns feed, or nil plus "network"/"http"/"empty" so a caller can decide.
 function Net.fetchFeed(url_str, opts)
     if type(url_str) ~= "string" or url_str == "" then
         return nil, "network"
@@ -454,12 +273,7 @@ function Net.fetchFeed(url_str, opts)
         return nil, "http" -- 200 with an unparseable body: a truncated response
     end
     if type(feed.entry) ~= "table" then
-        -- Parsed, and lists nothing. **Its own reason, because it is its own
-        -- state**: a caller that hears "http" goes looking for a status code
-        -- that does not exist, and the filtered feeds this plugin asks for are
-        -- *legitimately* empty — a fully read series has nothing under
-        -- `filter=unread`. Callers that treat empty as "no answer" and ask again
-        -- differently need to be able to tell it apart from a broken response.
+        -- "empty" is its own reason: a filtered feed is legitimately empty.
         return nil, "empty"
     end
     return feed

@@ -301,6 +301,12 @@ Invariants when touching these rows:
   know yet would silently do the opposite of what was asked, which is why the claim
   looks it up first and refuses loudly. A per-file choice made in "Open with…" still
   wins: `getAssociatedProviderKey` reads the sidecar before the file type.
+  `Association.holds` asks the registry rather than `G_reader_settings` because
+  `getAssociatedProviderKey` also requires the key to name a provider still
+  registered, so a claim left by a since-uninstalled Meguru reads as nil.
+  `setProvider` mutates the table it read without saving it, so `Association.save`
+  flushes after a claim or a release. `Association.provider` is exported so
+  `ui/open.lua` reaches the provider under the one spelling of the key.
 
 ## Plugin lifecycle facts worth not rediscovering
 
@@ -388,6 +394,15 @@ root list, and a search — and only one of them is a series feed, so the row ap
 the others (a search result list, most visibly). `genItemTableFromURL` is *handed the
 URL*, and the URL is what tells the four apart. The decision is made where the evidence
 is rather than reconstructed from how the switch was called.
+
+**A pagination append is the one caller the URL does not rule out**, and it is
+identified by the same evidence. `OPDSBrowser:appendCatalog` re-calls
+`genItemTableFromURL` for every tap on the next-page chevron, on the same series and
+with the feed's own `rel=next` href, then folds the result into the table already on
+screen (`table.insert`). The row is therefore skipped when `item_url` equals the
+`next` that the retained `browser.item_table.hrefs` advertises. Skipping it also keeps
+`appendCatalog`'s `#menu_table > 0` success test from being satisfied by our row
+alone, which would make `onNextPage` keep asking for more.
 
 The row is offered only when **every** entry of the feed discovers to the same series.
 A feed listing *series* has entries with no stream at all, so they fail `discover` and
@@ -533,3 +548,45 @@ ours. The first repair logs once per process —
 `the config menu was replaced since load; curation re-installed` — and, as with
 the OPDS repair, it deliberately does not name the plugin that did it.
 
+
+**The shipped SVGs are outline icons, and their paint attributes sit on each `path`.**
+`fill="none"` with a `stroke` is what most of KOReader's own icons use — 61 of the 102
+in `resources/icons/mdlight` are drawn with strokes alone — so an outline is a shape
+the rasteriser is known to draw. Where the paint is declared is not interchangeable: a
+Lucide export puts `stroke` on the root `<svg>`, which is valid SVG and inherits in a
+compliant renderer, but inheritance is the part of the format a small rasteriser is
+least obliged to implement. Every shipped icon therefore carries `fill`/`stroke` on its
+own drawing elements, and an editor that re-exports from the same source will put them
+back on the root — something only a device shows.
+
+**`meguru/seriescover` writes `.cover.jpg` whatever the bytes are.** The three
+servers disagree on the format — Suwayomi's feed image is WebP 400x600, Kavita's
+WebP 639x908, Komga's (fetched from REST) JPEG 211x300 — so the name lies for two of
+the three, knowingly: most readers sniff the header and the rest pay for the
+extension. Converting is not something this plugin can do — the bundled MuPDF
+*reads* WebP but KOReader carries no JPEG encoder. The file is written only when it
+is absent (`FS.exists`, not a remembered flag — there is nowhere left to keep one),
+and turning a server off stops new files without removing any.
+
+**`meguru/rowcover` decodes the file once per process and shares one buffer with every
+build of the row.** The row is rebuilt on every navigation, and a BlitBuffer is malloc'd
+outside the Lua heap, so a decode per row would leak one buffer per browse; the buffer is
+not disposable (the widget is told `image_disposable = false`) and nothing else frees it.
+It is handed over as authored: `ImageWidget` applies night mode itself, gated on
+`original_in_nightmode`. Pre-inverting the bitmap here cancels that and produces the
+negative it was meant to prevent, and the widget this row is drawn into belongs to
+zen-os, so whether that flag's stock default applies is settled only on a device (night
+mode on, this row on screen: the artwork should read as authored).
+
+**`main.lua` hands over two things `pluginloader` knows and nothing inside the
+plugin can.** `Paths.setPluginDir(self.path)` uses the `path` `pluginloader` assigns
+from the directory it found the plugin in — the plugin may sit on removable media under
+any name ending in `.koplugin`, so that is the only reliable source — and
+`Updater.setInstalledVersion(self.version)` takes the version `pluginloader` copied off
+`_meta.lua` onto the instance, which the updater cannot derive for itself. Both calls are
+idempotent because `init` runs once for the FileManager and again for every book opened.
+The marker's `mimetype` is its own (`application/x-koreader-meguru-stream`) rather than a
+comic one, because a marker is not an archive and nothing else should claim it.
+`onDispatcherRegisterActions` is called from `init` *and* by the Dispatcher's own
+broadcast, so `registerAction`'s own guard is what keeps the gesture action registered
+exactly once.

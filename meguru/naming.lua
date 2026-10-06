@@ -1,30 +1,17 @@
---[[--
-Turning server-provided titles into series names, folder components and marker
-file names.
-
-Pure string work: no I/O, no settings, no catalog. Lua 5.1 strings are byte
-strings and device filesystems store UTF-8 names verbatim, so every operation
-here is byte-exact — bytes >= 0x80 pass through untouched and only ASCII bytes
-that are hostile to a filesystem are ever replaced.
---]]
+-- Byte-string module: only filesystem-hostile ASCII bytes are ever replaced.
 
 local Paths = require("meguru/paths")
 
 local Naming = {}
 
--- Kavita emits, next to the real entry of the volume last read, an alias entry
--- whose title is prefixed with this. Both carry the same stream, so the prefix
--- is dropped for naming and for series derivation and the two map to one book.
+-- Kavita's "Continue Reading from:" alias duplicates a volume.
+-- The prefix is dropped so the two name to one book.
 Naming.ALIAS_PREFIX = "Continue Reading from: "
 
--- Byte cap for a marker base name and for a series/server folder component.
--- On-device filesystems treat names as UTF-8 byte strings with a 255-byte
--- per-component limit. The marker adds "." .. extension plus at worst a "-"
--- and 8 hex digits, so 220 keeps every derived component under 255.
+-- 220-byte cap keeps every component under the 255-byte name limit.
+-- The marker's extension and a "-" plus 8 hex digits fit in the remainder.
 Naming.MAX_COMPONENT_BYTES = 220
 
---- Drop a leading "Continue Reading from: " prefix, so an alias entry and the
---- real volume it duplicates name to the same marker file.
 function Naming.stripAliasPrefix(title)
     title = title or ""
     local prefix = Naming.ALIAS_PREFIX
@@ -34,10 +21,7 @@ function Naming.stripAliasPrefix(title)
     return title
 end
 
---- Codepoint and byte length of the UTF-8 character at the head of `s`, or nil
---- for an empty string or a malformed sequence. Deliberately permissive about
---- which lead bytes it accepts — this only ever answers "is the first character
---- a glyph", it never validates a whole string.
+-- Codepoint and byte length of the first UTF-8 char; nil if empty or malformed.
 local function utf8Head(s)
     local b1 = s:byte(1)
     if not b1 then
@@ -62,13 +46,8 @@ local function utf8Head(s)
     return nil, nil
 end
 
--- Servers bakes a reading-progress glyph into an entry's <title> (Kavita: a
--- filled/partial circle; Suwayomi: a down arrow, a check mark, an hourglass).
--- It is server bookkeeping, never part of the book's name.
---
--- Matched as *ranges* rather than an exhaustive list of the codepoints seen so
--- far: a server build that switches to a new status icon tomorrow is still
--- stripped without a code change.
+-- Servers bake a progress glyph into titles; ranges cover a new icon too.
+-- A new status icon is then stripped without a code change.
 local GLYPH_RANGES = {
     { 0x2190, 0x21FF },   -- Arrows
     { 0x2300, 0x23FF },   -- Misc Technical (hourglass, stopwatch)
@@ -90,11 +69,7 @@ local function isGlyphCodepoint(cp)
     return false
 end
 
---- Strip leading reading-progress glyphs and the whitespace after them.
----
---- A glyph with emoji presentation (U+2B07 + U+FE0F) is two codepoints: the
---- range check strips the base, then the variation selector is swallowed so no
---- invisible byte lingers at the head.
+-- Emoji presentation is two codepoints: strip the base, then swallow U+FE0F.
 local function stripLeadingGlyph(title)
     local t = title
     while true do
@@ -111,18 +86,15 @@ local function stripLeadingGlyph(title)
     return (t:gsub("^%s+", ""))
 end
 
---- A title safe to show: alias prefix and leading glyph gone, nothing else.
---- This is what ReaderUI displays, so it is applied at display time and never
---- baked into a stored value.
+-- Display-time only: prefix and leading glyph gone, never stored in a value.
 function Naming.cleanTitle(title)
     return stripLeadingGlyph(Naming.stripAliasPrefix(title))
 end
 
--- Some servers stamp every entry whose book has no recorded creator with a
--- placeholder. Echoing that into History or Book info shows a bogus author.
+-- Placeholder authors are stamped when there is no creator; never show them.
 local AUTHOR_PLACEHOLDERS = { "unknown", "unknown author" }
 
---- A real author name, or nil when there is none worth showing.
+-- A real author name, or nil when there is none worth showing.
 function Naming.cleanAuthor(author)
     local s
     if type(author) == "string" then
@@ -142,12 +114,7 @@ function Naming.cleanAuthor(author)
     return s
 end
 
--- Suwayomi writes the manga title of a chapter entry as "Series: <Manga> |
--- Chapter N | ...", and some feeds label the name with its kind. The label is
--- bookkeeping, never part of the name.
---
--- Only a leading "<word>:" matches, so a title that merely contains the word
--- ("A Series of Unfortunate Events") is untouched.
+-- Feeds label titles "Series: <Manga>"; only a leading label is stripped.
 local SERIES_NAME_LABELS = { "series", "manga" }
 
 function Naming.stripSeriesLabel(s)
@@ -169,14 +136,13 @@ function Naming.stripSeriesLabel(s)
     return s
 end
 
---- En/em dashes to ASCII "-", so " – Volume 3" peels like " - Volume 3".
+-- En/em dashes to ASCII "-", so " – Volume 3" peels like " - Volume 3".
 local function normalizeDashes(s)
     return (s:gsub("\u{2013}", "-"):gsub("\u{2014}", "-"))
 end
 
---- Make `name` a safe single filesystem component: path-hostile and control
---- bytes become spaces, runs collapse, and the result is capped to `cap_bytes`
---- on a UTF-8 boundary so it never ends in a dangling lead byte.
+-- Safe single filesystem component: hostile bytes to spaces, runs collapsed.
+-- Capped on a UTF-8 boundary so it never ends in a dangling lead byte.
 function Naming.sanitizeComponent(name, cap_bytes)
     cap_bytes = cap_bytes or Naming.MAX_COMPONENT_BYTES
     local out = {}
@@ -190,8 +156,8 @@ function Naming.sanitizeComponent(name, cap_bytes)
         end
     end
     name = table.concat(out)
-    -- Trailing dots and spaces are trimmed too: FAT filesystems do it behind
-    -- our back, which would make the name we recorded disagree with the disk.
+    -- Trailing dots/spaces are trimmed: FAT does it behind our back.
+    -- The name we record would otherwise disagree with the disk.
     name = name:gsub("%s+", " "):gsub("^%s+", ""):gsub("[%s.]+$", "")
     if name == "" or name == "." or name == ".." then
         return "stream"
@@ -205,8 +171,7 @@ function Naming.sanitizeComponent(name, cap_bytes)
         name = name:sub(1, #name - (#Paths.MARKER_EXT + 1))
     end
     if #name > cap_bytes then
-        -- Walk back from the cut past continuation bytes to the sequence's lead
-        -- byte and cut there.
+        -- Walk back past continuation bytes to the lead byte and cut there.
         local cut = cap_bytes
         while cut > 0 do
             local b = name:byte(cut)
@@ -223,22 +188,18 @@ function Naming.sanitizeComponent(name, cap_bytes)
     return name
 end
 
---- The marker file's base name (no extension) for an entry title: alias prefix
---- and leading glyph gone, filesystem-hostile bytes replaced, nothing else.
---- The title is kept verbatim otherwise, so the file reads cleanly in the file
---- browser and does not change when the server advances its progress glyph.
+-- The marker's base name, kept verbatim so it reads cleanly in the browser.
+-- It then does not change when the server advances its progress glyph.
 function Naming.markerBaseName(title)
     title = stripLeadingGlyph(Naming.stripAliasPrefix(title))
     return Naming.sanitizeComponent(title, Naming.MAX_COMPONENT_BYTES)
 end
 
--- Trailing volume/chapter tokens recognised when deriving a series name, in
--- the order tried. Each is a literal word; "Vol" is also accepted dotted.
+-- Volume/chapter tokens tried, in order, when deriving a series name.
 local VOLUME_TOKENS = { "Volume", "Vol", "Chapter", "Ch", "Part", "v" }
 
---- Strip a trailing run of parenthesised/bracketed release tags, so the volume
---- token can be matched even when the server appends per-release bookkeeping
---- after it. Komga titles every volume "<Series> v<NN> (<group>) (<group>)".
+-- Strip trailing "(...)"/"[...]" tags so the volume token before them is last.
+-- Komga titles every volume "<Series> v<NN> (<group>)".
 local function stripTrailingReleaseGroups(t)
     while true do
         local prev = t
@@ -249,23 +210,8 @@ local function stripTrailingReleaseGroups(t)
     end
 end
 
---- Derive a series name and volume label from a raw entry title.
----
---- Returns `series, volume_label, volume_index`, or nothing when no series can
---- be confidently derived — then the caller stays flat.
----   "◔ This Alluring ... - Volume 3" -> "This Alluring ...", "Volume 3", 3
----   "Series: Alya ... - Volume 2"    -> "Alya ...", "Volume 2", 2
----   "Series - Volume 1-2"            -> "Series", "Volume 1-2", 1 (omnibus)
----   "Series - Volume 7.5"            -> "Series", "Volume 7.5", 7.5
----   "'Tis Time ... Princess v01 (x)" -> "'Tis Time ... Princess", "v01", 1
----   "Series - Part One"              -> nil (no digits)
----   "⬇️ Chapter 17"                   -> nil (no series name; Suwayomi)
----
---- A hyphenated range ("Volume 1-2") is one omnibus stream spanning several
---- original volumes — how Kavita's storyline feed groups them — and indexes
---- from its *first* number, so the next combined volume still orders after it.
---- A decimal ("Volume 7.5") is kept whole, so it orders between its integer
---- neighbours.
+-- Returns series, volume label, index, or nothing when none is confident.
+-- A hyphenated range indexes from its first number; a decimal is kept whole.
 function Naming.deriveSeries(raw_title)
     local t = Naming.stripAliasPrefix(raw_title)
     t = stripLeadingGlyph(t):gsub("^%s+", ""):gsub("%s+$", "")
@@ -274,24 +220,17 @@ function Naming.deriveSeries(raw_title)
     end
     t = Naming.stripSeriesLabel(t)
     t = normalizeDashes(t)
-    -- A volume token is only *trailing* once any release-tag groups are gone:
-    -- Komga's token sits before its "(...)" groups, never at the very end.
+    -- A token is trailing only once the release groups are gone.
+    -- Komga's token sits before its "(...)" groups, never at the end.
     t = stripTrailingReleaseGroups(t)
 
     for _, token in ipairs(VOLUME_TOKENS) do
-        -- The prefix is minimal so the *trailing* token is the one peeled off;
-        -- greedy would eat a second, earlier "Volume N". After the number an
-        -- optional fractional part and an optional hyphenated range are
-        -- tolerated, both indexing from the leading integer.
+        -- Minimal prefix so the trailing token peels.
+        -- A fraction and range after the number index from the integer.
         local pattern = "^(.-)%s*[%-:]*%s*" .. token .. "%.?%s*(%d+%.?%d*)%s*%-?%s*%d*%s*$"
         local prefix, num = t:match(pattern)
-        -- An empty prefix is a *title*, not a failure. Suwayomi titles its entries
-        -- "Chapter 1" and nothing else, so requiring something before the token
-        -- made this return nil for every one of them — which cost the label
-        -- (`volume_label` nil, so buttons fell back to the full entry title) and
-        -- left callers that need the *number* with nothing to sort by. The empty
-        -- series it returns instead is honest: this title names no series, and
-        -- every caller already rejects a series that is `""`.
+        -- Empty prefix is a title, not a failure: Suwayomi has no series name.
+        -- It returns an empty series, which every caller already rejects.
         if prefix then
             local label = t:sub(#prefix + 1):gsub("^[%s%-:]+", ""):gsub("%s+$", "")
             local series = prefix:gsub("%s+$", ""):gsub("[%-:%s]+$", "")
@@ -304,9 +243,7 @@ function Naming.deriveSeries(raw_title)
     return nil
 end
 
---- Dependable 32-bit hash (djb2), for disambiguating names that would otherwise
---- collide. Not a security primitive — it only has to be stable across restarts
---- and spread similar inputs apart.
+-- djb2: not a security hash, only stable across restarts and spreading inputs.
 function Naming.hash32(str)
     local h = 5381
     for i = 1, #str do
@@ -315,24 +252,7 @@ function Naming.hash32(str)
     return h
 end
 
---- 64-bit identity digest of `str`, as 16 lowercase hex digits.
----
---- Two 32-bit lanes rather than one wide hash, because in Lua 5.1 every number
---- is a double and every intermediate product has to stay exact: `h * 33` with
---- h < 2^32 stays under 2^38 and `h * 65599` under 2^49, both clear of the 2^53
---- where a double stops counting exactly, so neither lane ever rounds. FNV-1a
---- would: its `h * 16777619` reaches ~2^56 and would need its operand split into
---- 16-bit halves to be correct — more code, no better spread.
----
---- Two lanes, not one, because the job differs from `hash32` above in what a
---- collision costs. There a 32-bit value is right: the worst case is two series
---- sharing a folder *name*. This one digests a stream URL into the `item_key`
---- of a marker that has no catalog series (`ui/open.lua`), and that key is what
---- `Marker.matches` and `Marker.pathFor` decide two markers are the same book
---- by — so a collision means two unrelated books collapsing onto one marker
---- file, which a single lane reaches with a few percent probability over a
---- large library. Requiring *both* lanes to collide takes that to nothing worth
---- reasoning about.
+-- Two lanes: Lua 5.1 doubles stay exact, and a collision collapses two books.
 function Naming.digest64(str)
     str = str or ""
     local h1, h2 = 5381, 0
@@ -344,18 +264,13 @@ function Naming.digest64(str)
     return string.format("%08x%08x", h2, h1)
 end
 
---- A filesystem component for a *natural key*, e.g. "<server>|<series>|<item>".
----
---- Deliberately derived from identity rather than from a stream URL: Kavita's
---- template embeds the API key and Suwayomi's chapter number can be renumbered,
---- so a URL-derived suffix would silently rename the file — and orphan its
---- reading progress — after a key rotation.
+-- From identity, not the URL: a URL-derived suffix would rename the file.
+-- A key rotation would then orphan its reading progress.
 function Naming.keySuffix(natural_key)
     return string.format("%08x", Naming.hash32(natural_key or ""))
 end
 
---- `name` with a natural-key suffix appended, for when the plain component is
---- already taken by a different book.
+-- `name` with a natural-key suffix, when the plain component is taken.
 function Naming.disambiguated(name, natural_key)
     return name .. "-" .. Naming.keySuffix(natural_key)
 end

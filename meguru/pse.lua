@@ -1,15 +1,5 @@
---[[--
-OPDS-PSE: finding a page stream in a feed entry, and turning its template into
-page URLs.
-
-The convention (as implemented by Kavita, Suwayomi, Komga and the rest) is a
-link with the `stream` relation whose href contains `{pageNumber}`, plus
-substitutable `{width}`/`{maxWidth}` and `{height}`/`{maxHeight}`. **The page
-number is zero based** — the first page of a stream is `{pageNumber}=0` while
-ReaderUI numbers document pages from 1 — so every caller passes a zero-based
-index. `PSE.pageURL` is the only place that rule lives.
---]]
-
+-- OPDS-PSE: a rel=stream link whose href carries {pageNumber}.
+-- Page numbers are zero based; PSE.pageURL is the one place that rule lives.
 local url = require("socket.url")
 
 local Net = require("meguru/net")
@@ -18,38 +8,9 @@ local PSE = {}
 
 PSE.STREAM_REL = "http://vaemendis.net/opds-pse/stream"
 
---- Page count and server-reported last-read page off a stream link.
----
---- The parser flattens namespaced attributes onto the link keyed by their
---- local name, and the prefix varies by server (`pse:count`, or none at all),
---- so the attribute is matched by key *suffix* rather than by exact name.
----
---- **A `lastRead` of 0 is returned as 0, not as nil**, and the difference is
---- load-bearing. Kavita marks a chapter unread by writing `lastRead="0"` rather
---- than by dropping the attribute, so the two are different states: 0 is "this
---- server has an opinion and it is nowhere", and nil is "this feed publishes no
---- progress at all".
----
---- What makes the distinction bite is `PSE.samePlace`, which asks whether a
---- recorded page is meaningfully ahead of a local one. A recorded 0 answers "no"
---- — `0 - n` is never ahead — so the server is not offered as a place to go. A
---- nil fails that function's own test and reports *not* the same place, which is
---- the right reading for a server that said nothing, and would be wrong for a
---- chapter it explicitly marked unread. (0 is truthy in Lua, which is what lets
---- the two travel differently through a `not recorded` guard.)
----
---- The rule used to be enforced one layer in, by a `COALESCE` that kept a stored
---- value when a walk sent nil; with no store, this function is the only place it
---- lives, and it is therefore the place that has to keep saying it.
----
---- Returning 0 is safe everywhere by construction: every consumer asks
---- `> 0` or `> 1` before treating the number as a page.
----
---- **The number is *not* normalised here, and must not be.** Suwayomi counts
---- pages from zero and Kavita from one, so the same state is `50`-of-51 on one
---- and `174`-of-174 on the other — a difference only a driver can resolve, and
---- `driver/suwayomi.lua` does it where its own progress enters. Normalising in a
---- parser shared by both would move Kavita's pages by one.
+-- Match by key suffix: the namespace prefix varies (p5: on Kavita, pse:).
+-- lastRead 0 is returned as 0, not nil: Kavita writes 0 for an unread chapter.
+-- The number is not normalised here; page bases differ per driver by design.
 function PSE.attributesFromLink(link)
     local count, last_read
     for key, value in pairs(link) do
@@ -64,12 +25,7 @@ function PSE.attributesFromLink(link)
     return count, last_read
 end
 
---- The page stream advertised by a feed entry: an absolute template, the page
---- count, and the server-reported last-read page. Returns nothing when the
---- entry carries no usable stream.
----
---- A template without `{pageNumber}` is rejected rather than accepted as a
---- degenerate one-page stream: every page would then fetch the same URL.
+-- A template without {pageNumber} is rejected: every page would be one URL.
 function PSE.streamFromEntry(entry, base_url)
     for _, link in ipairs(entry and entry.link or {}) do
         if type(link) == "table" and type(link.href) == "string"
@@ -86,18 +42,8 @@ function PSE.streamFromEntry(entry, base_url)
     return nil
 end
 
---- The URL of one page. `zero_based_index` is 0 for the first page.
----
---- **`template` must be a live one, not a marker's raw field.** A marker stores
---- its template with any credential-bearing path segment replaced by
---- `<redacted>` (see `meguru/credential`), and `Marker.load` puts it back. Hand
---- this a template straight off disk and the URL it builds is self-describing
---- and wrong — `…/api/opds/<redacted>/image?…` — which the server answers with a
---- 404 and nothing in this function can notice.
----
---- `screen_h` is optional: the height substitutions are only applied when a
---- height is given, so a caller that knows only its width leaves any
---- `{height}` in the template untouched rather than substituting nonsense.
+-- template must be restored, not a marker's raw <redacted> field (fetches 404).
+-- Height is substituted only when screen_h is given; else {height} stays as-is.
 function PSE.pageURL(template, zero_based_index, screen_w, screen_h)
     local ret = template:gsub("{pageNumber}", tostring(zero_based_index))
     ret = ret:gsub("{width}", tostring(screen_w))
@@ -109,32 +55,11 @@ function PSE.pageURL(template, zero_based_index, screen_w, screen_h)
     return ret
 end
 
---- How far ahead a recorded page may be before it stops being the same place.
----
---- Servers that track progress count pages *fetched*, and this reader fetches one
---- page beyond the one on screen so the next turn is instant
---- (`MeguruDocument.prefetch_count`) — so a book read here ends up recorded a page
---- ahead of where its reader stopped. That lead is the artefact this tolerates.
----
---- **It is not subtracted from the page.** Doing that was the first version, and
---- it was wrong in the case that matters most: a position recorded by *another*
---- reader has no such lead, so trimming it walks the reader back three pages they
---- had already read — the one direction that skips nothing and annoys everybody.
---- A lead this small means the two positions agree, which is a reason to say
---- nothing rather than to say a different number.
----
---- The slack covers the artefact plus a little judgement: page numbering also
---- drifts by one wherever a server counts from zero, and a two-page lead is still
---- not worth a question.
+-- 3 pages of lead still counts as the same place (prefetch adds one).
+-- Never subtract the lead: a position from another reader has none.
 local SERVER_PAGE_TOLERANCE = 3
 
---- Whether a recorded page and a local one describe the same place.
----
---- True when the recording is not meaningfully ahead — including when it is
---- behind, where there is equally nothing to offer.
----
---- A missing local page is never "the same place": with nothing to compare
---- against, the recording is the only position there is.
+-- A missing local page is never the same place: the recording is all there is.
 function PSE.samePlace(recorded, local_page)
     recorded, local_page = tonumber(recorded), tonumber(local_page)
     if not recorded or not local_page then
@@ -143,7 +68,6 @@ function PSE.samePlace(recorded, local_page)
     return recorded - local_page <= SERVER_PAGE_TOLERANCE
 end
 
---- Raw bytes of one page image, or nil plus the HTTP code.
 function PSE.fetchPage(url_str, opts)
     opts = opts or {}
     local code, _, body = Net.get(url_str, {
@@ -157,9 +81,5 @@ function PSE.fetchPage(url_str, opts)
     end
     return body, code
 end
-
--- `PSE.pageCachePath` used to live here: where the raw bytes of one page were
--- written on disk. Pages are never on disk now — the engine keeps a few in RAM —
--- so there is no name to build and nothing in this module files anything.
 
 return PSE

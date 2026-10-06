@@ -152,3 +152,17 @@ written by the "Open with…" dialog. `FS.exists` comes first, because
 deleted between the listing and the tap would otherwise leave the reader torn down
 with nothing in its place.
 
+### Folding a name, and the byte-level rules of the sort key
+
+**`asciiLower` folds only `A-Z`, one byte at a time, and is not `string.lower`.**
+The C library's `tolower` follows the device's locale: under a Turkish locale `I`
+folds to a dotless `i`, and on a UTF-8 locale a lead byte of a Polish or CJK
+character is fair game. The fold compares two names for equality and two
+extensions, where a device-dependent fold would match on one device only.
+
+**`sortKey` copies every byte outside a digit run verbatim, bytes >= 0x80 included**,
+so a Polish or CJK name orders by its own bytes, the way the file browser that
+wrote it would have shown it.
+
+**The folder listing is KOReader's `util.findFiles`, called with `recursive = false`.**
+`meguru/local` adds no directory walk of its own.

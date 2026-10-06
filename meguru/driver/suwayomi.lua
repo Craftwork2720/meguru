@@ -1,21 +1,4 @@
---[[--
-Suwayomi's OPDS surface.
-
-Two things about it drive the whole shape of this file, both observed on a live
-instance (see PROTOCOL.md):
-
-  * **A chapter entry carries no stream.** It links to a metadata feed, which
-    returns a feed containing one entry that holds the `stream` link. So
-    `resolveStream` is real I/O here, and `parseCatalogPage` stores
-    `template = NULL` on purpose — resolving it at sync time would be one HTTP
-    request per chapter, so a 500-chapter series would take 500 requests to sync.
-
-  * **The chapter number is not an identity.** The feed contradicts itself:
-    a chapter titled "Chapter 56.5" sits at path position 58, and numbers are
-    renumbered when metadata is refreshed. The `<id>` URN
-    (`urn:suwayomi:chapter:16851`) is the only stable handle, so that — not the
-    number — is the item key.
---]]
+-- Chapters carry no stream (resolved lazily); the entry.id URN is the item key.
 
 local logger = require("logger")
 
@@ -25,36 +8,21 @@ local PSE = require("meguru/pse")
 
 local Suwayomi = {}
 
---- Matched against the lowercased feed-level `<author>` name and uri.
+-- Matched lowercased against the feed-level <author>.
 Suwayomi.authorSignatures = { "suwayomi" }
 
---- Two needles, because either alone is a shape other servers use: a manga
---- stream is `/api/v1/manga/<id>/chapter/<n>/page/<n>`. Both must appear.
+-- Both needles required: each alone is a shape another server's URLs use.
 Suwayomi.streamSignatures = { { "/manga/", "/chapter/" } }
 
---- This server's feed order is **not** reading order, so a chapter's position
---- has to be recovered from the entry itself — the `/chapter/{n}/` in its
---- metadata link first, and the number in its title when that link is missing.
---- See `Feed.ordered`.
----
---- **Set here, and deliberately not set by Kavita or Komga.** Both of those
---- hand back a feed their server already sorted into reading order, and letting
---- the title override that is what mixed `Volume 1…3` with `Chapter 1…3` into
---- `1, 1, 2, 2, 3, 3` on 25 series out of one 3473-series library.
+-- Feed order is not reading order: recover position from the /chapter/ link.
+-- Set only here: the other servers' feeds are already in reading order.
 Suwayomi.orderFromTitles = true
 
 local CHAPTER_URN = "^urn:suwayomi:chapter:(.+)$"
 local MANGA_URN = "^urn:suwayomi:manga:(.+)$"
 
--- The same chapter is spelled differently by the two feeds it appears in: the
--- chapter list says `urn:suwayomi:chapter:9345`, and its own metadata feed says
--- `urn:suwayomi:chapter:9345:metadata`. Observed on a live instance, and
--- load-bearing — a sync builds keys from the list while an open builds one from
--- the metadata feed, so without stripping this suffix the two never agree and
--- every book opened would add a second, unreconcilable row for its chapter.
---
--- Only this one suffix is removed, rather than truncating at the first colon:
--- that way an id containing a colon for some other reason survives intact.
+-- The two feeds spell one chapter id differently: the ":metadata" suffix.
+-- Only this suffix, so an id with any other colon survives intact.
 local METADATA_SUFFIX = ":metadata"
 
 local function chapterKeyFromId(id)
@@ -67,32 +35,16 @@ local function chapterKeyFromId(id)
     end
     return key ~= "" and key or nil
 end
--- The trailing "chapter" is load-bearing, not decoration. Matching plain
--- `/series/{id}/` made this driver claim *Kavita* entries: a Kavita entry's
--- download link is
---   /api/opds/<KEY>/series/17517/volume/117120/chapter/180346/download/….cbz
--- which contains `/series/17517/`. Since `kindFor` refuses an entry two drivers
--- claim, that turned every Kavita server whose <author> the sniff missed into an
--- uncatalogued one — the exact failure this pattern-free version was meant to
--- prevent. Both documented Suwayomi paths put `chapter` right after the id
--- (`/series/{id}/chapters`, `/series/{id}/chapter/{n}/metadata`), and Kavita puts
--- `volume`, so requiring it separates them on evidence rather than on luck.
+-- "/chapter" required: plain /series/{id}/ also matches a Kavita download path.
 local SERIES_IN_PATH = "/series/(%d+)/chapter"
--- A chapter's page stream embeds the manga id ("/manga/3649/chapter/35/page/").
--- The same id space the chapter-list paths use — the old plugin relied on
--- exactly that, matching a list row by looking for "/<manga_id>/chapter/" in
--- it — and it is the only handle available when the entry being opened is the
--- single-entry metadata feed, which links to nothing but its own stream.
+-- The manga id in the stream path is the only handle on a metadata-feed entry.
 local MANGA_IN_STREAM = "/manga/(%d+)/chapter/"
 
 local DEFAULT_LANG = "en"
 
---- The chapters feed titles itself "<Manga> Chapters"; see `seriesName`.
 local SERIES_SUFFIX = " Chapters"
 
---- The language segment every Suwayomi URL carries. Inherited from whatever the
---- user was browsing with, because a library can hold several translations of
---- one manga and `lang` is what selects between them.
+-- ctx.lang (or "en") selects between translations of one manga.
 local function lang(ctx)
     local value = ctx and ctx.lang
     if type(value) == "string" and value ~= "" then
@@ -101,10 +53,8 @@ local function lang(ctx)
     return DEFAULT_LANG
 end
 
---- The manga id behind an entry, from whatever it happens to offer: on a series
---- entry the `<id>` is a manga URN, on a chapter list row any link path names
---- the series, and on a chapter's own metadata feed the only handle is the
---- stream the cursor was opened with.
+-- Manga id from whatever the entry offers: URN, a link path, or its own stream.
+-- The own-stream fallback is what kindFor (called with no cursor) depends on.
 local function seriesIdFrom(entry, stream)
     local id = entry and entry.id
     if type(id) == "string" then
@@ -123,15 +73,7 @@ local function seriesIdFrom(entry, stream)
             end
         end
     end
-    -- The entry's *own* stream link, before the passed-in one. A metadata-feed
-    -- entry is the case that needs it: its links are `alternate` (the scanlator's
-    -- web page), `open-access` (the CBZ) and the stream, with no `/series/` path
-    -- anywhere, so without this the driver recognised only the entry it was
-    -- handed a cursor for. `Kavita.discover` already falls back to the entry's
-    -- own link (`stream or streamHref(entry)`); this is the same fallback, and
-    -- `kindFor` — which calls `discover` with no cursor at all — depends on it.
-    -- Read as a bare href, never absolutized: `MANGA_IN_STREAM` matches a path,
-    -- and `url.absolute` with no base returns nil often enough to be a footgun.
+    -- Bare href, never absolutized: url.absolute with no base is a footgun.
     local link = Base.link(entry, PSE.STREAM_REL)
     local own = link and link.href
     local series = type(own) == "string" and own:match(MANGA_IN_STREAM)
@@ -144,8 +86,7 @@ local function seriesIdFrom(entry, stream)
     return nil
 end
 
---- Identify the series a browsed entry belongs to. Never guesses: without a
---- series id the caller must ask the user rather than sync an arbitrary series.
+-- Never guesses: without a series id the caller must ask rather than sync.
 function Suwayomi.discover(entry, stream, ctx)
     local remote_id = seriesIdFrom(entry, stream)
     if not remote_id then
@@ -153,103 +94,29 @@ function Suwayomi.discover(entry, stream, ctx)
     end
     return {
         series_remote_id = remote_id,
-        -- The stream carries the manga id, so this holds whatever page the book
-        -- was opened from — including an aggregate, whose chapter entries do
-        -- not link to their series at all.
         discovered_from = "stream",
         lang = lang(ctx),
     }
 end
 
---- The canonical, paginated chapter list.
----
---- `sort=number_asc` is load-bearing: the default order is *descending*, so
---- without it the whole series would be indexed newest-first and every "next
---- chapter" would run backwards through the book.
----
---- `filter` defaults to `all` and exists so the *read* list is built by the same
---- rule — one place that knows the language must be carried and the sort must be
---- asked for. A driver that has no filters simply ignores the extra argument.
+-- sort=number_asc is required: the default order is descending (newest first).
 function Suwayomi.catalogURL(base_url, series_remote_id, ctx, filter)
     return string.format("%s/series/%s/chapters?lang=%s&sort=number_asc&filter=%s",
         base_url, series_remote_id, lang(ctx), filter or "all")
 end
 
---- The `filter=` value that lists the chapters the *server* has not marked read.
----
---- **Suwayomi tracks "read" as a flag of its own, and it is not the page
---- counter.** `pse:lastRead` and the `<summary>` prose count pages within a
---- chapter; this flag is set when a chapter is finished *or* explicitly marked
---- read. The two disagree in both directions — a chapter can be flagged read
---- while its summary still says `Postęp: 0 z 17`, and a chapter flagged unread
---- can be part-way through at `Postęp: 2 z 22`.
----
---- Both of those are the same complaint: "where does this reader continue?" is a
---- question about the *flag*, and answering it from page progress gets it wrong
---- either way. So the flag is what the answer is built from, and it is read off a
---- feed filtered to these chapters rather than inferred from one that contains
---- them mixed with everything else — the flag is in no entry's data.
----
---- A driver whose server has no such flag leaves this nil, and the page-progress
---- rules stay: they are all Kavita has.
+-- The server's own read flag; it disagrees with page progress both ways.
 Suwayomi.unreadFilter = "unread"
 
---- One page of the canonical feed to normalized items. No position numbers and
---- no series metadata: the engine assigns feed positions, the catalog owns
---- everything else.
----
---- `template` and `page_count` stay nil — that is the lazy path, and the engine
---- resolves them on first open.
----
---- No `cover_url`, deliberately, and it is the one thing Kavita's driver does
---- that this one cannot. A Kavita series entry carries its own `image` links; a
---- Suwayomi *chapter-list* entry carries only `rel=subsection` — no image at
---- all. A chapter's own artwork exists solely in its metadata feed, reachable
---- only by fetching that feed per chapter, which is one HTTP request each and
---- precisely what the sync rules forbid spending.
----
---- So chapters fall back to the series cover and then to page 1 of their own
---- stream, on purpose. Should that ever be wanted differently, it is one line
---- here: `cover_url = Base.coverFromEntry(entry, base_url)` — the metadata
---- feed's entry *does* carry `<link rel="http://opds-spec.org/image" …/page/0>`,
---- which Suwayomi titles "chapter cover". Because `ui/open.lua`'s
---- `driverItemFor` reaches drivers through this same function, covers would then
---- fill in as chapters are opened, at no extra request and no extra sync cost.
----
---- The chapter's reading progress, read out of the entry's `<summary>` prose.
----
---- Suwayomi reports progress nowhere machine-readable on this feed. A
---- chapter-list entry carries no stream link, so it carries no PSE attributes at
---- all, and the metadata feed that does state `pse:lastRead` costs one request
---- per chapter — which is exactly what a sync may not spend. What the list entry
---- does carry is:
----
----   <summary>My Girlfriend is 8 Meters Tall | Chapter 63| Przez Unknown| Postęp: 0 z 31</summary>
----
---- So only the *digits* are read, never the words. The last two integers of the
---- final `|` field are `read` and `total`, and `?lang=` localises the prose
---- without touching the numbers, so "Postęp: 0 z 31" and "Progress: 0 of 31"
---- parse alike. Every failure — no `|`, fewer than two numbers, a count outside
---- its own total — returns nil, which is the honest outcome rather than a guess:
---- no progress hint, i.e. precisely the behaviour before this existed.
----
---- Deliberately *not* returned as `page_count`: that number arrives
---- authoritatively as `pse:count` when the stream is resolved, and a figure
---- scraped out of prose must not displace one the server stated.
----
---- One shape this reads wrongly, and knowingly: a *fractional* first number, as
---- in `Postęp: 0.5 z 31`, yields 5 — the pair `(5, 31)` matches and a dot is
---- invisible to a digits-only scan. Not defended against, because progress here
---- is a page index and no fractional one has been observed in the field; the
---- cost of meeting one is a starting page that is a few off, which is a swipe to
---- correct. It is recorded because a silent wrong answer is worth knowing about,
---- not because it needs code.
+-- Read the digits only, from the last | field; ?lang= does not touch them.
+-- Suwayomi counts from zero, so add one back (Kavita counts from one).
+-- Zero is exempt: an unread chapter reports 0, and +1 would mark it read.
+-- The total is returned too, to tell a finished chapter from a started one.
 local function progressFromSummary(summary)
     if type(summary) ~= "string" then
         return nil
     end
-    -- `|` is not a pattern metacharacter, and the anchored greedy class cannot
-    -- cross one, so this lands on the *last* field.
+    -- The greedy class cannot cross a |, so this lands on the last field.
     local field = summary:match("|([^|]*)$") or summary
     local numbers = {}
     for value in field:gmatch("%d+") do
@@ -261,42 +128,18 @@ local function progressFromSummary(summary)
         return nil, nil
     end
 
-    -- **Suwayomi counts from zero; this adds the one back.** A chapter sitting on
-    -- its seventh page reports `7`, meaning the eighth page is next, and a
-    -- finished 51-page chapter reports `50` rather than `51`. Without this the
-    -- page to resume at was one early, and "finished" was never true for any
-    -- Suwayomi chapter (`50 >= 51`), so a finished one looked merely started and
-    -- the next-chapter pick offered it again. Kavita counts from one and needs
-    -- none of it, which is why this sits in the driver and not in the shared
-    -- parser — see `PSE.attributesFromLink`.
-    --
-    -- **Zero is exempt, and that is not an oversight.** It is the only value that
-    -- cannot mean a page: a chapter never read reports `Postęp: 0 z 46`, and its
-    -- stream omits `lastRead` entirely rather than writing it. Adding one there
-    -- would give every unopened chapter a progress of 1, and then "has been read
-    -- at all" would be true of the whole series — which is how the resume point
-    -- ends up on the *last* chapter instead of the one being read.
+    -- Only zero is exempt: it is the one value that cannot be a page number.
     if read > 0 then
         read = read + 1
     end
     if read > total then
         return nil, nil
     end
-    -- 0 is returned as 0, and that is the whole point: Suwayomi writes progress
-    -- as "0 of 31" for a chapter that is not read, including one that *was* read
-    -- and has been reset. Returning nil there would say this feed publishes no
-    -- progress for the chapter, which is a different statement — and one
-    -- `PSE.samePlace` reads differently, because a recorded 0 is never ahead of
-    -- the reader's own page while a nil is not "the same place" at all. See
-    -- `PSE.attributesFromLink`, which carries the same rule for Kavita's
-    -- `lastRead="0"`.
-    -- The total is returned too, and that is the point of returning two values:
-    -- `read` alone cannot tell a *finished* chapter from a *started* one, and the
-    -- difference is exactly the chapter a reader wants offered next. Discarding it
-    -- meant a chapter sitting at 7 of 34 was treated as read and skipped.
+    -- 0 is returned as 0, not nil: a recorded 0 is not "no progress".
     return read, total
 end
 
+-- Lazy: template and count are resolved on first open; covers fall back.
 function Suwayomi.parseCatalogPage(feed, base_url, ctx)
     local items = {}
     for _, entry in ipairs(feed and feed.entry or {}) do
@@ -312,11 +155,7 @@ function Suwayomi.parseCatalogPage(feed, base_url, ctx)
                 template        = nil,
                 page_count      = nil,
                 last_read       = read,
-                -- Transient: carried on the parsed item for the in-memory
-                -- decision about which chapter is "next", and deliberately not
-                -- stored — `page_count` has an authoritative source in the
-                -- metadata feed's `pse:count`, and a figure scraped from prose
-                -- must not displace it.
+                -- Transient, never stored; pse:count is authoritative.
                 progress_total  = total,
             })
         end
@@ -324,23 +163,7 @@ function Suwayomi.parseCatalogPage(feed, base_url, ctx)
     return items
 end
 
---- The series name, from the feed title when that title says one.
----
---- Two feed titles carry it, in different shapes, and which one is seen depends
---- entirely on where the user is:
----
----   chapter list   "… Chapters"                     <- strip the suffix
----   metadata feed  "<Manga> | Chapter 1 | Details"  <- first "|" field
----
---- Each is checked for the *evidence* that makes it a series title, never just
---- for being non-empty: a feed title that matches neither shape is not naming a
---- series, and taking it anyway would name the series after whichever chapter
---- happened to be opened.
----
---- Falling back to the entry's own title is weak by design — a chapter entry is
---- titled "Chapter 1" and yields nothing — so the feed title is what carries
---- this. Its shape varies by source and cannot be assumed: "Ch. 5",
---- "Chapter 51", "Chapter 56.5".
+-- Series title comes in two feed shapes: "<Manga> Chapters" or "<Manga> | …".
 function Suwayomi.seriesName(feed, entry, _ctx)
     local title = feed and feed.title
     if type(title) == "string" then
@@ -362,18 +185,9 @@ function Suwayomi.seriesName(feed, entry, _ctx)
     return nil
 end
 
---- Fetch a chapter's metadata feed and pull the stream out of it.
----
---- This is the only place in the plugin where a driver causes I/O, and it goes
---- through the injected `fetch` so the engine keeps ownership of credentials,
---- timeouts and logging.
+-- The only driver I/O; fetch keeps credentials and logging in the engine.
 function Suwayomi.resolveStream(item, fetch, _ctx)
-    -- Every exit below is a nil, and a nil here is indistinguishable from every
-    -- other one at the call site: `planMarker` reports "no page stream" and
-    -- nothing says which of the four it was. Each says so now, because the
-    -- difference between "the catalog row lost its detail_url" and "the server
-    -- answered something unexpected" is the difference between two unrelated
-    -- fixes, and only the log can tell them apart.
+    -- A nil here is one of four, so log which; the call site sees only one.
     if not item.detail_url or not fetch then
         logger.warn("Meguru: cannot resolve a stream for", item.title,
             "(detail_url=" .. tostring(item.detail_url)
@@ -385,14 +199,12 @@ function Suwayomi.resolveStream(item, fetch, _ctx)
         logger.warn("Meguru: no metadata feed for", item.title)
         return nil
     end
-    -- A `<feed>` wrapping exactly one `<entry>`, which holds the stream.
     local entry = feed.entry and feed.entry[1]
     if not entry then
         logger.warn("Meguru: metadata feed for", item.title, "has no entry")
         return nil
     end
-    -- Absolute against the metadata URL: the stream href is a path
-    -- ("/api/v1/manga/3649/chapter/35/page/{pageNumber}"), not a full URL.
+    -- Stream href is path-only, made absolute against the metadata URL.
     local template, count = PSE.streamFromEntry(entry, item.detail_url)
     if not template then
         local links = {}
