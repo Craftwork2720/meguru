@@ -1,39 +1,3 @@
---[[--
-The marker file: a small book-shaped stand-in for a page stream.
-
-A marker is what KOReader opens, what lands in History and what DocSettings
-keeps reading progress for. It therefore has to be able to open a book with no
-database at all, which is why `template` and `count` are in the file rather than
-looked up: the catalog can be deleted, rebuilt or restored from a backup
-independently of the books on disk, and every marker keeps working when it is.
-
-**No secret is in the file, and that is enforced here rather than assumed.**
-`saveAt` strips the credential out of `template` on the way to disk and `load`
-puts it back — for Kavita the API key is a path segment, and the marker lives in
-the reader's *book* folder (an SD card, a folder something syncs), not in
-`settings/`. See `meguru/credential`.
-
-Two consequences worth knowing, because both are load-bearing:
-
-  * "no database" is not the same as "no configuration". A redacted template is
-    restored from `settings/opds.lua`, so a marker opens and reads with the
-    catalog deleted, and cannot fetch its pages with the *OPDS catalog* deleted.
-    The failure is loud and self-describing — a 404 whose path says
-    `<redacted>` — rather than a book that will not open.
-  * a marker written before this existed still carries the key, and nothing
-    rewrites it. Markers are not scrubbed in place: rewriting a book file the
-    reader did not ask to have rewritten is worse than a stale copy in a folder
-    they control. Delete and re-add such books if that matters to you.
-
-What is deliberately *not* in the file: any series metadata. Volume order,
-titles, whether a series has new chapters — all of that is the catalog's, in one
-place. The old sibling plugin duplicated a sibling list into every marker, which
-meant nothing could answer a question about a series without opening all of them.
-
-Serialized with LuaSettings, so a marker is an ordinary Lua file and any code
-that can open DocSettings can read it.
---]]
-
 local Device = require("device")
 local LuaSettings = require("luasettings")
 local logger = require("logger")
@@ -47,48 +11,12 @@ local Sources = require("meguru/sources")
 
 local Marker = {}
 
---- Key the descriptor is stored under inside the marker file. Also the test
---- for "is this file ours" on read, so a stray file with the same extension
---- opened from History never turns into a bogus stream.
+-- Also the "is this file ours" read test: a stray .meguru reads back nil.
 Marker.SETTINGS_KEY = Paths.MARKER_EXT
 
---- 2: the marker carries the series identity a feed needs (`series_name`,
---- `server_kind`, `lang`) and the book's own artwork, so an open needs nothing
---- but the file. Nothing reads this field — it is a note for whoever finds an
---- old file, not a gate: a v1 marker is still valid and still reads.
 Marker.VERSION = 2
 
---- Build a descriptor, keeping the shape in one place.
----
----   server_name        catalog title from KOReader's OPDS settings — the key
----                      credentials are looked up by, never a secret itself
----   series_remote_id   the series' id at the provider
----   series_name        the series as it is named to the reader: the History
----                      title, the dialog title, and the folder component
----   server_kind        which driver reads this server's feeds. Without it a
----                      book opened from History has no feed URL to build, so
----                      it has no next chapter — ever, not just until a sync
----   item_key           authoritative identity of this item within its series
----   title              as shown to the reader
----   template, count    enough to open and read with no database
----   last_read          the page the server says the reader stopped on — and,
----                      for `meguru/progress`, the floor below which this
----                      installation will not report a position
----   lang               the translation Suwayomi serves (`?lang=`); nil means
----                      its default, exactly as a nil `ctx.lang` does today
----   cover_url          this book's own artwork, where its feed published one
----   series_cover_url   the series' artwork, the step before page 1
----
---- **The URLs here are the live ones, secrets and all** — this builds the
---- in-memory descriptor, not the file. `saveAt` redacts them on the way out and
---- `load` restores them on the way in, so a caller that builds a descriptor,
---- saves it and reads the file back gets the same strings it started with, and
---- a caller that inspects `desc.template` after a save still has the real one.
----
---- `item_id` is gone: it was the catalog's rowid, carried so an open could
---- notice the database had been rebuilt underneath the marker. There is no
---- database to be rebuilt, so there is nothing for it to guard. A v1 file keeps
---- carrying the number; nothing reads it.
+-- In-memory descriptor: URLs stay live; saveAt redacts a copy on the way out.
 function Marker.new(fields)
     return {
         version          = Marker.VERSION,
@@ -107,24 +35,10 @@ function Marker.new(fields)
     }
 end
 
---- The fields above that hold a URL a credential can sit inside.
----
---- One list, read by both halves of the redaction pair below. A field added to
---- `Marker.new` and not added here is written to disk **with the API key in
---- it** — which is what CLAUDE.md's security note exists to prevent, and what
---- the marker's whole redaction apparatus was built for. `Kavita` puts its key
---- in a path segment of every URL it emits, covers included.
+-- A URL field missing here is written to disk with Kavita's API key in it.
 local CREDENTIAL_FIELDS = { "template", "cover_url", "series_cover_url" }
 
---- What this marker knows about its series, for callers that need the context
---- rather than the book.
----
---- The v1 fallbacks live here and only here, so no caller has to know which
---- fields an older file might be missing: a marker written before `series_name`
---- existed answers with nil and every reader of it already falls back (History
---- shows the book's own title, the dialog falls back to the book label). The
---- one field with no fallback is `server_kind`, and that is honest — without a
---- driver there is no feed URL, so there are no neighbours.
+-- The one place v1 fields may be nil; every caller falls back but server_kind.
 function Marker.seriesContext(desc)
     if type(desc) ~= "table" then
         return nil
@@ -134,10 +48,6 @@ function Marker.seriesContext(desc)
         server_kind      = desc.server_kind,
         series_remote_id = desc.series_remote_id,
         series_name      = desc.series_name,
-        -- The book's own identity within that series, which is how a feed
-        -- answers "which entry is this one" without a rowid: it is the same
-        -- key the drivers derive, so a walk and a marker cannot disagree
-        -- about which chapter a book is.
         item_key         = desc.item_key,
         lang             = desc.lang,
         cover_url        = desc.cover_url,
@@ -145,25 +55,13 @@ function Marker.seriesContext(desc)
     }
 end
 
---- A descriptor complete enough to open a book from.
----
---- Deliberately a predicate over the descriptor alone, and it does **not** test
---- for an unrestored `<redacted>` in the template. Two reasons: a validity test
---- that depended on whether a catalog happens to be configured would be a
---- different kind of test than this one, and this one is also the "is this file
---- ours at all" check that keeps a stray `.meguru` from becoming a bogus stream.
---- A marker whose catalog is missing is *valid* — it opens, and its pages fail
---- to fetch with a URL that says why.
+-- Doubles as "is this file ours"; no catalog still valid, just unfetchable.
 function Marker.isValid(desc)
     return type(desc) == "table"
         and type(desc.template) == "string" and desc.template ~= ""
         and type(desc.item_key) == "string" and desc.item_key ~= ""
 end
 
---- Identity of the book a descriptor names, for comparing and for deriving
---- names that must be stable. Never includes the template: a template can carry
---- a rotated API key or a renumbered chapter, and neither may count as a
---- different book.
 function Marker.naturalKey(desc)
     return table.concat({
         desc.server_name or "",
@@ -172,26 +70,9 @@ function Marker.naturalKey(desc)
     }, "|")
 end
 
---- Put the credential back into a descriptor read off disk.
----
---- The file stores a placeholder rather than the key (`saveAt` put it there),
---- so this is the inverse half of one pair, and the pair has exactly one member
---- on each side. Every caller of `Marker.load` therefore sees a descriptor whose
---- `template` is the real stream URL, and none of them has to know the file is
---- redacted at all — which is the point of doing it here rather than at the
---- call sites. `ui/open.lua` alone reads a marker from four places, and a
---- fifth added later would not know to restore.
----
---- **A marker with no catalog configured still loads.** It is a valid marker —
---- `isValid` asks whether the file is ours and complete, not whether the world
---- is configured — and refusing it would cost the reader the book with a message
---- that misdescribes its own file. What it cannot do is fetch: the placeholder
---- stays, the URL 404s, and the log says why. See `MeguruDocument:init`.
+-- Inverse of saveAt's redaction; a marker with no catalog still loads.
 local function restoreCredential(desc)
-    -- Is there anything to do at all? Answered first and once: the common path
-    -- is a marker with no placeholder anywhere (every Suwayomi one, and every
-    -- Kavita one written before this existed), and a line per book opened
-    -- because of it would be noise.
+    -- Up front and once: the common marker has no placeholder and needs no log line.
     local pending = false
     for _, field in ipairs(CREDENTIAL_FIELDS) do
         local value = desc[field]
@@ -205,9 +86,7 @@ local function restoreCredential(desc)
     end
 
     local conn = Sources.connection(desc.server_name)
-    -- Named, and warned once for the whole marker rather than once per field: a
-    -- Kavita marker whose catalog is missing has three placeholders in it, and
-    -- three identical warnings would read as three separate faults.
+    -- Warn once per marker, not per field: three alerts would read as three faults.
     local stuck = {}
     local restored_count = 0
     for _, field in ipairs(CREDENTIAL_FIELDS) do
@@ -223,40 +102,25 @@ local function restoreCredential(desc)
         end
     end
     if #stuck > 0 then
-        -- The placeholder survived: no catalog of that title, or one whose root
-        -- no longer matches this URL's prefix (a renamed entry, a second server
-        -- sharing the title, a server that moved host). Both are worth saying
-        -- out loud — this is the line the reader pastes into a report, and
-        -- without it the diagnosis needs them to know that a `<redacted>` in a
-        -- URL is not what the server sent. The field names matter: a stuck
-        -- `cover_url` costs a cover, a stuck `template` costs the book.
+        -- Pasteable diagnosis: a stuck cover costs a cover, a stuck template the book.
         logger.warn("Meguru: the marker for", desc.title or "?", "still has"
             .. " redacted URLs in", table.concat(stuck, ", "), "and no usable"
             .. " catalog named", tostring(desc.server_name),
             "- it opens, but those fetches cannot")
     end
     if restored_count > 1 then
-        -- The credential sat in more than one path position, and both were
-        -- filled with the same value. Right for every shape the supported
-        -- servers emit, unverified for one nobody has seen.
+        -- The credential sat in more than one path position, each filled the same.
         logger.dbg("Meguru: restored", restored_count, "credentials in the"
             .. " marker for", desc.title or "?")
     end
     return desc
 end
 
---- Read a descriptor back from a marker file, or nil when the file is missing
---- or does not hold one of ours.
----
---- The descriptor comes back as the book it names, not as the file it came
---- from: `template` has its credential restored — see `restoreCredential`.
 function Marker.load(path)
     if not FS.exists(path) then
         return nil
     end
-    -- LuaSettings.open is a *colon* method. pcall must forward both arguments,
-    -- so it needs a closure: a bare pcall(LuaSettings.open, path) would bind
-    -- path to `self` and leave file_path nil, silently reading an empty table.
+    -- Colon method: a bare pcall would bind path to self and read an empty table.
     local ok, ls = pcall(function()
         return LuaSettings:open(path)
     end)
@@ -270,20 +134,12 @@ function Marker.load(path)
     return restoreCredential(desc)
 end
 
---- Does the marker at `path` describe the same book as `desc`?
----
---- Read back only when a title is already taken — never on the fresh-write path,
---- which is the common one.
 function Marker.matches(path, desc)
     local existing = Marker.load(path)
     return existing ~= nil and Marker.naturalKey(existing) == Marker.naturalKey(desc)
 end
 
---- Where a marker write should land.
----
---- The user's chosen folder when one is set and usable, otherwise the KOReader
---- home folder — the folder the file browser opens in. A stale choice (a folder
---- on media that was unplugged) falls back rather than losing the marker.
+-- A stale choice (media unplugged) falls back rather than losing the marker.
 function Marker.baseDir()
     local dir = Settings.get("marker_dir")
     if type(dir) == "string" and dir ~= "" then
@@ -296,11 +152,7 @@ function Marker.baseDir()
     return Marker.homeDir()
 end
 
---- The folder the file browser opens in, resolved the way KOReader's own
---- filemanagerutil.getHomeFolder does — except that when neither the configured
---- nor the device default is usable it falls back to the plugin cache dir
---- rather than KOReader's bare ".", which would point at the process working
---- directory and hide the marker somewhere nobody will find it.
+-- Falls back to the cache dir, not KOReader's bare "." (the process CWD).
 function Marker.homeDir()
     local dir
     local g = rawget(_G, "G_reader_settings")
@@ -317,9 +169,7 @@ function Marker.homeDir()
     return FS.ensureDir(Paths.cacheDir()) or Paths.cacheDir()
 end
 
---- Folder the "save as a book" picker should start in: the last choice while it
---- is still a real directory, otherwise the home folder, so a stored folder
---- whose volume is gone never leaves the picker on a dead path.
+-- Falls back to the home folder so a stored folder on dead media never starts the picker.
 function Marker.pickerStartDir()
     local dir = Settings.get("marker_dir")
     if type(dir) == "string" and dir ~= "" and FS.isDir(dir) then
@@ -328,47 +178,7 @@ function Marker.pickerStartDir()
     return Marker.homeDir()
 end
 
---- The folder a marker for this book belongs in: `<base>[/<Server>]/<Series>`.
---- `opts.server_folder` adds the catalog component from `desc.server_name`, and
---- the series component comes from `desc.series_name` when the descriptor has
---- one.
----
---- **Two series may share a folder, and no file is overwritten when they do.**
---- A folder name used to be checked against the catalog so the second series
---- could be suffixed, and that check is gone with the catalog. What remains is
---- `pathFor`'s disambiguation of the *file*, which is the part that matters:
---- nothing is clobbered, and a reader whose two same-named series share a folder
---- sees both books in it. Suffixing a *folder* was never the protection anyway —
---- moving an existing series' folder would orphan the DocSettings sidecars that
---- hold its reading progress, which is why the check only ever applied to the
---- book being saved.
----
---- **Pure: it returns where a marker would go and creates nothing.** It used to
---- `FS.ensureDir` each component as it built the path, which was right while the
---- caller was about to write — and wrong the moment the write moved to the end of
---- the resume dialog. Tapping a book and then tapping past the question left the
---- series folder behind, empty, and an empty folder is not the harmless leftover
---- it looks like: it is indistinguishable from a series whose books were all
---- deleted, and it survives a "Clear cache" the way nothing else here does.
---- Creating it is now `saveAt`'s, at the moment there is a file to put in it.
----
---- The one thing that is *not* deferred is the outermost folder: `base_dir`
---- defaults to `Marker.baseDir()`, which does create it, because "is this folder
---- usable" is the question it exists to answer and a path on unplugged media has
---- to be rejected before anything is planned around it.
----
---- **One shape in, and it is the marker's own.** This took a descriptor *and* a
---- series row, and read the series' name from the row — `series.name` — while
---- every caller had already moved to passing what a marker says about its series
---- (`series_name`). So the condition below was silently false for every book, and
---- `dirFor` returned the base folder with no series component: **every new marker
---- landed beside its series rather than inside it**, and nothing failed, because a
---- table without a field is nil rather than an error.
----
---- The descriptor carries all three fields it reads, so there is one parameter
---- and no way to pass the wrong half of a pair. `Marker.seriesContext` produces
---- the same three names from the same fields, which is why a context works here
---- too and a caller never has to know which it holds.
+-- Pure: creates nothing, so a dismissed dialog leaves no empty folder behind.
 function Marker.dirFor(desc, opts)
     opts = opts or {}
     local dir = opts.base_dir or Marker.baseDir()
@@ -383,12 +193,7 @@ function Marker.dirFor(desc, opts)
     if type(desc.series_name) == "string" and desc.series_name ~= "" then
         local component = Naming.sanitizeComponent(desc.series_name)
         if component ~= "stream" then
-            -- No suffix for a claimed folder any more. It asked whether another
-            -- series already had this folder name and disambiguated if so, and
-            -- its only caller was the catalog lookup that went with the catalog.
-            -- Two series sharing a folder is now accepted; `pathFor` still
-            -- disambiguates the *file*, so nothing is overwritten, and the
-            -- reader keeps the sidecars beside the markers they belong to.
+            -- Two series may share a folder; pathFor disambiguates the file.
             dir = dir .. "/" .. component
         end
     end
@@ -396,13 +201,7 @@ function Marker.dirFor(desc, opts)
     return dir
 end
 
---- The marker file path for a descriptor inside `dir`.
----
---- Normally `<dir>/<title>.<ext>`, so a re-open finds the existing marker and
---- keeps its reading progress. Only when a *different* book
---- already owns that title (two volumes that share a title, two servers) is a
---- deterministic suffix of the natural key appended — distinct books never
---- clobber each other, and each always resolves back to the same file.
+-- A different book on the title gets a natural-key suffix so neither clobbers.
 function Marker.pathFor(dir, desc)
     local base = Naming.markerBaseName(desc.title)
     local plain = dir .. "/" .. base .. "." .. Paths.MARKER_EXT
@@ -413,15 +212,7 @@ function Marker.pathFor(dir, desc)
         .. "." .. Paths.MARKER_EXT
 end
 
---- Create `dir`, or the nearest ancestor that can be made.
----
---- Degrading is the behaviour `dirFor` used to have, one component at a time,
---- while it was also the thing creating the path: a subfolder that cannot be
---- made must cost the reader a folder level, not the book. The walk stops at
---- `Marker.baseDir()`, which has already vouched for itself, so this always
---- terminates on something usable rather than climbing to the filesystem root.
----
---- Returns the folder that was made, or nil when even the base is unusable.
+-- Climbs to the nearest makeable ancestor, stopping at the baseDir.
 local function ensureDirOrAncestor(dir)
     local base = Marker.baseDir()
     local candidate = dir
@@ -436,41 +227,7 @@ local function ensureDirOrAncestor(dir)
     end
 end
 
---- Persist a descriptor at a path already decided by `pathFor`.
----
---- Separate from a plain write because the path has to be known *before* the
---- file exists. The resume dialog reads a marker's sidecar to decide what to say
---- ("Start reading" or "Continue — page 30"), and a sidecar is a path-derived
---- thing: `DocSettings:hasSidecarFile` and `localLastPage` both work on a path
---- that has no marker behind it yet. So the caller resolves everything, asks,
---- and only then writes — and it must write to the path it asked about, which
---- is why this does not call `pathFor` again. Recomputing would be a second
---- answer to a question already answered, and `pathFor` consults the directory
---- it is about to write into, so the two could disagree.
----
---- The folder is created here and only here, which is what keeps a dismissed
---- dialog from leaving an empty series folder behind — see `dirFor`.
----
---- **The descriptor is written with its credential removed, and the caller's
---- table is left alone.** Kavita's API key is a path segment, so the marker
---- file — which lives in the reader's *book* folder, not in `settings/` — would
---- otherwise carry it in plaintext, onto an SD card or into whatever syncs that
---- folder. `Marker.load` puts it back; the pair has exactly this one member on
---- each side. See `meguru/credential`.
----
---- A copy rather than an edit, and the reason is mechanical as well as
---- hygienic: `LuaSettings:saveSetting` stores the table *by reference* and only
---- serialises at `flush()`, so a table shared with this function is a live
---- object the caller could still change underneath the write. Nothing reads
---- `desc.template` after a save today, which is exactly when an invariant like
---- this is cheap to establish and expensive to retrofit.
----
---- The copy goes through `pairs` rather than an explicit field list: a list is
---- how a field added to `Marker.new` later gets silently dropped on the way to
---- disk.
----
---- Returns the path written, or nil when no folder could be made. A caller that
---- gets nil reports it; nothing is silently dropped.
+-- Folder is made at write time, so a dismissed dialog leaves nothing behind.
 function Marker.saveAt(path, desc)
     local dir = path:match("^(.*)/[^/]+$")
     if dir then
@@ -485,15 +242,12 @@ function Marker.saveAt(path, desc)
             path = usable .. "/" .. (path:match("([^/]+)$") or path)
         end
     end
+    -- Copy via pairs: LuaSettings holds the table by reference until flush().
     local stored = {}
     for key, value in pairs(desc) do
         stored[key] = value
     end
-    -- Every URL, not just the stream template: Kavita puts the same key in the
-    -- path of the artwork it publishes, so a cover left unredacted is the same
-    -- secret in the same file. The list is one place, so a URL field added to
-    -- `Marker.new` cannot be redacted on the way out and forgotten on the way
-    -- in — see `CREDENTIAL_FIELDS`.
+    -- Redact every URL field: Kavita's key rides in cover URLs too.
     for _, field in ipairs(CREDENTIAL_FIELDS) do
         if type(stored[field]) == "string" then
             stored[field] = Credential.redactTemplate(stored[field])

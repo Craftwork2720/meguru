@@ -604,7 +604,9 @@ the delay is the point — a reader swiping quickly re-arms and unschedules fast
 it, so the warm never does work they did not ask for. The guard is
 `UIManager:isWidgetShown(self)`, which is the whole bookkeeping: a viewer that has been
 closed or handed off is off the stack, so its queued warm is a no-op. Both branches are
-gated on `dead_pages` and the page branch on `hasConnection()`. **Do not add panel
+gated on `dead_pages` and the page branch on `hasConnection()`. The native cache holds
+three (`max_cached_native`), so warming N+1 while N is live and N-1 may still be can
+evict N-1's decode — the existing trade, not a new one. **Do not add panel
 detection to `analyseAhead`**: that runs inside every page turn, and a scan per turn
 is exactly the cost this delay exists to keep out of the gesture.
 

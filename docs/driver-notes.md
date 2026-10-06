@@ -21,6 +21,10 @@ seq   = Feed.ordered(items)              -- reading order, and the length of the
 next  = Feed.neighbor(seq, item_key, "next")
 ```
 
+The walk is a stepper rather than one call because the engine's HTTP is synchronous
+and there is no thread to walk on: it must be able to stop between pages and hand
+control back to the event loop.
+
 The rules that make a walk safe, each of which has a reason:
 
 - **Pagination is followed by `rel=next`**, never by constructing `?page=N`.
@@ -32,7 +36,8 @@ The rules that make a walk safe, each of which has a reason:
 - **Two page caps, named for their caller.** `Feed.MAX_PAGES` bounds a walk nobody
   is waiting for; `Feed.TAP_PAGES` bounds one started by a gesture. A tap cannot
   spend half a minute of frozen e-ink, and six pages is 600 chapters — past the point
-  where walking further to find a neighbour is plausible.
+  where walking further to find a neighbour is plausible; it covers Berserk's 403
+  chapters in five.
 - **`opts.timeout` picks the `Net` preset.** A tap is `"resume"` (4s/8s), not the
   `"feed"` (10s/30s) a background job could afford. There are no background jobs any
   more, so this is always the short one in practice, and it is still a parameter
@@ -58,7 +63,9 @@ has exactly two callers: `Feed.collect`, which walks a chain, and `itemsFrom` in
 `ui/open.lua`, which is the one place in that file where feed entries become
 items — the three list-parsing sites (`freshResumeTarget`, and `seriesItems`
 twice) go through it rather than through the driver, so the identity rule cannot
-drift between them again.
+drift between them again. Kavita emits some chapters twice byte for byte, so
+collapsing them keeps a caller's count honest and stops a duplicate being offered
+as a neighbour of itself.
 
 *Why first-wins was wrong, which is what this replaced:* **Kavita's "Continue
 From" entry** — behind *Include Continue From Entry*, in User Settings → OPDS — is
@@ -112,6 +119,13 @@ of the ordered prefix, is load-bearing
 for any caller that looks *backwards*: the unpositioned tail is in feed order, which
 for Suwayomi is the exact reverse of reading order.
 
+`positioned` is legitimately 0 for a feed-ordered server, and every selector survives it:
+`firstUnfinished` ignores the second argument, `lastIn` falls through to its second pass
+over the unpositioned tail, and `firstIn` is `sequence[1]`. `firstIn` reads a feed the
+server already filtered to its own unread flag (`Suwayomi.unreadFilter`); where its answer
+disagrees with the page-count predicate, the flag wins, because that is what the reader
+sees in the server's own UI.
+
 `Feed.ordered` is also the one ordering both entry points share, **extracted rather
 than copied**, because the bug it exists for was the two of them disagreeing:
 `freshResumeTarget` took the last item of the parsed page with any progress —
@@ -129,6 +143,11 @@ credentials stay in the engine — otherwise there are three copies of the `rel=
 logic and three copies of the loop guard, and HTTP ends up inside a driver where it
 cannot be read with understanding. The only I/O a driver genuinely needs is
 Suwayomi's lazy metadata fetch, and that is handled by an injected callback.
+
+That refresh is a correctness requirement for Suwayomi rather than an optimisation: its
+stored stream template carries a chapter position the server can renumber, and a stale one
+fetches a *different chapter* while still answering 200. The stored template remains the
+offline fallback, so a caller only reaches here with a network to reach it on.
 
 ```
 authorSignatures                      -> lowercased needles matched against the
@@ -235,6 +254,14 @@ whole feed (`freshResumeTarget`, `feedSeries`) and over every registered driver
 already has an answer from `discover` must not ask this one, and the loop callers must stay as
 they are.
 
+`resolveSeries` is handed a `fetch_json` deliberately unlike `resolveStream`'s `fetch`: it
+asks for `application/json` and decodes the body here so no driver needs a decoder, and it
+waits on `"resume"` (4s/8s) rather than `"feed"`, because it is asked while the resume dialog
+is still waiting. The call is `pcall`-wrapped, which `resolveStream`'s is not, because
+`registerBook` runs it inside a UI callback and a throw there would cost the reader the open
+itself. There is deliberately no cache: the request is made per open, and the marker cannot
+be one, since its own path is a function of the answer being looked up.
+
 **`progressRequest(desc, page)` is handed the marker's own descriptor**, because that is where
 a book keeps the two things a write needs — its stream `template` and its `count` — and neither
 is an argument a caller should have to invent. The verb is not a field: a driver describes a
@@ -244,5 +271,6 @@ both mean no report, but they are different facts, and a default would erase the
 between a driver that opted out and one that failed.
 
 **`ctx` carries `lang`, the translation the reader was browsing in, and only Suwayomi selects
-on it.**
+on it.** It is remembered per server because it can only be learned while browsing:
+defaulting it would fetch the wrong translation of the right series.
 

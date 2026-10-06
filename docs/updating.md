@@ -27,6 +27,16 @@ is refused rather than defaulted** — pagenumbercrop's fallback of `"0.0.0"` is
 below every release ever published, so it turns each check into "a new version
 is available" forever.
 
+**Versions compare numerically, part by part.** `1.2.10` is above `1.2.9` where a
+string compare would invert them, a missing part counts as zero, and a trailing
+suffix (`-beta`) is ignored — a deliberate limit rather than a simplification:
+no prerelease has ever been published, and a full SemVer precedence
+implementation would be a hundred lines of precedence rules to order tags
+nobody writes. Both the tag (`v1.2.0`) and `_meta.lua`'s own form (`1.2.0`) are
+canonicalised by the same function, so the comparison and the install's "is this
+the release it was asked for" check cannot disagree about which form is
+canonical.
+
 It earned itself on `v0.9.2`, which was tagged one commit before the version
 bump landed: the run failed at that step, skipped the build and created no
 release. The recovery is to move the tag — `git push --delete origin v0.9.2`,
@@ -68,12 +78,26 @@ under `ASSET_NAME` is the one this release built. Then the installed directory
 is moved aside by **rename**, the staged tree is renamed into its place, and
 anything that goes wrong after that puts the backup back.
 
+**The verification is four required files, not one** — `main.lua`, `_meta.lua`,
+`meguru/updater.lua` and `meguru/net.lua`. `main.lua` alone would not notice an
+archive that shipped the entry point and none of the modules, which loads and
+then fails on the first tap.
+
+**The archive's `meguru.koplugin/` prefix is not joined on by the extractor.**
+Every entry's path already begins with it, because the workflow stages the tree
+under exactly that name; joining it again unpacks one level too deep, into
+`staging/meguru.koplugin/meguru.koplugin/`, and the verification then reports a
+perfectly good archive as "not a Meguru release". A device did exactly that.
+
 **Nothing on disk but markers** now has an exception of a different shape than
 `seriescover`'s: `<data>/ota/meguru/` holds the archive, the staged tree and the
 backup for the length of one attempt, and `ota` is entirely ours, so every
 failure path clears the whole directory in one `purgeDir` rather than picking
 off what that stage happened to write. A 477 KB zip left on the card after a
-failed attempt would be exactly the thing this codebase does not do.
+failed attempt would be exactly the thing this codebase does not do. It sits
+under the data directory rather than in `cache/meguru` because the staged tree
+has to *become* the plugin directory by rename, and a rename cannot cross
+filesystems.
 
 Three things about that transaction are load-bearing and each is easy to
 "tidy" away:

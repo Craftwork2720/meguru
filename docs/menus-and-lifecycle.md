@@ -94,6 +94,14 @@ answers `Series: Books` for a flat library, and on a folder that happens to be c
 popup reports is what the file carries, so a `.cbz` with no ComicInfo has no series to
 show — and the folder name stays where it means something, in the navigation rows.
 
+**Those navigation rows are built once per document.** The reader's item table is
+built when the book opens and nothing rebuilds it, so a volume added to a local
+`.cbz`'s folder while the book is open appears on the next open and not before. The
+rows name no book — a neighbour is fetched when the reader asks, so a title would be a
+promise made before the walk that would have to keep it — and the local `.cbz` listing
+is what decides whether the rows exist at all: a lone book in a folder gets none,
+rather than two that answer "no next chapter".
+
 Nothing is written or fetched; dismissing it is `ButtonDialog`'s own tap-outside.
 
 **The split between *Page* and *Tone* is the one thing to keep straight when moving a
@@ -197,12 +205,24 @@ Invariants when touching these rows:
   Position is named by neighbour rather than by index on purpose — everything above
   this row is whatever the user has enabled, so an index would land somewhere different
   on the next device. `profiles` was the neighbour before and sits far enough down the
-  list to have stopped being a useful landmark.
+  list to have stopped being a useful landmark. A hinted row lands at the *end* of the
+  named page's list — for `tools`, below `more_tools`, i.e. below Developer options —
+  which is the position core's own `ui/plugin/insert_menu.lua` targets and this one
+  avoids. `showUnderTools` names **both** order tables
+  (`ui/elements/filemanager_menu_order` and `reader_menu_order`), because they are the
+  objects the menu builders `require`, so one mutation is seen by every later build.
+  Two facts make the edits safe: an id in an order list with no matching item is skipped
+  by the sorter (what happens on the reader surface while a PDF is open), and a
+  duplicate insert is inert, because the first occurrence consumes the item out of
+  `item_table`.
 - **`separator` and `checked_func` are `TouchMenu`-only; `mandatory` is
   plain-`Menu`-only.** Both menus Meguru registers are `TouchMenu`s on a touch device,
   so both fields are usable in these rows. `text_func` renders on either, which is why
   the destination rows carry their state in the text rather than in a `mandatory` value
   slot.
+- **A `for _` loop would shadow gettext's `_` in `ui/menu.lua`.** Its progress rows
+  loop is indexed (`for i = 1, #Progress.KINDS`) for exactly this reason;
+  `tools/check.py` pass 9 is the same trap seen from the loop's side.
 - **A `Settings` submenu on both surfaces** — the reader's holds the rows that are about
   a book being read (auto-open next in series, report reading progress, hide status bar,
   save folder, subfolder per server, `Covers for folders`, default reader for `.cbz`,
@@ -211,9 +231,11 @@ Invariants when touching these rows:
   and a preference row here would be a plugin-wide answer to a per-book question. Two live
   in the viewer's own button row, where the reader can see what they do while looking at
   the page they do it to, and the view is the bottom dialog's *Panel view* row — see
-  `docs/panel-zoom.md`. The FileManager's depth is a deliberate
-  cost, paid so the two menus read the same. No `sorting_hint` exists below the top-level
-  `meguru` item — the sorter only ever orders a page's own rows.
+  `docs/panel-zoom.md`. A row here would also be undone by another panel plugin, whose
+  long-press takes over the panels while the row still describes Meguru's own. The
+  FileManager's depth is a deliberate cost, paid so the two menus read the same. No
+  `sorting_hint` exists below the top-level `meguru` item — the sorter only ever orders
+  a page's own rows.
 - **`Covers for folders` is the one thing below `Settings`, and it is an exception
   rather than a precedent.** Its three rows are switches for one feature, and as flat
   rows they would take `Settings` from six entries to nine while naming servers instead
@@ -232,10 +254,12 @@ Invariants when touching these rows:
   as a name and a count, and never looks for a file beside a document.
 - **The separator is *under* the row that carries it** (`touchmenu.lua:714`), and is
   dropped when that row is last on a page (`touchmenu.lua:713`) — so a separator is a
-  hint about the list, never a guarantee about the screen. Two lines split `Settings`
-  into its three groups, and each sits on the row that *ends* a group: `Hide status
-  bar` and `Subfolder per server`. The FileManager gets both but only the second has
-  anything above it there.
+  hint about the list, never a guarantee about the screen. Three lines split the
+  reader's `Settings` into its four groups, and each sits on the row that *ends* a
+  group: `Hide status bar` (behaviour above, book location below), `Subfolder per
+  server` (location above, covers and the `.cbz` row below) and the default-reader row
+  (preferences above, *Check for updates*, the one action, below). The FileManager
+  holds only the last two.
 - **The FileManager's `Meguru` submenu carries nothing but that `Settings` row.** Both
   surfaces use the key `meguru`, which is safe because the two `menu_items` tables are
   per-surface and never shared, and `Meguru:addToMainMenu` dispatches on whether a

@@ -94,6 +94,12 @@ file. Lua 5.1 constrains the shape: every double intermediate must stay exact,
 which rules out FNV-1a's `h * 16777619` (~2^56) and forces the two polynomials
 (`*33`, `*65599`) that do.
 
+**A folder name is not disambiguated against the catalog, on purpose.** `Marker.dirFor`
+once suffixed a second series that wanted the same folder name, and no longer does:
+suffixing a *folder* was never the protection — moving an existing series' folder
+would orphan the `DocSettings` sidecars holding its reading progress — so the guard
+stays on `Marker.pathFor`'s file name, which does not move anything.
+
 **Page bytes live in the document, keyed by page number alone.** `self.page_bytes`
 is a four-entry array, most-recent-first. A bare page number is unambiguous only
 because exactly one document can reach the store: `self.file` is fixed and

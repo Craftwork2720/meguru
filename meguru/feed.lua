@@ -1,34 +1,4 @@
---[[--
-Reading a series' canonical feed: walking it, putting it in reading order, and
-picking the entry either side of the one being read.
-
-This module is the whole of the engine's network surface for a series, and it
-**writes nothing**. It used to be `meguru/sync.lua`, whose job was to walk a
-feed and persist the result into a catalog; with the catalog gone the persisting
-half has no object, and what is left is a reader. The name follows: "sync"
-means keeping two things equal, and nothing here keeps anything equal to
-anything.
-
-Three things live here that used to live apart, and they live together because
-they answer one question:
-
-  * the `rel=next` walk — the engine's HTTP, with the pagination and the
-    completeness rule;
-  * reading order (`Feed.ordered` and the selectors over it), which is what
-    turns a feed into a sequence;
-  * `Feed.neighbor`, which is the one answer callers actually want — the entry
-    before or after this one.
-
-Order is shared rather than copied because the same series used to give two
-different answers from two different screens: the browser's page is
-`number_desc` and the canonical feed is `number_asc`, and whichever function
-read the page it happened to hold got the other one's answer. One ordering, one
-selector, one neighbour.
-
-Pagination is followed by `rel=next` and never by constructing `?page=N`:
-Kavita's next href is a bare query string and Suwayomi's carries `lang`, so a
-rebuilt URL would quietly walk a different feed than the one being paged.
---]]
+-- Reading a series' canonical feed: walk it, order it, name a neighbour.
 
 local logger = require("logger")
 
@@ -40,21 +10,13 @@ Base.loadDrivers()
 
 local Feed = {}
 
---- Page cap for one walk. Well past any real series while still bounding a
---- `next` chain that never terminates.
+-- Bounds a `next` chain that never terminates; well past any real series.
 Feed.MAX_PAGES = 25
 
---- How many pages a walk started by a *tap* may cross.
----
---- A walk is now something a reader waits for — "next chapter" crosses the feed
---- in the gesture that asked for it — and half a minute of frozen e-ink is what
---- a 25-page series costs. Six pages is 600 chapters, well past the point where
---- walking further to find a neighbour is plausible, and it covers Berserk's
---- 403 in five.
+-- A tap cannot spend half a minute of frozen e-ink; six pages is 600 chapters.
 Feed.TAP_PAGES = 6
 
--- Walking ---------------------------------------------------------------------
-
+-- The href is relative to its own page, not the first page's path.
 local function nextLink(feed, page_url)
     local url = require("socket.url")
     for _, link in ipairs(type(feed.link) == "table" and feed.link or {}) do
@@ -66,18 +28,7 @@ local function nextLink(feed, page_url)
     return nil
 end
 
---- A resumable `rel=next` walk, one page per `step()`.
----
---- The engine's HTTP is synchronous and there is no thread to walk on, so the
---- walk has to be able to stop between pages and hand control back to the event
---- loop. `Feed.walk` is this stepper run to completion, which is the right call
---- when the caller is already going to wait; a caller that wants to stay
---- responsive drives the stepper itself.
----
---- `complete` is only ever true when the walk reached the end of the chain.
---- Everything else — a non-200, an unparseable body, the page cap, a `next`
---- pointing back at a page already visited, a cancellation — leaves it false,
---- and `reason` says which.
+-- Synchronous HTTP: the walk stops between pages and hands control back.
 local Walker = {}
 Walker.__index = Walker
 
@@ -88,12 +39,11 @@ function Feed.walker(url, opts)
         visited  = {},
         pages    = {},
         count    = 0,
-        -- The URL of the next page to fetch, or nil at the end of the chain.
+        -- The next page to fetch; nil here is the end of the chain.
         current  = url,
     }, Walker)
 end
 
---- Fetch one page. Returns true while there is more work.
 function Walker:step()
     if self.finished then
         return false
@@ -109,8 +59,7 @@ function Walker:step()
         return stop(true, nil)
     end
     if self.visited[self.current] then
-        -- A `next` chain that loops would otherwise page forever between two
-        -- feeds.
+        -- A looping `next` chain would otherwise page forever.
         return stop(false, "next-loop")
     end
     if self.count >= (opts.max_pages or Feed.MAX_PAGES) then
@@ -125,10 +74,7 @@ function Walker:step()
     local feed, reason = Net.fetchFeed(page_url, {
         username = opts.username,
         password = opts.password,
-        -- Forwarded so a caller walking on the reader's behalf can ask for the
-        -- short preset. `Net.RESUME_*` (4s/8s) instead of `Net.FEED_*` (10s/30s)
-        -- is what keeps a slow server from holding the screen through a tap.
-        -- Default unchanged: nil here is still `"feed"` inside `Net.fetchFeed`.
+        -- A tap passes "resume" (4s/8s); nil stays "feed" in Net.fetchFeed.
         timeout = opts.timeout,
     })
     self.count = self.count + 1
@@ -136,8 +82,7 @@ function Walker:step()
         return stop(false, reason or "network")
     end
 
-    -- The URL is kept alongside the feed because entry hrefs resolve against
-    -- *their own* page: a later page need not share the first one's path.
+    -- Kept per page: hrefs resolve against their own page, not the first's.
     self.pages[#self.pages + 1] = { feed = feed, url = page_url }
     if opts.on_page then
         opts.on_page(self.count, page_url)
@@ -150,61 +95,19 @@ function Walker:step()
     return true
 end
 
---- Walk `url` to the end in one call. Returns `pages, complete, reason, count`.
 function Feed.walk(url, opts)
     local walker = Feed.walker(url, opts)
     while walker:step() do end
     return walker.pages, walker.complete, walker.reason, walker.count
 end
 
---- One item per book, and the copy that carries the server's own page wins.
----
---- **A repeated `item_key` is one book, and the entry that describes it is the
---- one carrying the position.** `last_read` is the whole of that: it is what says
---- where the reader stopped. A duplicate without it is a *shortcut to* the book
---- rather than the book, so first-wins — which is what this replaced — answered
---- with the copy that describes the book least.
----
---- **Kavita's "Continue From" entry is the case this exists for.** With *Include
---- Continue From Entry* on (User Settings → OPDS), `GetSeriesDetail` adds an entry
---- at the **top** of a series feed: it is `CreateChapterFeedEntry` of the chapter
---- the reader is on, so it carries the same `chapterId`, the same stream and the
---- same `p5:count` as that chapter's own entry, and only its title is replaced.
---- It carries **no `p5:lastRead`** — PROTOCOL.md has the capture — while the entry
---- it duplicates carries the reader's page. Under first-wins the alias survived
---- and the book lost its progress, which is not a cosmetic loss: `isFinished` is
---- false without a `last_read`, so `firstUnfinished` then read the alias as
---- *unfinished* and offered a chapter with no page to open it at.
----
---- **The survivor keeps its *own* place in the feed, not the place of the copy it
---- displaced.** That is not tidiness: for a server whose feed order *is* reading
---- order — Kavita, whose `Feed.ordered` therefore has no position to sort on —
---- position is the neighbour relation, because `Feed.neighbor` walks the sequence
---- by index. Kavita's entry sits at the **top** of the feed, so a survivor that
---- inherited its slot would put the chapter the reader is *in* at the head of the
---- series: "next chapter" would answer the first volume, and "previous" would say
---- there is none. Keeping the winner's own index puts it back among its
---- neighbours, where the server put it.
----
---- Returns `unique`, how many were `dropped`, and the entries `replaced` — the
---- copies given up in favour of one that carried a page. The last is what lets a
---- caller say *why* a row it was looking at is not on offer, and it is empty for
---- the duplicates that differ in nothing, which is the ordinary case.
----
---- An item with no `item_key` identifies no book and is dropped as one of the
---- `dropped`, exactly as it was before this was extracted.
----
---- **Nothing here reads a title, and that is a requirement rather than a
---- preference.** Kavita's OPDS settings are *per user* — `Include Continue From
---- Entry` decides whether the entry above exists at all, and `Embed Progress
---- Indicator` / `... in Title` decide whether the title carries a status glyph —
---- so the same series feed has a different shape for each reader of it. The
---- identifier and the page are on the wire in every one of those shapes; the title
---- is not.
+-- A copy carrying `last_read` is the book; one without it is only a shortcut.
+-- `replaced` is the copies given up for one that carried a page.
 function Feed.dedupe(items)
     local at, kept, dropped, replaced = {}, {}, 0, {}
     for index, item in ipairs(items or {}) do
         local key = item.item_key
+        -- No item_key names no book, so it is dropped like a duplicate.
         if not key then
             dropped = dropped + 1
         else
@@ -221,8 +124,7 @@ function Feed.dedupe(items)
             end
         end
     end
-    -- By the index each survivor was *found at*, so the list is the feed's own
-    -- order with the duplicates taken out of it.
+    -- Sorted by the index each survivor was found at: the feed's own order.
     table.sort(kept, function(a, b) return a.index < b.index end)
     local unique = {}
     for i, entry in ipairs(kept) do
@@ -231,20 +133,7 @@ function Feed.dedupe(items)
     return unique, dropped, replaced
 end
 
---- Every item the walk's pages describe, in feed order, deduped.
----
---- Kavita emits some chapters twice, byte for byte. Collapsing them here keeps
---- the count a caller reports honest, and keeps a duplicate from being offered
---- as a neighbour of itself.
----
---- **Deliberately not numbered.** A position used to be assigned here, because
---- the catalog stored one; nothing stores one now, and the order a caller needs
---- is `Feed.ordered`'s, which reads the server's own list position rather than
---- the arrival order of a page that may be descending.
----
---- **One walk is many pages**, so the collapse has to happen across the whole of
---- it rather than per page — which is why it is `Feed.dedupe` over the joined
---- list and not something the loop below could do as it went.
+-- The collapse spans the walk, not one page: a chapter can repeat across pages.
 function Feed.collect(walker, plan)
     local all = {}
     for _, page in ipairs(walker.pages or {}) do
@@ -257,50 +146,8 @@ function Feed.collect(walker, plan)
     return unique, duplicates
 end
 
--- Reading order ---------------------------------------------------------------
-
---- A parsed page put into reading order, plus how much of it that order covers.
----
---- **Order from the server's own list position, which is in the path.** A
---- Suwayomi entry links to `/series/{id}/chapter/{n}/metadata`, and `{n}` is the
---- position on the server's list — that is, its reading order.
----
---- **Whether the number in a title may be used at all is the server's answer,
---- and `opts.title_order` is how a driver gives it.** It used to be taken
---- whenever the path was silent, and that was wrong for the one server whose
---- feed is *already* in reading order: Kavita's. Kavita feeds routinely mix
---- granularity — `Volume 1, Volume 2, Volume 3, Chapter 1, Chapter 2, Chapter 3`
---- is one series in this library — and numbering that by title sorts it
---- `1, 1, 2, 2, 3, 3`, interleaving chapters into volumes the server had already
---- put in the right order. Measured across 3473 series: 25 change order, and 116
---- mix the two styles. Titles that yield no number at all were worse still — the
---- tail is where they went, so a mid-series chapter was offered last. Both shapes
---- exist in that library: `Chapter 128x1`, and a volume with nothing but release
---- groups after its name.
----
---- So a driver that does not set `opts.title_order` gets feed order, which is
---- the honest reading of a feed its server sorts. Suwayomi does set it, because
---- there the feed is newest-first and the title is the only fallback left once
---- the path is gone.
----
---- Returns the sequence and `positioned`, the length of its ordered prefix.
---- Everything after index `positioned` had no position anywhere and is in feed
---- order. Callers that need "earlier"/"later" must not read past `positioned`
---- without meaning to: feed order is *not* reading order in general, and for
---- Suwayomi it is its exact reverse.
----
---- **`positioned` is legitimately 0 for a server that orders by feed**, and
---- every selector over this sequence survives it: `firstUnfinished` ignores the
---- second argument, `lastIn` falls through to its second pass
---- (`positioned + 1 … #sequence`) and answers with the last entry in feed order,
---- and `firstIn` is `sequence[1]`.
----
---- Extracted from `firstUnread` rather than copied, because the consumer that
---- was missing it is the bug this exists for. `freshResumeTarget` picked the
---- furthest-read chapter by *feed* order, which is right on the canonical feed
---- and backwards on the page the browser holds — the same series, the same
---- question, two opposite answers depending on which screen asked. Sharing the
---- ordering is what keeps them from disagreeing again.
+-- A title number only when the driver vouches; else the server's list order.
+-- Everything after `positioned` has no position and stays in feed order.
 function Feed.ordered(parsed, opts)
     local Naming = require("meguru/naming")
     opts = opts or {}
@@ -308,9 +155,7 @@ function Feed.ordered(parsed, opts)
     for index, item in ipairs(parsed or {}) do
         local path_position = type(item.detail_url) == "string"
             and tonumber(item.detail_url:match("/chapter/(%d+)/")) or nil
-        -- Not even derived when the server has not vouched for it: `Naming` is
-        -- a lazy require for the sake of one edge in this file, and there is no
-        -- reason to walk a title for a number nobody will read.
+        -- Skipped unless a driver vouches; `Naming` is the one lazy require.
         local title_number
         if opts.title_order then
             local _, _, number = Naming.deriveSeries(item.title or "")
@@ -330,8 +175,7 @@ function Feed.ordered(parsed, opts)
         sequence[#sequence + 1] = entry.item
     end
     local positioned = #sequence
-    -- No position anywhere: the feed's own order, which is reading order for the
-    -- server whose feeds are built that way.
+    -- The unpositioned tail keeps feed order, which is Kavita's reading order.
     table.sort(fallback_position, function(a, b) return a.index < b.index end)
     for _, entry in ipairs(fallback_position) do
         sequence[#sequence + 1] = entry.item
@@ -340,31 +184,14 @@ function Feed.ordered(parsed, opts)
     return sequence, positioned
 end
 
---- Has this chapter been read to its own last page?
----
---- The page counter is the only evidence a Kavita-style feed carries, so
---- "finished" can only mean `last_read >= page_count` here.
----
---- **A chapter with no count is unfinished, not finished.** Offering a chapter
---- again is a smaller mistake than skipping past one, and a Suwayomi entry has
---- no count at all until its stream is resolved — so the alternative would
---- silently treat every unopened Suwayomi chapter as done.
+-- No count or no read means unfinished: re-offering beats skipping one.
 function Feed.isFinished(item)
     local total = tonumber(item.page_count) or tonumber(item.progress_total)
     local read = tonumber(item.last_read)
     return (total and read and read >= total) and true or false
 end
 
---- The first entry in reading order the server has not finished, or nil.
----
---- Takes no account of `positioned`, like `firstIn`: this reads *forward*, and
---- the unpositioned tail sits at the *end* of the sequence, so it cannot win
---- from this direction — there is nothing to guard against.
----
---- Returns nil when every entry is finished, and the two callers want opposite
---- things from that: `firstUnread` (the row above a series feed) says so and
---- stops, while `firstUnfinishedOrLast` below treats it as "this reader is at
---- the end" and names the last chapter instead.
+-- Reads forward: the unpositioned tail at the end cannot win, so no guard.
 function Feed.firstUnfinished(sequence, _positioned)
     for _, item in ipairs(sequence) do
         if not Feed.isFinished(item) then
@@ -374,15 +201,7 @@ function Feed.firstUnfinished(sequence, _positioned)
     return nil
 end
 
---- The last entry in reading order.
----
---- Two passes, and the order of the passes is the point: the ordered prefix is
---- reading order, so its last entry is the furthest along; the unpositioned tail
---- is *feed* order, and is only consulted when nothing was positioned at all.
---- For Suwayomi that tail is empty — every chapter entry is positioned, by its
---- `rel=subsection` link or by its stream — so the second pass is dead code
---- there, and it exists for Kavita, whose feed order is reading order and where a
---- chapter whose title carries no number is perfectly ordinary.
+-- The ordered prefix first: its last entry is furthest along; feed tail last.
 function Feed.lastIn(sequence, positioned)
     for pass = 1, 2 do
         local first, last
@@ -398,47 +217,17 @@ function Feed.lastIn(sequence, positioned)
     return nil
 end
 
---- Where the reader carries on: the first chapter not finished, or the last one.
----
---- **The second half is not decoration.** A series read to the end has nothing
---- unfinished, and "nowhere to continue" is not the answer this button is for —
---- the reader who finished chapter 177 and taps again is at chapter 177, and a
---- button that vanished would be telling them the series is empty.
----
---- This is the default for `freshResumeTarget`, so it is what Kavita gets on its
---- own feed and what a Suwayomi series gets on the canonical feed when the
---- server reports nothing unread.
+-- A finished series still answers: the reader who finished the last is at it.
 function Feed.firstUnfinishedOrLast(sequence, positioned)
     return Feed.firstUnfinished(sequence) or Feed.lastIn(sequence, positioned)
 end
 
---- The earliest entry of a feed that already contains only what we want.
----
---- **The same question as `firstUnfinished` above, answered by the server
---- instead of inferred.** This one is handed a feed the server already filtered
---- to the chapters it flags *unread* (`Suwayomi.unreadFilter`), where every entry
---- qualifies by construction and the answer is simply the earliest one.
----
---- Why not just ask `firstUnfinished` there too: on a filtered feed the two
---- usually agree, and where they disagree the *server* is right. A chapter the
---- server flags unread whose page counter happens to read full — the two axes
---- genuinely do disagree, which is the whole reason `unreadFilter` exists — would
---- be skipped by the page-count predicate and offered by this one. The flag is
---- what the reader sees in the server's own UI, so the flag wins.
+-- On a filtered feed the flag wins: only the server knows what it flags unread.
 function Feed.firstIn(sequence, _positioned)
     return sequence[1]
 end
 
---- The entry before or after `item_key` in a sequence already in reading order.
----
---- Returns nil when the key is not in the sequence at all, which is the honest
---- answer: a caller asking for a neighbour of something this feed does not list
---- has no neighbour to be given, and guessing one from position would offer a
---- chapter the reader did not ask for.
----
---- `which` is `"next"` or `"previous"`. Walking the sequence rather than
---- scanning a stored list is the whole difference from the old design: a feed
---- that has moved on cannot leave a stale neighbour behind.
+-- Absent key means no neighbour; guessing from position offers an unasked one.
 function Feed.neighbor(sequence, item_key, which)
     if type(item_key) ~= "string" or item_key == "" then
         return nil
@@ -456,10 +245,7 @@ function Feed.neighbor(sequence, item_key, which)
     return sequence[which == "previous" and (index - 1) or (index + 1)]
 end
 
--- Planning --------------------------------------------------------------------
-
---- The catalog root to build fetch URLs from: the URL the user configured minus
---- any trailing slash, so joining a path never doubles it.
+-- Trailing slashes stripped so joining a path never doubles them.
 local function baseURL(configured_url)
     if type(configured_url) ~= "string" or configured_url == "" then
         return nil
@@ -467,10 +253,7 @@ local function baseURL(configured_url)
     return (configured_url:gsub("/+$", ""))
 end
 
---- A `fetch(url) -> feed` closure bound to one server's credentials, for
---- drivers whose streams need an extra request. This is the only I/O a driver
---- ever causes, and it happens through here so credentials, timeouts and log
---- redaction stay in the engine.
+-- The one I/O a driver causes: credentials, timeouts and redaction stay here.
 local function makeFetch(conn)
     return function(url_str)
         if type(url_str) ~= "string" or url_str == "" then
@@ -484,25 +267,8 @@ local function makeFetch(conn)
     end
 end
 
---- A `fetch_json(url) -> table` closure bound to one server's credentials, for
---- the driver hook that has to read a JSON answer — today only
---- `resolveSeries`.
----
---- **Beside `makeFetch` on purpose**, so the two credential paths cannot drift
---- apart: both take the server's username and password from the one `conn` and
---- neither logs the URL verbatim. What differs is what they ask for and how long
---- they will wait, and both differences are deliberate rather than copied:
----
----   * the media type is the API's own, not a feed's, and the body is **decoded
----     here** so that no driver needs a decoder or a policy for its absence;
----   * the timeout is `"resume"` (4s/8s) where `makeFetch` passes none and so
----     gets `"feed"` (10s/30s) inside `Net.fetchFeed`. That is not an oversight
----     to be "fixed" into agreement: `resolveStream` is reached from an open that
----     has already accepted a wait, where this one is asked while the reader is
----     waiting for the resume dialog to appear — the same class of wait
----     `currentResumeTarget` sizes its own fetches for.
----
---- Every refusal is one logged line and a nil; a reader never sees any of them.
+-- A JSON answer, decoded here so no driver needs a decoder.
+-- "resume" (4s/8s), not makeFetch's "feed": the reader awaits this dialog.
 local function makeJsonFetch(conn)
     return function(url_str)
         if type(url_str) ~= "string" or url_str == "" then
@@ -519,10 +285,8 @@ local function makeJsonFetch(conn)
                 "(", tostring(code), ")")
             return nil
         end
-        -- Lazily, like the OPDS parser: a build without it costs this one hook
-        -- rather than the whole module. `Net.jsonDecoder` is where the names are
-        -- known — one of them answered nothing on a device, which is why there is
-        -- more than one.
+        -- Lazy: a build without a decoder costs this hook, not the module.
+        -- Net.jsonDecoder knows several names; one gave nothing on a device.
         local json = Net.jsonDecoder()
         if not json then
             return nil
@@ -537,17 +301,8 @@ local function makeJsonFetch(conn)
     end
 end
 
---- Everything a walk needs before it can start: which driver, whose credentials,
---- the canonical feed URL, and the driver's context.
----
---- `opts.on_failure` is called with a message for each way of refusing, and it
---- is **required by the caller rather than done here**: this module writes
---- nothing and knows nothing to write to. A refusal still has to leave a trace —
---- an unknown kind and an unconfigured server fail identically from the reader's
---- side, and each needs a different fix — so the caller decides where the trace
---- goes.
----
---- Returns `plan, nil` or `nil, reason`.
+-- Refusals go through `opts.on_failure`: this module writes nothing, and an
+-- unknown kind and an unconfigured server need different repairs.
 function Feed.plan(server, opts)
     opts = opts or {}
     local function refuse(reason)
@@ -568,11 +323,7 @@ function Feed.plan(server, opts)
         return refuse("server not configured")
     end
 
-    -- `lang` is remembered per server by whatever saw the reader browsing, which
-    -- is the only place it can be learned: a walk with no browsing context and a
-    -- driver's own default would fetch the wrong translation of a Suwayomi manga
-    -- while still keying it to the right series. `opts.lang` is the caller's, and
-    -- its absence is the driver's default.
+    -- Defaulting lang would fetch the wrong translation of the right series.
     local ctx = { lang = opts.lang }
     local url = driver.catalogURL(base, opts.remote_id, ctx)
     if type(url) ~= "string" or url == "" then
@@ -583,8 +334,7 @@ function Feed.plan(server, opts)
         driver = driver,
         ctx    = ctx,
         url    = url,
-        -- Ready for `Feed.walker`, so no caller rebuilds the credentials (and
-        -- cannot pass the wrong server's).
+        -- Bound here so no caller rebuilds them and passes another server's.
         walker_opts = {
             username     = conn.username,
             password     = conn.password,
@@ -596,23 +346,8 @@ function Feed.plan(server, opts)
     }
 end
 
---- `Feed.plan` for a book, from the marker that describes it.
----
---- The one place a *descriptor* becomes a *server*, so no caller has to know how
---- a book names its server or what to do when it does not. Three things are
---- folded in here, and each is a case a caller would otherwise re-derive and get
---- subtly different:
----
----   * `server_kind` is what the marker was written with. A marker written
----     before the field existed has none, and a v1 book must not lose its next
----     chapter for that — so the template it does carry is asked instead
----     (`Base.kindFromTemplate`), which is the same evidence `discover` uses.
----   * `server_name` is the catalog title credentials are looked up by, which is
----     the marker's field of exactly that meaning.
----   * `lang` is per server and was learned when the reader browsed, so it comes
----     from the marker rather than being defaulted here.
----
---- Returns `plan, nil` or `nil, reason`, like `Feed.plan`.
+-- The one place a marker becomes a server.
+-- A v1 marker has no server_kind, so its stream template is asked instead.
 function Feed.planForMarker(desc, opts)
     if type(desc) ~= "table" then
         return nil, "no marker"
@@ -639,24 +374,14 @@ function Feed.planForMarker(desc, opts)
     })
 end
 
---- Resolve the page stream for an item, refreshing it from the server when the
---- driver needs to.
----
---- For Suwayomi this is a correctness requirement rather than an optimisation:
---- the stored template carries a chapter position that the server can renumber,
---- and a stale one fetches a *different chapter* while still answering 200. The
---- stored `template` remains the offline fallback, which is why a caller only
---- reaches here with a network to reach it on.
+-- For Suwayomi a refresh is correctness, not speed: a stored position may be
+-- renumbered, and a stale one fetches a different chapter while answering 200.
 function Feed.resolveStream(item, server, opts)
     opts = opts or {}
     local driver = server and Base.forKind(server.kind)
     if not driver then
-        -- Both of the early returns here hand back the stored template, which is
-        -- NULL for every lazy item — and those are exactly the items that need
-        -- this function. So the failure otherwise surfaces three frames away as
-        -- "no page stream", with nothing naming the cause. Kavita items never
-        -- notice: their template is stored, so the early return is a success by
-        -- accident.
+        -- The early return hands back a stored template lazy items do not have,
+        -- so the failure surfaces later as an unnamed "no page stream".
         logger.warn("Meguru: no driver for server", tostring(server and server.name),
             "(kind=" .. tostring(server and server.kind) .. ")",
             "- cannot resolve the stream for", item.title)
@@ -672,37 +397,13 @@ function Feed.resolveStream(item, server, opts)
     if template then
         return template, count or item.page_count
     end
-    -- Could not refresh: fall back to the stored template rather than failing to
-    -- open a book that can still be read.
+    -- Refresh failed: the stored template still opens the book.
     return item.template, item.page_count
 end
 
---- The series of an entry whose feed did not name one, asked of the server.
----
---- **The I/O counterpart of `discover`, and asked at the one moment it is
---- affordable.** `discover` is pure because it runs per entry over a whole feed
---- and over every registered driver; this runs once, for one book, from the
---- caller that is opening it. A driver that does not implement the hook answers
---- nothing and costs nothing — Kavita and Suwayomi both recover the series from
---- the stream itself and have no use for it.
----
---- The two lookups this makes are the same two `Feed.plan` makes before it will
---- walk anything: the driver from `server.kind`, and the credential from
---- `Sources.connection`. Both failing silently is the ordinary case for a device
---- with no catalogue configured, and both are logged, because a nil here is
---- indistinguishable from "the server had nothing to say" downstream.
----
---- **Pcall'd, which `resolveStream` is not.** Under this call there is a socket
---- and a JSON decode, and the caller is `registerBook`, running inside a UI
---- callback: a throw here would cost the reader the open itself, where the whole
---- point of the fallback is that a book survives a server that will not answer.
---- `Base.kindFor` pcalls `discover` for the same reason.
----
---- Nil is ordinary and every caller must read it as "this series could not be
---- identified", which is the state the open path already carries. Note what is
---- *not* here: no cache. The request is made per open, and the marker is what
---- makes a later open from History free — a marker cannot be the cache for this,
---- because its own path is a function of the answer being looked up.
+-- Asked once per open, not per entry: `discover` stays pure by doing no I/O.
+-- Pcall'd: the caller is a UI callback, and a throw would cost the open.
+-- No cache: the marker's path depends on this answer, so it cannot store it.
 function Feed.resolveSeries(entry, stream, server, ctx)
     local driver = server and Base.forKind(server.kind)
     if not (driver and type(driver.resolveSeries) == "function") then
@@ -724,10 +425,7 @@ function Feed.resolveSeries(entry, stream, server, ctx)
         or found.series_remote_id == "" then
         return nil
     end
-    -- Said out loud, because it is the one thing that tells this path apart from
-    -- `discover` having answered. Without it a book that still ends up flat says
-    -- nothing about *why*, and "the request was never made", "the request failed"
-    -- and "the answer was rejected" are three different repairs.
+    -- Logged: a flat book must distinguish never-run, failed, and refused.
     logger.info("Meguru: resolved the series for", tostring(entry and entry.title),
         "-", tostring(found.series_remote_id),
         found.series_name and ("(" .. tostring(found.series_name) .. ")") or "")
