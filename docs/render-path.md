@@ -40,17 +40,13 @@ gives stock's own tiles RGB32 on the same device.
 log, not for the code.
 
 **On the grayscale branch a decoded page is 8bpp and the dither is still forced
-on.** Both halves are one story, and the second half is a decision with a cost —
-recorded here so it is not "corrected" a third time without knowing what it is.
-`Mupdf.openDocumentFromText` never sets `doc.color` and `draw_new` allocates BB8
-whenever the field is falsy, so a page that *is* decoded grayscale ends up BB8 —
-not the RGB24 an earlier comment here and in `meguru/doc/image` claimed. That
-mattered because the false premise was the whole justification for forcing
-`sw_dithering = true` and calling `ditherblitFrom` with no branch: a *converting*
-blit is what dithering is for, and ours is a same-format copy. On a BB8
-destination `ditherblitFrom` runs `dither_o8x8` (blitbuffer.c), which quantises a
-full 8-bit page to **16 levels on a fixed 8x8 pattern** — a burnt-in dot grid and
-four bits of tone gone, on every pixel of every page.
+on.** `Mupdf.openDocumentFromText` never sets `doc.color`, and `draw_new` allocates
+BB8 whenever the field is falsy, so a page that *is* decoded grayscale ends up BB8,
+**not RGB24**. Forcing `sw_dithering = true` and calling `ditherblitFrom` with no
+branch is therefore a same-format copy rather than the converting blit dithering is
+for. On a BB8 destination `ditherblitFrom` runs `dither_o8x8` (blitbuffer.c), which
+quantises a full 8-bit page to **16 levels on a fixed 8x8 pattern** — a burnt-in dot
+grid and four bits of tone gone, on every pixel of every page.
 
 Reading the flag from `Screen.sw_dithering` — `framebuffer.lua`'s `setupDithering`
 answer — would be the more defensible arrangement *there*, and it is **not** what

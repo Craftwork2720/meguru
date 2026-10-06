@@ -941,9 +941,11 @@ Four things about it are the design rather than the arithmetic:
 **Nothing downstream has to know, and that is not an accident of this change.** Every step
 already carried its own `w`/`h`, `out_w`/`out_h` and `panel` — that is why a step carries
 them at all — so the viewer, the tile key, the pre-warm and the render-path log line read
-the step and cannot tell an eased panel from a page whose steps simply differ. `entryView`
-is the one caller that has to be told: `steps` hands it the panel's **own** scale, or a tap
-on an eased panel would open at the reader's zoom and jump to another one a press later.
+the step and cannot tell an eased panel from a page whose steps simply differ. `steps`
+is the one caller that has to be told: it is handed *which panel the reader
+long-pressed* (`entry`), so the walk opens on that panel's own frame — a tap on an
+eased panel would otherwise open at the reader's zoom and jump to another one a press
+later.
 
 The constant is a guess at where a reader stops noticing the shrink and starts wanting the
 zoom, and it is the one number to move if that judgement is wrong. **Zero switches the whole
