@@ -1,0 +1,15 @@
+# This file itself first: core.autocrlf would otherwise hand it back with CRLF,
+# and a pattern line that ends in "\r" does not match what it looks like it
+# matches — which would quietly undo the rule below on the next checkout.
+.gitattributes text eol=lf
+
+# `libs/` holds vendored ELF binaries, and this repository is worked on from
+# Windows with core.autocrlf=true. Git decides "binary" by sniffing the first
+# few KB for a NUL, which is right for an ELF but is a heuristic — and a
+# heuristic is the wrong thing to rest a shipped .so on. A converted library is
+# not a broken diff; it is a row on a reader's device that stops working.
+*.so binary
+
+# The LICENCE beside them is text and travels unmodified, so it must not be
+# re-wrapped either.
+libs/LICENSE binary
