@@ -824,9 +824,9 @@ Each step must pass before the next:
     `seriesTitle` at the top level. If a deployment closes `/api`, every row above degrades to
     `i`, which is the status quo ante rather than a fault.
 
-28. **Derainbow filters what the reader sees and nothing else.** Needs a **colour** device with
-    `derainbowify.koplugin` installed beside Meguru, and a book whose pages are largely
-    black-and-white artwork — which is where the artefacts and the filter both live.
+28. **Derainbow filters what the reader sees and nothing else.** Needs a **colour** device —
+    nothing else installed, the libraries ship with the plugin — and a book whose pages are
+    largely black-and-white artwork, which is where the artefacts and the filter both live.
     [derainbow](derainbow.md) is the design; what follows is what only a device can answer.
 
     | # | do | expected |
@@ -840,6 +840,6 @@ Each step must pass before the next:
     | g | the mosaic's cover for this book | **not** filtered, and no `derainbow` line for it. A cover is a decode and never a tile — this is the row that catches a filter put at the decode instead of the seam |
     | h | change Contrast, then Saturation | the page re-renders and is **still** filtered — the switch joins the tile stamp and survives a tone change, which drops the decodes |
     | i | turn Derainbow on, then turn **colour rendering** off in KOReader's own settings | the row is **gone** from the Tone tab on the next menu open, and pages decode without a filter or an error |
-    | j | rename `derainbowify.koplugin`, restart, open a book whose `kopt_derainbow` is `1` | it opens **unfiltered**, with no error and no `derainbow` line, and the row is absent. The value is the reader's and it stays in the book |
-    | k | with it renamed, check `crash.log` for `available` | nothing — the probe is silent when the plugin is simply absent, and only a *failed load of files that were there* warns |
+    | j | delete `<plugin dir>/libs/`, restart, open a book whose `kopt_derainbow` is `1` | it opens **unfiltered**, with no error and no `derainbow` line, and the row is absent. The probe is silent when the files are simply missing — only a *failed load of files that were there* warns |
+    | k | put the files back and open the book again | the row returns and the filter runs; nothing about the book had to change, because the value lives in the book and the availability lives in the install |
     | l | turn the row off again on a page already shown | it repaints unfiltered immediately. A tile keeps its old pixels until the stamp is compared, and `ReZoom` is what asks for new ones |

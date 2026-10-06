@@ -82,6 +82,11 @@ assets/
   icons/                  optional; the bottom menu's tab icons, one per tab
     reading.svg  page.svg  rotation.svg  tone.svg  info.svg
 
+libs/                     vendored, not ours: the moiré filter's native libraries
+  color_detect-<platform>.so   from derainbowify.koplugin 0.0.12, unmodified
+  moire_filter-<platform>.so   GPL-3.0; see libs/README.md for provenance
+  LICENSE                      that project's licence, which travels with them
+
 .github/workflows/release.yml   a tag builds meguru.koplugin.zip and publishes it
 ```
 
@@ -97,6 +102,15 @@ name when a file is not there (see `docs/menus-and-lifecycle.md`). The plugin ha
 it was deleted on purpose — an error-page drawing whose headline named the wrong
 fault — so the distinction is worth keeping: these are the row's *identity* and
 the menu's, not a claim about something that went wrong.
+
+**`libs/` is the third thing shipped and the first that is not ours**, which is
+why it is not in that sentence: it holds another project's compiled code, taken
+unmodified from its release and pinned at the version `meguru/derainbow`'s
+prototypes were written against. It is *not* optional — the Derainbow row is
+absent without it — and it is the whole reason that row no longer needs
+`derainbowify.koplugin` installed. `libs/README.md` carries the provenance, the
+version and the GPL-3.0 terms; `docs/derainbow.md` carries what the pinning
+costs. Nothing updates those files but a human.
 
 `tools/check.py` is a development aid, not part of the plugin.
 
@@ -186,10 +200,13 @@ pages, so it is a leaf, and the two rules it owns about the pair's own fit — t
 a spread keeps and the scale a page cropped short grows by — are numbers in and numbers
 out, the boxes themselves staying where the geometry lives. `meguru/derainbow` is a leaf of
 the same kind and is required by `doc/document` and by `ui/reader` — the first to run the
-filter, the second to decide whether to offer the row — and it requires only `meguru/fs`
-and KOReader's own modules. It is the one module that loads a **foreign** shared library,
-someone else's, at runtime; that is a dependency of the device's install rather than of
-this graph, and `docs/derainbow.md` says what it is and when it is absent.
+filter, the second to decide whether to offer the row — and it requires only `meguru/fs`,
+`meguru/paths` and KOReader's own modules. It is the one module that loads a **shared
+library**, and the library is not ours: vendored from another project into `libs/`, pinned
+at the version its prototypes were written against. That is a dependency of the *filesystem*
+rather than of this graph — the `.so` is not a module and has no edge — and
+`docs/derainbow.md` says what it is, what the pinning costs, and where the row is absent
+anyway.
 
 
 ## Where the detail lives

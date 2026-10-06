@@ -67,4 +67,23 @@ function Paths.asset(name)
     return plugin_dir .. "/assets/" .. name
 end
 
+--- Where a file shipped in the plugin's own `libs/` lives, or nil when that
+--- directory is not known.
+---
+--- The same contract as `asset` above, and the difference is only what is in
+--- there: `assets/` holds artwork this plugin drew or was given, and `libs/`
+--- holds **someone else's compiled code** — the moiré filter, vendored from
+--- `derainbowify.koplugin` with its licence beside it (`libs/README.md` says
+--- where it came from and what the version means).
+---
+--- Kept separate from `asset` rather than folded into it because the two fail
+--- differently, and a caller should be able to say which it wanted: a build
+--- with no artwork loses a picture, and a build with no libraries loses a row.
+function Paths.lib(name)
+    if type(plugin_dir) ~= "string" or plugin_dir == "" then
+        return nil
+    end
+    return plugin_dir .. "/libs/" .. name
+end
+
 return Paths

@@ -1,12 +1,12 @@
 --[[--
-The rainbow-moiré filter, borrowed at runtime from `derainbowify.koplugin`.
+The rainbow-moiré filter, vendored from `derainbowify.koplugin`.
 
 A Kaleido 3 panel puts a colour filter array over a monochrome one, and fine
 black-and-white artwork — which is most manga — beats against that array and
-comes up in rainbows. `derainbowify.koplugin` removes them with a Fourier pass
-over the rendered page, in a native library it builds and ships itself.
+comes up in rainbows. The filter that removes them is a Fourier pass in a native
+library, written by someone else and shipped in `libs/` beside this file.
 
-**None of it reaches a Meguru book on its own.** That plugin wraps
+**None of that plugin's own code reaches a Meguru book.** It wraps
 `KoptInterface.renderPage`, `KoptInterface.renderOptimizedPage`,
 `CreDocument:drawCurrentView` and `Document.hintPage`, and hangs its switch off
 the `KoptOptions`/`CreOptions` sections. A Meguru book is none of those: it
@@ -15,12 +15,19 @@ renders through MuPDF itself (`meguru/doc/image`) and answers
 hooks is inert here — and `Document.hintPage`, the only one that could have
 fired, is shadowed by `MeguruDocument:hintPage`, which never calls the base.
 
-So this module reaches for the same `.so` files the other plugin installed and
-calls them directly. **Nothing is vendored and nothing is redistributed**: the
-library is found in `derainbowify.koplugin`'s own directory, and when that
-plugin is not installed this module answers `false` and the reader is never
-offered the switch. Meguru loads someone else's GPL-3.0 binary at runtime; it
-ships none of it.
+So this module calls the same four exported symbols itself. That much was always
+true; what changed is **where the files come from**. It used to look for an
+installed `derainbowify.koplugin` and answer "unavailable" when there was none,
+which made the row depend on a second install for no reason a reader could see.
+The libraries now ship with this plugin (`libs/`, taken unmodified from that
+project's version 0.0.12 — `libs/README.md` records the provenance and the
+licence) and an installed copy of the other plugin is neither needed nor used.
+
+**That freezes the ABI, and that is the trade.** The four prototypes below are
+written against 0.0.12. LuaJIT's FFI does not check a signature against the
+library it calls — a changed one is undefined behaviour rather than an error —
+so these files are never updated by anything but a human deciding to re-copy and
+re-test them. A newer `derainbowify` cannot break this, and cannot fix it either.
 
 **Only one buffer shape is ever handed over, and that is a safety rule rather
 than a preference.** `remove_moire` decides what it is looking at from
@@ -32,17 +39,17 @@ than a preference.** `remove_moire` decides what it is looking at from
   * `bpp == 2` (BB8A) takes that same three-byte-per-pixel branch over a
     two-byte pixel, which is a heap overflow of one byte per pixel.
 
-The other plugin's bridge gates on `bpp >= 3` and so lets the second case
-through; it never meets the third only because it never filters an alpha
-buffer. This module gates on `TYPE_BBRGB32` and an exact stride instead, and
-refuses everything else — a page that is not filtered is a page as it was,
-which is the only failure worth having here. See `docs/derainbow.md`.
+The other plugin's own bridge gates on `bpp >= 3` and so lets the second case
+through; it never meets the third only because it never filters an alpha buffer.
+This module gates on `TYPE_BBRGB32` and an exact stride instead, and refuses
+everything else — a page that is not filtered is a page as it was, which is the
+only failure worth having here. See `docs/derainbow.md`.
 --]]
 
 local Blitbuffer = require("ffi/blitbuffer")
-local DataStorage = require("datastorage")
 local Device = require("device")
 local FS = require("meguru/fs")
+local Paths = require("meguru/paths")
 local ffi = require("ffi")
 local ffiutil = require("ffi/util")
 local logger = require("logger")
@@ -50,22 +57,22 @@ local util = require("util")
 
 local Derainbow = {}
 
--- The other plugin's directory and the shape of what it puts in it. Both names
--- are its own, built the same way its `main.lua` builds them.
-local PLUGIN_NAME = "derainbowify.koplugin"
+-- The library names, and the versions of them this was written against. The
+-- suffixes are the other project's filename convention; `libs/README.md` says
+-- where the files came from.
 local COLOR_LIB = "color_detect-%s.so"
 local MOIRE_LIB = "moire_filter-%s.so"
 
 -- Its constants, kept as they are so a page filtered here looks like a page
--- filtered by the plugin itself.
+-- filtered by that plugin itself.
 local COLOR_TOLERANCE = 20
 local FILTER_STRENGTH = 0.9
 
--- Declared here because this module loads its own handle to the libraries; the
--- other plugin declares the same four. A second `ffi.cdef` naming symbols that
--- are already declared is refused by LuaJIT ("attempt to redefine"), so the
--- call below is guarded: if it fails, the symbols exist and the calls resolve
--- anyway. That is the only reason the guard is there.
+-- Declared here because this module loads its own handle to the libraries.
+-- Nothing else in the process declares these names, but the declaration is
+-- guarded anyway: a second `ffi.cdef` for a symbol that is already declared is
+-- refused by LuaJIT, and a refusal here would mean the symbols exist, which is
+-- a working state rather than a fault.
 local CDEF = [[
 bool is_page_colored(uint8_t* data, int width, int height, int stride, int tolerance);
 void remove_moire(unsigned char *fb_data, int width, int height, int stride, bool is_colored, float strength);
@@ -80,27 +87,20 @@ local function nowMs()
     return secs * 1000 + usecs / 1000
 end
 
--- Every answer this module caches, and there are two different kinds in here.
+-- Every answer this module caches, and they are all settled by one probe.
 --
--- `probed`/`installed` are a fact about an *installation*: the platform does not
--- change under a running KOReader and neither do the files on disk, so this is
--- asked once and kept — a reader who installs the other plugin mid-session sees
--- the switch after a restart, which is what every plugin install in KOReader
--- asks for anyway.
---
--- `load_attempted`/`loaded` are a different answer and are kept for a different
--- reason: a `dlopen` that failed must not be retried on every tile of every
--- page, and it must not be confused with "not installed" — the files being there
--- and unloadable is a real fault and is reported as one.
+-- `available` is a fact about an *installation and a panel*, neither of which
+-- changes under a running KOReader, so it is asked once and kept — which is also
+-- why `apply` does not re-ask it per tile. `initialized` is separate because
+-- `init_moire_resources` allocates, and a reader who never turns the row on
+-- should not pay for that; `filter_failed` because a library that throws will
+-- throw on every tile of every page and must be reported once.
 local state = {
     probed = false,
-    installed = false,
-    color_path = nil,
-    moire_path = nil,
-    load_attempted = false,
-    loaded = false,
+    available = false,
     color = nil,
     moire = nil,
+    initialized = false,
     filter_failed = false,
 }
 
@@ -148,30 +148,23 @@ local function libPaths()
     if not suffix then
         return nil, nil
     end
-    local dir = DataStorage:getDataDir() .. "/plugins/" .. PLUGIN_NAME .. "/libs/"
-    return dir .. string.format(COLOR_LIB, suffix),
-           dir .. string.format(MOIRE_LIB, suffix)
+    return Paths.lib(string.format(COLOR_LIB, suffix)),
+           Paths.lib(string.format(MOIRE_LIB, suffix))
 end
 
---- Whether this device can offer the switch at all.
----
---- Three questions, and the first is the one that keeps it off most devices: a
---- screen that cannot show colour has no rainbow to remove, and that is a
---- property of the *panel* rather than of the reader's colour setting — which
---- is why this asks `Device:hasColorScreen()` and not `Image.colorEnabled()`.
---- The row asks the second question separately (see `ui/reader`), because a
---- reader who has turned colour rendering off would be offered a switch whose
---- effect `apply` then refuses to produce.
----
---- Memoised, and that is the one thing to know about calling it: the answer is
---- fixed for the session.
-function Derainbow.available()
-    if state.probed then
-        return state.installed
-    end
-    state.probed = true
-    state.installed = false
-
+-- Load both libraries, once, and answer whether this device can filter at all.
+--
+-- **It loads rather than merely looking.** The files are ours now, so on any
+-- supported platform `FS.exists` would say yes every time — and would be wrong
+-- on the one platform where it matters: an Android install whose plugin
+-- directory sits inside the APK ships these files and cannot `ffi.load` them.
+-- A row that appears and then does nothing is worse than a row that is not
+-- there, so the only honest test is the load itself.
+--
+-- Memoised by `available`, so this costs one `dlopen` per session whichever of
+-- the two callers reaches it first: the menu, deciding whether to offer the row,
+-- or the render path, on the first page that wants filtering.
+local function probe()
     if not deviceSays("hasColorScreen") then
         return false
     end
@@ -179,57 +172,65 @@ function Derainbow.available()
     if not (color_path and moire_path) then
         return false
     end
-    -- The files, not the directory: both halves are needed and either one
-    -- missing means the other plugin is not installed for this platform.
     if not (FS.exists(color_path) and FS.exists(moire_path)) then
         return false
     end
-    state.color_path, state.moire_path = color_path, moire_path
-    state.installed = true
-    return true
-end
 
--- Load both libraries once, on the first page that actually wants filtering
--- rather than when the row is offered: a reader who never turns the switch on
--- should never pay for a dlopen.
-local function loadLibs()
-    if state.loaded then
-        return true
-    end
-    -- `not state.installed` is checked *before* the attempt is recorded, so a
-    -- call that arrives before `available()` has ever run cannot poison the
-    -- one-shot ledger and leave the libraries permanently unloaded.
-    if state.load_attempted or not state.installed then
-        return false
-    end
-    state.load_attempted = true
-
-    local ok_color, color = pcall(ffi.load, state.color_path)
-    local ok_moire, moire = pcall(ffi.load, state.moire_path)
+    local ok_color, color = pcall(ffi.load, color_path)
+    local ok_moire, moire = pcall(ffi.load, moire_path)
     if not (ok_color and ok_moire and color and moire) then
-        -- Once, and at warn: this is a real fault — the files were there — and
-        -- it must not repeat on every tile of every page.
-        logger.warn("Meguru: derainbow libraries are installed but would not load:",
+        -- At warn, once: the files said they were there, so this is a broken
+        -- install or a platform the build does not match, and it is worth
+        -- saying rather than silently hiding the row.
+        logger.warn("Meguru: derainbow libraries are present but would not load:",
             tostring(color), tostring(moire))
         return false
     end
-    -- Guarded, not checked: see the note on CDEF. A refusal here means the
-    -- other plugin already declared them, which is a working state.
+    -- Guarded, not checked: see the note on CDEF.
     pcall(ffi.cdef, CDEF)
 
     state.color, state.moire = color, moire
-    -- Best-effort. The other plugin treats this as allocating whatever the
-    -- filter needs up front, and its own build stubs it out; a build where it
-    -- does something and fails must not take the filter - or the page - down.
+    logger.dbg("Meguru: derainbow libraries loaded from", moire_path)
+    return true
+end
+
+--- Whether this device can offer the switch at all.
+---
+--- Four questions, and the first is the one that keeps it off most devices: a
+--- screen that cannot show colour has no rainbow to remove, and that is a
+--- property of the *panel* rather than of the reader's colour setting — which is
+--- why this asks `Device:hasColorScreen()` and not `Image.colorEnabled()`. The
+--- row asks the second question separately (see `ui/reader`), because a reader
+--- who has turned colour rendering off would be offered a switch whose effect
+--- `apply` then refuses to produce.
+---
+--- Memoised, and that is the one thing to know about calling it: the answer is
+--- fixed for the session, and asking it may load the libraries.
+function Derainbow.available()
+    if not state.probed then
+        state.probed = true
+        state.available = probe()
+    end
+    return state.available
+end
+
+-- `init_moire_resources` allocates whatever the filter needs, on the first page
+-- that actually wants filtering rather than when the row is offered.
+--
+-- Best-effort: the other plugin treats this as a setup step and its own build
+-- stubs it out, so a build where it does something and fails must not take the
+-- filter — or the page — down.
+local function ensureInit()
+    if state.initialized then
+        return
+    end
+    state.initialized = true
     local ok_init, init_err = pcall(function()
-        moire.init_moire_resources()
+        state.moire.init_moire_resources()
     end)
     if not ok_init then
         logger.warn("Meguru: derainbow init_moire_resources failed:", tostring(init_err))
     end
-    state.loaded = true
-    logger.dbg("Meguru: derainbow filter loaded from", state.moire_path)
-    return true
 end
 
 -- Refusal reasons already said out loud.
@@ -330,9 +331,9 @@ end
 --- is already large.
 ---
 --- **Everything is guarded, and a refusal returns the buffer untouched.** The
---- library is someone else's, the prototypes are frozen at the version this was
---- written against (see `docs/known-issues.md`), and a page that is not
---- filtered is a page as it was — so no failure here may cost a paint.
+--- library is someone else's and frozen at the version this was written against
+--- (see `libs/README.md`), and a page that is not filtered is a page as it was —
+--- so no failure here may cost a paint.
 function Derainbow.apply(bb)
     if not Derainbow.available() then
         return bb
@@ -342,9 +343,7 @@ function Derainbow.apply(bb)
         reportOnce(refusal)
         return bb
     end
-    if not loadLibs() then
-        return bb
-    end
+    ensureInit()
 
     local t0 = nowMs()
     local ok, err = pcall(function()
@@ -355,9 +354,9 @@ function Derainbow.apply(bb)
     if not ok then
         -- Once per process, for the reason the refusal ledger exists: this runs
         -- on every tile, and a library that throws will throw on all of them.
-        -- The likely cause is the one `docs/known-issues.md` names — a
-        -- signature that moved upstream — and a hundred copies of it in the log
-        -- help nobody.
+        -- The likely cause is the one `docs/known-issues.md` names — a library
+        -- that does not match the prototypes above — and a hundred copies of it
+        -- in the log help nobody.
         if not state.filter_failed then
             state.filter_failed = true
             logger.warn("Meguru: derainbow filter failed:", tostring(err))

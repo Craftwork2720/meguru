@@ -433,17 +433,26 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   stop by turning the row off. No book has been read that way here, so how it actually behaves
   is unmeasured rather than known.
 
-- **Derainbow is bound to an unversioned ABI.** `meguru/derainbow` declares four prototypes
-  from `derainbowify.koplugin`'s current release and calls the symbols by name through its own
-  `ffi.load` handle. Upstream is free to change a signature or the library filenames, and a
-  changed signature is **undefined behaviour rather than a caught error** — everything on this
-  path is `pcall`ed, which catches a throw and not a corrupted argument list. What would settle
-  it is a compatibility note naming the version this was written against, and the habit of
-  checking it when that plugin releases; what it costs today is, in the worst case, a crash in
-  the render path of a device that has both plugins installed rather than a filtered page. The
-  prototypes as written **do** work against the release they were taken from — both symbols
-  resolve and run, on the desktop, on a real page — so this is a warning about the next
-  release rather than about this one.
+- **The vendored libraries are pinned, and nothing will ever move them.** `meguru/derainbow`
+  declares four prototypes against `derainbowify.koplugin` **0.0.12**, and `libs/` holds that
+  release's binaries — so upstream changing a signature cannot break the row, which is the
+  point of vendoring. The cost is the mirror image and it has no mechanism behind it at all:
+  a bug fixed, a platform added or an artefact improved in a later release **does not arrive**,
+  and nothing in this repository notices. What would settle it is someone reading
+  `libs/README.md`, re-copying the files and re-running the desktop check; what it costs is
+  a reader living with a defect that upstream has already fixed, for as long as nobody looks.
+  There is no version check anywhere on this path, and adding one would only compare our
+  files against a number we wrote ourselves.
+
+- **A library inside the APK is the one install where the files are present and unusable.**
+  On Android, a KOReader whose plugin directory sits inside the package cannot `ffi.load`
+  anything from it. Meguru ships the android builds, so `FS.exists` says yes and only the
+  load itself can tell the truth — which is why `available()` loads rather than looks
+  (`docs/derainbow.md`), and why the row is *absent* there rather than present and inert.
+  Nothing stages the files out of the package; the other plugin does that for its own copy
+  and Meguru does not borrow it. What would settle it is a colour Android device with the
+  plugin installed as an APK; what it costs is a missing row on a platform where the filter
+  has never been confirmed to work at all.
 
 - **Whether the rainbow actually goes away has never been seen.** Every link in the chain has
   now been run — the row is offered, the value is written and stamped, `renderPage` calls the
@@ -477,18 +486,10 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   against the raw dimensions — which would put a transient in the tens of MB behind each of
   those figures, doubled for a two-page spread. What would settle it is the same line on a
   Kaleido device with a large page, read against the paint line beside it; what it costs is a
-  page turn that stutters, or an OOM on a low-memory one. Nothing in Meguru can fix it — it is
-  the library's own behaviour, and the honest workaround would be bounding the tile size,
-  which is a worse trade.
-
-- **On Android the filter may simply be unavailable, and that is the current answer rather
-  than a plan.** `derainbowify.koplugin` stages its `.so` files out of the APK into its own
-  `libs/` directory at plugin-load time, because a library inside the package cannot be
-  `dlopen`ed. `meguru/derainbow` looks for the staged files and does not duplicate that
-  extraction, so on Android the row appears only if that plugin has already run once — and if
-  it never has, Meguru reports unavailable and the switch is hidden. What would settle it is a
-  colour Android device with the other plugin freshly installed and never opened; what it
-  costs is a missing row on a platform where nobody has yet confirmed the filter works at all.
+  page turn that stutters, or an OOM on a low-memory one. Nothing in Meguru can fix it: it is
+  inside the vendored library, and rebuilding that is a cross-compilation pipeline this
+  repository does not have. The honest workaround would be bounding the tile size before
+  handing it over, which is a worse trade.
 
 - **That plugin's own Dispatcher action will crash on a Meguru book.** A gesture bound to
   `copt_derainbow` runs a handler that reaches for `self.ui.rolling` — a reflowable reader

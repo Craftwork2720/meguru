@@ -58,11 +58,17 @@ jobs:
       # `assets/` must be in here -- meguru/rowcover reads the series-row
       # artwork through Paths.asset. LICENSE is in here because the zip is a
       # distribution of AGPL-licensed code.
+      #
+      # `libs/` too: it is the vendored moiré filter (meguru/derainbow loads it
+      # through Paths.lib), and shipping it is the whole reason the Derainbow
+      # row no longer needs derainbowify.koplugin installed. Its own LICENSE
+      # travels inside that directory -- GPL-3.0 terms for GPL-3.0 binaries,
+      # which is not the same file as the AGPL one at the root.
       - name: Build plugin zip
         run: |
           stage="$RUNNER_TEMP/stage"
           mkdir -p "$stage/meguru.koplugin"
-          cp -r _meta.lua main.lua LICENSE assets meguru "$stage/meguru.koplugin/"
+          cp -r _meta.lua main.lua LICENSE libs assets meguru "$stage/meguru.koplugin/"
           cd "$stage"
           zip -r "$GITHUB_WORKSPACE/meguru.koplugin.zip" meguru.koplugin \
             -x "*.git*" -x "*/.DS_Store"

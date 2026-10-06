@@ -93,34 +93,70 @@ whose effect the next paint would decline to produce.
 
 ## What is loaded, and from where
 
-Two shared libraries, from the other plugin's own installed directory:
+Two shared libraries, **shipped inside this plugin**:
 
 ```
-<data dir>/plugins/derainbowify.koplugin/libs/color_detect-<platform>.so
-<data dir>/plugins/derainbowify.koplugin/libs/moire_filter-<platform>.so
+<plugin dir>/libs/color_detect-<platform>.so
+<plugin dir>/libs/moire_filter-<platform>.so
 ```
 
-`<platform>` is `amd64`, `kobo`, `pocketbook`, `kindlehf`, `kindle` or `android-<arch>`,
-spelled exactly as that plugin spells it — the suffixes are its filename convention and
-nothing about them can be inferred from anywhere else. Both files must exist: `available()`
-answers `false` if either is missing, if the panel cannot show colour
-(`Device:hasColorScreen()`), or if the platform is not one it builds for.
+`Paths.lib` derives the path; `libs/README.md` records where the files came from, what
+version they are and under what licence. `<platform>` is `amd64`, `kobo`, `pocketbook`,
+`kindlehf`, `kindle` or `android-arm`/`android-arm64` — the suffixes are the other
+project's filename convention and nothing about them can be inferred from anywhere else.
 
-**Nothing is vendored and nothing is redistributed.** Meguru loads someone else's GPL-3.0
-binary at runtime and ships none of it; the dependency is detected, not declared, and a
-reader without the other plugin simply never sees the row. `available()` is **memoised** —
-it is a fact about an installation, not about a device state — so a plugin installed
-mid-session is noticed after a restart.
+**`derainbowify.koplugin` is neither needed nor consulted.** An earlier version looked for
+it in the data directory and answered "unavailable" when it was absent, which made the row
+depend on a second install for no reason a reader could see. Vendoring the pair removes
+that, and removes the ABI variance that came with it: what is loaded is what was tested,
+whichever copy of the other plugin happens to be on the device.
 
-The libraries are `ffi.load`ed lazily, on the first page that actually wants filtering, so
-a reader who never turns the switch on never pays for a `dlopen`. The `ffi.cdef` is
-wrapped in `pcall` on purpose: the other plugin declares the same four prototypes, and a
-second identical declaration is refused by LuaJIT. A refusal there means the symbols
-already exist, which is a working state.
+**That freezes the version, and it is the price of the independence.** The four prototypes
+in `meguru/derainbow.lua` are written against 0.0.12, and LuaJIT's FFI does not check a
+signature against the library it calls — a changed one is undefined behaviour rather than
+an error. So a newer `derainbowify` cannot break this, and cannot fix it either; updating
+is a human re-copying the files and re-testing, which is what `libs/README.md` says.
+
+**`available()` loads rather than looks.** Since the files are ours they are present on
+every supported platform, so a plain existence check would be right everywhere except the
+one place it matters: an Android install whose plugin directory sits inside the APK ships
+these files and cannot `ffi.load` them. A row that appears and then does nothing is worse
+than a row that is not there, so the load itself is the test. It is memoised, so it costs
+one `dlopen` per session whichever caller reaches it first — the menu deciding whether to
+offer the row, or the render path on the first page that wants filtering. The other three
+conditions are a colour panel (`Device:hasColorScreen()`), a platform the builds cover,
+and both files being on disk.
+
+`init_moire_resources` is the one thing still deferred: it allocates, and a reader who
+never turns the row on should not pay for it. The `ffi.cdef` is wrapped in `pcall` on
+purpose — a second declaration of an already-declared symbol is refused by LuaJIT, and a
+refusal there means the symbols exist, which is a working state.
 
 **`cleanup_moire_resources` is deliberately never called.** The other plugin hooks
 `UIManager.quit` to call it. Meguru will not wrap a KOReader core method for a resource
 that the process teardown releases anyway; the wrap would be a global we do not need.
+
+## Where it can run at all
+
+The filter targets the colour filter array of a **Kaleido 3** panel. Whether the row
+appears is decided by the gates above; whether the filter helps is a property of the panel,
+and the two are not the same question.
+
+| device | colour? | build? | row shown | effect |
+|---|---|---|---|---|
+| Kobo Clara/Libra Colour (`Kobo_monza`, `Kobo_spaColour`) | yes | `kobo` | yes | **the case it exists for** |
+| Kindle Colorsoft, Scribe Colorsoft | yes | `kindlehf`/`kindle` | yes | **unknown** — a different panel technology, and KOReader has no CFA handling for it |
+| PocketBook colour models | yes | `pocketbook` | yes | unknown |
+| Android, colour | yes | `android-arm*` | only where the plugin dir is loadable | unknown |
+| reMarkable Paper Pro | yes | **none** | no | — |
+| desktop / emulator | yes | `amd64` | yes | **the only one measured** |
+| every monochrome reader | no | — | no | — |
+
+**Only the desktop has been run.** The filter was exercised there on a real page of a
+local `.cbz` (806×1132 tiles, 36–51 ms) and on synthetic buffers; the rest of the table is
+what the code says, not what anyone has seen. `docs/known-issues.md` records the two
+consequences that matter most — the unmeasured cost on an ARM reader, and the fact that
+whether the rainbow actually goes away has never been observed at all.
 
 ## The value, and the stamp
 
@@ -154,6 +190,14 @@ across paints). The row's handler is therefore a write and a `ReZoom`, and nothi
   curation replaces the options at menu-open time and `Defaults.apply` runs after the
   stock defaults are loaded, so the curated dialog is not clobbered; it is worth a look on
   a device with both installed.
-- **The ABI is unversioned.** The four prototypes are frozen at the version this was
-  written against. A signature change upstream is undefined behaviour rather than a caught
-  error, however much of this module is `pcall`ed.
+- **The ABI is frozen at 0.0.12, and nothing enforces that.** The four prototypes match the
+  vendored pair and nothing checks them against anything. This is the deliberate side of the
+  trade above — a newer upstream release cannot break the row — but it also means a fix in
+  that release does not arrive either, and the only thing that would notice is a human
+  re-reading `libs/README.md` and re-copying the files.
+- **A second copy of the libraries may be in the process.** If `derainbowify.koplugin` *is*
+  installed, it loads its own handle to its own files for its own hooks — which are inert on
+  a Meguru book. Two `ffi.load`s of two versions of the same library is not a conflict here
+  (each handle is separate and neither plugin calls the other's), but it is worth knowing
+  when reading a log with both installed: the `ffi.load:` lines that matter are the ones
+  naming *this* plugin's directory.
