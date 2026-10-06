@@ -445,6 +445,13 @@ current one, leaving it for the LRU to free when it turns over or when that key 
 rendered again. That is also why the tile keys say nothing about tone: the cache stays
 keyed by what it stores (the crop), and the tone is a comparison at the lookup.
 
+**A panel tile's key is built from the region, not from the rendered tile's size**, which is
+not known until the render has run and is not what identifies the panel anyway; rotation is
+deliberately absent, because the same region is the same tile whichever way up it is shown.
+`drawPagePart` writes the tile under that key and `releasePanelTile` frees the tile under it,
+so the two must build it identically — byte for byte. A quadrilateral crop adds its planes'
+`A`/`B` to the key, which pins the third coefficient.
+
 **A third value rides that stamp without paying that price, and the difference is where
 it is applied.** The moiré filter ([derainbow](derainbow.md)) is a per-book switch that is
 baked into a *tile* and not into the decode: it runs on the buffer `renderPage` or

@@ -1,24 +1,4 @@
---[[--
-A virtual, streaming document: the thing KOReader actually opens for a Meguru
-book.
-
-In *streamed* mode `self.file` is a marker — a small Lua file holding a stream
-template and a page count — and pages are fetched one at a time over HTTP.
-Raw bytes live in a small in-memory LRU on this document, decoded buffers in two
-more beside it — nothing is written to disk. ReaderUI's page N is template index
-N-1, because OPDS-PSE counts pages from zero.
-
-In *local archive* mode (`local_cbz`) `self.file` is a real .cbz the user routed
-here through KOReader's "Open with…". One MuPDF handle renders every page
-through the same pipeline as a streamed page, and every HTTP seam is bypassed.
-Meguru registers the extension at a low weight so MuPDF stays the default.
-
-There is no engine instance behind this document (`_document` is nil), so every
-Document virtual ReaderPaging / ReaderZooming / ReaderView / ReaderHinting would
-otherwise reach for the engine is overridden here: geometry is presented the way
-a KOpt document presents it, with the crop living in the bounding box rather
-than in the page size.
---]]
+-- A virtual streaming document; ReaderUI's page N is OPDS-PSE's index N-1.
 
 local Blitbuffer = require("ffi/blitbuffer")
 local CanvasContext = require("document/canvascontext")
@@ -28,9 +8,7 @@ local Geom = require("ui/geometry")
 local RenderImage = require("ui/renderimage")
 local Screen = require("device").screen
 local Device = require("device")
--- MuPDF binding (koreader-base ffi/mupdf). Guarded: every KOReader that can
--- run this plugin ships it, but should a build ever lack it we degrade to the
--- RenderImage path instead of failing to load the whole document module.
+-- MuPDF binding, guarded: a build without it degrades to the RenderImage path.
 local Mupdf
 do
     local ok, mupdf = pcall(require, "ffi/mupdf")
@@ -58,98 +36,24 @@ local function clamp(v, lo, hi)
     return math.max(lo, math.min(hi, v))
 end
 
--- Monotonic milliseconds, for the timing fields in the log lines below.
--- `os.clock` is CPU time, so it would miss a network wait entirely — the one
--- cost here that a reader cannot do anything about — and `os.time` is whole
--- seconds. `ffi/util`'s `gettime` is the clock KOReader measures with itself.
+-- Monotonic ms for log timing; os.clock is CPU time and misses network waits.
 local function nowMs()
     local secs, usecs = ffiutil.gettime()
     return secs * 1000 + usecs / 1000
 end
 
--- ---------------------------------------------------------------------------
--- Auto page crop (light and dark margin detection)
--- ---------------------------------------------------------------------------
---
--- OPDS-PSE servers (and some scanners) deliver pages with a uniform border
--- around the actual artwork — paper (white or cream) on most of them, a printed
--- or rendered black edge on some. Cropping such a page is done like a
--- KOpt-engine document would: the page size stays the *full* (capped) native
--- page and the crop lives only in the document's bounding box. `getPageBBox`
--- (below) returns the trimmed content box when the "Crop" ConfigDialog
--- choice is "auto" (configurable.trim_page == 1) and the full page otherwise,
--- and ReaderZooming/ReaderView crop through that box for every "content" fit
--- mode ("content", "contentwidth", "contentheight"), which is what this
--- plugin's Fit menu now maps onto.
---
--- Detection is two-stage. A cheap pass reads raw pixels of a small downscaled
--- copy of the decoded page (Blitbuffer.tostring gives us the raw bytes, the
--- same route TileCacheItem uses to serialize tiles), finds the first/last row &
--- column that differ from the uniform border, and maps that back onto native
--- coordinates — this also decides which pages to leave alone (a blank one, or
--- one whose box comes back whole because content reaches every edge) and which
--- end of the border band the crop is anchored to: the light margin, or, where
--- there is no light one, the dark border.
---
--- **The dark side is the same rule reached where the light one refuses, and
--- nothing more.** The mark-skipping heuristics a later attempt added — moving an
--- edge inwards past a short detached mark near the edge — are deliberately not
--- here: that mark is a speech bubble, a bubble's tail or a small drawn element
--- standing in a white margin, and cutting it costs the reader something they can
--- see, where leaving the strip of margin around it costs them a strip of blank.
--- The top/bottom are trimmed
--- maximally, flush with the detected content edge; the left/right margins are
--- trimmed just as maximally (see computeContentBox). A second, native-resolution
--- pass (refineAutoCrop) then pins each edge to the *exact* outermost content
--- pixel, so the crop ends flush with the panel/artwork and leaves no
--- frame — even on a page whose only boundary is a thin printed frame line the
--- downscale would have blurred away.
---
--- The two finer crops a KOReader CBZ user gets from the pagenumbercrop plugin
--- — removing a printed page number from the bottom gutter, and "no crop on
--- blank pages" — are built in here (see the "Page-number / blank-page
--- analysis" section below and the rewritten getPageBBox), and they run off
--- this document's own getPageBBox whether or not that plugin is installed: its
--- own patch of the same seam is taken back at ReaderReady
--- (`takeBackPageBBox`), because the ported analysis carries a width bound the
--- original has no counterpart of. They are not rows: "Crop" at "auto" is
--- what turns them on (`getPageBBox` below), so a reader who has that plugin
--- installed — with its two extra rows — sees them folded into the same choice.
--- Only the plugin's screen-level "Rotate wide pages" is left to it.
-
+-- Auto page crop: ~128px scan then a native fine pass; crop lives in the bbox.
 local AUTOCROP_SCAN_TARGET = 128 -- max dimension of the scanned downscale
--- The two ends of the border band. At or above the light bar a border is a
--- paper margin; at or below the dark bar it is a printed or rendered black
--- margin; and a border whose ring is *uniform* is a margin whatever its
--- luminance says, which is what a coloured frame is (see scanContentBounds).
--- Between the two bars and *not* uniform is content at the edge, and the crop
--- refuses — the direction that cannot cut artwork.
+-- Border band: >=light is paper, <=dark is black, a uniform ring is a margin.
 local AUTOCROP_MIN_BG_LUMA = 170
 local AUTOCROP_MAX_DARK_BG_LUMA = 85
 local AUTOCROP_LUMA_DELTA = 26   -- how much a pixel may differ from the border
--- Degenerate-crop floor: whatever the options say, never let a scan shrink a
--- page below this fraction of its area (guards against a pathological scan).
+-- Never shrink a page below this fraction of its area (pathological scan).
 local AUTOCROP_MIN_KEEP_FRAC = 0.02
 
+-- Blitbuffer type -> bytes per pixel; an unknown type bails out.
 
--- Blitbuffer pixel type -> bytes per pixel. Decoders give us one of these
--- (grayscale BB8 on e-ink devices, RGB24/RGB32 on color ones; BB8A for PNGs
--- with an alpha channel). Anything else (BB4, exotic) makes us bail out.
-
--- Diagnostic: a page is being kept as-is although the crop refused (visible
--- as "the frame stays"). `pageno` (when known) makes the line matchable
--- to that page's own turn in the log.
---
--- **dbg, and it used to be warn on the argument that the symptom is
--- reader-visible so the line should be too.** The argument is good and the level
--- was still wrong, because of how *often* it fires: a book whose pages are
--- full-bleed — or whose border has content in it, the edges the crop refuses on
--- both sides — has nothing to find on any of them, so this is one warning
--- per page for the whole book -- which buries the warnings that are rare and
--- that matter. A reader chasing a frame that stayed reads this with `-d`.
---
--- The old argument, kept because it is the reason to hesitate:
---     Logged at warn level (not dbg) so it shows up in crash.log without -d.
+-- Page kept as-is because the crop refused; dbg, as it fires every page.
 local function cropSkipLog(pageno, ...)
     if pageno then
         logger.dbg("Meguru: crop skip (page", pageno, "):", ...)
@@ -158,15 +62,7 @@ local function cropSkipLog(pageno, ...)
     end
 end
 
--- Scan a small BlitBuffer for the content bounding box. Returns
--- { left, top, right, bottom } (inclusive pixel indices, small-image
--- coordinates) or nil when the page is blank / unsupported / has no light
--- uniform margin.
--- `page_w`/`page_h` are the PAGE's dimensions, which are not the same thing as
--- `bb`'s: the caller scans a downscale (AUTOCROP_SCAN_TARGET), so the buffer is
--- smaller than the page and the message below has to say which is which. It
--- printed the buffer alone once, and a 6883x4913 spread reported itself as
--- "128 x 91" — which reads as a page that size, i.e. as a bug in the cap.
+-- Scan a small buffer for the content box; page_w/h are the PAGE's, not bb's.
 local function scanContentBounds(bb, pageno, page_w, page_h)
     local w = bb:getWidth()
     local h = bb:getHeight()
@@ -187,8 +83,7 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         stride = w * bpp
     end
     if #data < stride * h then
-        -- Some builds hand back tightly packed rows without the per-row
-        -- stride padding; fall back to the compact layout before giving up.
+        -- Some builds omit per-row stride padding; use the compact layout.
         stride = w * bpp
         if #data < stride * h then
             return nil -- unexpected layout, refuse rather than mis-scan
@@ -201,19 +96,12 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         if bpp == 1 then
             lum = data:byte(off + 1)
         elseif bpp == 2 then
-            -- BB8A: gray + alpha. Using min() keeps transparent (alpha 0)
-            -- texels as "content", i.e. we never crop away transparent frame
-            -- areas of a PNG; opaque near-white texels stay background.
+            -- BB8A: min(gray, alpha) keeps transparent texels as content.
             local a = data:byte(off + 1)
             local b = data:byte(off + 2)
             lum = a < b and a or b
         else
-            -- Rec.601 luminance, not the mean of the three channels — see the
-            -- long note in `Image.rasterFor`, which is where this formula now
-            -- lives for the panel detector. The mean and the luminance disagree
-            -- by up to 65 on light tinted colours, which is more than this
-            -- scan's own `AUTOCROP_LUMA_DELTA`, so using the wrong one moves a
-            -- crop edge on exactly the pages a crop is for.
+            -- Rec.601 luminance, not the mean (they differ up to 65 on tints).
             local r = data:byte(off + 1)
             local g = data:byte(off + 2)
             local b = data:byte(off + 3)
@@ -225,31 +113,7 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         return lum
     end
 
-    -- Reference background = the *lightest typical* luminance of the outer
-    -- ring (85th percentile), not its mean. A mean is easily dragged down by
-    -- dark content bleeding onto one edge/corner or by a scan vignette; when
-    -- it drops far enough below the true white margin, |margin − bg| exceeds
-    -- the delta below and the white margins themselves get classified as
-    -- "content" (the whole page then looks edge-to-edge full). A high
-    -- percentile tracks the light border as long as the border makes up even a
-    -- minority of the ring samples, which is exactly the "has a white margin"
-    -- case.
-    --
-    -- **This is asked first, and on its own it is the whole rule the crop has
-    -- always had.** A page with a light margin is measured by this expression
-    -- and cropped exactly as it was before dark borders were supported, whatever
-    -- else shares its ring. Deciding the border's side from the ring's
-    -- *majority* instead would break pages this reads correctly: a white caption
-    -- band above artwork bleeding off three edges has a dark majority **and** a
-    -- light margin, and this rule is right about it because its light samples
-    -- are well over the 15% a high percentile needs. The dark branch below is
-    -- reached only where this one refuses.
-    -- Each ring sample carries its colour as well as its luminance. The scan
-    -- decides *which* sample the border is, by luma; the reader view's surround
-    -- wants that pixel's colour, and the ring is where the border was looked for.
-    -- The page's own physical edge is not: on any page whose artwork bleeds to it,
-    -- that edge is artwork, and a surround painted from it changes colour page to
-    -- page and is wrong on every bleeding one.
+    -- Reference border luma is the 85th-percentile ring sample, not its mean.
     local samples = {}
     local function addSample(y, x)
         local off = y * stride + x * bpp
@@ -277,43 +141,25 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
     local dark = samples[math.max(1, math.floor(n * 0.15))]
     local light_bg, dark_bg = light.l, dark.l
 
-    -- **A border whose ring is uniform is a margin whatever its colour** — paper,
-    -- a printed black edge, or a coloured frame. Luma alone cannot tell a
-    -- coloured margin from artwork: a mid-tone frame sits in the band between the
-    -- two bars below and used to be refused for its colour alone, which is a page
-    -- left with its frame on. Uniformity can tell, and it is the stronger
-    -- statement anyway: the ring holds no content that could be mistaken for a
-    -- border. The reference is then the middle of that ring, and because the
-    -- whole span of it is within one delta, *which* end it is taken from cannot
-    -- matter — measured over both corpora, this branch changes no page either
-    -- luma test already crops, and it crops exactly the ones that were refused.
+    -- A ring uniform within one delta is a margin whatever its colour.
     local border
     if light_bg - dark_bg <= AUTOCROP_LUMA_DELTA then
         border = samples[math.max(1, math.floor(n * 0.5))]
     elseif light_bg >= AUTOCROP_MIN_BG_LUMA then
-        -- The light rule, unchanged.
         border = light
     elseif dark_bg > AUTOCROP_MAX_DARK_BG_LUMA then
-        -- Neither a light margin, nor a dark one, nor a uniform border: an edge
-        -- with content in it. A mid-grey scan edge is not a margin on either
-        -- side, and refusing is the direction that cannot cut artwork.
+        -- Neither light, dark nor uniform: content at the edge, so refuse.
         cropSkipLog(pageno, "border neither light nor dark enough (bg=",
             math.floor(light_bg), ", dark=", math.floor(dark_bg), ") — page kept as-is")
         return nil
     else
-        -- The dark rule, unchanged: the 15th percentile is the *darkest typical*
-        -- ring sample exactly as the 85th is the lightest, and it is the border's
-        -- own colour when that border is printed or rendered black.
+        -- Dark rule: the 15th percentile is the darkest typical ring sample.
         border = dark
     end
 
     local bg = border.l
     if bg <= AUTOCROP_MAX_DARK_BG_LUMA and bpp == 2 then
-        -- BB8A: lumaAt takes min(gray, alpha), so a transparent texel reads as
-        -- black — but a transparent frame is not a black margin, and this
-        -- document never cropped one (the light percentile of such a ring is
-        -- that same transparent black, so it used to be refused by that route
-        -- instead). Only an opaque dark border is a margin.
+        -- BB8A: a transparent frame is not a black margin; only opaque is.
         for x = 0, w - 1 do
             if data:byte(x * bpp + 2) < 255
                 or data:byte((h - 1) * stride + x * bpp + 2) < 255 then
@@ -361,8 +207,7 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         row_cnt[y] = rcount
     end
 
-    -- A candidate row/column must contain more than a couple of speck pixels
-    -- to count as the start of actual content.
+    -- A candidate row/column needs more than a couple of speck pixels.
     local row_min = math.max(2, math.floor(w * 0.02))
     local col_min = math.max(2, math.floor(h * 0.02))
 
@@ -392,76 +237,35 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         end
     end
     if not (left and top and right and bottom) then
-        -- A uniform border but no row/column clears the content bar anywhere:
-        -- the whole page reads as uniform background (or the content bar is too
-        -- low — see row_min/col_min). This is the "blank page" case.
+        -- No row/column cleared the content bar anywhere: blank page.
         cropSkipLog(pageno, "no content found anywhere (page blank?)")
         return nil -- blank page
     end
-    -- Suspicious case worth flagging: a *light* border (bg above) yet the
-    -- detected content still spans the entire small image edge-to-edge. When
-    -- this box comes back whole, computeContentBox has nothing left to trim and
-    -- the page is kept as-is — i.e. the exact "whole frame stays" symptom.
+    -- Whole-page box: nothing left to trim, i.e. the "frame stays" symptom.
     if left == 0 and top == 0 and right == w - 1 and bottom == h - 1 then
-        -- Both sizes, because both are the answer to a different question: the
-        -- page says how much margin there was to find, the scanned size says how
-        -- much resolution there was to find it with. A page scanned at 128 px
-        -- across is a page whose margins were judged coarsely, and that is not
-        -- visible from the page size alone.
+        -- Both sizes: page margin vs how coarsely the scan judged it.
         cropSkipLog(pageno, "detected content spans the whole page",
             "(bg=", math.floor(bg), ", page ", page_w, "x", page_h,
             ", scanned at ", w, "x", h, ") — nothing to trim")
     end
-    -- `bg` (the reference border luminance) rides along so the native fine pass
-    -- in refineAutoCrop reuses the exact same content predicate as this scan.
-    -- `bg` (the reference the scan measured content against) rides along for the
-    -- fine pass, and the border sample's colour beside it for the reader view's
-    -- surround — one sample, so the two cannot describe different pixels.
+    -- bg and the border colour ride along for the fine pass and the surround.
     return { left, top, right, bottom, bg = bg,
         color = { r = border.r, g = border.g, b = border.b, l = border.l } }
 end
 
--- Native fine pass; assigned below (it needs `computeContentBox` above it), see
--- its definition.
+-- Forward declaration: refineAutoCrop is defined below but used above.
 local refineAutoCrop
 
--- Compute the native auto content box of a decoded (working-resolution) page.
--- Returns { x0, y0, x1, y1 } in native pixels, or nil when the page should be
--- left as-is (no detectable margin, blank, or any scan hiccup — a crop
--- must never be worse than no crop). This is the *plain margin* crop only;
--- the finer page-number / blank-page refinements are layered on top of it in
--- getPageBBox (see the "Page-number / blank-page analysis" section below).
---
--- Maximal on every side: top, bottom, left and right are each trimmed right
--- up to the detected margin, whatever lies between the content and the
--- page edge is cut. The left and right margins are detected independently, so
--- an asymmetric frame is trimmed asymmetrically (never centered): the result
--- is the smallest box that contains the artwork on all four sides. The scan is
--- two-stage: a cheap ~128px projection (scanContentBounds) finds the box and
--- decides blank and full-bleed pages — and the border's own colour, light or
--- dark, is what "content" is measured against — then a native-resolution fine
--- pass (refineAutoCrop) pins each edge to the exact outermost content pixel, so
--- a page comes out of the crop flush with its artwork — no frame left.
---
--- The result feeds getPageBBox (the bbox ReaderZooming/ReaderView crop
--- through), cached per page in self.crops. It is never baked into the page
--- size: getPageDims reports the full native page.
+-- Native auto content box, or nil to leave the page as-is; cached in crops.
 local function computeContentBox(native_bb, full_w, full_h, pageno)
-    -- Returns { x0,y0,x1,y1 } in native pixels, or nil. The only C-side
-    -- (BlitBuffer) allocation made here is the ~128px scan copy `scan_bb`;
-    -- BlitBuffers are malloc'd outside the Lua heap and are NOT reclaimed by
-    -- Lua GC, so an exception between an allocation and its free would leak
-    -- the buffer permanently. That is why the allocation, the (pcall-guarded)
-    -- pixel work and the free are kept as separate steps, with the free done
-    -- unconditionally right after the work.
+    -- The scan copy is malloc'd outside the Lua heap; free it unconditionally.
     local ok, box = pcall(function()
         local bw = native_bb:getWidth()
         local bh = native_bb:getHeight()
         if not bw or not bh or bw < 1 or bh < 1 then
             return nil
         end
-        -- Downscale before scanning: ~128px across the long edge is plenty to
-        -- find a border, and keeps the Lua pixel loop tiny.
+        -- ~128px across the long edge is plenty to find a border.
         local sw, sh = bw, bh
         local scan_bb = native_bb
         if bw > AUTOCROP_SCAN_TARGET or bh > AUTOCROP_SCAN_TARGET then
@@ -476,8 +280,7 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
                 return nil -- could not make the scan copy: leave the page as-is
             end
         end
-        -- Scan for the content bounding box in its own pcall so `scan_bb` is
-        -- freed even if the pixel scanner hits a pathological page and throws.
+        -- Its own pcall so `scan_bb` is freed even if the scanner throws.
         local bounds
         local ok_scan, scan_err = pcall(function()
             bounds = scanContentBounds(scan_bb, pageno, full_w, full_h)
@@ -496,10 +299,6 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
         local bg = bounds.bg
         local sc_x = full_w / sw
         local sc_y = full_h / sh
-        -- Coarse content extent in native coordinates. Maximal on every side:
-        -- top, bottom, left and right are each trimmed right up to the detected
-        -- margin, independently (scanContentBounds), so an asymmetric
-        -- frame is trimmed asymmetrically; nothing but margin is removed.
         local x0 = math.max(0, math.floor(left * sc_x))
         local y0 = math.max(0, math.floor(top * sc_y))
         local x1 = math.min(full_w, math.ceil((right + 1) * sc_x))
@@ -508,24 +307,14 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
         if x0 == 0 and y0 == 0 and x1 == full_w and y1 == full_h then
             return nil
         end
-        -- Pin each edge to the *exact* outermost content pixel. The coarse scan
-        -- above ran on a ~128px downscale, so its box is only flush to a scan
-        -- pixel and, worse, the downscale blurs thin boundary features away (a
-        -- 1-2px printed frame line right where the panel art starts averages to
-        -- near-background and is missed), which leaves a visible frame
-        -- around the panel. The fine pass re-scans a narrow native-resolution
-        -- band around each coarse edge with a hair-trigger threshold, so every
-        -- trimmed side ends flush with the real content — no margin is left.
+        -- Pin each edge to the exact content pixel (see refineAutoCrop).
         x0, y0, x1, y1 = refineAutoCrop(native_bb, x0, y0, x1, y1, bg,
             math.max(8, math.ceil(sc_x * 3)),
             math.max(8, math.ceil(sc_y * 3)))
         if x0 == 0 and y0 == 0 and x1 == full_w and y1 == full_h then
             return nil
         end
-        -- Degenerate-crop guard: whatever happened above, never let a scan
-        -- shrink a page below a tiny fraction of its area. (The blank-page rule
-        -- in getPageBBox is what keeps a genuinely blank page uncropped; this is
-        -- only a last line of defence against a pathological scan.)
+        -- Last line of defence against a pathological scan.
         if (x1 - x0) * (y1 - y0) < AUTOCROP_MIN_KEEP_FRAC * full_w * full_h then
             return nil
         end
@@ -539,78 +328,15 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
     return box
 end
 
--- ---------------------------------------------------------------------------
--- Panel zoom (getPanelFromPage, and the sequence in getPanelsFromPage)
--- ---------------------------------------------------------------------------
---
--- KOReader's "Panel zoom (manga/comic)" (ReaderHighlight:onPanelZoom, a
--- long-press) asks the document for the panel under the finger via
--- Document:getPanelFromPage. Engine-backed paged documents answer with kopt's
--- full page segmentation; this document has no engine, so without an override
--- the call would be nil and the reader would crash.
---
--- **There is one detector now**, in `meguru/panel.lua`, and both entry points
--- below are thin wrappers over it: `getPanelsFromPage` returns a whole page's
--- panels in reading order, and `getPanelFromPage` returns the one under a
--- touch. That replaced a second, conservative gutter detector this file used to
--- carry, and the reason is worth keeping, because "keep the cheap fallback" is
--- the obvious instinct and it was wrong here: two detectors meant two different
--- crops for one page depending on which path asked, and the fallback's own
--- sensitivity was the thing that could not read these pages.
---
--- What the one detector *is* — the recursive cut, and why its thresholds come
--- from 1.3 rather than from the reference's later version — is documented in
--- the module itself and in CLAUDE.md. `05790d1` once replaced this cut with a
--- connected-component detector, on the grounds that a panel carrying a
--- full-width white band inside its own drawing was coming back cut in two;
--- `9c9f042` put the cut back. The cut has since been exercised on a device and
--- stands, so that contest is settled — the thresholds are the part not to move,
--- and the detector is not the part to swap.
---
--- Coordinates: ReaderView hands the touch in *full native* page space — the
--- space getPageDims reports (`_pageGeom`; the instance's
--- getNativePageDimensions answers with a pair while two pages are showing, which
--- is why `spreadPageAt` maps the point onto one page before this is reached).
--- A margin crop only makes
--- ReaderView zoom in; it never shifts tap coordinates (content sits at the
--- bbox origin, already accounted for by ReaderView), so both the touch point
--- and the returned panel are in plain native page coordinates, and what
--- `drawPagePart` is handed is what it expects. There is no rotation in this
--- plugin anymore, so no page is ever turned here.
---
--- **A panel is its four edges, not a rectangle.** `x, y, w, h` is the
--- bounding box and `planes` is the quadrilateral inside it — the same four
--- border lines the cut was built from, which are slanted wherever a panel is.
--- The box is what the region render is asked for (MuPDF clips to a box and
--- nothing else); the planes are what the tile is masked to, and what a touch is
--- tested against. See `meguru/panel` for where they come from.
+-- Panel zoom wraps meguru/panel's recursive-cut detector; base method is nil.
 
--- The raster accessor itself lives beside the decoder: `Image.rasterFor`
--- (`meguru/doc/image`). It moved because the panel detector in `meguru/panel.lua`
--- reads a buffer too, and a module that answers "what is this buffer's byte
--- layout" belongs with the module that produced the buffer — a second copy here
--- would have been the second answer to that question.
-
--- Tighten the coarse auto-crop box to the *exact* outermost content pixel (see
--- computeContentBox for where the coarse box comes from). The coarse scan runs
--- on a ~128px downscale, so its box is only flush to a scan pixel; and the
--- downscale *blurs away* thin boundary features — a 1-2px printed frame line
--- right where the panel art starts averages to near-background in a 128px cell
--- and is missed entirely, so the coarse box can sit a few scan pixels INSIDE
--- the true art and a visible frame stays around the panel. This pass
--- re-scans a narrow native-resolution band around each coarse edge with a
--- hair-trigger threshold and pins the edge to the first pixel that is actually
--- content. Printed frame lines are full-width features, so the moment the scan
--- reaches one it lights up the whole row/column — every trimmed side ends
--- flush with the real content, with no margin left on any side that has one.
--- Falls back to the coarse box on any hiccup (a crop must never be worse than
--- the coarse one). Returns four tightened numbers in native coordinates.
+-- Tighten the coarse box to the exact content edge; fall back on any hiccup.
 refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     if not (native_bb and native_bb.getWidth) then
         return x0, y0, x1, y1
     end
     if native_bb:getRotation() and native_bb:getRotation() ~= 0 then
-        return x0, y0, x1, y1 -- raw rows are not axis-aligned: keep the coarse box
+        return x0, y0, x1, y1 -- rows not axis-aligned: keep coarse box
     end
     local fw, fh = native_bb:getWidth(), native_bb:getHeight()
     if fw < 2 or fh < 2 then
@@ -619,24 +345,11 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     local w, h = fw, fh
     local delta = AUTOCROP_LUMA_DELTA
 
-    -- **One band of the page at a time, not the whole page.** The four walks
-    -- below are the only readers here and each reads exactly one rectangle: the
-    -- top and bottom walks every column of `2*pad_y+1` rows, the left and right
-    -- every row of `2*pad_x+1` columns. Rasterising that rectangle instead of the
-    -- page leaves every comparison this pass makes exactly as it was — the same
-    -- bytes through the same `Image.rasterFor` conversion, compared against the
-    -- same reference and delta — while a 1600x2400 page stops becoming a 3.8 MB
-    -- Lua string on every page turn to serve a few hundred kilobytes of it. The
-    -- rectangle handed to each walk is its own clamped iteration range, so no read
-    -- can land outside the band it was given, and a band that fails to rasterise
-    -- falls back to the coarse box exactly as a failed whole-page raster did.
+    -- Rasterise only the band each walk reads, not the whole page.
     local function bandLuma(px, py, bw, bh)
         local band = Blitbuffer.new(bw, bh, native_bb:getType())
         band:blitFrom(native_bb, 0, 0, px, py, bw, bh)
-        -- Carried because it is a property of the object rather than of the
-        -- bytes, and `rasterFor` reads it: a page that arrived already inverted
-        -- must keep reading inverted. A same-type blit moves the pixels as they
-        -- are, so the copy is byte-for-byte what the whole-page raster held.
+        -- rasterFor reads this: an inverted page must keep reading inverted.
         band:setInverse(native_bb:getInverse())
         local raster = Image.rasterFor(band)
         band:free()
@@ -649,17 +362,11 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
             return math.abs(luma(y - oy, x - ox) - bg) > delta
         end
     end
-    -- Content = a pixel that departs from the border reference luminance (the
-    -- very predicate the coarse scan used). Only a row/column with more than
-    -- scattered specks counts: ~0.2% of its span (~4px at a 2048px native)
-    -- separates a real edge — or a thin printed frame line — from isolated JPEG
-    -- noise, and is far below the coarse 2%-of-span bar because this pass only
-    -- looks where the coarse scan already proved content is nearby.
+    -- ~0.2% of a row's span separates a real edge from isolated JPEG noise.
     local row_bar = math.max(2, math.floor(w * 0.002))
     local col_bar = math.max(2, math.floor(h * 0.002))
 
-    -- Top: walk rows from the outward band edge downward; margin rows are
-    -- blank, so the first row that clears the bar is the true topmost content.
+    -- Walk rows from the band edge; the first over the bar is the content top.
     local top_y0, top_y1 = math.max(0, y0 - pad_y), math.min(h - 1, y0 + pad_y)
     local top_luma, top_ox, top_oy = bandLuma(0, top_y0, w, top_y1 - top_y0 + 1)
     if not top_luma then
@@ -758,27 +465,12 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     local nx0, ny0 = math.max(0, left), math.max(0, top)
     local nx1, ny1 = math.min(w, right + 1), math.min(h, bottom + 1)
     if nx0 >= nx1 or ny0 >= ny1 then
-        return x0, y0, x1, y1 -- sanity: the fine pass went sideways, keep coarse
+        return x0, y0, x1, y1 -- sanity: fine pass went sideways, keep coarse
     end
     return nx0, ny0, nx1, ny1
 end
 
--- ---------------------------------------------------------------------------
--- Native decode resolution cap
--- ---------------------------------------------------------------------------
---
--- The pagenumbercrop plugin renders its crop-analysis strips by calling the
--- *base* `Document.renderPage` method slot directly (it is a standalone plugin
--- that patches engine module code, and for a PdfDocument the engine-backed
--- renderPage is an instance override of exactly that slot). On a Meguru book
--- its automatic analysis no longer runs — `takeBackPageBBox` takes that seam
--- back — but its own menu actions still reach here, and so may any other
--- plugin's analysis. For this virtual
--- document — _document == nil — the base slot would crash on the missing
--- engine (document.lua:514), so the slot is redirected once per process: our
--- own documents delegate to their renderPage (which already implements the
--- prescaled contract pagenumbercrop relies on), every other document keeps the
--- pristine base behaviour.
+-- pagenumbercrop calls the base renderPage slot, which crashes: redirect it.
 local _render_page_shim_installed = false
 local function installRenderPageShim()
     if _render_page_shim_installed then
@@ -795,24 +487,7 @@ local function installRenderPageShim()
 end
 installRenderPageShim()
 
--- External manga-panel plugins that drive KOReader's native KOPT detector
--- directly (e.g. Panels+) reach the document's geometry the same way
--- pagenumbercrop reaches renderPage: they call the *base*
--- `Document.getNativePageDimensions` slot explicitly — dot form,
--- `Document.getNativePageDimensions(doc, page)` — never through the instance,
--- so this document's getNativePageDimensions override is bypassed. For this
--- virtual document that base slot would crash on the missing engine
--- (_document is nil: document.lua "attempt to index field '_document'"). The
--- slot is redirected once per process, exactly like the renderPage shim above:
--- our own documents answer with **one page's** size — `_pageGeom`, the space the
--- plugin's probe grid and our `getPanelFromPage` share, and deliberately not the
--- instance's `getNativePageDimensions`, which answers with a *pair* while the
--- reader is being shown two pages (see "Two pages at once" below) — and every
--- other document keeps the pristine base
--- behaviour bit-for-bit. With the slot answered, the plugin's batched KOPT
--- path bails out on its own `not document._document` guard and falls back to
--- probing `document:getPanelFromPage` — this document's conservative panel
--- detector — so panel zoom works on a streamed book instead of crashing.
+-- Panels+ calls the base getNativePageDimensions slot, which crashes: redirect.
 local _native_page_dimensions_shim_installed = false
 local function installNativePageDimensionsShim()
     if _native_page_dimensions_shim_installed then
@@ -822,11 +497,7 @@ local function installNativePageDimensionsShim()
     local base_get_native_page_dimensions = Document.getNativePageDimensions
     Document.getNativePageDimensions = function(self, pageno, ...)
         if self.provider == "meguru" then
-            -- **One page, always**, even while the reader is being shown two:
-            -- an external plugin asks this to decide whether to turn the screen
-            -- for a wide page, and a pair is wide by construction — handing it
-            -- the pair would have it fighting this plugin's own two-page view
-            -- for the screen. See `_pageGeom`.
+            -- One page, always: a pair is wide; do not turn for it.
             return Geom:new(self:_pageGeom(pageno))
         end
         return base_get_native_page_dimensions(self, pageno, ...)
@@ -834,106 +505,51 @@ local function installNativePageDimensionsShim()
 end
 installNativePageDimensionsShim()
 
--- The base bbox seam, captured before this class replaces it. `getUsedBBoxDimensions`
--- below is virtual while the reader is shown two pages at once (it composes the
--- pair's box), and the single-page answer still has to be reachable from inside
--- that override.
+-- Captured before the class replaces it; the one-page answer stays reachable.
 local base_get_used_bbox_dimensions = Document.getUsedBBoxDimensions
 
 local MeguruDocument = Document:extend{
     _document = nil, -- we have no engine instance
     provider = "meguru",
-    -- Label shown for this provider in KOReader's stock "Open with…" picker
-    -- (the dialog lists DocumentRegistry providers by provider.provider_name).
-    -- It covers both extensions this class registers: the .meguru stream markers
-    -- and the opt-in local .cbz routing.
+    -- Provider label for KOReader's "Open with..." picker (both extensions).
     provider_name = "Meguru",
     dc_null = DrawContext.new(),
 
-    -- Local-archive mode (a .cbz opened through this engine — see init):
-    -- when set, the book is rendered page-by-page from one persistent MuPDF
-    -- handle (self.mupdf_doc) instead of being fetched over HTTP, and every
-    -- byte-consuming seam is bypassed.
+    -- .cbz through this engine: one MuPDF handle, no HTTP seams.
     local_cbz = false,
     mupdf_doc = nil,
 
-    -- How many pages ahead to warm after a repaint, counting the one hintPage is
-    -- handed (via ReaderHinting -> Document:hintPage). One is the page the
-    -- reader is about to turn to.
+    -- Pages warmed after a repaint, including the one hintPage is handed.
     prefetch_count = 1,
     -- Maximum number of decoded/scaled tiles kept in RAM per document.
     max_cached_tiles = 8,
-    -- Maximum number of *native* decoded pages kept in RAM (for pan/zoom crops).
+    -- Max native decoded pages kept in RAM (for pan/zoom crops).
     max_cached_native = 3,
-    -- Maximum number of raw page-byte entries kept in RAM, per document.
-    --
-    -- Two is the floor: the page being rendered and the one `hintPage` warms
-    -- ahead of it — no path in this file holds two pages' bytes at once, so
-    -- nothing ever thrashes a store this size. The rest is room for
-    -- ReaderHinting to ask for two pages ahead. It is not a memory figure: these
-    -- bytes are the *compressed* page, orders of magnitude below what
-    -- `max_cached_native` holds decoded beside them.
+    -- Page-byte entries in RAM: the rendered page, hintPage's, and two ahead.
     max_cached_pages = 4,
 
     tiles = nil,    -- decoded tile LRU, key = "pageno|w x h"
     native = nil,   -- native decode LRU, key = pageno
-    stamps = nil,   -- key -> recency stamp for `tiles` and `native` ONLY. The
-                    --            page-byte store below is a self-ordering array
-                    --            and must never be stamped: it is keyed by the
-                    --            same numbers `native` is, so a shared stamp
-                    --            would let a byte eviction erase a live native's
-                    --            recency and free a buffer the renderer holds.
+    stamps = nil,   -- recency stamp for tiles and native only (not bytes)
     stamp = 0,
-    page_bytes = nil, -- raw page bytes, most-recent-first: { pageno =, bytes = }
-    panels = nil,   -- detected panel lists, most-recent-first: { key =, panels =,
-                    --            accepted =, reason = }. An entry is rects and
-                    --            Lua numbers, so dropping the table is the whole
-                    --            of freeing it -- there is no buffer to release.
-                    --            Keyed on "<pageno>|<mode>" and never stamped;
-                    --            see panelCacheKey
+    page_bytes = nil, -- raw page bytes, most-recent first: { pageno, bytes }
+    panels = nil,   -- detected panel lists, "<pageno>|<mode>", never stamped
     max_cached_panels = 4,
-    dims = nil,     -- pageno -> {w=, h=} full (capped) native page size, as
-                    --            delivered by decodeNative (never cropped)
-    crops = nil,    -- pageno -> auto content box {x0,y0,x1,y1} in native px
-                    --            (plain margin scan, see computeContentBox),
-                    --            cached for getPageBBox / getPanelFromPage;
-                    --            false == full page (no margin trimmed); a nil
-                    --            *returned* box means the same (see autoContentBox)
+    dims = nil,     -- pageno -> {w=, h=} full (capped) native page size
+    crops = nil,    -- pageno -> auto content box in native px; false = full
     desc = nil,     -- the stream descriptor read from the marker file
 
-    -- Ascending page numbers this session has found to be wider than tall —
-    -- the pages an artist drew as one spread. One bit per page, no LRU, and
-    -- **only ever written where a page was really decoded** (`_noteWide`): a
-    -- page whose fetch failed is given the screen's own dimensions as a
-    -- stand-in (`getPageDims`), and on a landscape screen that stand-in would
-    -- read as "wide" and re-anchor the whole pairing around a page that does
-    -- not exist. The imposition itself is `meguru/spread`.
+    -- Ascending pages found wider than tall; written only for decoded pages.
     wide_list = nil,
 
-    -- Whether this book reads right to left, so the earlier page of a pair goes
-    -- on the *right*. Mirrors `ReaderView.inverse_reading_order`, which is a
-    -- reader-side setting rather than a configurable one; seeded from the same
-    -- sidecar key at open and kept in step by the reader's Reading direction row.
+    -- Reads right-to-left (earlier page on the right); mirrors the key.
     spread_rtl = false,
 
-    -- Whether the landscape the screen is in was put there by *this plugin* — a
-    -- wide-page rotation — rather than by the reader holding the device that way.
-    -- Written by `ui/reader.lua` just before it asks `spreadActive` (see
-    -- `publishScreenRotation`), and false until a rotation happens, which is the
-    -- right answer for a reader who has turned nothing.
+    -- Set by this plugin's wide-page rotation, not by the reader turning.
     spread_rotated_by_plugin = false,
 }
 
--- ---------------------------------------------------------------------------
--- Lifecycle
--- ---------------------------------------------------------------------------
-
--- Open a local .cbz for this document. Returns the open MuPDF document, or nil
--- (with a logged reason). This mirrors how the stock DocumentMuPDF opens the
--- same file, so page order and page count always agree between the two
--- engines. Local rendering cannot fall back to RenderImage (there are no entry
--- bytes to decode), so a missing MuPDF binding must fail the open here rather
--- than crash mid-render on the first page.
+-- Open a local .cbz, or nil; mirrors stock DocumentMuPDF so order/count agree.
 function MeguruDocument:_openLocalArchive()
     if not Mupdf then
         logger.warn("Meguru: MuPDF binding unavailable; cannot open a local CBZ")
@@ -944,9 +560,7 @@ function MeguruDocument:_openLocalArchive()
         logger.warn("Meguru: MuPDF cannot open", self.file, ":", tostring(doc))
         return nil
     end
-    -- The same answer the streamed decode asks for (decodeNativeMupdf sets the
-    -- flag per page), so a local cbz and a .meguru book of the same pages come
-    -- out identical on whatever screen is in front of them.
+    -- Same colour answer as the streamed decode, so both engines render alike.
     if doc.setColorRendering then
         doc:setColorRendering(Image.colorEnabled())
     end
@@ -963,47 +577,22 @@ function MeguruDocument:init()
     self.wide_list = {}
     self.crops = {}
     self.panels = {}
-    -- Pages whose decode has failed (or that were refused as too large to
-    -- decode on this device) are remembered so a doomed full-resolution decode
-    -- is never attempted more than once per page — re-attempting it every
-    -- paint is what turned a single failed ~100 MB malloc into the repeated
-    -- OOM kill.
+    -- Failed/refused decodes, so a doomed decode is not retried on every paint.
     self.dead_pages = {}
 
-    -- Pages whose *fetch* failed, and why: `{ reason = "offline"|"network"|
-    -- "http", code = <status or nil> }`. A paint is not a place to discover
-    -- that the server is down — `drawSinglePage` reaches `fetchPage` on every
-    -- repaint, so a page that failed once would otherwise pay a socket timeout
-    -- on every menu open, zoom step and crop toggle *and* log a line for each,
-    -- against a server that has already said no. This makes one attempt per
-    -- page per look at it: `clearFetchFailures` is what starts the next look
-    -- (a page turn, or the connection coming back), and the entry doubles as
-    -- the reason the placeholder page shows the reader.
+    -- Failed fetches and why; retried only by clearFetchFailures.
     self.fetch_failed = {}
 
     self.mod_time = FS.mtime(self.file)
 
-    -- Two opening modes, chosen by the file suffix BEFORE anything is parsed —
-    -- a binary cbz must never be handed to LuaSettings / marker loading:
-    --
-    --  * .meguru  -> a streamed book: `self.file` is a marker holding the stream
-    --    descriptor (server, template URL, count); pages are fetched one at a
-    --    time over HTTP through the fetch seams below.
-    --  * .cbz   -> a local archive the user routed through this engine with
-    --    KOReader's stock "Open with…". desc stays nil for the book's whole
-    --    life (every desc-based reader-side feature in main.lua is nil-safe:
-    --    next-volume rows, end-of-book auto-open and the ⋮ stream rows simply
-    --    stay inert), and the HTTP seams are bypassed — each page is rendered
-    --    from the single open handle below.
+    -- Mode by suffix before parsing; a .cbz must never reach LuaSettings.
     local desc
     if util.getFileNameSuffix(self.file):lower() == "cbz" then
         desc = nil
         self.local_cbz = true
         self.mupdf_doc = self:_openLocalArchive()
         if not self.mupdf_doc then
-            -- Nothing was opened, so there is no partial document to leak; the
-            -- error is caught by DocumentRegistry:openDocument and the file is
-            -- simply not opened (it stays with native MuPDF next time).
+            -- Nothing opened, nothing to leak; DocumentRegistry catches it.
             error("Meguru: cannot open local CBZ as a Meguru book: "
                 .. tostring(self.file))
         end
@@ -1015,26 +604,11 @@ function MeguruDocument:init()
     end
     self.desc = desc
 
-    -- **The marker's own template is the only one, and nothing here fetches.**
-    -- A catalog row used to win over it — the row held whatever the last walk
-    -- resolved, while the marker held whatever was saved when the book was first
-    -- opened, and for Suwayomi that difference is correctness: the stored
-    -- template carries a chapter position the server can renumber.
-    --
-    -- That is now `Feed.resolveStream`'s job, called from the open path where
-    -- there is a moment to spend a request, and deliberately not here: `init`
-    -- runs inside the document open, where a dead server would hold the screen.
-    -- So this function stays what it always was underneath the override — a
-    -- marker that opens and reads offline, with `template` already restored from
-    -- `settings/opds.lua` by `Marker.load`. Which is why it needs the catalog
-    -- *configured* rather than only the database present; see `meguru/credential`.
+    -- init never fetches (a dead server would hold the open).
 
     local count
     if self.local_cbz then
-        -- MuPDF counts and orders the pages of the archive; these are the same
-        -- 1-based numbers the stock DocumentMuPDF uses for the identical file,
-        -- so page order and count always agree between the two engines. A
-        -- 0-page archive is clamped to 1, mirroring the streamed clamp below.
+        -- The same 1-based numbers stock uses; a 0-page archive clamps to 1.
         local ok_pages, n = pcall(self.mupdf_doc.getPages, self.mupdf_doc)
         count = ok_pages and tonumber(n) or 1
         if not count or count < 1 then
@@ -1047,17 +621,7 @@ function MeguruDocument:init()
         end
     end
 
-    -- Present the stock bottom ConfigDialog + ReaderConfig/ReaderKoptListener
-    -- surface (see main.lua: the dialog is curated to only what this document
-    -- and the pagenumbercrop plugin implement). info.configurable = true gates
-    -- ReaderUI's "config" module (ReaderConfig) and, together with has_pages,
-    -- the "koptlistener" (ReaderKoptListener); koptinterface = {} is the
-    -- sentinel ReaderConfig checks to pick the KOpt option set over the CRE
-    -- one, and the one pagenumbercrop gates its own init on (see its main.lua).
-    -- The numeric configurable fields (trim_page, text_wrap, ...) are filled in
-    -- right after this by ReaderConfig:init -> loadDefaults(KoptOptions), then
-    -- overridden per book from the marker's DocSettings; main.lua's
-    -- onReadSettings re-asserts the plugin defaults on top.
+    -- Stock ConfigDialog surface; koptinterface={} picks the KOpt option set.
     self.info = {
         has_pages = true,
         number_of_pages = count,
@@ -1068,41 +632,9 @@ function MeguruDocument:init()
     self.render_mode = 0
     self.is_open = true
 
-    -- We cannot know beforehand how big pages are, so we scale decoded
-    -- BlitBuffers to the requested size.
+    -- Pages' sizes are unknown until decoded, so buffers are scaled on request.
     self:updateColorRendering()
-    -- Dither every tile->screen blit on a grayscale screen, where the tiles are
-    -- grayscale too — deliberately, and back to what this document did before
-    -- `d40e52e` re-pointed the flag at `Screen.sw_dithering`.
-    --
-    -- What that commit established still holds and is worth keeping in view
-    -- rather than deleting: there the cached tiles are 8bpp grayscale, not
-    -- colour (`doc.color` is falsy, so MuPDF's `draw_new` allocates BB8), so
-    -- blitting them to a BB8 screen is a same-format copy, and `ditherblitFrom`
-    -- over it is not a conversion — it is `dither_o8x8` (blitbuffer.c)
-    -- re-quantising a full 8-bit source down to 16 levels on a fixed 8x8
-    -- pattern. On a device whose controller dithers an 8-bit framebuffer
-    -- itself, that pass burns in a dot grid and drops four bits of tone for
-    -- nothing. The claim that made this look like a no-op conversion ("our
-    -- tiles are RGB24") was simply false, and `d40e52e` was right about that.
-    --
-    -- It is forced on anyway on that screen, on the reader's decision, and the
-    -- reason is the one thing the correction does not touch: the dithered look
-    -- is what the pages have always had here, and it is the shape the rest of
-    -- this file is tuned around. On the reporting device `hw_dither` is false,
-    -- so `Screen.sw_dithering` was already true and this changes nothing; on a
-    -- device whose controller dithers an 8-bit framebuffer itself, the page is
-    -- now quantised to 16 levels *before* that controller gets it, and the four
-    -- bits it would have dithered are already gone. That is recorded rather
-    -- than argued: if it ever hurts on some screen, this flag is the whole
-    -- switch, and `Screen.sw_dithering` is the answer it would take back.
-    --
-    -- **A colour screen is the other branch, and it is not a preference.**
-    -- There the tiles are RGB (the decode asks for colour) and the destination
-    -- is RGB, so there is no conversion for a dither to earn anything on — the
-    -- whole argument above is about a same-format grayscale copy, which is not
-    -- what happens. The screen's own answer is the one that applies, and on a
-    -- colour screen `Screen.sw_dithering` is false.
+    -- Colour screen: take the screen's dither answer; grayscale forces it on.
     if Image.colorEnabled() then
         self.sw_dithering = Screen.sw_dithering and true or false
         logger.info(string.format(
@@ -1127,35 +659,7 @@ function MeguruDocument:init()
             desc.title or "?", count, self.file))
     end
 
-    -- Two things are seeded into this book's own DocSettings, and they want the
-    -- same sidecar.
-    --
-    -- 1. The plugin-wide "Reading direction" answer (manga order) — KOReader's
-    --    ReaderView only reads "inverse_reading_order" per book, falling back to
-    --    its *global* default otherwise, a global this plugin deliberately never
-    --    touches. Books that already carry an explicit reading order (set
-    --    through the bottom-menu Reading direction row or elsewhere) are left alone;
-    --    only books with none are seeded, so existing markers honour the plugin
-    --    setting too. The bottom-menu Reading direction toggle keeps this key in sync.
-    --
-    -- 2. The page the *server* says the reader stopped on — but **only** for a
-    --    book never opened on this device, because a book opened before carries
-    --    KOReader's own position, which is finer-grained, and seeding over it
-    --    would move the reader backwards.
-    --
-    --    This is the only way to land on a page at the first paint:
-    --    `ReaderUI:showReader` takes no page, and both of its post-open callbacks
-    --    fire *after* the first render. `ReaderPaging:onReadSettings` reads
-    --    `last_page` out of this sidecar, and this runs before that — the
-    --    document is opened before `ReaderUI:init` even loads the settings.
-    --
-    --    Silent on this path, deliberately. `ui/open.lua` asks instead, but only
-    --    when it is the one doing the opening; a book opened from the file
-    --    manager or History reaches the reader with no moment to ask in.
-    --
-    -- `hasSidecarFile` is asked first and must stay first: the `DocSettings:open`
-    -- below creates the very file it looks for, so asking afterwards would make
-    -- every book look like a first open.
+    -- Seed Reading direction only if absent; last_read only for a first open.
     local ok_ds, DocSettings = pcall(require, "docsettings")
     if ok_ds then
         local opened_before = DocSettings:hasSidecarFile(self.file)
@@ -1165,21 +669,11 @@ function MeguruDocument:init()
                 ds:saveSetting("inverse_reading_order", Settings.get("manga_order"))
                 ds:flush()
             end
-            -- The same key says which way a pair is laid out: read right to
-            -- left, the earlier page of a pair belongs on the right. Read here
-            -- rather than asked of the reader because the document draws the
-            -- pair and the reader is not always there (the mosaic's cover path
-            -- opens one too) — and it is read *after* the seed above, so a book
-            -- with no key of its own answers the plugin preference's value.
+            -- Same key lays out a pair: RTL puts the earlier page on the right.
             if type(ds.isTrue) == "function" then
                 self.spread_rtl = ds:isTrue("inverse_reading_order") and true or false
             end
-            -- The recorded page is used exactly as recorded. It is *not* trimmed
-            -- back past the prefetch lead, even though a book read here is
-            -- recorded a page ahead: a position recorded by another reader has no
-            -- such lead, and trimming would walk the reader back pages they had
-            -- already read. This only runs for a book never opened here, so there
-            -- is no local page to weigh it against — the recording is all there is.
+            -- Used as recorded; another reader's position has no lead to trim.
             local page = not opened_before and tonumber(desc.last_read) or nil
             if page and page > 1 and page <= count then
                 ds.data.last_page = math.floor(page)
@@ -1207,8 +701,7 @@ function MeguruDocument:close()
         end
         if refcount == 0 then
             self:clearCaches()
-            -- Local cbz: release the persistent MuPDF document (and forget it,
-            -- so close stays idempotent for a stray second call).
+            -- Release the persistent MuPDF document; nil it (idempotent close).
             if self.local_cbz and self.mupdf_doc then
                 pcall(self.mupdf_doc.close, self.mupdf_doc)
                 self.mupdf_doc = nil
@@ -1223,12 +716,7 @@ function MeguruDocument:close()
     return nil
 end
 
--- Free every BlitBuffer an LRU holds.
---
--- A BlitBuffer is malloc'd outside the Lua heap, so dropping the table alone
--- leaks it. This is the half of "empty a cache" the GC cannot do, and the reason
--- `clearCaches` and `syncTone` below share it rather than each walking the
--- tables themselves.
+-- Free every BlitBuffer an LRU holds; dropping the table would leak it.
 local function freeCacheEntries(cache)
     for _, item in pairs(cache or {}) do
         if item.bb and item.bb_free ~= true then
@@ -1244,28 +732,13 @@ function MeguruDocument:clearCaches()
     self.tiles = {}
     self.native = {}
     self.stamps = {}
-    -- No BlitBuffer work for the byte store: its entries are Lua strings, so
-    -- dropping the table drops the last references and the GC reclaims them
-    -- with nothing here having to be told to.
+    -- Byte store is Lua strings; dropping the table lets the GC reclaim them.
     self.page_bytes = {}
-    -- The panel lists are rects and Lua numbers, so the same holds: dropping
-    -- the last references is the whole of the work.
+    -- Panel lists are plain numbers, so dropping the references frees them.
     self.panels = {}
 end
 
---- The contrast this book is being read at.
----
---- Read off the document's own `configurable`, which is where the bottom menu's
---- Contrast row already lands: `ReaderKoptListener:onConfigChange` writes every
---- row's value there, and it comes back at open through the same table. That is
---- deliberately **not** the `gamma` argument `ReaderView` hands `renderPage`:
---- panel zoom renders through `drawPagePart` and never goes near the reader
---- view, so a value only `ReaderView.state` knew would leave every panel at the
---- tone the book was opened at. One source, read by both paths.
----
---- 1.0 wherever the question cannot be answered — an absent table, a value that
---- is not a positive number. That is also "no contrast", which is what every
---- book that never touched the row renders at.
+-- Book's contrast from configurable, so panel zoom keeps it; 1.0 when unset.
 function MeguruDocument:contrast()
     local value = self.configurable and self.configurable.contrast
     if type(value) == "number" and value > 0 then
@@ -1274,22 +747,7 @@ function MeguruDocument:contrast()
     return 1.0
 end
 
---- The colour intensity pages are rendered at — 1.0 being the file's own.
----
---- The same source as `contrast()` and for the same reason, with one extra
---- answer: **1.0 wherever the pages are not being decoded in colour at all.**
---- Saturation is a colour operation, and every tile on a grayscale screen is
---- 8-bit gray — `BlitBuffer:adjustSaturation` returns early for those types, so a
---- value would cost a comparison per tile and change nothing. The menu hides the
---- row on those screens for the same reason; this is the guard for the *other*
---- way a value gets here, which is a global `kopt_saturation` set on a PDF and
---- pulled into `configurable` by `Configurable:loadDefaults` before this
---- document's seed ever looks at it.
----
---- Asked live, like the decode's own colour question: a reader who turns colour
---- off mid-book drops to grayscale on the next page, and this has to say 1.0 from
---- that moment on — which it does, and which the tone stamp then treats as the
---- tone change it is.
+-- Book's saturation; 1.0 when pages are not colour (adjustSaturation is no-op).
 function MeguruDocument:saturation()
     local value = self.configurable and self.configurable.saturation
     if type(value) ~= "number" or value <= 0 then
@@ -1301,26 +759,7 @@ function MeguruDocument:saturation()
     return value
 end
 
---- Whether a painted page goes through the moiré filter — and whether it can.
----
---- **Two questions in one answer, and the second is the one worth reading
---- twice.** `configurable.derainbow` is the book's own stored choice, seeded
---- from the plugin preference (`doc/defaults`); `Derainbow.available()` is
---- whether this device has `derainbowify.koplugin`'s libraries at all. A book
---- carrying a stored `1`, opened where they are missing, answers **false** — and
---- that is what lets the value travel: it is the reader's and stays in the book,
---- while what it *means* here is "filter every page", which this device cannot
---- do. Nothing else has to know which of the two said no.
----
---- Like `saturation()`, asked live rather than cached at open, so the answer
---- follows the stored value wherever it moves. `Derainbow.available()` is
---- memoised for the session — it is a fact about an installation, not about a
---- device state — so a reader who installs the other plugin mid-book sees this
---- turn true after a restart.
----
---- The value arrives in the row's own **0/1** domain and is therefore
---- *compared*: `0` is truthy in Lua, so `value and …` would read a stored "off"
---- as on — the trap `doc/defaults` documents at length.
+-- Book's moire choice AND availability; compared to 1 (0 is truthy).
 function MeguruDocument:derainbow()
     if not Derainbow.available() then
         return false
@@ -1328,42 +767,7 @@ function MeguruDocument:derainbow()
     return self.configurable ~= nil and self.configurable.derainbow == 1
 end
 
---- Drop everything a *tone* change invalidates, on the change itself.
----
---- **The tone is two values, not one**: contrast and saturation, both of which are
---- applied by MuPDF while rendering (see `meguru/doc/image`). Either of them moving
---- is the same event here, and this is the one place that decides what it costs.
----
---- **The moiré switch is a third value watched here, and it is not a third
---- tone.** It is read and stamped beside the pair because it rides the same
---- mechanism — a per-book render setting baked into the pixels of a tile, which
---- `tileAtTone` has to be able to refuse — but it is deliberately not allowed to
---- cost what a tone change costs. See the note on `tone_moved` below.
----
---- The working decode in `native` has the tone of the moment it was made baked
---- into its pixels — and so does every tile cut from it, every content box and
---- panel list derived from it, and the page-number/blank memos that scan it. Left
---- alone, all of that would be served, correct-looking and wrong, until the LRUs
---- happened to turn over: a reader who moves a tone row would watch the
---- page they are on keep its old tone for another eight tile renders.
----
---- So this one setting is not like the others here. Crop, blank and panel
---- toggles only flip an `active` flag over a memo that stays valid (the analysis
---- section below says why), while a tone change alters the pixels those memos were
---- *computed from* and so drops them. What survives is what a tone cannot move:
---- `dims` (a tone maps pixel values, never page dimensions) and `page_bytes`
---- (the raw source bytes, kept precisely so the re-decode here costs a decode and
---- not a fetch).
----
---- **Tiles are stamped, not dropped, and that asymmetry is deliberate.** A native
---- is held by nothing but this document — every consumer is handed a copy of it —
---- so freeing one here is safe. A *tile* can be on screen: the panel viewer holds
---- one across paints and only ever lets go through `releasePanelTile`. So a tile
---- the tone has outlived is left in the LRU and refused by `tileAtTone` until the
---- LRU turns it over, rather than be freed under a blit that is still using it.
----
---- Called at the top of every entry point that reads one of these tables, and
---- idempotent: two reads and two comparisons while nothing has moved.
+-- Tone change stales tiles, crops, panels and memos; tiles are stamped.
 function MeguruDocument:syncTone()
     local contrast, saturation = self:contrast(), self:saturation()
     local derainbow = self:derainbow()
@@ -1371,21 +775,9 @@ function MeguruDocument:syncTone()
             and derainbow == self._tone_derainbow then
         return contrast, saturation
     end
-    -- The first call is the book's opening tone rather than a change, and it is
-    -- provably the first: every path that fills a cache below runs this at its
-    -- top, so there is nothing to drop yet and nothing to say about it.
+    -- The first call is the opening tone, not a change: nothing to drop yet.
     local first = self._tone_contrast == nil
-    -- **Only the tone pair costs the decodes; the moiré switch does not.** The
-    -- filter runs on the tile a paint has just produced, not on the decode that
-    -- fed it (`renderPage`), so the working buffer in `native` is the same
-    -- unfiltered pixels whichever way this switch is set — and so is everything
-    -- computed from them: the content boxes, the panel lists, and the
-    -- page-number and blank memos that scan them. Dropping those here would
-    -- re-fetch and re-decode bytes the filter never touched.
-    --
-    -- What the switch *does* invalidate is every tile, and a tile is stamped
-    -- rather than dropped — the asymmetry the header above sets out. So the
-    -- stamp is written unconditionally below and the decodes are not.
+    -- Only the tone pair costs a re-decode; the moire filter runs on the tile.
     local tone_moved = contrast ~= self._tone_contrast
         or saturation ~= self._tone_saturation
     self._tone_contrast, self._tone_saturation = contrast, saturation
@@ -1393,9 +785,7 @@ function MeguruDocument:syncTone()
     if tone_moved then
         freeCacheEntries(self.native)
         self.native = {}
-        -- The memos are created lazily on first use, so a book that never turned
-        -- either feature on has nothing here to drop, and nil is the same answer as
-        -- an empty table for all of them.
+        -- Memos are lazy, so nil and an empty table are the same answer here.
         self.crops = {}
         self.panels = {}
         self._meguru_pagenum_cache = nil
@@ -1409,10 +799,6 @@ function MeguruDocument:syncTone()
     end
     return contrast, saturation
 end
-
--- ---------------------------------------------------------------------------
--- LRU helpers (RAM: tiles & native pages)
--- ---------------------------------------------------------------------------
 
 local function bump(self, key)
     self.stamp = self.stamp + 1
@@ -1446,27 +832,7 @@ local function evictOldest(self, cache, cap)
     end
 end
 
---- The cached tile for `key`, if it is still the tile that key means.
----
---- **A tile is rendered *at a tone*, and the tone is a stamp rather than part of
---- the key.** A tone change does not free the tiles it invalidated (see
---- `syncTone`), and this comparison is what keeps the stale ones from being
---- served: they stay in the LRU, unservable, until the LRU turns over or
---- `cacheTile` renders that key again — which is also when they are freed.
----
---- **The moiré switch is stamped and compared here too**, for exactly the same
---- reason and by exactly the same rule: it is baked into the tile a paint
---- produced, so a tile rendered with it on is not the tile this key means once
---- the reader turns it off. It joins the comparison rather than getting a
---- mechanism of its own — the stamp is one fact about a tile, and splitting it
---- would be two places to remember.
----
---- Freeing them at the change instead is the obvious thing and the wrong one. The
---- panel viewer holds a tile across paints (`image_disposable = false`), and the
---- only code in this plugin that may free a tile something is still painting is
---- `releasePanelTile` — the viewer saying it has moved on. A tone change is not
---- that statement, and a freed BlitBuffer under a viewer's blit is a use of
---- memory that no longer belongs to us.
+-- Cached tile for key, if still the tile that key means; tone is a stamp.
 local function tileAtTone(self, key)
     local tile = self.tiles[key]
     if tile and tile.bb_free ~= true
@@ -1475,8 +841,7 @@ local function tileAtTone(self, key)
             and tile.derainbow == self._tone_derainbow then
         return tile
     end
-    -- Only an already-freed entry is dropped here; a live one the tone has
-    -- outlived stays where the LRU can still account for it.
+    -- Drop an already-freed entry; a live stale one stays for eviction.
     if tile and tile.bb_free == true then
         self.tiles[key] = nil
     end
@@ -1489,10 +854,7 @@ function MeguruDocument:cacheTile(key, tile)
         self.tiles[key].bb:free()
     end
     tile.bb_free = false
-    -- The tone this tile was rendered at — both halves of it — and the moiré
-    -- switch it was rendered under, for `tileAtTone` above. All three are
-    -- written here and nowhere else, so the stamp cannot come to describe a
-    -- tile by halves.
+    -- The tone (both halves) and moire switch this tile was rendered at.
     tile.contrast = self._tone_contrast
     tile.saturation = self._tone_saturation
     tile.derainbow = self._tone_derainbow
@@ -1514,43 +876,13 @@ function MeguruDocument:cacheNative(pageno, bb)
     evictOldest(self, self.native, self.max_cached_native)
 end
 
--- True when this page's decoded native is already in the LRU.
---
--- Every render/analysis path below starts by obtaining the page's raw bytes and
--- hands them to `decodeRegion`, which passes them straight to `ensureNativeBB` —
--- and `ensureNativeBB` returns the cached buffer *before* it ever looks at them.
--- So when this is true the bytes are read and thrown away.
---
--- That was affordable while they were a file. With the store in RAM, sized to a
--- handful of pages, the read is a real risk: a repaint whose page has been
--- evicted — a zoom or crop change, a repaint during teardown — would pay a
--- synchronous HTTP GET inside the paint for bytes the render is about to
--- ignore. Skipping it costs nothing:
--- with the native live `ensureNativeBB` cannot fail, so `decodeRegion`'s
--- last-resort branch (the one that genuinely needs `data`) is unreachable.
---
--- It also fixes a plain bug. Today, if the bytes are gone and the native is
--- live, `renderPage` returns nil and the reader is shown the gray placeholder
--- while a perfectly good decoded page sits in the LRU.
+-- True when the page's decoded native is already in the LRU.
 function MeguruDocument:hasNative(pageno)
     local item = self.native and self.native[pageno]
     return item ~= nil and item.bb_free ~= true
 end
 
--- ---------------------------------------------------------------------------
--- Page bytes in RAM (fetch page N, keep an LRU)
--- ---------------------------------------------------------------------------
---
--- The store is per-document and keyed by nothing but the page number, which is
--- only unambiguous because exactly one document can reach it — `self.file` is
--- fixed and `self.desc` is assigned once, so one instance never serves two
--- books. A shared store would need the book's identity in the key; this one must
--- not have one, and must never be made shared.
---
--- Its lifetime is the document's: `clearCaches` empties it on close, so opening
--- a book again fetches its pages again.
-
--- The one read of the byte store, and a hit is moved to the front.
+-- Page bytes in RAM; page-number key is unambiguous (one book per document).
 function MeguruDocument:readCachedPage(pageno)
     for i = 1, #self.page_bytes do
         local entry = self.page_bytes[i]
@@ -1565,11 +897,7 @@ function MeguruDocument:readCachedPage(pageno)
     return nil
 end
 
--- Keep `bytes` for one page, evicting the least recently read beyond the cap.
---
--- Deliberately not `evictOldest`: its loop is `count >= cap`, so it holds one
--- fewer than its cap reads, and it stamps through the `stamps` table `native`
--- also uses — keyed, as this is, by page number.
+-- Keep bytes for one page; not evictOldest (it reads one low, shares stamps).
 function MeguruDocument:cachePage(pageno, bytes)
     for i = 1, #self.page_bytes do
         if self.page_bytes[i].pageno == pageno then
@@ -1578,38 +906,19 @@ function MeguruDocument:cachePage(pageno, bytes)
         end
     end
     table.insert(self.page_bytes, 1, { pageno = pageno, bytes = bytes })
-    -- Dropping the tail drops the last reference to those bytes, so the GC
-    -- reclaims them without anything here having to be told to.
+    -- Dropping the tail drops the last reference; the GC frees them.
     while #self.page_bytes > self.max_cached_pages do
         table.remove(self.page_bytes)
     end
 end
 
--- Credentials to fetch pages with.
---
--- Resolved at the moment of use and never stored: the marker holds the catalog
--- *title*, not a secret, and `meguru/sources` looks the credentials up in the
--- session's cache or read-only in KOReader's own settings/opds.lua.
---
--- "Not a secret" is about *these* credentials, and it is also true of the other
--- one: the stream template in `desc` had Kavita's API key stripped before it was
--- written and restored by `Marker.load`. Two different secrets, one file, and
--- neither of them in it.
+-- Fetch credentials, resolved at use; no secret is stored in the marker.
 function MeguruDocument:streamCredentials()
     local desc = self.desc or {}
     return Sources.credentials(desc.server_name, self.file)
 end
 
---- Whether a page could be fetched at all right now.
----
---- A *device* state, not a probe: Wi-Fi off means the socket call can only fail,
---- and on some backends only after sitting through its timeout with the UI
---- thread blocked. It says nothing about whether the server will answer — Wi-Fi
---- on and a dead server is exactly the case this cannot see, and that is the one
---- the fetch timeout and `fetch_failed` are for.
----
---- `isConnected` is true by construction on a device with no Wi-Fi to toggle
---- (desktop, emulator), so this never blocks a fetch that could have worked.
+-- Device state, not a probe: Wi-Fi off can only fail, not detect a dead server.
 function MeguruDocument:hasConnection()
     if self.local_cbz then
         return true
@@ -1618,40 +927,16 @@ function MeguruDocument:hasConnection()
     return ok and NetworkMgr ~= nil and NetworkMgr:isConnected()
 end
 
---- Forget that any page failed to fetch, so the next look at one tries again.
----
---- Called for the two things that mean "try now": the reader turning to a page,
---- and the connection having come back. Without it a page that failed during an
---- outage stays a placeholder for the rest of the session — the entries would
---- outlive the outage they describe, which is the same failure as a copy written
---- once and never repaired, one page down.
----
---- Returns whether there was anything to clear, which is what tells the
---- connection-restored caller that a repaint would be worth asking for: the
---- event also arrives at startup, on a device that was already online.
+-- Forget fetch failures on a page turn or the connection returning.
 function MeguruDocument:clearFetchFailures()
     local had = next(self.fetch_failed) ~= nil
     self.fetch_failed = {}
     return had
 end
 
--- Make sure the raw bytes of `pageno` are available (fetched over HTTP if not
--- in the byte LRU yet). Returns the bytes, or nil on failure.
---
--- A failed page is remembered in `self.fetch_failed` and **not attempted again
--- until something clears that** — see the field's comment in init. The warning
--- is logged once, with the attempt, for the same reason.
+-- Ensure raw bytes for a page; a failure is remembered and not retried here.
 function MeguruDocument:fetchPage(pageno)
-    -- **Nothing below the first page, and no request for it.** This document
-    -- numbers pages from 1 (KOReader's own numbering) and `pageno - 1` below is
-    -- what maps that to the server's, which numbers from 0 — so index 0 is the
-    -- page *before* the first, which no server has. One is asked for at open on
-    -- some path (measured: a device logs it immediately after the stream is
-    -- ready), and Kavita answers 400: a failed fetch, logged as one, for a page
-    -- nobody can draw. The lower bound is the whole of the guard: the server
-    -- *does* answer past the last page, with the last page's own bytes, and the
-    -- upper bound belongs to `prefetchPage` below, which is about not warming a
-    -- page the book does not have rather than about what can be served.
+    -- Pages are 1-based; pageno-1 is the server's zero-based index (0 invalid).
     if pageno < 1 then
         return nil
     end
@@ -1677,14 +962,7 @@ function MeguruDocument:fetchPage(pageno)
     local user, pass = self:streamCredentials()
     local ok, bytes, code = pcall(PSE.fetchPage, url, { username = user, password = pass })
     if not ok or not bytes then
-        -- A `code` here is an HTTP answer and its absence is everything else —
-        -- and "everything else" is two things that must not be read as one:
-        -- `PSE.fetchPage` returns the status `Net.get` got, and `Net.get`
-        -- returns nothing at all (rather than a status) when the socket never
-        -- connected, having already logged why. So `ok` with no `code` is a
-        -- transport failure, not a server that answered. The page message is
-        -- built from this, and "did not answer" and "answered 404" are
-        -- problems with different fixes.
+        -- No code with ok = transport failure, not a server answer.
         local reason, detail
         if ok and code then
             reason, detail = "http", "(HTTP " .. tostring(code) .. ")"
@@ -1693,13 +971,11 @@ function MeguruDocument:fetchPage(pageno)
         else
             reason, detail = "network", "(error: " .. tostring(bytes) .. ")"
         end
-        -- `code` is nil on the two network paths, and the message only reads it
-        -- in the branch where it is a number.
         self.fetch_failed[pageno] = { reason = reason, code = code }
         logger.warn("Meguru: failed to fetch page", pageno, detail)
         return nil
     end
-    -- Stored only once the fetch has succeeded, so a failed one writes nothing.
+    -- Cleared only after success, so a failed fetch writes nothing.
     self.fetch_failed[pageno] = nil
     self:cachePage(pageno, bytes)
     return bytes
@@ -1715,28 +991,13 @@ function MeguruDocument:prefetchPage(pageno)
     end
 end
 
--- ---------------------------------------------------------------------------
--- Page geometry (what ReaderZooming / ReaderView ask for)
--- ---------------------------------------------------------------------------
-
--- Local cbz documents have no stream descriptor; the book's title is derived
--- from the archive's own file name (basename without the suffix) — what a
--- native engine open of the same file would report.
+-- Local cbz title is the archive's file name, as stock would report.
 function MeguruDocument:_localTitle()
     local name = self.file:match("([^/\\]+)$") or self.file
     return (name:gsub("%.[^.]*$", ""))
 end
 
---- What this book's marker says about its series, or nil.
----
---- Nil is an ordinary answer, not a failure: a local cbz has no descriptor at
---- all, and a marker written before the series fields existed has none of them.
---- Everything that calls this reads as if the series were simply not there.
----
---- This replaced a lookup that resolved the marker against the catalog and
---- memoised three rows. It is now a projection of `self.desc`, which is what
---- makes a book opened from History — with no browser, no database and possibly
---- no network — able to answer where it sits in its series.
+-- Marker's series context, or nil (ordinary: local cbz and old markers).
 function MeguruDocument:seriesContext()
     if not self.desc then
         return nil
@@ -1744,18 +1005,7 @@ function MeguruDocument:seriesContext()
     return Marker.seriesContext(self.desc)
 end
 
---- The folder this book shares with its neighbours, or nil when it has none.
----
---- The other half of the same question, and deliberately a second method rather
---- than a branch inside `seriesContext`: that one projects a marker's
---- descriptor, everything downstream branches on its nil, and a local cbz has
---- no descriptor at all. Two sources of "which series is this" that can never
---- answer with each other's shape is what keeps the marker path and the local
---- path from being confused for one another.
----
---- This one *does* read the folder — it is the only way to know whether there is
---- anything to navigate to — so it is asked when a menu is built and when a
---- neighbour is opened, and never on the render path.
+-- Folder shared with neighbours; separate from seriesContext by design.
 function MeguruDocument:localSeries()
     if not self.local_cbz then
         return nil
@@ -1763,38 +1013,7 @@ function MeguruDocument:localSeries()
     return Local.seriesOf(self.file)
 end
 
---- What a local `.cbz` is known by: its own metadata, else its file name.
----
---- **The archive's `ComicInfo.xml` is the answer, and the file name is only the
---- fallback.** This returned `{ title = _localTitle() }` unconditionally, which
---- is what made a book opened through Rakuyomi lose the metadata Rakuyomi had
---- written into the file and show a hashed file name in History — while the very
---- same file, opened by Rakuyomi's own document class, was titled properly.
---- Rakuyomi was not broken; it was simply no longer the class doing the opening,
---- so its `getDocumentProps` never ran. Reading the entry here is what makes the
---- metadata survive whoever claims `.cbz`, and it needs Rakuyomi installed only
---- to have written the file, never to be present at read time.
----
---- **`title` is the file's own `Title` and the series is a field beside it.**
---- They are not folded together, and that is deliberate: ComicRack's schema
---- separates them, `doc_props` carries both, and KOReader's
---- `BookInfo.extendProps` puts `title` straight into `display_title` — so a
---- title that repeated the series would show it twice, and Book info would list
---- the series on a line of its own underneath. The streamed path does fold, and
---- the difference is not an inconsistency to tidy: a marker projects a
---- descriptor that has no series *field*, so folding is the only way its title
---- can say what it belongs to, where here the field exists.
----
---- **What the archive says arrives whole**, in `doc_props` terms, from
---- `meguru/comicinfo` — `series_index`, `language`, `authors`, `keywords` and
---- `description` among them. What is left here is the one thing that module
---- cannot know: the file's name, which is what `title` falls back to when the
---- entry is missing, unreadable, or has no `Title` of its own.
----
---- The entry is read once and memoised on the document — it opens the archive,
---- and one document is one book, so this cannot go stale the way a shared cache
---- could. The returned table is built fresh each call because `Document:getProps`
---- hands it to `FileManagerBookInfo.extendProps`, which is free to add to it.
+-- Local .cbz props from ComicInfo.xml, title falling back to the file name.
 function MeguruDocument:_localComicProps()
     if self._comic_info == nil then
         self._comic_info = ComicInfo.read(self.file) or false
@@ -1814,19 +1033,10 @@ function MeguruDocument:getDocumentProps()
         return self:_localComicProps()
     end
     local desc = self.desc or {}
-    -- A server-faithful title carries bookkeeping the reader should not see in
-    -- History: a leading reading-progress glyph (Kavita's ◕/◔, Suwayomi's ⭕)
-    -- or a "Continue Reading from:" resume prefix. Stripped exactly as the
-    -- marker's file name already strips them. KOReader recomputes doc_props on
-    -- every open, so this needs no migration to reach existing books.
+    -- Strip progress glyphs and resume prefixes, as the marker name does.
     local title = desc.title and Naming.cleanTitle(desc.title)
 
-    -- A Suwayomi chapter is titled after the chapter alone ("Chapter 84"), so
-    -- History would list a bare "Chapter 84" with no manga to place it. The
-    -- series name is the marker's own field now, and is used only when the title
-    -- does not already start with it — a Kavita volume title names its own
-    -- series. A marker written before the field existed answers nil, and History
-    -- shows the book's own title, which is what a book with no catalog row got.
+    -- Prefix the series name unless the title already starts with it.
     local name = desc.series_name
     if type(name) == "string" and name ~= ""
         and type(title) == "string" and title ~= ""
@@ -1834,44 +1044,16 @@ function MeguruDocument:getDocumentProps()
         title = name .. " - " .. title
     end
 
-    -- No authors, deliberately. Neither server publishes one worth showing, and
-    -- both stamp placeholders ("Unknown", "Unknown Author") often enough that a
-    -- guessed author would be worse than an empty field.
+    -- No authors: both servers stamp placeholders worse than an empty field.
     return { title = title }
 end
 
--- Book cover, returned as a BlitBuffer exactly like any other KOReader
--- Document. This is the seam FileManager ("Book info"/mosaic), coverimage-like
--- plugins and coverbrowser all go through, so exposing it here makes a
--- streamed book show its cover wherever covers normally appear.
---
--- **Nothing is cached.** The artwork is fetched over HTTP on every call, so
--- browsing a folder costs one request per book. That is the whole price of
--- having covers at all here, and it is deliberate: a cover already has
--- somewhere else to live — KOReader's own `BookInfoManager` remembers the
--- thumbnail it extracts — so this plugin does not need a store of its own, and
--- with one it would be the only thing meguru wrote to disk.
---
--- The link comes from the catalog, not from the marker: a cover belongs to a
--- book and to a series, and the catalog is where each of those lives, so
--- neither is copied into every marker. A book with no recorded artwork falls
--- back to the first page of its stream, mirroring how a CBZ treats its first
--- image as the cover — and so does a book whose stored link can no longer be
--- fetched, so it is never left cover-less over a stale or moved URL.
---
--- Cover of a local cbz = the archive's first page (like any CBZ). Rendered
--- into a *fresh* capped buffer and bounded to the screen, so the cover never
--- aliases the LRU-cached native of page 1 (that buffer is cache-owned and
--- freed on eviction) nor lingers as an oversized bitmap.
+-- Cover BlitBuffer, nothing cached; falls back to page 1 so never cover-less.
 function MeguruDocument:_localCoverPageImage()
     if self.dead_pages[1] then
         return nil
     end
-    -- `Image.renderMupdfPage`, not a bare `renderMuPDFPage`: that name is a
-    -- file-local of meguru/doc/image.lua and reads as nil here, and
-    -- `pcall(nil, ...)` returns false rather than raising — so the whole body
-    -- below was unreachable and every local cbz reported "could not render
-    -- local cbz cover" whether or not the render would have worked.
+    -- Must be Image.renderMupdfPage; a bare renderMuPDFPage is nil.
     local ok, bb = pcall(Image.renderMupdfPage, self.mupdf_doc, 1, nil)
     if not ok or not bb or bb == Image.DECODE_TOO_LARGE then
         logger.warn("Meguru: could not render local cbz cover")
@@ -1897,24 +1079,11 @@ function MeguruDocument:getCoverPageImage()
     if self.local_cbz then
         return self:_localCoverPageImage()
     end
-    -- No connection, no cover — and no attempt. A cover is fetched once per book
-    -- while the FileManager waits to draw its mosaic, which is the one place
-    -- this plugin runs a request per file in a *folder*: offline, every book
-    -- spent a socket call and a warning to find out what `isConnected` already
-    -- said. The mosaic fills in when the network is back, on the next browse —
-    -- nothing here is remembered, so there is nothing to invalidate.
+    -- No connection, no attempt: a cover is one request per book.
     if not self:hasConnection() then
         return nil
     end
-    -- Both cover links are the marker's own fields, written when it was. The
-    -- fallback below — page 1 of the stream, which on OPDS-PSE servers is usually
-    -- the cover — still applies, and is what a marker written before the fields
-    -- existed gets.
-    --
-    -- The book's own artwork wins. Most feeds publish only a series image, so
-    -- for them this changes nothing; Kavita publishes one per volume, and
-    -- preferring the series there is what made every book of a series render
-    -- with the same picture.
+    -- The book's cover wins over the series' (Kavita's gave every book one).
     local desc = self.desc or {}
     local cover_url
     for _, candidate in ipairs{ desc.cover_url, desc.series_cover_url } do
@@ -1932,12 +1101,7 @@ function MeguruDocument:getCoverPageImage()
         if ok and bytes then
             data = bytes
         else
-            -- The stored cover link could not be fetched (moved/changed on the
-            -- server, a transient auth/network hiccup, a server that only
-            -- answers its own page URLs). Do not leave the book cover-less:
-            -- fall through to the first streamed page below — the same fallback
-            -- a marker *without* a stored cover link already takes. Nothing was
-            -- written, so a later call simply retries the link.
+            -- Stored link unfetchable: fall through to page 1 (retried later).
             if ok then
                 logger.warn("Meguru: failed to fetch cover (HTTP "
                     .. tostring(code) .. "), falling back to page 1")
@@ -1948,37 +1112,21 @@ function MeguruDocument:getCoverPageImage()
         end
     end
     if not data then
-        -- No stored cover link, or the stored one failed above: page 1 of the
-        -- stream, which on OPDS-PSE servers is usually the cover.
-        --
-        -- No `hasNative` guard here, unlike the render paths: this decodes the
-        -- bytes itself rather than handing them to `decodeRegion`, so it
-        -- genuinely needs them. Page 1 is also a page number of its own — the
-        -- one entry the byte store can hold that is for a page other than the
-        -- one on screen.
+        -- No stored link or it failed: page 1; no hasNative guard.
         data = self:fetchPage(1)
     end
     if not data then
         return nil
     end
 
-    -- Decode the cover. decodeNative bounds oversized artwork to the cap, so a
-    -- server handing out a full-res image as its "cover" is not fully decoded
-    -- into RAM either (it would otherwise be another giant transient). A cover
-    -- refused as too large (Image.DECODE_TOO_LARGE: huge lossless artwork) simply
-    -- has no cover.
+    -- decodeNative caps oversized artwork, so a full-res cover stays bounded.
     local res = Image.decode(data)
     if not res or res == Image.DECODE_TOO_LARGE then
         logger.warn("Meguru: could not decode cover image")
         return nil
     end
     local bb = res
-    -- Bound memory like the MuPDF/kopt cover path: never hand back a larger
-    -- bitmap than the screen can use (the raw OPDS cover can be full-res).
-    -- free_orig_bb=false: `bb` is owned here (fresh decode), so the scaler
-    -- must not free it — we release it only when a distinct bounded copy was
-    -- actually produced; when it returns `bb` itself (or a decode failure is
-    -- reported via ok_s=false) the buffer is still ours to hand back.
+    -- Never hand back more pixels than the screen; free it only if copied.
     local w, h = bb:getWidth(), bb:getHeight()
     if w and h and (w > Screen:getWidth() or h > Screen:getHeight()) then
         local scale = math.min(Screen:getWidth() / w, Screen:getHeight() / h)
@@ -2003,64 +1151,22 @@ function MeguruDocument:getPageText()
     return nil
 end
 
--- ---------------------------------------------------------------------------
--- Two pages at once
--- ---------------------------------------------------------------------------
---
--- When the reader asks for it — `spread` at "on", or "auto" while the screen is
--- in landscape — two pages are shown side by side. The whole of how they pair
--- lives in `meguru/spread`; what lives here is the *geometry*, and the shape it
--- takes is worth stating once:
---
--- **A pair is presented to the reader as one page, twice as wide.** KOReader has
--- no two-page mode for a paged document (its `getVisiblePageCount` is a reflow
--- engine's, and `ReaderPaging` never asks for two), so the alternative would be
--- to drive the layout ourselves. Instead the document answers two of the
--- reader's geometry questions with the pair's box — `ReaderView:getPageArea`
--- reads exactly those two — and then splits the one rectangle it is asked to
--- draw into the two pages it is made of. Zoom, fit, panning, the page box and
--- the visible area are all the reader's own, unchanged, because from its side
--- there is only ever one page.
---
--- Three things must stay truthful while that is going on, and they are the
--- reason the pair is composed here rather than the box being faked wholesale:
--- a page's **own** size (`_pageGeom` — the crop analysis and the panel detector
--- ask for it, and a pair-wide answer would move a printed page number's strip
--- and shrink the probe grid), the pair's **full** size (the fit is measured
--- against it, and the reader refuses a bounding box bigger than the page), and
--- every **external** reader of the geometry (the process-wide shim above), which
--- is handed one page for the reason given there.
+-- Two pages at once: the geometry; the pairing is meguru/spread (see the doc).
 
---- The page's own full size, never the pair's.
----
---- Every part of this document that means *one page* asks through here: the
---- blank-page rule and the page-number strip (`getPageBBox`), which measure a
---- band of the printed page, and `ui/reader`'s wide-page rotation, which decides
---- by a page's shape whether to turn the screen. A pair is wider than tall by
---- construction, so any of them reading the virtual seam would decide for two
---- pages what only makes sense for one.
+-- The page's own full size, never the pair's; the analyses measure one page.
 function MeguruDocument:_pageGeom(pageno)
     local dims = self:getPageDims(pageno)
     return { w = dims.w, h = dims.h }
 end
 
---- Whether the reader is being shown two pages at a time right now.
----
---- Read from the configurable and the screen rather than from a flag the reader
---- sets, so there is no ordering to get wrong between the reader installing and
---- the first layout pass: "auto" is landscape only, and landscape is the parity
---- of the rotation mode — the same definition `ui/reader`'s `rotateTo` rotates
---- by, and the same one this plugin already reasons about everywhere else.
+-- Whether two pages are shown now: read live, so install order cannot matter.
 function MeguruDocument:spreadActive()
     local configurable = self.configurable
     local value = configurable and configurable.spread
     if value ~= "off" and value ~= "auto" and value ~= "on" then
         return false
     end
-    -- Continuous scroll lays the pages out one after another in a strip, and two
-    -- side by side there would not be a pair at all but a page in two slots. The
-    -- row is inert while the reader is scrolling — the same shape as the
-    -- reader's own per-page rotation, which is meaningless in that mode too.
+    -- Continuous scroll is a strip: two side by side would be two slots.
     if configurable.page_scroll == 1 or configurable.page_scroll == "1" then
         return false
     end
@@ -2070,27 +1176,14 @@ function MeguruDocument:spreadActive()
     if value == "off" then
         return false
     end
-    -- **"in landscape" is about the reader, not about the screen.** A screen this
-    -- plugin has just turned for a wide page is landscape to `Screen` and portrait
-    -- to the reader — who is holding the device upright and wants one page at a
-    -- time back the moment the wide image is past. Reading the screen alone is what
-    -- put a wide page's neighbours into two-page mode and *left* them there:
-    -- a pair being active is exactly what stops the wide rotation being restored.
-    -- See `ui/reader.lua`'s `publishScreenRotation`, which is where this is set.
+    -- "In landscape" means the reader's, not a screen this plugin turned.
     if self.spread_rotated_by_plugin then
         return false
     end
     return (Screen:getRotationMode() % 2) == 1
 end
 
---- The page the offset is anchored at, or 0 for off.
----
---- **The stored value is a page number and not a flag**, and it is read by
---- comparison: `0` and `"0"` are both *truthy* in Lua, so a truth test here would
---- read a stored "off" as on — the trap `meguru/doc/defaults`' `seedRowValue`
---- documents at length. A stored `1` means page 1 — which is what the row wrote
---- when it was a flag, and the front of the book either way, so no book written
---- before this changes behaviour; `true` is accepted for the same reason.
+-- Offset anchor page, or 0 for off; compared because 0 and "0" are truthy.
 function MeguruDocument:_spreadAnchor()
     local value = self.configurable and self.configurable.spread_offset
     if value == true then
@@ -2103,12 +1196,7 @@ function MeguruDocument:_spreadAnchor()
     return math.floor(anchor)
 end
 
---- Whether a pair keeps its gutter — the row beside the offset, on by default.
----
---- Read by comparison, and **with nil answering yes**: a configurable that has not
---- been seeded yet is a book whose answer is the plugin default, and the default
---- here is on. The trap is the usual one: `0` is truthy in Lua, so a truth test
---- would read a stored "off" as on.
+-- Flexible gutter row (default on); nil means yes; compared (0 is truthy).
 function MeguruDocument:_spreadGutterOn()
     local value = self.configurable and self.configurable.spread_gutter
     if value == nil then
@@ -2117,21 +1205,7 @@ function MeguruDocument:_spreadGutterOn()
     return value == 1 or value == "1" or value == true
 end
 
---- Whether the fit in force limits the pair by its *width* — the one fit with no
---- room in it for the growth `meguru/spread`'s `grow` offers a short half.
----
---- Read from the configurable, which is where `ReaderZooming:_updateConfigurable`
---- writes the pair of numbers KOReader names a zoom mode by, on every change of
---- the mode: genus 3 is "content" — the genus this plugin's *Fit* row writes, as
---- full/width/height — and type 1 is its "width". Type 2 is full and 0 is height,
---- and those two are the fits a pair's own height limits, which is what the
---- growth needs.
----
---- **Everything else answers true, and the default is deliberately the answer
---- that stands the growth down**: a page-fit and manual are KOReader's own modes
---- rather than this row's, and a configurable nobody has set a mode on is not a
---- mode to grow inside of. A pair drawn under one of them is drawn exactly as it
---- is today.
+-- Whether the fit limits the pair by width (no room for Spread.grow).
 function MeguruDocument:_spreadFitByWidth()
     local configurable = self.configurable
     local genus = configurable and tonumber(configurable.zoom_mode_genus)
@@ -2139,13 +1213,7 @@ function MeguruDocument:_spreadFitByWidth()
     return not (genus == 3 and (kind == 2 or kind == 0))
 end
 
---- Whether the offset is in force for `pageno`: the run it is anchored in being
---- the run that page is in.
----
---- This is what the row shows rather than the stored anchor, and the difference is
---- the whole point of anchoring at a page: **a wide page ends the offset by
---- itself**, so a reader who crosses one finds the row off again without having
---- touched it — and can set it again for the run they are in.
+-- Whether the offset covers this page's run; a wide page ends it by itself.
 function MeguruDocument:spreadOffsetHere(pageno)
     local anchor = self:_spreadAnchor()
     if anchor <= 0 then
@@ -2155,16 +1223,7 @@ function MeguruDocument:spreadOffsetHere(pageno)
         == Spread.runStart(pageno or 0, self.wide_list)
 end
 
---- The unit `pageno` is being shown in: nil when two pages were not asked for,
---- `{ a = n }` for a page shown alone (a wide page, or one whose partner is
---- wide), `{ a = n, b = m }` for a pair.
----
---- **A pair is only offered once both pages' sizes are known.** Those sizes come
---- from a fetch and a decode, and this is asked from inside the reader's layout
---- pass — answering "pair" for a page whose partner has not been decoded would
---- have to fetch right there, which is a freeze on the paint. What warms the
---- partner is `prepareSpread` (on the page turn) and `hintPage` (after a paint);
---- until one of them has, the page is shown alone, exactly as it is today.
+-- Unit shown: nil, {a=n} alone, or {a=n,b=m}; a pair needs both pages decoded.
 function MeguruDocument:spreadUnitFor(pageno)
     if not self:spreadActive() then
         return nil
@@ -2180,12 +1239,7 @@ function MeguruDocument:spreadUnitFor(pageno)
     return unit
 end
 
---- The pair's two pages in screen order: the left one first.
----
---- The reading direction is the whole of what decides this. In a right-to-left
---- book — manga, and this plugin's own default — the *earlier* page of a pair
---- belongs on the right, which is what makes a spread read the way the artist
---- drew it.
+-- Pair's pages in screen order, left first (RTL puts the earlier on the right).
 function MeguruDocument:_pairSides(pair)
     if self.spread_rtl then
         return pair.b, pair.a
@@ -2193,20 +1247,7 @@ function MeguruDocument:_pairSides(pair)
     return pair.a, pair.b
 end
 
---- Which page of the spread on screen a point falls on, and where in that page
---- it is.
----
---- The point arrives in the space the reader laid out — the pair's, while two
---- pages are showing, exactly as `drawPage` splits it — and comes back in the
---- page's own, which is the space the panel detector, the crop box and the
---- page's size are all measured in. With one page showing it answers what it was
---- handed, so the long-press has one path and not two.
----
---- **It is the exact inverse of `drawPage`'s split, half's scale included**, which
---- is what it has to be: a point on the enlarged page has to land where the panel
---- under the finger is, and the page in the box is the same picture at a bigger
---- `zoom` there. Dividing by the half's scale first is the whole of it, and with
---- both scales at 1 it is the arithmetic this has always done.
+-- Which page of the on-screen spread a point is in; drawPage's split inverse.
 function MeguruDocument:spreadPageAt(pageno, x, y)
     local pair = self:spreadUnitFor(pageno)
     if not (pair and pair.b) then
@@ -2214,9 +1255,7 @@ function MeguruDocument:spreadPageAt(pageno, x, y)
     end
     local layout = self:_pairLayout(pair)
     local left, right = layout.left, layout.right
-    -- The seam is where the two halves meet, which the gutter has moved and the
-    -- growth has moved again: a press on the blank gutter counts for the page it
-    -- belongs to, whose margin it is.
+    -- A press on the blank gutter counts for the page whose margin it is.
     local seam = left.box.w * left.scale
     if x >= seam then
         return right.page, (x - seam) / right.scale + right.box.x,
@@ -2225,11 +1264,7 @@ function MeguruDocument:spreadPageAt(pageno, x, y)
     return left.page, x / left.scale + left.box.x, y / left.scale + left.box.y
 end
 
---- One page's content box, `{x, y, w, h}`, in its own native coordinates.
----
---- The corruption guard is the base `getUsedBBoxDimensions`': a box that does
---- not describe an area is the whole page (which is also what "Crop: none"
---- answers, and what a blank page answers).
+-- One page's content box; a degenerate box means the whole page.
 function MeguruDocument:_pageBox(pageno)
     local geom = self:_pageGeom(pageno)
     local box = self:getPageBBox(pageno)
@@ -2244,13 +1279,7 @@ function MeguruDocument:_pageBox(pageno)
     }
 end
 
---- The screen a pair is laid out against.
----
---- `CanvasContext:getSize()` and not a bare screen read, for the reason the panel
---- viewer gives beside its own use of it: it is the framebuffer's *rotated*
---- surface, so a page laid out in landscape is measured against a landscape
---- screen. A gutter computed against the wrong one of the two would be wrong by
---- the whole difference between them.
+-- Screen a pair is laid out against; the rotated surface, so landscape fits.
 function MeguruDocument:_spreadScreen()
     local canvas = CanvasContext:getSize()
     if canvas and canvas.w and canvas.h and canvas.w > 0 and canvas.h > 0 then
@@ -2259,53 +1288,7 @@ function MeguruDocument:_spreadScreen()
     return { w = Screen:getWidth(), h = Screen:getHeight() }
 end
 
---- The pair's two halves as they are drawn: each page's crop box widened on the
---- side that faces the other one by the gutter that page keeps, the shorter half
---- scaled up by however much of the room left over it can use, and — because the
---- last of those is a scale and not a box — each half's `scale` beside its box.
----
---- **This is the one place the pair's geometry is decided**, and everything that
---- needs to know where the seam is asks it: `_pairGeom` for the box the reader
---- lays out, `drawPage` for the split, `spreadPageAt` for the long-press. They
---- have to agree to the pixel, and asking one function is how they do.
----
---- The rule is `meguru/spread`'s, and it is worth restating in the terms this
---- function works in. Each page's **inner** margin is the whole distance from its
---- cropped content to its own edge — the most the gutter may ever be, because
---- that is the paper the page actually has (`dims.w` is the full uncropped page,
---- so the margin the crop took off is exactly what is left over). The two
---- margins, the artwork's own size and the screen go to `Spread.gutter`, which
---- answers with how much each half widens. Everything else here is bookkeeping.
----
---- Two cases answer with no gutter at all without this function having to know
---- about them. A page whose crop came back whole — "Crop: none", a
---- mostly-blank page, a page that would not load and was given the screen's own
---- size as a stand-in — has its content edge *at* its page edge, so its margin is
---- zero. And a pair whose artwork already fills the screen width leaves no slack
---- for a gutter to take.
----
---- **The half that is cropped shorter grows into the room the pair is not using**
---- (`Spread.grow`), which is why each half leaves here with a `scale` as well as
---- a box. The box stays in the page's *own* units; the scale says how much larger
---- than those units the half is drawn. **The two are separate on purpose**,
---- because they answer different questions: the box is what `renderPage` cuts out
---- of the page, the scale is what it is cut *for*, and every caller that draws or
---- hit-tests a half carries both.
----
---- **The growth comes first and the gutter second, and that order is the whole of
---- how the two share the one spare.** The growth is not a claim on the room beside
---- the pair — it is part of how large the artwork *is*, and the gutter's own rule
---- already puts the artwork's fit ahead of itself: the pair is fitted to the screen
---- with the short page already evened up, and the gutter is the leftover of *that*
---- fit. Asked the other way round the gutter takes the spare up to the page's own
---- margin, so a pair whose pages have any inner margin at all leaves the shorter
---- page nothing to grow into — which is backwards, a reader looking at a page
---- cropped short being owed the page rather than the paper.
----
---- A pair fitted by width has no spare at all (`_spreadFitByWidth`), and neither
---- has one with a page that failed to load: that page's size is the screen's
---- stand-in rather than a page anybody has seen, which is the same reason
---- `_noteWide` is never asked about one.
+-- Pair's halves as drawn; the one place the pair's geometry is decided.
 function MeguruDocument:_pairLayout(pair)
     local left_page, right_page = self:_pairSides(pair)
     local l, r = self:_pageBox(left_page), self:_pageBox(right_page)
@@ -2318,13 +1301,7 @@ function MeguruDocument:_pairLayout(pair)
             screen.w, screen.h, self:_spreadFitByWidth())
     end
 
-    -- The row next, then the rule: with "Flexible gutter" off a pair is drawn
-    -- exactly as the crop and the growth left it, which is the only thing this row
-    -- decides — `meguru/spread`'s four sentences are unchanged by it.
-    --
-    -- Measured on the pair **at the scales it is drawn at**, because that is what
-    -- the leftover is a leftover of. The paper comes back in those units, and a
-    -- half's own are one division away — its box being in its own.
+    -- Gutter off: pair as crop and growth left it; measured at drawn scales.
     local gutter = { left = 0, right = 0 }
     if self:_spreadGutterOn() then
         local sl, sr = scales.left, scales.right
@@ -2348,47 +1325,13 @@ function MeguruDocument:_pairLayout(pair)
     }
 end
 
---- The pair's content box — the space the reader lays the pair out in, and the
---- space `drawPage` splits.
----
---- The two pages' crop boxes sit side by side with their tops aligned, each
---- widened towards the seam by its own gutter and the shorter one enlarged by its
---- own scale (`_pairLayout`), page a's left edge at the origin. **The vertical
---- alignment is the one approximation that survives all of that**: two pages
---- cropped to different heights cannot both be flush top and bottom, so the taller
---- sets the box and the shorter carries whatever blank is left under it once the
---- growth has taken its share — none at all where the room was there. Two pages of
---- one scan are the same size and it never shows; a spread mixed with a
---- differently cropped page is the case to look at if a seam ever looks wrong.
----
---- **Neither the gutter nor the growth takes the box past the pages it came
---- from.** Each half is widened only into its own page's margin and enlarged only
---- where the pair is not using the room, so the pair still fits inside the two
---- full pages — which is the box `getNativePageDimensions` answers with, and the
---- ceiling `ReaderZooming:getZoom` holds the box the reader lays out under.
+-- Pair's content box (what drawPage splits); stays inside the full-pages box.
 function MeguruDocument:_pairGeom(pair)
     local layout = self:_pairLayout(pair)
     return Geom:new{ x = 0, y = 0, w = layout.w, h = layout.h }
 end
 
---- The pair's *full* box — both pages whole, side by side, tops aligned, at the
---- scales the pair is being drawn at. The uncropped counterpart of `_pairGeom`,
---- and the size the fit is measured against; see `getNativePageDimensions`.
----
---- **The same per-half scales, and that is load-bearing rather than tidy.** The
---- reader will not lay out a bounding box larger than this one — `getZoom` meets
---- one by falling back to the whole page — and the cropped pair is inside the full
---- pair only while both are drawn at the same scales: each half's crop is a
---- sub-box of its own page, and multiplying both ends of that by one factor, 1 or
---- more, leaves it a sub-box, term by term. The factor is the growth's, so this is
---- what the pair would be if the crop gave the pages back.
----
---- It asks `_pairLayout` for those scales rather than keeping its own copy, and
---- the cost of that is the reason to say so: inside `getZoom` this call and the
---- one that asks for the box are one after the other on the same pair, so the
---- layout is worked out twice where once would do. A memo would be cheaper and is
---- not worth it — it would have to be invalidated by the canvas, the tone, the
---- gutter row and the fit, which is four chances to answer with a stale box.
+-- Pair's full box at the drawn scales; the fit's ceiling; not memoised.
 function MeguruDocument:_pairFullGeom(pair)
     local layout = self:_pairLayout(pair)
     local a = self:_pageGeom(layout.left.page)
@@ -2399,12 +1342,7 @@ function MeguruDocument:_pairFullGeom(pair)
     }
 end
 
---- Note that a page is wider than tall, for the imposition.
----
---- Called from the two places `getPageDims` really decodes a page, and **never**
---- from its failure branches: those cache the *screen's* own size as a stand-in
---- for a page that would not load, and on a landscape screen that stand-in reads
---- as "wide" — which would re-anchor the pairing around a page nobody has seen.
+-- Note a page wider than tall; only where getPageDims really decodes.
 function MeguruDocument:_noteWide(pageno, dims)
     if not (dims and dims.w and dims.h and dims.w > dims.h) then
         return
@@ -2418,8 +1356,7 @@ function MeguruDocument:_noteWide(pageno, dims)
         list[n + 1] = pageno
         return
     end
-    -- Out of order: a prefetch or a panel warm can learn a later page first, and
-    -- the list has to stay ascending for the imposition's search.
+    -- Out of order: warm-ahead may learn later pages; keep it ascending.
     local i = n
     while i >= 1 and list[i] > pageno do
         i = i - 1
@@ -2430,28 +1367,13 @@ function MeguruDocument:_noteWide(pageno, dims)
     table.insert(list, i + 1, pageno)
 end
 
---- Is this one page wider than tall? The truthful test, and the one the
---- reader's own wide-page rotation must use: it must not read a *pair* through
---- `getNativePageDimensions` and decide to turn the screen for two pages that
---- are only wide because they are lying side by side.
+-- Is this one page wider than tall? Not getNativePageDimensions (a pair).
 function MeguruDocument:pageIsWide(pageno)
     local geom = self:_pageGeom(pageno)
     return geom.w > geom.h
 end
 
---- Warm the one page the pairing needs for `pageno`, before the reader lays the
---- page out.
----
---- This is what keeps the fetch out of the layout pass. Sequentially read, the
---- page ahead is already warm from `hintPage`; this is for the rest — a jump, a
---- resume, the first page of an open — and it warms a single page, the partner,
---- or nothing at all when the pairing does not need one. Silent with no
---- connection, like `analyseAhead`, and for the same reason: a fetch from here
---- would otherwise sit through its timeout before every page turn of an offline
---- book. A local `.cbz` needs no connection and is warmed regardless.
---- Returns whether it learned anything — a page it did not have before — because a
---- caller that has just made the pair *possible* owes the reader a re-layout
---- (`ui/reader.lua`'s `syncSpread`), and only this knows whether it did.
+-- Warm the page the pairing needs, keeping the fetch out of the layout pass.
 function MeguruDocument:prepareSpread(pageno)
     if not self:spreadActive() then
         return false
@@ -2466,16 +1388,13 @@ function MeguruDocument:prepareSpread(pageno)
     local warmed = false
     local candidates = { pageno + 1 }
     if self:spreadOffsetHere(pageno) then
-        -- The offset pairs backwards, so the partner is the page before — but
-        -- only in the run it is anchored in, which is why this asks the document
-        -- rather than the stored value.
+        -- The offset pairs backwards, but only in its own run.
         candidates[#candidates + 1] = pageno - 1
     end
     for _, target in ipairs(candidates) do
         if target >= 1 and target <= count and not self.dims[target]
             and not self.dead_pages[target] then
-            -- pcall: this runs on the page-turn path, and a fetch that throws
-            -- must cost a pair, not the turn.
+            -- pcall: a throw here must cost a pair, not the page turn.
             pcall(self.getPageDims, self, target)
             pcall(self.analyseAhead, self, target)
             warmed = true
@@ -2484,24 +1403,7 @@ function MeguruDocument:prepareSpread(pageno)
     return warmed
 end
 
---- Where a page change to `number` lands once two pages are shown at a time, and
---- whether it ran off the end of the book.
----
---- **`turn` is the whole of what makes this decidable, and it is the caller's
---- answer rather than a guess**: `ui/reader.lua` marks the two ways into
---- `_gotoPage` that mean "the next one from where I am" (a gesture through
---- `onGotoPageRel`, and the page-flipping step), and everything else names a page
---- and means it.
----
----  * **A turn** stops inside the unit already on screen whenever the counter
----    crosses it: the reader's one gesture moves the counter by a page and the view
----    by a *unit*, which is the whole reason this exists.
----  * **A landing** — a `GotoPage`, and that is the panel viewer's handoff, a
----    bookmark, a search hit, a resume — is answered with the unit that *contains*
----    the page, so a page inside the spread on screen keeps that spread. The
----    crossing this exists for is the panel viewer's: browsing page 4's panels and
----    stepping to page 5's used to arrive on 6+7, one spread further on, because
----    the landing was read as a turn.
+-- Where a page change lands with a pair shown; turn vs landing (see the doc).
 function MeguruDocument:spreadSnap(number, current, turn)
     if not self:spreadActive() then
         return number, false
@@ -2528,26 +1430,13 @@ function MeguruDocument:spreadSnap(number, current, turn)
         if target then
             return target, false
         end
-        -- No unit that way. Backwards that is the start of the book and the
-        -- gesture is simply spent; forwards it is the end, which the reader
-        -- has to be told — the counter never passes the last page while the
-        -- last unit is a pair, so nothing else would say so.
+        -- No unit that way: backwards spent; forwards is the end.
         return current, number >= current
     end
     return (there and there.a) or number, false
 end
 
---- The page's size as the *reader* asks for it: the pair's when two are being
---- shown, this page's own otherwise.
----
---- **This is the seam the two-page view hangs off, and it is a deliberate lie.**
---- `ReaderZooming:getZoom` measures the fit from it and refuses a bounding box
---- larger than it, so a document reporting one page here would have the pair's
---- box rejected and the view fitted to a single page — the pair would overflow
---- the screen and the reader would pan across it rather than see two pages. The
---- answer is the *full* pair; the box the view actually lays out is the cropped
---- one (`_pairGeom`), and the fit is measured against the larger of the two,
---- which is what keeps the crop alive in a pair.
+-- Page size as the reader asks: full pair, else one page; getZoom's ceiling.
 function MeguruDocument:getNativePageDimensions(pageno)
     local pair = self:spreadUnitFor(pageno)
     if pair and pair.b then
@@ -2558,8 +1447,7 @@ function MeguruDocument:getNativePageDimensions(pageno)
     return Geom:new{ w = dims.w, h = dims.h }
 end
 
---- The pair's cropped box — the "no bbox" half of `ReaderView:getPageArea`, and
---- the coordinate space `drawPage` splits.
+-- Pair's cropped box: getPageArea's no-bbox half, drawPage's space.
 function MeguruDocument:getPageDimensions(pageno, zoom, rotation)
     local pair = self:spreadUnitFor(pageno)
     if pair and pair.b then
@@ -2568,10 +1456,7 @@ function MeguruDocument:getPageDimensions(pageno, zoom, rotation)
     return Document.getPageDimensions(self, pageno, zoom, rotation)
 end
 
---- The pair's cropped box again, for the path that *does* use the bounding box —
---- which is the one this plugin takes whenever the crop is on. Both halves of
---- `getPageArea` have to answer the same box, or the pair would be drawn in a
---- space the view never laid it out in.
+-- Its bbox twin; both getPageArea halves must answer the same box.
 function MeguruDocument:getUsedBBoxDimensions(pageno, zoom, rotation)
     local pair = self:spreadUnitFor(pageno)
     if pair and pair.b then
@@ -2580,78 +1465,34 @@ function MeguruDocument:getUsedBBoxDimensions(pageno, zoom, rotation)
     return base_get_used_bbox_dimensions(self, pageno, zoom, rotation)
 end
 
--- Used-BBox is the *full* page. Cropping is never baked into geometry: the
--- page size stays the full native page and any crop lives only in the
--- bounding box getPageBBox returns (below) — the base
--- Document:getUsedBBoxDimensions goes through getPageBBox, so returning the
--- whole page here is simply the "nothing cropped" fallback (e.g. when
--- "Crop" is "none", trim_page == 3).
+-- Used-BBox is the full page; the crop lives only in getPageBBox's bbox.
 function MeguruDocument:getUsedBBox(pageno)
     local dims = self:getPageDims(pageno)
     return { x0 = 0, y0 = 0, x1 = dims.w, y1 = dims.h }
 end
 
--- The bounding box ReaderZooming/ReaderView crop through ("used bbox"
--- mechanism): the auto content box when the bottom-menu "Crop" choice is
--- "auto" (configurable.trim_page == 1), else the whole page. This is what
--- makes a KOpt-style crop work while the page size (getPageDims) stays the
--- full native page. The base getUsedBBoxDimensions mutates the table it is
--- handed, so a *fresh* table is returned on every call.
---
--- **This seam is this document's own, whatever else is installed.**
--- `pagenumbercrop.koplugin` patches it too — its init replaces
--- `document.getPageBBox` on the *instance* to apply its own page-number strip
--- crop, its "no crop on blank pages" and its wide-page rotation — and this file
--- was ported from that analysis. It does not get to drive a Meguru book: the
--- port carries a width bound the original has no counterpart of (a band wider
--- than a printed number is the page's own text, not furniture to remove — see
--- `meguruAnalyzeStrip` below), so a reader who has that plugin installed would
--- otherwise be handed back the crop that removes their sound effects and boxed
--- titles. `MeguruDocument:takeBackPageBBox` (below) restores this method, from
--- the `ReaderReady` seam `ui/reader.lua` installs — which is provably later than
--- every plugin's init. What that plugin keeps is its wide-page rotation: its
--- wrappers around `paging` and `view` cannot be unwrapped, so `ui/reader.lua`
--- installs this plugin's own rotation only for a document that plugin has not
--- patched at all.
---
--- **"Crop" at "auto" is the whole of the switch.** The two finer crops are
--- built in here (see the "Page-number / blank-page analysis" section below) and
--- have no rows of their own: with the box being auto, a detected printed
--- page-number band trims its bottom edge, and a page whose content area is below
--- the mostly-blank threshold is left as the *full* native page (the margin crop
--- discarded too), because a chapter divider must not zoom into a small element.
--- `pagenumbercrop` treats the same two as independent toggles; this document used
--- to as well, and folding them in is deliberate — the switch a reader wants is
--- "crop the page or not", and both rules are what cropping a page means here.
+-- Bbox the crop goes through; this seam is ours (takeBackPageBBox restores it).
 function MeguruDocument:getPageBBox(pageno)
-    -- The content box and the page-number/blank memos are computed from the
-    -- rendered page, so a tone change invalidates them before they are read.
+    -- The memos come from the rendered page, so a tone change invalidates them.
     self:syncTone()
     local bbox = self:_basePageBBox(pageno)
     if not bbox or self._meguru_pagenum_analysis_flag then
-        -- The analysis flag guards the (theoretical) re-entry of an analysis
-        -- render; none of this document's render paths call back into
-        -- getPageBBox, but the guard mirrors pagenumbercrop's and is free.
+        -- Mirrors pagenumbercrop's guard against analysis re-entry.
         return bbox
     end
     local c = self.configurable
     if not c or c.text_wrap == 1 or c.trim_page ~= 1 then
-        -- "Crop" at "none" — nothing finer is offered as a separate choice,
-        -- so this is the only gate the two rules below have.
+        -- "Crop" at "none": the only gate the two rules below have.
         return bbox
     end
-    -- Blank pages are left ENTIRELY uncropped (the margin crop discarded too),
-    -- like pagenumbercrop: a chapter divider / title page must not zoom into a
-    -- small element. Asked *before* the strip, which is what keeps such a page
-    -- from paying for a strip render at all.
+    -- Blank pages stay uncropped; asked before the strip to spare the render.
     if self:_meguruPageMostlyBlank(pageno) then
         local page_size = self:_pageGeom(pageno)
         return { x0 = 0, y0 = 0, x1 = page_size.w, y1 = page_size.h }
     end
     local crop_y = self:_meguruPagenumStrip(pageno)
     if crop_y and crop_y > bbox.y0 and crop_y < bbox.y1 then
-        -- One page, always: these two rules measure a band of the *printed* page,
-        -- and a pair's box would move the strip up the other page's height.
+        -- These rules measure a printed page; a pair's box shifts the strip.
         local page_size = self:_pageGeom(pageno)
         local min_removal = page_size and math.max(1, page_size.h * 0.001) or 1
         if bbox.y1 - crop_y >= min_removal then
@@ -2663,28 +1504,7 @@ function MeguruDocument:getPageBBox(pageno)
     return bbox
 end
 
--- Take the crop seam above back from `pagenumbercrop.koplugin`.
---
--- It assigns its wrapper onto the *instance* (`document.getPageBBox = ...`)
--- while this document's own is the class method, so clearing the field is the
--- whole of the restore — and the plugin's captured `orig` becomes unreachable
--- rather than merely unused. Its per-page memo tables are reset to *empty
--- tables* rather than removed, and that is the deliberate half: nothing reads
--- them once the wrapper is gone, but three of its own entry points still index
--- them — `_pagenum_strip`, `_page_mostly_blank`, and the Dispatcher action that
--- crops one page on demand — and a nil there is an index error inside a
--- gesture, which is the loud direction. Empty, its page-turn wrapper warms the
--- next page with its own analysis into its own tables; that is work nobody
--- reads, and it is the price of not unwrapping a closure.
---
--- Its menu rows and its rotation are left alone on purpose: the rows are the
--- shared `KoptOptions` entries this plugin's curated dialog reads in preference
--- to its own, and the rotation is wrapped into `paging`/`view` in a way that
--- cannot be unwrapped — see the note on getPageBBox.
---
--- Returns true only when there was something to take back, which is what tells
--- the caller that the box already derived for the page on screen may be the
--- plugin's answer and has to be derived again.
+-- Restore the crop seam from pagenumbercrop; empty its memos, not remove them.
 function MeguruDocument:takeBackPageBBox()
     if rawget(self, "getPageBBox") == nil then
         return false
@@ -2695,10 +1515,7 @@ function MeguruDocument:takeBackPageBBox()
     return true
 end
 
--- The plain margin/full-page box, shared by getPageBBox above and by the
--- `_meguru*` analyses. Returns a
--- fresh table on every call (the base getUsedBBoxDimensions mutates the table
--- it is handed).
+-- Plain margin/full-page box; a fresh table each call (the base seam mutates).
 function MeguruDocument:_basePageBBox(pageno)
     local configurable = self.configurable
     if configurable and configurable.trim_page == 1 then
@@ -2711,11 +1528,7 @@ function MeguruDocument:_basePageBBox(pageno)
     return { x0 = 0, y0 = 0, x1 = dims.w, y1 = dims.h }
 end
 
--- Compute and cache the auto content box of `pageno` (see computeContentBox).
--- It is derived from the very native decode that establishes the page size,
--- so it never costs an extra fetch; it is cached in self.crops[pageno] for the
--- page's lifetime (the plain margin scan is trim-independent, so the box is
--- stable while a page is open). nil is cached as "no margin trimmed".
+-- Compute/cache the auto content box; no extra fetch; nil caches as no-margin.
 function MeguruDocument:autoContentBox(pageno)
     local cached = self.crops[pageno]
     if cached ~= nil then
@@ -2728,31 +1541,12 @@ function MeguruDocument:autoContentBox(pageno)
     end
     local bb = item.bb
     local box = computeContentBox(bb, bb:getWidth(), bb:getHeight(), pageno)
-    -- Store false as the "nothing trimmed" mark: a box table is cached as-is,
-    -- a nil result (full page) as false, so a full-bleed page is scanned once
-    -- and not re-derived on every getPageBBox / panel-zoom call.
+    -- Cache false for "nothing trimmed", so a full-bleed page is scanned once.
     self.crops[pageno] = box or false
     return box
 end
 
--- The colour of the margin this page's crop trimmed off (r, g, b in 0..255), or
--- nil when nothing was trimmed. The reader view paints the screen around the page
--- in it, so the trim reads as the page continuing rather than as a frame around
--- it — and on a colour screen it is the margin's own colour, not a grey of the
--- same brightness.
---
--- A cold cache is filled here rather than left to the paint that follows: this
--- is asked on a page turn, and the decode it costs is the one that paint is
--- about to do anyway — doing it first is what makes the surround right on the
--- *first* paint of the page rather than one repaint later. `false` in the cache
--- is the "scanned, nothing trimmed" mark, so a full-bleed page and a page the
--- scan refused both answer nil and leave the reader's own colour alone.
---
--- The colour rides out of `scanContentBounds` on the box table, as the very ring
--- sample that scan picked as the border; `bg` beside it is that sample's
--- luminance, the reference content was measured against. Per page, because a
--- margin is the page's own — a colour insert or a cover keeps its own — and nil
--- where the page has no margin to offer.
+-- Margin colour of the trim, or nil; filled here so the first paint is right.
 function MeguruDocument:cropMarginColor(pageno)
     if self.crops[pageno] == nil then
         self:autoContentBox(pageno)
@@ -2764,51 +1558,12 @@ function MeguruDocument:cropMarginColor(pageno)
     return box.color
 end
 
--- ---------------------------------------------------------------------------
--- Page-number / blank-page analysis
--- ---------------------------------------------------------------------------
---
--- The two finer crops — cropping a detected printed page-number band off the
--- bottom, and leaving mostly-blank pages entirely uncropped — are built here as
--- a port of the pagenumbercrop plugin's own analysis (its main.lua), renamed
--- `_meguru*`, and this document runs them itself whether or not that plugin is
--- installed (`takeBackPageBBox` above). They are only ever consulted from
--- getPageBBox, and only when the gate there holds: "Crop" at auto — they
--- have no rows of their own, so that one choice is the whole of the gate.
---
--- All state is per-page memo tables (`_meguru_pagenum_cache` etc.), created
--- lazily on first use so a book with the features off allocates nothing. The
--- analysis renders the *raw native* page in native coordinates and never
--- depends on trim_page or the margin box, so — exactly like pagenumbercrop —
--- there is no cross-toggle invalidation: toggling a row only flips the
--- `active` flag in getPageBBox and a warm per-page memo is reused. Meguru
--- field names (`_meguru_*`) never collide with pagenumbercrop's `_pagenum_*`,
--- which matters for the one moment both are on the same document: until
--- `takeBackPageBBox` runs, this document's body may be called as that plugin's
--- wrapper's `orig` — so it answers with its own crop, which the wrapper may
--- then trim further, and nothing here writes into that plugin's own tables.
---
--- Cost: the strip and the blank check cut+scale from the per-page cached
--- native decode that getPageDims already keeps (the same render the margin
--- scan and every pan/zoom tile use), so a page turn adds two small region
--- renders — no extra network fetch, matching what pagenumbercrop does to this
--- document through the base Document.renderPage shim.
+-- The two finer crops, ported as _meguru*; consulted only from getPageBBox.
 
 local MEGURU_BLANK_RENDER_MAX_PX = 256
 local MEGURU_BLANK_MAX_CONTENT_AREA = 0.10
 
--- Which side of the midpoint a page's own margin sits on: false = a light
--- margin (a printed number reads as dark ink on it), true = a dark one (the
--- number is light). Read from the bottom band of a buffer whose bottom edge *is*
--- the page's bottom edge — a whole-page preview, or the bottom strip — because
--- that band is margin on every page that has a margin. Three columns across it
--- and the median of their samples: a printed number covers a handful of them at
--- most, and one of the three columns can be a corner number without moving the
--- median.
---
--- The `false` fallback is the point of the shape: a buffer too small to sample
--- leaves both callers on the test this document has always used — ink is dark,
--- content is dark — and never on the flipped one.
+-- Margin polarity: light or dark; median of three bottom columns; safe default.
 local function meguruMarginIsDark(bb, w, h, mid)
     if not w or not h or w < 16 or h < 4 then
         return false
@@ -2823,58 +1578,7 @@ local function meguruMarginIsDark(bb, w, h, mid)
     return samples[math.max(1, math.floor(#samples * 0.5))] < mid
 end
 
--- Analyze a bottom-strip render for a page-number band. Ported from
--- pagenumbercrop's PageNumberCrop.analyzeStrip, with three deliberate deviations.
---
--- **The first is the ink polarity.** The port inherited that plugin's "dark is
--- ink" as a constant, which is the white-margin page only — on a page whose
--- margin is black it read the margin itself as one full-width band and answered
--- "panel reaches the bottom" on every page of a black-bordered book. Ink is now
--- read in the margin's own polarity (see meguruMarginIsDark above), so a printed
--- number is removed from a dark margin by the same rule that removes it from a
--- light one.
---
--- **The second is a width bound, and it is here because the port removed the
--- reader's content.** `narrow-ish` was `max_band_span` below, a *panel* test at
--- 60% of the width, and the branch that fires when artwork reaches the bottom of
--- the page (below) asked nothing at all of the bands under it — it returned the
--- artwork's own bottom edge and discarded everything below, whatever it was. On
--- Kavita chapter 197622 (library 39) that removed the sound-effect line "THE
--- DARK MAGI!!!" on the reader's page 29 (28% of the page's width) and the boxed
--- title "Chapter 0: Prologue" on page 3 (19%) — both measured with a mirror of
--- this function over 46 pages of it. A printed number is a few glyphs wide: a
--- corner "24" measures 2.6% of the page's width, a big "128" 7%, and even the
--- wide footer "Page 128" only 10%, against those two at 19% and 28%. The bound
--- goes between them, and it is `max_number_span`. A band
--- wider than it is not a number but the page's own drawing or text, and a strip
--- holding one yields no crop at all — a number under a caption is not worth a
--- caption removed. Every page that crops today still crops: this can only turn
--- a crop into a refusal, and the artwork case's cut is returned unchanged.
---
--- **The third is the height a band may have**, and it is here because the port
--- made that a knife edge. It refuses a band taller than its `max_band_h` (4% of
--- the strip) *when no clean gutter separates it from the content above*, and
--- allows up to `max_big_band_h` (15%) only when one does — so a printed number
--- touching the artwork's edge reads as artwork, and a tight margin is where that
--- happens. One page, one printed "6", analysed from MuPDF's grayscale render and
--- from its colour one: the gray render leaves a 1-px gap above the number and the
--- colour render more than the gutter test wants, so the crop happened with colour
--- rendering on and not with it off — a few pixels between two decodes of one
--- page deciding the reader's crop. There is one allowance now, whichever side of
--- the gutter test a band falls on (see the refusal below); measured over the
--- corpus, no page that cropped before moved.
---
--- The plugin's own defect is not ours to fix, and when it is installed it owns
--- `getPageBBox` and this body never runs the built-in crop at all.
---
--- `bb` is the downscaled strip; `y_start_override` (0 here) pins the scan to the
--- strip's own bottom. Returns (crop_y, detail[, suspicious]): crop_y is the
--- band's top in *strip-image* pixels (0 = no page number), detail a human log,
--- and the third value flags "only noise bands" so the caller retries at fallback
--- zoom.
--- Heuristics: the band must be short and narrow, sit above a clean gutter,
--- leave content above it, and never touch the page edges like real artwork
--- would.
+-- Bottom-strip page-number analysis, ported with three documented deviations.
 local function meguruAnalyzeStrip(bb, y_start_override)
     local w, h = bb:getWidth(), bb:getHeight()
     if not w or not h or w < 20 or h < 40 then
@@ -2926,10 +1630,7 @@ local function meguruAnalyzeStrip(bb, y_start_override)
     local max_big_band_h = math.max(3, h * 0.15)
     local min_gutter_h = math.max(1, math.floor(h * 0.01))
     local min_band_span = math.max(3, math.floor(w * 0.005))
-    -- The widest a printed number can be, and the one bound that separates it
-    -- from a line of the page's own text (see the header). Scale-invariant — it
-    -- is the same fraction of the page at either analysis zoom — so a wide band
-    -- is wide at the fallback zoom too and the retry below is never earned.
+    -- Scale-invariant, so a wide band stays wide at fallback zoom.
     local max_number_span = w * 0.12
 
     -- Skip the empty run at the very bottom of the page.
@@ -2944,8 +1645,7 @@ local function meguruAnalyzeStrip(bb, y_start_override)
     -- Walk ink bands from the bottom up.
     local bands = {}
     local descr = {}
-    -- A band too wide to be a number refuses the crop for the whole strip, and
-    -- `panel_bottom` is where the walk stopped when it stopped on artwork.
+    -- A too-wide band refuses the strip; panel_bottom marks an artwork stop.
     local saw_wide_band = false
     local panel_bottom
     while y >= y_start do
@@ -2975,28 +1675,18 @@ local function meguruAnalyzeStrip(bb, y_start_override)
             if panel_like then
                 local detail = "bands(" .. #descr .. ") " .. table.concat(descr, ", ")
                 if saw_wide_band then
-                    -- Artwork, and under it the page's own text: everything
-                    -- below the artwork is what a crop here would discard, so
-                    -- there is nothing here it may discard. Asked before the
-                    -- #bands test because it is the more useful answer -- it
-                    -- says why no band was kept, where "panel reaches the
-                    -- bottom" would blame the artwork.
+                    -- Text under artwork: nothing here a crop may discard.
                     return 0, "text in the bottom margin [" .. detail .. "]"
                 end
                 if #bands == 0 then
                     return 0, "panel reaches the bottom [" .. detail .. "]"
                 end
-                -- Everything the walk kept under the artwork is number-shaped. Stop the walk
-                -- here and let the tail below -- the same merge, height, gutter
-                -- and content-above tests the ordinary path runs -- decide
-                -- whether it is a number worth cutting to; no exit asks a
-                -- weaker question than the other.
+                -- Under-artwork bands are number-shaped; run the usual tests.
                 panel_bottom = bottom
                 break
             end
             if b_span > max_number_span then
-                -- Too wide for a number: a line of text, a boxed title, a
-                -- sound effect. The reader's, not the page's furniture.
+                -- Too wide for a number: page text, not furniture to cut.
                 saw_wide_band = true
             else
                 table.insert(bands, { top = top, bottom = bottom, row_ink = b_ink, span = b_span })
@@ -3013,15 +1703,12 @@ local function meguruAnalyzeStrip(bb, y_start_override)
         return 0, "only noise bands [" .. detail .. "]", true
     end
     if saw_wide_band then
-        -- Something in this margin is wider than any number: no crop, and no
-        -- fallback zoom either — `max_number_span` is a fraction of the page,
-        -- so the retry would measure the same width and refuse the same page.
+        -- Wide band: no crop and no fallback (the span is a page fraction).
         return 0, "text in the bottom margin [" .. detail .. "]"
     end
     local first = bands[1]
 
-    -- Merge a small stack of thin bands (one page number often renders as a
-    -- few adjacent digit bands separated by sub-gutter whitespace).
+    -- One number often renders as a few digit bands with sub-gutter gaps.
     local stack_top = first.top
     local prev_top = first.top
     for i = 2, #bands do
@@ -3035,8 +1722,7 @@ local function meguruAnalyzeStrip(bb, y_start_override)
     end
     local band_h = first.bottom - stack_top + 1
 
-    -- The clean white gutter right above the stack separates the number from
-    -- the page content; the crop cut lands at its top.
+    -- The clean gutter above the stack is the cut: number from page.
     local gutter_len = 0
     local yy = stack_top - 1
     while yy >= y_start and ink[yy] <= ink_threshold do
@@ -3047,19 +1733,12 @@ local function meguruAnalyzeStrip(bb, y_start_override)
     local fallback_detail = string.format("band_h=%d row_ink=%.2f span=%d%% gutter=%dpx",
         band_h, first.row_ink, math.floor(first.span / w * 100), gutter_len)
 
-    -- One allowance, glued or not — the third deviation, argued in the header.
-    -- The port's two here were a knife edge: `glued` chose between them, and a
-    -- printed number touching the artwork's edge (a tight margin) came out as
-    -- artwork on one decode of a page and as a number on another.
+    -- One allowance, glued or not: the port flipped between decodes.
     if band_h > max_big_band_h then
         return 0, "band too tall (" .. band_h .. " px) [" .. fallback_detail .. "]"
     end
 
-    -- What the crop would leave above the band, which the ordinary path has to
-    -- scan for — every row of the strip is in `ink` by then. Where the walk
-    -- stopped on artwork the answer is that artwork, already found, and the rows
-    -- over it were deliberately never scanned, so the scan is skipped rather
-    -- than asked about rows that are not there.
+    -- Content above the band; skip the scan where the walk found artwork.
     local has_content = panel_bottom ~= nil
     if not has_content then
         for ry = y_start, math.max(y_start, yy) do
@@ -3073,26 +1752,13 @@ local function meguruAnalyzeStrip(bb, y_start_override)
         return 0, "no content above the band [" .. fallback_detail .. "]"
     end
 
-    -- The cut the artwork case has always taken is the artwork's own bottom
-    -- edge, and it is returned as it was rather than recomputed: the gutter
-    -- above the stack ends there, so `stack_top - gutter_len` is that same row
-    -- one pixel on, and a page that crops today must not move by even one. Only
-    -- the tests above have changed, and only in the refusing direction.
+    -- The artwork cut is its own bottom edge, returned unchanged.
     local crop_y = panel_bottom or (stack_top - gutter_len)
     local log_detail = string.format("crop_y=%d %s", crop_y, fallback_detail)
     return crop_y, log_detail
 end
 
--- Mostly-blank check on a full-page downscale: true when the content spans less
--- than ~10% of the page area (a chapter divider, a title page). Ported from
--- pagenumbercrop's PageNumberCrop.pageMostlyBlank, with the polarity deviation
--- its sibling meguruAnalyzeStrip carries (that one's other two are about the
--- bands a strip holds, which this rule has no counterpart of): content is
--- what departs from the page's own margin, and on a page framed in black that is
--- the *light* pixels.
--- Without it the rule cannot see a black-framed divider as blank at all (the
--- frame alone is more than 10% of the page), so the crop would trim the frame
--- and zoom into the small title the row exists to protect.
+-- Mostly-blank check (<10% content); content is what departs from the margin.
 local function meguruPageMostlyBlank(bb)
     local w, h = bb:getWidth(), bb:getHeight()
     if not w or not h or w < 20 or h < 20 then
@@ -3140,26 +1806,7 @@ local function meguruPagenumCaches(self)
     end
 end
 
--- Render a native-coordinate analysis rectangle for one of the analyses above,
--- and return the bare BlitBuffer (or nil). Unlike renderPage this never enters
--- the tile LRU — the caller analyzes and frees the buffer right away, so a ~700px
--- strip or a ~256px blank preview never lingers as a large cached tile. The
--- region is cut+scaled from the LRU-cached native decode (no extra
--- fetch/decode for a page whose geometry is already known). The analysis flag
--- is set across the render (defensive: this document's render paths never call
--- back into getPageBBox).
---
--- **`zoom` is the *vertical* scale, and it is capped at 1:1 horizontally.** The
--- one caller that magnifies is the page-number strip, whose zoom exists to give
--- the band's *height* enough rows to be measured in — a number is a few glyphs
--- tall, and the analysis reads its rows. Magnifying the page's whole width with
--- it bought nothing and cost a great deal: the strip is read as fractions of its
--- own width, so the same analysis runs at 1:1 horizontally, while the render
--- stops being `page_w * zoom` wide — 2.2 Mpx for a 1600px page, up to 3.6 Mpx on
--- the fallback zoom, and the Lua-side scan over it — for a band that is a few
--- percent of that width. The two axes scale independently here because
--- `scaleBlitBuffer` takes them independently; the blank preview passes a zoom
--- that is already ≤ 1.0, so nothing changes for it.
+-- Render an analysis rectangle, or nil; no tile LRU; zoom vertical, x at 1:1.
 function MeguruDocument:_meguruAnalysisBB(pageno, x, y, w, h, zoom)
     self._meguru_pagenum_analysis_flag = true
     local ok, bb = pcall(function()
@@ -3172,12 +1819,7 @@ function MeguruDocument:_meguruAnalysisBB(pageno, x, y, w, h, zoom)
         end
         local tw = math.max(1, math.floor(w * math.min(zoom, 1.0) + 0.5))
         local th = math.max(1, math.floor(h * zoom + 0.5))
-        -- Bytes are only for decodeRegion's *decode* path. A local cbz page has
-        -- none (it renders from the open archive, ensureNativeBB's local
-        -- branch), and a streamed page whose native is already decoded does not
-        -- need them either — see `hasNative`. So `data` staying nil is expected
-        -- on both, and the render below must still run. This is a bypass, not a
-        -- nil no-op.
+        -- data is only for the decode path; nil is expected, render still runs.
         local data
         if not self.local_cbz and not self:hasNative(pageno) then
             data = self:fetchPage(pageno)
@@ -3194,17 +1836,14 @@ function MeguruDocument:_meguruAnalysisBB(pageno, x, y, w, h, zoom)
     return nil
 end
 
--- Bottom 15% strip: how far up the page a printed page-number band sits.
--- Returns (crop_y, detail) in *native* page coordinates: the native y of the
--- band's top, or 0 when no page-number-like band is found. Ported from
--- pagenumbercrop's `_pagenum_strip`, minus its manual force-crop and prewarm.
+-- Bottom-15% strip: the page-number band's top, or 0; ported from the plugin.
 function MeguruDocument:_meguruPagenumStrip(pageno)
     meguruPagenumCaches(self)
     local cached = self._meguru_pagenum_cache[pageno]
     if cached ~= nil then
         return cached
     end
-    self._meguru_pagenum_cache[pageno] = 0 -- "busy / none yet" mark
+    self._meguru_pagenum_cache[pageno] = 0 -- "no verdict yet" mark
     local page_size = self:_pageGeom(pageno)
     if not (page_size and page_size.w > 0 and page_size.h > 0) then
         logger.dbg("Meguru: page", pageno, "no page number [no render: page size]")
@@ -3226,9 +1865,7 @@ function MeguruDocument:_meguruPagenumStrip(pageno)
             return 0, "analysis error", false
         end
         if rel_y > 0 then
-            -- meguruAnalyzeStrip reports the band top in strip-image pixels;
-            -- map back to native page y.
-            rel_y = strip_y0_nat + rel_y / zoom
+            rel_y = strip_y0_nat + rel_y / zoom -- strip pixels -> native page y
         end
         return rel_y, rel_detail or "", rel_suspicious or false
     end
@@ -3238,8 +1875,7 @@ function MeguruDocument:_meguruPagenumStrip(pageno)
     local used_fallback = false
 
     if crop_y == 0 and suspicious then
-        -- The fast render found only noise bands: retry at higher zoom before
-        -- giving up (a page number that small is below the fast resolution).
+        -- Only noise bands at the fast zoom: the number needs more rows.
         local zoom_fallback = math.min(1000 / strip_h_nat, 2.5)
         local crop_y2, detail2 = renderAndAnalyze(zoom_fallback)
         used_fallback = true
@@ -3251,10 +1887,7 @@ function MeguruDocument:_meguruPagenumStrip(pageno)
     end
 
     if crop_y > 0 then
-        -- Cross-page sanity filter: a band whose height is an outlier against
-        -- the rolling history of page-number heights is re-checked at fallback
-        -- zoom, and dropped when it still does not fit (it is probably part of
-        -- the artwork, not a page number).
+        -- Cross-page sanity: an outlier band is re-checked, then dropped.
         local history = self._meguru_pagenum_history
         local frac = crop_y / page_size.h
         if #history >= 3 then
@@ -3299,10 +1932,7 @@ function MeguruDocument:_meguruPagenumStrip(pageno)
     return crop_y
 end
 
--- Mostly-blank check (content below ~10% of the page area): such a page — a
--- chapter divider, a title page — is left entirely uncropped by getPageBBox.
--- Renders the whole native page downscaled to at most MEGURU_BLANK_RENDER_MAX_PX.
--- Result memoised per page.
+-- Mostly-blank check (<10% content); such a page is left entirely uncropped.
 function MeguruDocument:_meguruPageMostlyBlank(pageno)
     meguruPagenumCaches(self)
     local cached = self._meguru_pagenum_blank_cache[pageno]
@@ -3335,30 +1965,7 @@ function MeguruDocument:_meguruPageMostlyBlank(pageno)
     return false
 end
 
--- The tile-LRU key for one panel.
---
--- One definition, because two places have to agree on it byte for byte:
--- `drawPagePart` writes the tile under it, and `releasePanelTile` frees the
--- tile under it. Keyed by the *region* rather than by the rendered tile's size,
--- which is not known until the render has run and is not what identifies the
--- panel anyway. Rotation is deliberately absent: the same region is the same
--- tile whichever way up it is shown.
---
--- **The box alone stops identifying a panel once the crop is a quadrilateral.**
--- Two panels could share a bounding box and differ in where their edges run
--- inside it — and the tile is masked to those edges, so the two would be
--- different pictures. The planes' directions are what the box leaves out, and
--- they are enough to put back: given the box and each plane's `A`/`B`, every
--- plane's `C` is pinned by the box edge it touches. Scaled to integers, so two
--- crops a fraction of a degree apart cannot mint two keys for one tile.
---
--- **`tw`/`th` join the key when the caller chooses the output size, which is what
--- the window view does.** There the same rectangle of the same page is a different
--- picture at a different size, and the size is not recoverable from the rectangle.
--- The cropped mode passes neither, so its keys are unchanged to the byte — which is
--- what keeps the tiles a warm from the other mode still lands on. `Viewport` rounds
--- its windows to whole page pixels for the `%d` here; a fractional one would be
--- filed under a key naming a rectangle it was not rendered from.
+-- drawPagePart writes and releasePanelTile frees: the two must agree exactly.
 local function panelTileKey(pageno, rect, tw, th)
     local key = string.format("%d|panel|%d,%d+%dx%d",
         pageno, rect.x, rect.y, rect.w, rect.h)
@@ -3375,18 +1982,7 @@ local function panelTileKey(pageno, rect, tw, th)
     return key
 end
 
--- Get the page's decoded native buffer, fetching and decoding it if the LRUs
--- have let it go.
---
--- Both panel entry points start here, and it is a pure move of what
--- `getPanelFromPage` used to do inline: one definition of "make sure the page
--- this gesture is about is in hand". A local function taking the document
--- rather than a method, because nothing outside this file calls it.
---
--- Bytes are only for the *decode* path: a local cbz page has none (it renders
--- from the open archive), and a page whose native is already decoded does not
--- need them — see `hasNative`. `data` staying nil is expected on both, and the
--- decode must run regardless. Bypass, not a nil no-op.
+-- Page's decoded native, fetching if evicted; both panel entries start here.
 local function panelNativeFor(doc, pageno)
     local data
     if not doc.local_cbz and not doc:hasNative(pageno) then
@@ -3398,25 +1994,7 @@ local function panelNativeFor(doc, pageno)
     return doc:ensureNativeBB(pageno, data)
 end
 
--- The panel-list cache, most-recent-first.
---
--- Detecting a page's panels walks a few hundred thousand cells, so the answer
--- is worth keeping — but only for as long as it is plausibly about to be asked
--- for again. Four entries is not a memory figure (an entry is at most 40 rects
--- of five numbers, a few kB, against four whole compressed pages in
--- `max_cached_pages` beside it); it is the window a reader moves in, which from
--- the panel viewer is "this page, the next one, and back again".
---
--- **A self-ordering array, not `evictOldest`.** That one stamps through
--- `self.stamps`, which `native` shares and keys by a bare page number, and its
--- loop holds one fewer than the cap. This is the other shape the file already
--- uses for a cache that is not `native`'s — `page_bytes` — and the reason is
--- the same one written there.
---
--- The key carries the reading direction because the direction reorders the
--- list: flipping the reading direction and long-pressing the same page must not be
--- answered from the other direction's order. It carries nothing else — there is
--- one detector, and no border plane for a variant of one.
+-- Panel-list cache (4 entries); self-ordering, and keyed by reading direction.
 local function panelCacheKey(pageno, manga)
     return string.format("%d|%s", pageno, manga and "m" or "c")
 end
@@ -3439,14 +2017,7 @@ local function readCachedPanels(doc, key)
     return nil
 end
 
--- Store the answer, refused or not, and trim the tail.
---
--- A refusal is cached on purpose. The decision is the expensive part and a
--- refusal costs exactly what an acceptance costs, so a splash-heavy page would
--- otherwise be scanned again at every press — and a refusal is a real answer
--- now, not a gap: `Panel.detect` hands back the whole page as one panel and the
--- viewer opens on it. `reason` is kept because the callers log it, and a hit
--- has to log what a miss would have.
+-- Store the answer and trim the tail; a refusal is a real answer, so cache it.
 local function cachePanels(doc, key, panels, accepted, reason)
     if not doc.panels then
         doc.panels = {}
@@ -3462,25 +2033,9 @@ local function cachePanels(doc, key, panels, accepted, reason)
     end
 end
 
--- Every panel on a page, in reading order.
---
--- Returns `panels, accepted, reason`, and `panels` is **never nil once the page
--- was readable**: a page the detector could not make sense of comes back as one
--- rectangle covering the whole page, with `accepted` false and the failing test
--- in `reason`. A long-press therefore always has something to open, and the log
--- can always say which of the two it is looking at. `nil` means exactly one
--- thing — the page could not be decoded — and that is deliberately **not**
--- cached: `fetch_failed` and `dead_pages` already remember the two ways a page
--- goes missing, and a third answer to that question would be a third thing to
--- keep in step.
---
--- Coordinates are **full native** page space — the space `self.dims` lives in,
--- and the space `drawPagePart` renders. `manga` picks the reading direction and
--- is passed in rather than read from a preference: the document has no view, and
--- which book is on screen is the reader's question.
+-- All panels on a page in reading order; never nil for a readable page.
 function MeguruDocument:getPanelsFromPage(pageno, manga)
-    -- Panels are detected on the rendered page, so a tone change means the
-    -- cached lists were detected on a different picture: drop them first.
+    -- Panels come from the rendered page, so a tone change drops them.
     self:syncTone()
     local key = panelCacheKey(pageno, manga)
     local hit = readCachedPanels(self, key)
@@ -3498,26 +2053,7 @@ function MeguruDocument:getPanelsFromPage(pageno, manga)
     return panels, accepted, reason
 end
 
--- Drop the tile a panel render left in the tile LRU.
---
--- Not an optimisation, and not about the tile being wrong: `drawPagePart`
--- caches every panel it renders under `page|panel|region`, and a reader walking
--- through a page's panels leaves one behind at every step. Eight entries is the
--- whole LRU, shared with the page tiles ReaderView paints, so a dozen panels
--- would push up to seven dead panel buffers — each one bounded only by
--- `max_native_pixels`, so up to ~28 MB of malloc'd bitmap — and evict the
--- page's own tile on the way. The panel sequence viewer releases the panel it
--- just left, which keeps it at two: the one on screen and the one being warmed.
---
--- This is also what makes "no cache" true rather than aspirational: nothing
--- remembers a panel a reader has moved past, so going back re-renders it — from
--- bytes that are still in `self.page_bytes`, so still without the network.
---
--- The key is built by `panelTileKey` and not retyped, because a key that drifts
--- from `drawPagePart`'s would free nothing and fail silently. `tw`/`th` travel with
--- it for the same reason the write passes them: a window tile is filed under its
--- size, and a release that named only the rectangle would free the cropped tile
--- with that box — or, more often, nothing at all.
+-- Drop the tile a panel render left; keeps the shared 8-entry LRU for pages.
 function MeguruDocument:releasePanelTile(pageno, rect, tw, th)
     if not rect then
         return false
@@ -3536,25 +2072,7 @@ function MeguruDocument:releasePanelTile(pageno, rect, tw, th)
     return true
 end
 
--- Panel under a touch point, for KOReader's manga/comic "panel zoom".
---
--- The public contract: stock's `ReaderHighlight:onPanelZoom` calls this by
--- name, so it has to exist even though Meguru's own long-press no longer routes
--- through it — a missing method here is a nil call and a crash in a path that
--- is otherwise a quiet `false`. It is the *stock* path, reached when Meguru's
--- wrap hands the gesture back because the page could not be decoded.
---
--- A thin wrapper over the one detector: the panels of the page, then the one
--- under the point. Coordinates are in *full native* page space — pos.x/pos.y
--- come from ReaderView already in that space (a margin crop only zooms through
--- the bbox, it never shifts the tap) — and the returned panel is a native one,
--- exactly what drawPagePart expects.
---
--- The reading direction passed here is a deliberate constant. In the detector
--- it orders the list and nothing else, and this function returns a *panel*, not
--- an index, so the order cannot reach the answer: the panel containing a point
--- is the panel containing it whichever way the page is read. Passing `false`
--- rather than looking a mode up is honest, not a shortcut.
+-- Panel under a touch, for stock's onPanelZoom (a missing method would crash).
 function MeguruDocument:getPanelFromPage(pageno, pos)
     if not pos then
         return nil
@@ -3575,14 +2093,7 @@ function MeguruDocument:getPanelFromPage(pageno, pos)
     return index and panels[index] or nil
 end
 
--- One line per prepared page: what a page turn waited for, split into the two
--- costs that have different fixes. The fetch is the server's (and the only one
--- a reader cannot tune); the decode is `max_native_pixels`, which is exactly
--- what a slow big page is a question about. `dims` is printed with them because
--- it is what says whether the budget bit on this page at all.
---
--- A local cbz page has no fetch — it renders out of the open archive — so that
--- field is simply absent, rather than reported as 0 and read as instant.
+-- One line per prepared page; the fetch field is absent for a local cbz.
 function MeguruDocument:_logPrepared(pageno, dims, t_start, fetch_ms, decode_ms)
     logger.dbg(string.format(
         "Meguru: page %d prepared in %d ms%s (decode %d ms, %dx%d)",
@@ -3592,31 +2103,15 @@ function MeguruDocument:_logPrepared(pageno, dims, t_start, fetch_ms, decode_ms)
 end
 
 function MeguruDocument:getPageDims(pageno)
-    -- Before anything reads a render: a tone change invalidates the decode this
-    -- is about to make (and the `dims` it keeps survive it — see syncTone).
+    -- A tone change invalidates the decode this is about to make.
     self:syncTone()
     local cached = self.dims[pageno]
     if cached then
         return cached
     end
-    -- This call is what a page turn waits for (see `analyseAhead`), and it is a
-    -- fetch followed by a decode. Both are timed so `_logPrepared` below can
-    -- tell them apart; the cost is two clock reads per page.
-    -- Fetch (if needed) and decode the page once to learn its size. The size
-    -- reported is the *full* (capped) native page — decodeNative downscales
-    -- oversized scans to the cap, so the decode never holds a huge buffer.
-    -- Cropping is deliberately NOT baked into this size: any auto-crop lives
-    -- in the bounding box getPageBBox returns, so page turns / zoom recomputes
-    -- never re-derive a crop-dependent size (and the bbox, being a pure margin
-    -- scan, is stable for a page's lifetime).
+    -- What a page turn waits for: fetch then decode; size is the capped native.
     if self.local_cbz then
-        -- Local cbz: geometry comes from rendering the page once out of the
-        -- open archive, capped exactly like decodeNative caps a streamed page.
-        -- ensureNativeBB marks a failed page in self.dead_pages, so a doomed
-        -- page is never re-rendered on later lookups; the native LRU keeps the
-        -- very buffer whose size is reported here, so geometry, every pan/zoom
-        -- tile and the auto content-box scan share one render — the same
-        -- one-whole-page-render profile as the streamed mode.
+        -- One capped archive render feeds geometry, tiles and the box scan.
         local t_start, t0 = nowMs(), nowMs()
         local native_bb = self:ensureNativeBB(pageno)
         local decode_ms = nowMs() - t0
@@ -3631,15 +2126,12 @@ function MeguruDocument:getPageDims(pageno)
         }
         self.dims[pageno] = dims
         self:_noteWide(pageno, dims)
-        -- Logged before the GC below, so `prepared in` is exactly the fetch and
-        -- the decode: the parts then sum to the whole, and a line where they do
-        -- not is a line that has drifted from what it measures.
+        -- Logged before the GC below, so the parts sum to the whole.
         self:_logPrepared(pageno, dims, t_start, nil, decode_ms)
         pcall(collectgarbage, "collect")
         return dims
     end
-    -- Fetched unconditionally, with no `hasNative` guard: this is the decoder,
-    -- and a live native would have answered from `self.dims` at the top.
+    -- Fetched unconditionally: this is the decoder; a live native answered.
     local t_start, t0 = nowMs(), nowMs()
     local data = self:fetchPage(pageno)
     local fetch_ms = nowMs() - t0
@@ -3649,9 +2141,7 @@ function MeguruDocument:getPageDims(pageno)
         return fallback
     end
     t0 = nowMs()
-    -- Contrast, if the reader set any: MuPDF applies it while rendering, so the
-    -- working decode — and everything later cut out of it — carries the tone.
-    -- See `contrast()` and `meguru/doc/image`.
+    -- MuPDF applies the tone while rendering, so the decode carries it.
     local res = Image.decode(data, self:contrast(), self:saturation())
     local decode_ms = nowMs() - t0
     if res == nil or res == Image.DECODE_TOO_LARGE then
@@ -3672,57 +2162,24 @@ function MeguruDocument:getPageDims(pageno)
         h = math.max(1, bb:getHeight()),
     }
     self.dims[pageno] = dims
-    -- The two `_noteWide` calls in this function are the only ones there are, and
-    -- they sit on the two paths that hold a *decoded* page. The three failure
-    -- branches above cache the screen's own size instead; on a landscape screen
-    -- that stand-in is wider than tall, and noting it would anchor the pairing
-    -- around a page that never loaded.
+    -- Only really-decoded paths note wide; failure branches cache screen size.
     self:_noteWide(pageno, dims)
 
-    -- Keep the working-resolution decode (capped by decodeNative) so every
-    -- later render of this page reuses it instead of re-rendering the scan:
-    -- one capped MuPDF whole-page render per new page covers the geometry, the
-    -- auto content box (autoContentBox -> computeContentBox) and every
-    -- pan/zoom tile (decodeRegion). This is safe precisely because the buffer
-    -- is the *capped* one from Image.decode (never more than `max_native_pixels`
-    -- on its long edge), so the native LRU can never
-    -- hold a huge scan at full res.
+    -- Keep the capped decode so every later render reuses it.
     self:cacheNative(pageno, bb)
-    -- Same placement as the local branch above: before the GC, so the parts of
-    -- this line add up to its total.
     self:_logPrepared(pageno, dims, t_start, fetch_ms, decode_ms)
-    -- Drop this local's reference to the page's raw bytes before forcing the GC
-    -- below: it is a multi-MB Lua allocation on a big scan and, still referenced,
-    -- a collect right now would not reclaim it. What is kept by this file is the
-    -- capped native decode, now cached. The bytes themselves are *not* dropped
-    -- wholesale any more — `self.page_bytes` holds those of the last
-    -- `max_cached_pages` pages on purpose, so they can be re-decoded without a
-    -- fetch. That is a bounded, deliberate holding.
+    -- Drop the local bytes reference before the GC, or they are not reclaimed.
     data = nil
-    -- Force a GC right here so the Lua-side garbage is reclaimed *before* the
-    -- next page is decoded, instead of piling up until the device runs out of
-    -- RAM a few pages in (the built-in page-stream viewer survives exactly
-    -- because it holds only one page's worth; without this, e-ink devices with
-    -- tight RAM die on the second or third big page). What this reclaims is the
-    -- byte strings of pages that have aged past the store's cap; the ones it
-    -- still holds are the reason it holds them, and the count is fixed. One full
-    -- collect per new page is cheap next to the decode it follows; BlitBuffers
-    -- are freed explicitly, so it is the Lua-side garbage this targets.
+    -- Collect before the next decode; tight-RAM e-ink dies otherwise.
     pcall(collectgarbage, "collect")
     return dims
 end
-
--- ---------------------------------------------------------------------------
--- Rendering
--- ---------------------------------------------------------------------------
 
 local function round(v)
     return math.floor(v + 0.5)
 end
 
--- Ensure a working-resolution (native unless capped by decodeNative) BlitBuffer
--- for `pageno` is available, decoding `data` if it is not in the native LRU
--- yet. Returns the BlitBuffer.
+-- Ensure a working-resolution BlitBuffer, decoding data if not in the LRU.
 function MeguruDocument:ensureNativeBB(pageno, data)
     if self.dead_pages[pageno] then
         return nil -- decode already failed once (or was refused as too large)
@@ -3735,22 +2192,14 @@ function MeguruDocument:ensureNativeBB(pageno, data)
     self.native[pageno] = nil
     local res
     if self.local_cbz then
-        -- Local cbz: no raw bytes to decode — render the page straight from
-        -- the open archive, through the same capped renderer the streamed
-        -- decode uses. A local page cannot be refused up front as too large
-        -- (there are no entry bytes to sniff the format), so Image.DECODE_TOO_LARGE
-        -- never comes back here: a huge PNG-in-cbz page keeps its transient
-        -- full-res decode inside MuPDF, exactly like the stock DocumentMuPDF
-        -- path for the same file (see renderMuPDFPage).
+        -- No raw bytes: render from the archive; huge PNGs keep MuPDF's decode.
         res = Image.renderMupdfPage(self.mupdf_doc, pageno, nil,
             self:contrast(), self:saturation())
     else
         res = Image.decode(data, self:contrast(), self:saturation())
     end
     if res == nil or res == Image.DECODE_TOO_LARGE then
-        -- A page that failed to decode once with these bytes will fail again
-        -- identically; remembering it keeps a doomed full-resolution decode
-        -- (or the RenderImage repeat of it) from running again on every paint.
+        -- Remember it: the same bytes fail identically; no retry per paint.
         if res == Image.DECODE_TOO_LARGE then
             logger.warn(string.format(
                 "Meguru: page %d skipped: its lossless source is above the %d-Mpx decode safety limit",
@@ -3765,17 +2214,7 @@ function MeguruDocument:ensureNativeBB(pageno, data)
     return res
 end
 
--- An open MuPDF document to render `pageno`'s region out of, plus whether the
--- caller owns it. Two sources, and the difference matters:
---
---  * a local cbz has the book's own handle, open for the document's lifetime;
---  * a streamed page is opened fresh, one page at a time, exactly as the decode
---    does — **from the byte LRU and only from it.** `readCachedPage` is a pure
---    cache read; `fetchPage` is not, and a fetch here would be a synchronous
---    HTTP GET inside a paint, which is the thing `hasNative` exists to keep out
---    of the render path. A miss falls through to the saved decode instead,
---    which is correct, just softer — so the failure costs quality, never a
---    stalled screen.
+-- Open a MuPDF doc for the region; a streamed page opens from the byte LRU.
 function MeguruDocument:_regionSource(pageno)
     if self.local_cbz then
         return self.mupdf_doc, false, pageno
@@ -3792,44 +2231,17 @@ function MeguruDocument:_regionSource(pageno)
     if not ok or not doc then
         return nil, nil, nil, "MuPDF cannot open the bytes"
     end
-    -- The same answer the decode makes, so a region render and a saved decode
-    -- of the same page are the same picture (see `meguru/doc/image`).
+    -- Same colour answer as the decode, so a region and a decode look alike.
     if doc.setColorRendering then
         doc:setColorRendering(Image.colorEnabled())
     end
-    -- **Page 1, always — not `pageno`.** A streamed page's document is opened
-    -- from that one page's bytes, so it holds exactly one page and MuPDF numbers
-    -- it 1. Handing this the book's page number makes `openPage` throw for every
-    -- page after the first, and the throw is caught: the whole direct path fell
-    -- back for every page of every streamed book while the local-cbz case — the
-    -- one place the two numbers happen to coincide — was the only one that ever
-    -- worked. A silent fallback is exactly what makes a bug like this survivable
-    -- and invisible, so the reason now travels instead of being logged at a
-    -- level nobody sees.
+    -- Page 1, always: the doc holds one page, so use 1, not the book's number.
     return doc, true, 1
 end
 
--- Render `cx, cy, cw, ch` (in the space `self.dims` lives in) straight into a
--- `tw x th` buffer, in one pass from the page's own bytes. Returns nil when
--- there is no source to render from, or when the render fails — the caller then
--- uses `decodeRegion`, which is always correct.
---
--- The whole point is that no intermediate exists on this path: MuPDF paints the
--- region once, from the source, at the size asked for. See `Image.renderRegion`
--- for how the region is expressed to MuPDF and why the coordinate mapping is
--- rederived rather than passed in — including what leaving `tw`/`th` out asks
--- for, which is the region at its own size in the page's pixels.
--- `planes` is a panel's quadrilateral, and reaches `Image.renderRegion`
--- unchanged; every other caller leaves it out and gets the plain rectangle it
--- always did. See `maskToQuad` there for what it means and why the crop needs it.
+-- Render a region into tw x th in one pass; nil with a reason if no source.
 function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th, planes)
-    -- A dead page stays dead, and this guard is load-bearing rather than tidy:
-    -- DECODE_TOO_LARGE is one of the ways a page dies, and it is set for a
-    -- *lossless* page whose full-size decode would be the ~100 MB transient that
-    -- OOM-kills the process. MuPDF decodes that whole PNG inside the region
-    -- render too, so going around the check would resurrect exactly the failure
-    -- the refusal exists to prevent. (A page that merely failed to decode dies
-    -- with it, which is fine — the render would fail identically.)
+    -- Load-bearing: DECODE_TOO_LARGE would OOM inside the region render too.
     if self.dead_pages[pageno] then
         return nil, "page is dead"
     end
@@ -3837,9 +2249,7 @@ function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th, plane
     if not doc then
         return nil, reason
     end
-    -- The last argument is the reader's contrast: this is the one render *every*
-    -- panel tile comes out of, so it is what makes a panel follow a setting the
-    -- panel viewer knows nothing about.
+    -- The tone: every panel tile comes through here, so panels follow it.
     local ok, bb = pcall(Image.renderRegion, doc, doc_pageno, cx, cy, cw, ch, tw, th, planes,
         self:contrast(), self:saturation())
     if owned then
@@ -3854,50 +2264,9 @@ function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th, plane
     return bb
 end
 
--- Panel zoom: what a long-press hands the ImageViewer.
---
--- Stock's `Document:drawPagePart` picks `zoom = min(canvas / rect)` — the largest
--- zoom that still fits the panel on screen — so the tile arrives screen-sized,
--- and its comment says why: "so that ImageViewer doesn't have to rescale
--- further". For a document behind an *engine* that is the right trade, because
--- rasterising the region costs the same at any target size and the viewer is
--- going to fit it to the screen regardless. A streamed page is not that. It *is*
--- a bitmap, so a panel bigger than the screen — a splash page, a spread, a large
--- art panel — reached the reader already reduced to the screen's pixels, with
--- everything past them gone: magnifying it in the viewer was magnifying a
--- resample of the file rather than a crop of it. So this asks for the region at
--- its own size instead (see `Image.renderRegion`), and the viewer starts out
--- scaled to fit either way. A panel smaller than the screen comes back smaller
--- than it used to and is upscaled by the viewer exactly as it was by MuPDF
--- before — those pixels were never being thrown away, which is why the change is
--- invisible on them.
---
--- Bounded by the same `max_native_pixels` budget as every other render here, so a
--- panel covering a 3000x4500 page cannot become the one allocation this plugin
--- never limits (`meguru/doc/image`). The rotation decision is stock's, on the
--- same setting, because it is about the panel's *shape* against the screen's and
--- nothing about it changed.
---
--- Its second return value is **stock's** answer, and stays stock's: `ReaderHighlight`
--- reads it to build its own bare ImageViewer, so changing what it means would
--- change stock's path for stock's reasons. The *sequence* viewer answers the same
--- question separately, and now answers the direction too — see `PanelViewer` in
--- `ui/panelzoom` for why the two agree on shape and differ on which way to turn.
---
--- The tile goes through this document's own LRU, which is what owns it: the
--- viewer is handed `image_disposable = false` and never frees what it is given,
--- and a BlitBuffer is malloc'd outside the Lua heap, so a buffer rendered outside
--- the cache would simply be lost. `cacheTile` is also what frees it later, on
--- eviction or on `clearCaches`.
---
--- **`tw`/`th` are the window view's, and nil everywhere else.** The cropped panel
--- wants the region at its own size in the page's pixels, so `renderRegionDirect`
--- is asked with no size; a *window* is a rectangle of the page that has to arrive
--- as the screen's worth of pixels, so it is asked with one. Passing neither is the
--- call `Panels+` and the cropped sequence have always made, unchanged.
+-- Panel zoom hands the region at its own size; the tile goes through the LRU.
 function MeguruDocument:drawPagePart(pageno, native_rect, rotation, tw, th)
-    -- Panel zoom is the one consumer that never passes through `renderPage`, so
-    -- the tone is refreshed here rather than relied on from a paint.
+    -- Panel zoom never passes through renderPage, so refresh the tone here.
     self:syncTone()
     if not native_rect then
         return nil, false
@@ -3921,11 +2290,7 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation, tw, th)
     local bb = self:renderRegionDirect(pageno, rect.x, rect.y, rect.w, rect.h,
         tw, th, native_rect.planes)
     if not bb then
-        -- Nothing to render the region from — the page's bytes have aged out of
-        -- the store, or MuPDF refused it. Stock's shape still has the saved
-        -- working decode to cut the panel out of, so falling back to it is what
-        -- keeps a long-press working offline; the panel is softer where the cap
-        -- bit, which is the right way for this to fail.
+        -- No bytes to render: fall back to stock (softer, but still works).
         local ok, image, fallback_rotate = pcall(Document.drawPagePart,
             self, pageno, native_rect, rotation)
         if ok and image then
@@ -3935,32 +2300,13 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation, tw, th)
         return nil, rotate
     end
 
-    -- Panel zoom is the one view that never passes through `renderPage`, so the
-    -- filter has to run here as well — this is the buffer the ImageViewer
-    -- magnifies, and it carries the moiré the reader long-pressed to get away
-    -- from. Same seam, same ownership: `renderRegionDirect` has just rendered it
-    -- and nothing else holds it, and it is filtered before `cacheTile` below, so
-    -- the cached panel is the filtered one.
-    --
-    -- The stock fallback above is deliberately **not** filtered: it returns
-    -- KOReader's own image out of `Document.drawPagePart`, which this document
-    -- neither owns nor may write to.
+    -- Filter here too, before cacheTile; the stock fallback stays unfiltered.
     if self._tone_derainbow then
         bb = Derainbow.apply(bb)
     end
 
     local tw, th = bb:getWidth(), bb:getHeight()
-    -- The **steepest edge** of the crop, and the one number that says whether
-    -- the region printed here is the panel or only its bounding box: a panel
-    -- with square sides has every edge at 0 and the two are the same rectangle,
-    -- and anything else is how far the crop had to lean to follow its border.
-    --
-    -- Which component carries the slope is the half-plane convention, not a
-    -- choice: a vertical side is `x = a + b*y` and became
-    -- `-x + b*y + a <= 0`, so its `b` is the plane's `B`; a horizontal side is
-    -- `y = a + b*x` and became `-y + b*x + a <= 0`, so its `b` is the plane's
-    -- `A`. Reading `A` off all four would report `1` for every panel that has a
-    -- vertical edge at all, which is every panel.
+    -- Steepest edge of the crop; B for vertical sides, A for horizontal.
     local tilt = 0
     local planes = native_rect.planes
     if planes then
@@ -3983,45 +2329,16 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation, tw, th)
     return bb, rotate
 end
 
--- Decode (and, when needed, crop+scale) a page region out of the saved working
--- -resolution decode.
--- `cx, cy, cw, ch` are in *full native* page coordinates (already mapped back
--- from zoomed page space by renderPage, and clamped to the page size); the
--- crop ReaderView applies lives purely in the bounding box it zooms through
--- (getPageBBox), so it never shifts the region requested here. `tw`/`th` is
--- the output tile size. `data` must be the cached raw bytes. Returns a
--- BlitBuffer.
---
--- This is now the *fallback* for a paint: `renderPage` asks
--- `renderRegionDirect` first, and reaches here only when there is no source to
--- render the region from. It is still the only path for the analysis renders
--- (`_meguruAnalysisBB`), which want a strip cut out of a page already decoded
--- and must not each pay a fresh open and render. Its own resample is what makes
--- it resample twice when it *is* used for a paint, which is why it is no longer
--- the first choice.
+-- Decode (crop+scale) a region from the saved decode; the paint's fallback.
 function MeguruDocument:decodeRegion(pageno, cx, cy, cw, ch, tw, th, data)
     local dims = self.dims[pageno] or self:getPageDims(pageno)
     local whole_page = cx <= 0 and cy <= 0 and cx + cw >= dims.w and cy + ch >= dims.h
         and cw >= dims.w and ch >= dims.h
 
-    -- Note: there is deliberately no "whole page → decode straight to the tile
-    -- size" fast path here. The paths below reuse the LRU-cached, cap-bounded
-    -- native render instead (getPageDims keeps one per page), and a slice/scale
-    -- of a cached buffer is what the analysis renders want. A paint that needs
-    -- the *resolution* rather than the speed takes `renderRegionDirect` above
-    -- instead, which is where the one-pass render lives.
-    -- render.
+    -- No whole-page fast path: reuse the cached native; resolution goes direct.
     local native_bb = self:ensureNativeBB(pageno, data)
     if not native_bb then
-        -- No cached/decodable native. ensureNativeBB has already logged and
-        -- memoised a decode failure (self.dead_pages), so nothing here retries
-        -- a doomed decode on every paint — that repeated ~full-res attempt is
-        -- what OOM-killed the process. On the very first failure of a *whole
-        -- page* only, a single last-resort direct decode at the tile size is
-        -- still worth trying (it can salvage a page whose native capped render
-        -- failed for a non-memory reason); any sub-region request must keep
-        -- the nil behaviour — a wrong region is worse than a gray tile. Guarded
-        -- on `data` too: a local cbz page has no raw bytes for a direct decode.
+        -- Failure memoised; a whole page gets one last-resort direct decode.
         if whole_page and not self.dead_pages[pageno] and data ~= nil then
             local ok, bb = pcall(RenderImage.renderImageData, RenderImage, data, #data, false, tw, th)
             if ok and bb then
@@ -4039,16 +2356,7 @@ function MeguruDocument:decodeRegion(pageno, cx, cy, cw, ch, tw, th, data)
     local ny1 = clamp(round(cy + ch), ny0 + 1, fh)
     local rw = nx1 - nx0
     local rh = ny1 - ny0
-    -- Scale the requested region out of the native bitmap. When the request is
-    -- the *whole* page and the output is not 1:1 (tw/th differ from the native
-    -- size), there is nothing to cut out first: scaleBlitBuffer must then
-    -- allocate a new buffer, so the scale can run straight on the LRU-cached
-    -- native — a no-copy fast path. The cache-ownership rule is what makes the
-    -- 1:1 case fall through to the copy: if the output size matched the input,
-    -- the scaler could hand back `native_bb` itself, and a tile that aliases
-    -- the cache-owned native would then be freed behind the LRU's back on
-    -- eviction. Every other request — a pan/zoom sub-rectangle, or a 1:1
-    -- whole-page paint — needs a region copy first.
+    -- Non-1:1 whole page scales on the cache; the 1:1 case copies.
     local cropped
     if nx0 == 0 and ny0 == 0 and rw == fw and rh == fh
             and (tw ~= fw or th ~= fh) then
@@ -4057,16 +2365,7 @@ function MeguruDocument:decodeRegion(pageno, cx, cy, cw, ch, tw, th, data)
         cropped = Blitbuffer.new(rw, rh, native_bb:getType())
         cropped:blitFrom(native_bb, 0, 0, nx0, ny0, rw, rh)
     end
-    -- free_orig_bb=false: scaleBlitBuffer never frees its input, so `cropped`
-    -- (when built) is an intermediate owned here — it must be freed
-    -- explicitly, or every cropped render leaks one region buffer until a GC
-    -- happens (KOReader BlitBuffers are malloc'd outside the Lua heap — see
-    -- the bb:free() convention). Handing it over with free_orig_bb=true would
-    -- free it inside the call, turning this free into a double-free on every
-    -- path where scaling actually happened. The cached `native_bb` is never
-    -- consumed by the scaler nor freed here. scaleBlitBuffer may return the
-    -- very same buffer when the sizes already match, so only free when
-    -- distinct.
+    -- Free the cropped intermediate explicitly; only when the scaler copied.
     local ok, scaled = pcall(RenderImage.scaleBlitBuffer, RenderImage,
         cropped or native_bb, tw, th, false)
     if cropped and scaled ~= cropped then
@@ -4080,40 +2379,26 @@ function MeguruDocument:decodeRegion(pageno, cx, cy, cw, ch, tw, th, data)
 end
 
 function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturation, hinting)
-    -- The tone, refreshed before a cached tile is read: a contrast change
-    -- invalidates the LRU's tiles by stamp rather than by key (see
-    -- `syncTone` and `tileAtTone`).
+    -- Refresh the tone before reading a cached tile (invalidated by stamp).
     self:syncTone()
-    -- `gamma` and `saturation` are accepted for API compatibility and read as
-    -- nothing: they are `ReaderView`'s copy of the settings, while the tone this
-    -- document renders at comes from its own `configurable` (see `contrast()` and
-    -- `saturation()`). That is not a loss — the bottom menu's rows set the
-    -- configurable as well as those, and the configurable is the one value the
-    -- panel views can read, which never come through here at all.
-    -- KOReader's per-page document rotation parameter is never set nowadays
-    -- (that code path was removed upstream); landscape-page turns live outside
-    -- this document (the pagenumbercrop screen rotation), so a non-zero
-    -- rotation is simply ignored here.
+    -- gamma/saturation ignored (tone from configurable); rotation is never set.
 
     local safe_zoom = (zoom and zoom > 0) and zoom or 1
     local is_prescaled = rect and rect.scaled_rect ~= nil or false
 
-    -- Determine the native crop region, the output tile size, and where in
-    -- page (zoomed) coordinates the tile origin sits.
+    -- Work out the native crop, the tile size, and the zoomed tile origin.
     local nx, ny, nw, nh  -- native region
     local tw, th          -- output tile size
     local excerpt_x, excerpt_y
 
     if is_prescaled then
-        -- drawPagePart: rect is already a native crop, rect.scaled_rect holds
-        -- the desired output size.
+        -- drawPagePart: rect is a native crop; scaled_rect is the output size.
         local sr = rect.scaled_rect
         nx, ny, nw, nh = rect.x, rect.y, rect.w, rect.h
         tw, th = sr.w, sr.h
         excerpt_x, excerpt_y = 0, 0
     elseif rect then
-        -- Standard ReaderView call: rect is the visible area expressed in
-        -- *zoomed* page coordinates (it fits within the zoomed page).
+        -- ReaderView: rect is the visible area in zoomed page coordinates.
         nx = rect.x / safe_zoom
         ny = rect.y / safe_zoom
         nw = rect.w / safe_zoom
@@ -4121,10 +2406,7 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
         tw, th = rect.w, rect.h
         excerpt_x, excerpt_y = rect.x, rect.y
     else
-        -- No rect (thumbnail/hint-ish call): render the whole page at the
-        -- requested zoom. From the page's *own* size and never the virtual
-        -- pair's — this branch draws one page into one tile, and a pair-sized
-        -- box here would stretch it (see `_pageGeom`).
+        -- No rect: whole page at the requested zoom, from the page's own size.
         local own = self:_pageGeom(pageno)
         local page_size = self:transformRect(
             Geom:new{ w = own.w, h = own.h }, safe_zoom, rotation or 0)
@@ -4147,12 +2429,7 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
     tw = math.max(1, round(tw))
     th = math.max(1, round(th))
 
-    -- Cache key must capture the actual crop (content), not only its size,
-    -- otherwise panning/zoom slices of the same dimensions would collide.
-    -- The tone deliberately is not part of the key: it is a stamp compared at
-    -- the lookup (`tileAtTone`), so a tile rendering at a tone the reader has
-    -- moved off is refused without the key having to say anything about tone —
-    -- and the key stays what it says, the crop.
+    -- Key captures the actual crop, not just its size; tone is a lookup stamp.
     local key = string.format("%d|%dx%d|%d,%d+%dx%d", pageno, tw, th, cx, cy, cw, ch)
     local tile = tileAtTone(self, key)
     if tile then
@@ -4160,34 +2437,9 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
         return tile
     end
 
-    -- Two ways to produce this tile, and which one is right depends on nothing
-    -- but the ratio between what was asked for and what the saved decode holds.
-    --
-    --  * `tw > cw` (or `th > ch`): the tile wants more pixels than the region
-    --    has, so anything cut out of the saved decode would be *interpolated* —
-    --    the reader would be looking at a magnified resample of a buffer that is
-    --    itself a resample. Render the region instead, once, at this size, from
-    --    the page's own bytes. This is the case a small page on a wide screen
-    --    always lands in, and it is exactly the "one render at the target size"
-    --    the whole-page-then-rescale shape could never give.
-    --
-    --  * otherwise the saved decode has more pixels than the tile needs, so the
-    --    tile is a genuine downscale of it and no resolution is being invented.
-    --    A slice-and-scale of the cached buffer is then both correct and much
-    --    cheaper than a second open and render of the page — which matters on
-    --    e-ink, where every tile miss (a pan, a zoom step, a crop toggle) would
-    --    otherwise pay for one.
-    --
-    -- The old shape was the second of these for *every* paint, which is what
-    -- made a page narrower than the screen look soft: its pixels were magnified
-    -- out of the working buffer rather than fetched from the file.
+    -- Magnify (tw>cw): render direct once; else slice/scale the cached decode.
     local bb
-    -- Which of the two ways this paint took, and — when the direct render was
-    -- *wanted* and came back empty — why it did not run. That reason is not
-    -- optional detail: this is the path that should have run, and a caught throw
-    -- that quietly degrades to a slower render is how the page-number bug (see
-    -- `_regionSource`) survived its own first run on a device. It travels into
-    -- the log line below rather than dying in a `logger.dbg` nobody reads.
+    -- A wanted direct render's failure reason travels into the log below.
     local method, why = "scale", nil
     local paint_ms
     if tw > cw or th > ch then
@@ -4201,14 +2453,7 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
         end
     end
     if not bb then
-        -- Bytes are only for the *decode* path below. A local cbz page has none
-        -- (it renders from the open archive, ensureNativeBB's local branch), and
-        -- a page whose native is already decoded does not need them — see
-        -- `hasNative`. `data` staying nil is expected on both, and the render
-        -- must still run, or every page would paint the gray placeholder.
-        --
-        -- This is the read that matters: it runs on every tile miss — a zoom
-        -- change, a crop toggle, a rotation — not just on a page turn.
+        -- data is only for the decode path; the render must still run.
         local data
         if not self.local_cbz and not self:hasNative(pageno) then
             data = self:fetchPage(pageno)
@@ -4221,20 +2466,7 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
         paint_ms = nowMs() - t0
     end
 
-    -- One line per rendered tile, at dbg because it is the only place this
-    -- choice is visible on a device — and the choice is not cosmetic: `direct`
-    -- renders the region from the page's own bytes once, `scale` slices the
-    -- retained decode and resamples it. A tile-cache hit returns further up, so
-    -- this tracks real renders rather than repaints: once or twice a page turn,
-    -- once per pan or zoom step.
-    --
-    -- `page %dx%d` is `dims`, the *retained* working size — the decode budget
-    -- (`meguru/settings`) made visible, which is what says whether a given page
-    -- cost a full decode or a reduced one. `region` and `tile` are what the
-    -- predicate compares, so the line also shows why this paint took this path.
-    -- The millisecond count is the render alone, not the decision around it: it
-    -- is what `direct` costs against `scale` on this device, which is the whole
-    -- reason the threshold exists.
+    -- One line per rendered tile; page = retained size; region/tile = pair.
     logger.dbg(string.format(
         "Meguru: page %d paint %s%s in %d ms (zoom %.3f, page %dx%d, region %d,%d+%dx%d, tile %dx%d)",
         pageno,
@@ -4247,26 +2479,7 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
         return nil
     end
 
-    -- The moiré filter, on the tile this paint has just produced and before it
-    -- is cached. **This is the seam, not the decode**, and that is the whole
-    -- design: the buffer here is freshly rendered and owned by nothing else —
-    -- either `renderRegionDirect`'s own `page.draw_new`, or a `decodeRegion`
-    -- that is documented never to hand back the LRU-cached native — so writing
-    -- to it in place is safe, and a cache hit (taken further up) is already
-    -- filtered and is not filtered twice.
-    --
-    -- It also leaves the *retained* decode unfiltered, which is the other half
-    -- of the point: the auto-crop, the panel detector, the page-number strip
-    -- and the blank test all read their pixels off that buffer through
-    -- `Image.rasterFor`, and they were calibrated on the page as it arrived.
-    -- Filtering the source would move every one of those answers.
-    --
-    -- Both halves of a two-page spread arrive here, each through its own
-    -- `drawOnePage` — so a spread is filtered as two pages, which is what it is.
-    --
-    -- Guarded on the *stamp* rather than on `self:derainbow()`: `syncTone` has
-    -- just settled it, so this is the same value the tile below is stamped
-    -- with, and the two cannot come to disagree.
+    -- Moire filter runs on the tile before cacheTile; analyses stay unfiltered.
     if self._tone_derainbow then
         bb = Derainbow.apply(bb)
     end
@@ -4286,20 +2499,9 @@ function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturati
     return tile
 end
 
+-- ReaderView calls this via nextTick (post-paint) and unschedules it on close.
 function MeguruDocument:hintPage(pageno, zoom, rotation, gamma, saturation)
-    -- Counted from `pageno`, not from the page after it: ReaderHinting already
-    -- offsets what it hands over (ReaderView passes `state.page + i`), and
-    -- stock's own documents treat the argument as the page itself — see
-    -- PdfDocument:hintPage, which renders exactly `pageno`. Counting from it
-    -- fetched the page AFTER the next one, so the page the reader was about to
-    -- turn to had nothing waiting and paid for its fetch on the turn.
-    --
-    -- Two pages at a time want one page more of lead. The pairing cannot be
-    -- decided without the *next* page's size, and ReaderHinting fires this one
-    -- page behind the turn (`state.page + i`), so a lead of two is what has the
-    -- partner decoded by the time the reader turns to it — see `spreadUnitFor`,
-    -- which refuses to pair a page whose partner is not known so that the
-    -- layout pass never has to fetch.
+    -- Counted from pageno; pairs want one more of lead so the partner is ready.
     local lead = self.prefetch_count
     if self:spreadActive() and lead < 2 then
         lead = 2
@@ -4307,9 +2509,7 @@ function MeguruDocument:hintPage(pageno, zoom, rotation, gamma, saturation)
     for i = 0, lead - 1 do
         local target = pageno + i
         if target <= self.info.number_of_pages then
-            -- A local cbz needs no prefetch: each page renders on demand from
-            -- the open archive, and the byte store is not used in that mode.
-            -- The analysis below still applies to it.
+            -- No prefetch for a local cbz; the analysis still applies.
             if not self.local_cbz then
                 self:prefetchPage(target)
             end
@@ -4319,28 +2519,7 @@ function MeguruDocument:hintPage(pageno, zoom, rotation, gamma, saturation)
     return true
 end
 
--- Warm everything getPageBBox will be asked about `pageno`, before the reader
--- gets there.
---
--- ReaderView emits HintPage through `UIManager:nextTick`, so this runs on the
--- tick after the current page is already painted — the reader is looking at it,
--- not waiting on a blank screen — and ReaderView unschedules that tick when the
--- view is torn down, so closing the reader drops the work rather than queueing
--- it.
---
--- One call does the lot, because getPageBBox is the single seam all of it hangs
--- off: the margin box, the blank check and the page-number strip are reached
--- from it, and each memoises its answer. Its first step is `getPageDims`, which
--- fetches the page and decodes it into the native LRU — the expensive part of a
--- page turn, and the part this exists to move. That the analyses themselves no
--- longer render (they read the retained buffer) does not make this pointless:
--- the DECODE is still per page, and it is still what a turn waits for.
---
--- Guarded on both sides. Skipped when the crop is off, since nothing it would
--- compute is ever consulted, and for a streamed page when there is no
--- connection — the fetch inside would otherwise sit through its timeout with
--- the UI thread blocked, which is worse than the slow page turn this avoids,
--- and an offline page could not be rendered anyway.
+-- Warm all of getPageBBox for pageno; skipped with the crop off or offline.
 function MeguruDocument:analyseAhead(pageno)
     local c = self.configurable
     if not (c and c.text_wrap ~= 1 and c.trim_page == 1) then
@@ -4352,40 +2531,11 @@ function MeguruDocument:analyseAhead(pageno)
     if not self:hasConnection() then
         return
     end
-    -- pcall: this runs in an event nothing is waiting on, so a throw in a
-    -- heuristic must cost a crop, not the book.
+    -- pcall: a heuristic throw must cost a crop, not the book.
     pcall(self.getPageBBox, self, pageno)
 end
 
--- The pair, drawn as two pages.
---
--- **The view asks for one page and gets two.** It has laid the pair out as a
--- single page twice as wide (see `getUsedBBoxDimensions` and `_pairGeom`), so
--- `rect` is a window into that pair's space, with the left page's left edge at
--- the pair's origin and the seam one left-half along — a half being the page's
--- crop plus whatever gutter it keeps (`_pairLayout`). Splitting it is then
--- arithmetic: cut the window at the seam, translate each half back into its own
--- page's coordinates, and hand each to the ordinary single-page path.
---
--- Nothing about drawing a page is re-implemented here. Tone, dithering, night
--- mode's invert, the tile cache and the "could not load" placeholder are all
--- `drawOnePage`'s, per half — which is what makes a half that failed to fetch
--- show its own placeholder beside a page that loaded, and what keeps each half's
--- tile keyed by its own page number.
---
--- Two small pieces of care are worth naming. A half is clipped to *its own*
--- page's height as well as to the seam, so a pair of unequal pages does not
--- stretch the shorter one's last rows into the taller one's space. And the
--- halves are laid out left-to-right in `_pairSides`' order, which is the reading
--- direction's — in a right-to-left book the earlier page is the right-hand one.
---
--- **A half that was cropped shorter is drawn at its own zoom**, which is the
--- pair's times the scale `_pairLayout` gave it: one page of the pair is a bigger
--- picture than the other, and `renderPage` has to divide by the same factor it
--- was multiplied by or the half would be cut out of the wrong place. Everything
--- about *placing* a half — the seam, the window, where it lands on the target —
--- stays in the pair's zoom, because the pair's box is what the reader laid out;
--- only the page's own coordinates carry the half's.
+-- Pair drawn as two pages: split rect at the seam, one drawOnePage per half.
 function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
     local pair = rect and self:spreadUnitFor(pageno) or nil
     if not (pair and pair.b) then
@@ -4395,19 +2545,13 @@ function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gam
     local safe_zoom = (zoom and zoom > 0) and zoom or 1
     local layout = self:_pairLayout(pair)
     local left, right = layout.left, layout.right
-    -- Where the two halves meet in the pair's space, and the window's own edges.
-    -- The seam carries the gutter and the growth: the left page's box has already
-    -- been widened into the margin it keeps and, if it is the shorter page,
-    -- scaled up, so the split follows from the same layout the reader was handed
-    -- rather than from the crop alone.
+    -- The seam carries the gutter and growth, so the split follows the layout.
     local left_zoom = safe_zoom * left.scale
     local right_zoom = safe_zoom * right.scale
     local seam = left.box.w * left_zoom
     local x0, x1 = rect.x, rect.x + rect.w
 
-    -- `origin` is where this page begins in the pair's space — the left page at 0,
-    -- the right one at the seam — so that `from - origin` lands the window in the
-    -- page's *own* coordinates, which is the space `renderPage` reads it in.
+    -- origin is where the page begins, so from-origin lands in its own coords.
     local function half(page, box, half_zoom, origin, from, to)
         local width = to - from
         if width <= 0 then
@@ -4432,42 +2576,7 @@ function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gam
     half(right.page, right.box, right_zoom, seam, math.max(x0, seam), x1)
 end
 
--- drawOnePage / drawPageInverted: same as Document's, but our renderPage may
--- return nil (network/decode failure), in which case we paint a neutral tile
--- instead of crashing the UI.
---
--- `drawPageInverted` is left on one page deliberately: nothing calls it (the
--- reader inverts through `drawPage`'s night-mode branch), so a pair split here
--- would be a path no book has ever run.
---
--- drawPage also honours the "Invert Document" setting
--- (configurable.nightmode_document), mirroring the dispatch KoptInterface:drawPage
--- does for a MuPDF book (koptinterface.lua): KOReader inverts the whole display
--- while night mode is on, so a page drawn normally would *appear* inverted (the
--- artwork's stark negative). Meguru forces the choice ALWAYS on — it is not a
--- bottom-menu row any more (main.lua's onReadSettings sets
--- configurable.nightmode_document = 1 on every open), so whenever night mode is
--- on, the page is drawn with its
--- usual blit and the freshly drawn *target* region is then inverted in place
--- (target:invertRect) — the two inversions cancel and the page keeps its
--- original (light-page) look, like a MuPDF book with "Invert Document" on.
---
--- The inversion is applied to the destination, not through invertblitFrom on the
--- tile. That is the format-safe route: invertRect works in place on whatever the
--- target is, costs no extra buffer, is visually identical to inverting the source
--- for a matching format, and leaves the shared cached tile untouched — exactly as
--- KoptInterface relies on. KoptInterface's own drawContextPage inverts the same
--- way (blit, then target:invertRect).
---
--- The reason it was originally written this way was narrower and is worth keeping
--- straight, because the premise has been corrected twice and is now conditional:
--- on a grayscale screen the tiles are 8bpp grayscale (see init and
--- `meguru/doc/image`), so `invertblitFrom` on them would in fact be a legal
--- same-format call — and on a colour screen they are RGB. The arrangement is kept
--- because it covers both without asking which: `invertblitFrom` would be an
--- "incompatible bb" throw out of blitbuffer.c for a tile format that did not
--- match, which is a frozen renderer mid-paint, whereas this shape cannot be
--- affected by the tile's format at all.
+-- Like drawPage; nil renderPage paints a neutral tile; night inverts target.
 function MeguruDocument:drawOnePage(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
     local tile = self:renderPage(pageno, rect, zoom, rotation, gamma, saturation)
     if not tile then
@@ -4478,14 +2587,7 @@ function MeguruDocument:drawOnePage(target, x, y, rect, pageno, zoom, rotation, 
     local dy = rect.y - tile.excerpt.y
     local configurable = self.configurable
     local invert = configurable and configurable.nightmode_document == 1 and Screen.night_mode
-    -- Dither-and-blit where init asked for it, plain blit where it did not — and
-    -- the flag, not this line, is the whole switch. On a grayscale screen it is
-    -- set `true` by decision: over a same-format (BB8->BB8) copy `ditherblitFrom`
-    -- runs `dither_o8x8` (blitbuffer.c) and re-quantises an already-8-bit page to
-    -- 16 levels on a fixed 8x8 pattern, which is a loss with nothing on the
-    -- other side of it. On a colour screen the flag follows `Screen.sw_dithering`
-    -- and is false, because there the copy is RGB->RGB and the dither would be
-    -- a conversion of a page that has nothing to convert. See init for both.
+    -- `self.sw_dithering` is the whole switch (set in init); see the doc.
     if self.sw_dithering then
         target:ditherblitFrom(tile.bb, x, y, dx, dy, rect.w, rect.h)
     else
@@ -4496,9 +2598,7 @@ function MeguruDocument:drawOnePage(target, x, y, rect, pageno, zoom, rotation, 
     end
 end
 
--- Explicit inverted draw (a caller asking for the page's negative on the target
--- regardless of night mode): same format-safe route as drawPage's invert branch
--- — the normal blit, then the drawn target region is inverted in place.
+-- Not pair-split on purpose: nothing calls it; night mode inverts via drawPage.
 function MeguruDocument:drawPageInverted(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
     local tile = self:renderPage(pageno, rect, zoom, rotation, gamma, saturation)
     if not tile then
@@ -4507,8 +2607,7 @@ function MeguruDocument:drawPageInverted(target, x, y, rect, pageno, zoom, rotat
     end
     local dx = rect.x - tile.excerpt.x
     local dy = rect.y - tile.excerpt.y
-    -- Same forced dither as drawPage (see its comment): the invert below is
-    -- applied to the target either way, so the two are independent.
+    -- Same forced dither as drawPage; the invert is independent of it.
     if self.sw_dithering then
         target:ditherblitFrom(tile.bb, x, y, dx, dy, rect.w, rect.h)
     else
@@ -4517,29 +2616,7 @@ function MeguruDocument:drawPageInverted(target, x, y, rect, pageno, zoom, rotat
     target:invertRect(x, y, rect.w, rect.h)
 end
 
--- A page that could not be rendered. Stock's documents have no equivalent —
--- their renderPage cannot come back empty — so this is where a streamed book
--- puts what a browser puts in place of a page it could not fetch.
---
--- The box is painted here, always; what goes *in* it is not. `missing_painter`
--- is installed by whoever is drawing a reader (`ui/reader.lua`), which is where
--- the wording and the font live — a document that has no reader in front of it
--- (the mosaic's cover path, say) gets the plain gray box and nothing to read.
--- The reason travels with the call: this is the only place that knows which of
--- "you are offline", "the server did not answer" and "the server said no" the
--- reader is actually looking at.
---
--- Deliberately **no log line per paint**. The failure was logged once where it
--- happened (`fetchPage`, `ensureNativeBB`); this function runs on every repaint
--- of a broken page — a pan, a zoom step, a menu opening — so a line here is a
--- line per repaint for as long as the reader looks at it, which is what buried
--- the rare warnings under `crop skip` before that one moved to `dbg` too.
---
--- The fill is **white**, which is what the sentence drawn on it is written for:
--- black on white, the way the page the reader was looking at was. It was light
--- grey while an error *drawing* stood here, and the drawing is gone while the
--- white is not — an unloaded page is still a page, and this is what one looks
--- like. See `ui/reader.lua`'s `installPageErrorPage` for why the drawing went.
+-- A page that could not render; box here, sentence from missing_painter.
 function MeguruDocument:paintMissingPage(target, rect, x, y, pageno)
     if not rect then
         return
