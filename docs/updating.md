@@ -47,11 +47,12 @@ after.
 
 **The archive is staged to get its `meguru.koplugin/` prefix, and staging is
 also what keeps the developer material out.** The repository root *is* the
-plugin — `main.lua`, `_meta.lua`, `meguru/` and `assets/` are at the top level,
-where pagenumbercrop has them a directory down — so zipping the root would put
-32 files under no folder at all, and would ship `CLAUDE.md`, `PROTOCOL.md`,
-`tools/` and `docs/` to every device. `assets/` has to be in the staged copy
-(`meguru/rowcover` reads it through `Paths.asset`), and so does `LICENSE`,
+plugin — `main.lua`, `_meta.lua`, `meguru/`, `assets/` and `libs/` are at the top
+level, where pagenumbercrop has them a directory down — so zipping the root would
+leave every file at the archive's top level, and would ship `CLAUDE.md`,
+`PROTOCOL.md`, `tools/` and `docs/` to every device. `assets/` has to be in the
+staged copy (`meguru/rowcover` reads it through `Paths.asset`), and so do `libs/`
+(`meguru/derainbow` loads the moiré filter's libraries from it) and `LICENSE`,
 because the zip is a distribution of AGPL-licensed code.
 
 ### Installing one

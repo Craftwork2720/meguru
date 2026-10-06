@@ -448,11 +448,11 @@ from the previous member, which is what stops a staircase of slightly lower pane
 from growing one row down the page. Each row is then sorted left-to-right for a comic
 and right-to-left for a manga, and a panel that sits beside a tall later-row neighbour
 is held until after it (the `1,2,3,5,6,7,4` order). The direction comes from
-`Reader.panelZoomMode(ui)`, which reads `ui.view.inverse_reading_order` — **not**
-`Settings.get("manga_order")`. That preference is only the floor of KOReader's
-cascade; the view holds the resolved value, which is what turning a page already
-obeys. The document is told the mode rather than reading it, because a document has no
-view.
+`Reader.panelZoomMode(ui)`, which reads `ui.view.inverse_reading_order` first — the
+resolved value, which is what turning a page already obeys — and falls back to the
+document's `opdsbook_manga`, and then to the plugin-wide
+`Settings.get("manga_order")`, only when the view cannot answer. The document is told
+the mode rather than reading it, because a document has no view.
 
 **The viewer is four overrides on `ImageViewer`, and stock does the rest.**
 `ui/panelzoom.lua` passes a list of **lazy functions** — `ImageViewer:init` and
@@ -822,8 +822,8 @@ scale **for that panel alone**, so the panel arrives complete in one centred sto
 used to cost two.
 
 Measured on the 1600x2400 page against the 1236x1648 screen at 1.7x, where the reader's
-window is 1059x1412 page pixels: a panel eight percent too wide goes from **2 stops to 1**,
-its window growing to 1144x1525 — which renders at 1236x1648, the whole screen, at 92.6% of
+window is 941x1255 page pixels: a panel eight percent too wide goes from **2 stops to 1**,
+its window growing to 1016x1355 — which renders at 1236x1648, the whole screen, at 92.6% of
 the reader's zoom. The output size does not change: the same screenful of pixels simply
 covers more page, and the panel reads smaller inside it.
 

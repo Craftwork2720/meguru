@@ -43,8 +43,9 @@ silently wear `appbar.pageview`, which is the *Reading* tab's.
   where the three before it are about its shape. It had a tab of its own before the rows
   were regrouped, was folded into *Page* for a while, and is back — a reader who knows a
   PDF's contrast tab looks for these in one place, and the crop is not one of them. The
-  first three are stock's own wiring; Derainbow is this plugin's and is the one row here
-  that needs something installed beside us ([derainbow](derainbow.md)), below.
+  first three are stock's own wiring; Derainbow is this plugin's, and is the one row here
+  that can be absent because a library would not load rather than because a reader turned
+  it off ([derainbow](derainbow.md)), below.
 
 **One more icon sits beside them and is not a tab.** It opens the Info popup — the page,
 how far through the book that is, and what the book says about itself — and it carries no
@@ -137,12 +138,12 @@ plugin at all: `ReaderKoptListener` writes the row's value into the configurable
   (`Settings.dither` is deliberately unset), which is why the row reads back the value the
   page is actually drawn with rather than a stored one.
 - **Derainbow** is this plugin's own row, on its own `MeguruDerainbowUpdate` event, and it
-  is the only row in the whole dialog that can be **absent because something is not
-  installed**: it needs `derainbowify.koplugin` beside us, and it is offered only where
-  `Derainbow.available()` says its libraries are there *and* `Image.colorEnabled()` says
-  the pages are decoded in colour. It cannot borrow that plugin's own switch — that one is
-  inserted into `KoptOptions`, which a Meguru book never reads, and its handler reaches for
-  a `rolling` view this reader does not have. See [derainbow](derainbow.md).
+  is the only row in the whole dialog that can be **absent**: the filter's libraries ship
+  inside the plugin (`libs/`), and the row is offered only where `Derainbow.available()` can
+  actually load them *and* `Image.colorEnabled()` says the pages are decoded in colour. It
+  cannot borrow `derainbowify.koplugin`'s own switch — that one is inserted into
+  `KoptOptions`, which a Meguru book never reads, and its handler reaches for a `rolling`
+  view this reader does not have. See [derainbow](derainbow.md).
 
 **The crop is one row of the *Page* tab, and it is `none` or
 `auto`; `auto` is the whole of the feature: the margin box, the printed page number and the

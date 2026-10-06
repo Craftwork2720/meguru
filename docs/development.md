@@ -243,7 +243,7 @@ Each step must pass before the next:
    zoom, night-mode invert, wide-page rotation, local `.cbz` via "Open with…" —
    behaviour identical to the old plugin, with one deliberate exception: the
    page-number strip refuses a band wider than 12% of the page's width, which the
-   old plugin removes. See *Page-number crop* below for what must and must not move.
+   old plugin removes. See `docs/design-decisions.md` for what must and must not move.
    **With `pagenumbercrop.koplugin` installed as well** the same run must give the same
    answers: that plugin patches the crop seam in its own init and this plugin takes it
    back on `ReaderReady`, so a book with both installed gets *this* crop and not the
@@ -295,11 +295,11 @@ Each step must pass before the next:
     row and nothing logs `menu id not found`.
 
     Then the `.cbz` row, which starts **on**. On a fresh install — no `provider` key in
-    `settings.reader.lua`, no `meguru_cbz_default_claimed` — the first start must write
+    `settings.reader.lua`, no `cbz_default_claimed` — the first start must write
     `provider = { cbz = "meguru" }` and log `Meguru: is now the default reader for
     .cbz`; **every** `.cbz` then opens as a Meguru book. Then the half that matters
     more: turn the row off, restart, and it must **stay off** — `cbz` gone from
-    `provider` and `meguru_cbz_default_claimed` true. Guard the other direction: with
+    `provider` and `cbz_default_claimed` true. Guard the other direction: with
     `provider.cbz` set to something else, the claim must leave it alone, while the row
     still reads ticked for a per-file choice and unticked for a file-type one that is
     not Meguru.

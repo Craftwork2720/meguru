@@ -256,12 +256,6 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   a canonical `catalogURL`, so it has no feed to walk for a neighbour. Until it
   exists an unrecognised server is handled by the absence of a driver rather than
   by one that returns nothing useful.
-- **Komga's `pse:lastRead` has never been seen carrying a value.** Every capture was
-  of a library nobody had read, so `readProgress?.page` was absent on every entry and
-  the feed looked like a server that tracks nothing — it does. PROTOCOL.md has the
-  source line; what is unverified is only whether that page is one-based, as Komga's
-  own numbering is. Wants a device check against a book with progress: a zero-based
-  value would offer a page one early, and `PSE.samePlace`'s tolerance would hide it.
 
 - **The bottom menu in a Meguru book belongs to zen-os, and this plugin does not
   contest it.** Taking the gesture back was tried (`4a0f395`) and deliberately reverted:

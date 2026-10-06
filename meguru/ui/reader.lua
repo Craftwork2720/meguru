@@ -1665,7 +1665,7 @@ local DERAINBOW_ROW = {
     args = { false, true },
     default_value = 0,
     event = "MeguruDerainbowUpdate",
-    help_text = _([[Removes the rainbow shimmer that fine black-and-white artwork picks up on a colour e-ink screen, by filtering the page as it is painted. Needs the derainbowify plugin installed; without it this row is not offered. Costs a moment on each page's first paint. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+    help_text = _([[Removes the rainbow shimmer that fine black-and-white artwork picks up on a colour e-ink screen, by filtering the page as it is painted. Needs the filter's native libraries, which ship with the plugin; without them this row is not offered. Costs a moment on each page's first paint. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
 }
 
 --- Colour intensity, for the screens that can show it.
