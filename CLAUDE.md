@@ -1,258 +1,91 @@
 # meguru
 
-A KOReader plugin that turns OPDS-PSE page streams (Kavita, Suwayomi) into
-ordinary KOReader "books". Each book is a small on-disk **marker** file; the
-pages come off the network one at a time as they are read. It is a from-scratch
-successor to the `meguru.koplugin` beside it — which is the reference for
-behaviour, the fallback if this one misbehaves, and **not to be modified**.
+KOReader plugin that turns OPDS-PSE page streams (Kavita, Suwayomi, Komga) into
+ordinary KOReader books. A book is a small on-disk marker file; pages come off
+the network as they are read. Successor to `meguru.koplugin`, which is the
+behaviour reference and fallback.
 
 ## Environment
 
-These are fixed and shape most of the design:
-
-- **Lua 5.1 / LuaJIT.** No `//`, no bitwise operators, no `goto`. The device is
-  the only place this code runs.
-- **No test framework and no linter.** Verification is manual, in a running
-  KOReader. `tools/check.py` (see Development) is the automated guard, covering
-  eleven failure modes.
-- **Reuse KOReader's own machinery** rather than rebuilding it: `LuaSettings`,
-  `DocSettings`, `DocumentRegistry`, and the built-in `plugins/opds.koplugin` for
-  Atom parsing and the browser UI. That plugin is **read only** — wrapped at
-  runtime, never edited.
-- **Module names are global**, so everything lives under `meguru/`. Always
-  `require("meguru/feed")`, never `require("meguru.feed")`: both resolve to the
-  same file but occupy two different `package.loaded` keys.
-- `require` of `opdsbrowser` / `opdsparser` must be **lazy, at the call site** —
-  `pluginloader.lua` only adds plugin directories to `package.path` after the
-  plugin itself has loaded.
+- Lua 5.1 / LuaJIT only: no `//`, no bitwise operators, no `goto`.
+- No test framework, no linter. Run `python tools/check.py` after every change.
+  Behaviour is verified manually on the device.
+- `meguru.koplugin` and KOReader's `plugins/opds.koplugin` are read only.
+- Reuse KOReader machinery (`LuaSettings`, `DocSettings`, `DocumentRegistry`,
+  opds.koplugin) instead of rebuilding it.
+- Always `require("meguru/x")`, never `require("meguru.x")` (two `package.loaded` keys).
+- `require` of `opdsbrowser` / `opdsparser` must be lazy, at the call site.
 
 ## Layout
 
 ```
-_meta.lua                 plugin metadata
-main.lua                  plugin class: provider registration, menu dispatch, reader install
-
-meguru/
-  paths.lua               every path: markers, and the last-resort folder
-  fs.lua                  filesystem predicates, directory creation, one raw write
-  settings.lua            plugin-wide preferences in G_reader_settings
-  association.lua         Meguru's claim on .cbz: the file-type reader association
-  sources.lua             read-only view on settings/opds.lua (catalogs + credentials)
-  net.lua                 HTTP: GET, the one PATCH, feed fetch + parse
-  naming.lua              sanitizeComponent / deriveSeries / glyph / identity digest
-  local.lua               the series a .cbz's folder and file name imply
-  comicinfo.lua           the metadata a .cbz carries about itself
-  marker.lua              marker read/write, naming, collision resolution, series context
-  credential.lua          what a credential looks like in a URL: redact / restore
-  seriescover.lua         the series' artwork, written once into its folder
-  rowcover.lua            the "Meguru this series" row's own artwork, decoded once
-  icons.lua               the bottom menu's tab icons, from assets/icons/; optional
-  progress.lua            the reader's position, sent back to the server
-  pse.lua                 OPDS-PSE: link extraction, template -> URL, page fetch
-  feed.lua                reading a series feed: the rel=next walk, identity, order,
-                          neighbour
-  panel.lua               the panels on a page, and the order they are read in
-  viewport.lua            the window over a page, for the panel view that crops nothing
-  spread.lua              the imposition: which pages shown together, the gutter a
-                          pair keeps, and the growth of a page cropped shorter
-  hook.lua                runtime wraps on OPDSBrowser (sniff, "Meguru this series")
-  updater.lua             GitHub releases: check for one, download it, install it
-  derainbow.lua           the moiré filter, lent at runtime by derainbowify.koplugin
-
-  driver/
-    base.lua              driver registry + pure shared helpers
-    suwayomi.lua
-    kavita.lua
-    komga.lua
-
-  doc/
-    document.lua          Document subclass: the reading engine
-    image.lua             MuPDF decoding with a size cap
-    defaults.lua          per-book seeding of kopt_* from plugin preferences
-
-  ui/
-    open.lua              "Meguru this series": resume dialog, marker write, open
-    reader.lua            everything grafted onto a running ReaderUI
-    panelzoom.lua         the panel sequence viewer: nav, pre-warm, page boundary
-    info.lua              the popup the bottom menu's Info icon opens
-    menu.lua              the two menu surfaces
-
-assets/
-  meguru-this-series.png  optional; the cover drawn on the series row
-  icons/                  optional; the bottom menu's tab icons, one per tab
-    reading.svg  page.svg  rotation.svg  tone.svg  info.svg
-
-libs/                     vendored, not ours: the moiré filter's native libraries
-  color_detect-<platform>.so   from derainbowify.koplugin 0.0.12, unmodified
-  moire_filter-<platform>.so   GPL-3.0; see libs/README.md for provenance
-  LICENSE                      that project's licence, which travels with them
-
-.github/workflows/release.yml   a tag builds meguru.koplugin.zip and publishes it
+main.lua            plugin class: provider registration, menu dispatch, reader install
+meguru/             core modules (paths, fs, settings, net, feed, marker, pse, panel, ...)
+meguru/driver/      per-server drivers: base, suwayomi, kavita, komga
+meguru/doc/         Document subclass, image decoding, per-book defaults
+meguru/ui/          open, reader, panelzoom, info, menu
+assets/             optional artwork and tab icons
+libs/               vendored moire filter (not ours, unmodified, pinned; see libs/README.md)
+tools/check.py      automated guard, not part of the plugin
 ```
 
-**Two things the plugin ships rather than writes, and both are optional.**
-`assets/meguru-this-series.png` is the cover drawn on the series row —
-`meguru/rowcover` answers nil without it and the browser draws its ordinary
-placeholder. It is portrait, authored at 2:3 (what zen-os fits a cover into by
-default); any size decodes, and a larger one costs only bytes on disk.
-`assets/icons/*.svg` are the bottom menu's tab icons, one per tab — plus
-`info.svg`, which belongs to the one icon in that bar that is a button rather
-than a tab — the same rule, with `meguru/icons` answering KOReader's own icon
-name when a file is not there (see `docs/menus-and-lifecycle.md`). The plugin has had artwork before and
-it was deleted on purpose — an error-page drawing whose headline named the wrong
-fault — so the distinction is worth keeping: these are the row's *identity* and
-the menu's, not a claim about something that went wrong.
+Not yet written: `driver/generic.lua`. An unrecognised server has no driver.
 
-**`libs/` is the third thing shipped and the first that is not ours**, which is
-why it is not in that sentence: it holds another project's compiled code, taken
-unmodified from its release and pinned at the version `meguru/derainbow`'s
-prototypes were written against. It is *not* optional — the Derainbow row is
-absent without it — and it is the whole reason that row no longer needs
-`derainbowify.koplugin` installed. `libs/README.md` carries the provenance, the
-version and the GPL-3.0 terms; `docs/derainbow.md` carries what the pinning
-costs. Nothing updates those files but a human.
+## Invariants
 
-`tools/check.py` is a development aid, not part of the plugin.
+- Module graph is a DAG. The only lazy edge is `feed.lua` -> `meguru/naming`.
+- `ui/panelzoom` and `ui/info` require no `meguru/` module; they are handed plain data.
+- `meguru/spread` and `meguru/derainbow` are leaves.
+- Only markers are written to disk, plus `.cover.jpg` from `meguru/seriescover`.
+- Reading position is sent to the server for Komga only, and is opt-out per server.
+- Never modify `libs/` by hand.
 
-Not yet written: `driver/generic.lua` — the `kind = NULL` driver that can
-only discover a series by title heuristic and cannot build a canonical
-`catalogURL`, so there is no feed to walk for a neighbour. Until `generic.lua`
-exists, an unrecognised server is handled by the absence of a driver rather than
-by a driver that returns nothing useful.
+## Docs
 
-**Nothing is written to disk but markers** — and one exception, named here
-because the sentence above it is the kind that gets quoted: `meguru/seriescover`
-leaves a `.cover.jpg` in a series folder, for whatever *outside* KOReader reads
-it. It is not a cache and nothing reads it back; KOReader will not display it
-either (`coverbrowser` draws a directory as a name and a count, and never looks
-for a file beside a document), and the plugin never removes it — turning a server
-off in the menu stops new files and leaves what is already written.
+Read the one you need, not all of them.
 
-**The counterpart is true of the network, and it is the one thing sent outward.**
-`meguru/progress` sends the reader's position back to the server the book came
-from — **Komga only**, one switch per server in ⋮ → Meguru → Settings, on by
-default. Suwayomi is already told by its own page fetches (its stream template
-carries `?updateProgress=true`) and Kavita's write API wants a login this plugin
-does not make, so neither is given a report. It is a position and not a book: a
-page number goes out, the credential rides in the Basic header a page
-fetch already sends, and nothing the server answers is written anywhere. See
-`docs/reading-position.md`.
+- `PROTOCOL.md`: wire-format findings from live servers. Observation beats assumption.
+- `docs/design-decisions.md`: why the design is what it is.
+- `docs/series-state-and-markers.md`: marker fields and `item_key` identity rules.
+- `docs/render-path.md`: decode, paint, cache, tone rows, log lines.
+- `docs/driver-notes.md`: feed walking, ordering, per-server differences.
+- `docs/opening-a-book.md`: resume dialog, silent opens, marker planning.
+- `docs/reading-position.md`: what is sent back to the server and when.
+- `docs/local-cbz.md`: local folder of `.cbz` as a series.
+- `docs/panel-zoom.md`: panel detection and the three long-press views.
+- `docs/two-page-view.md`: landscape imposition, gutter, wide-page rotation.
+- `docs/menus-and-lifecycle.md`: menu rows, config dialog, plugin lifecycle.
+- `docs/updating.md`: GitHub release updater.
+- `docs/derainbow.md`: borrowed moire filter and its pinning.
+- `docs/development.md`: `tools/check.py` passes and the on-device checklist.
+- `docs/known-issues.md`: open questions and unverified assumptions.
+- `docs/security-notes.md`: credential redaction in markers and logs.
 
-**The file's name is not its format, and the three servers disagree** — worth
-knowing before someone "fixes" the extension:
+## Docs rules
 
-| server | where the series artwork comes from | what arrives |
-|---|---|---|
-| Suwayomi | feed-level image on the chapter list | WebP 400x600 |
-| Kavita | feed-level image on the series feed | **WebP** 639x908 |
-| Komga | `driver.seriesCover` → REST, because OPDS has none | JPEG 211x300 |
+- Never write journals, changelogs, status notes or "what I did" files. Git history is the log.
+- Do not create new .md files. Edit an existing one only when a lasting fact changes.
+- Docs hold only what the code cannot show: server behaviour, quirks, open questions,
+  security rules. No history ("previously", "was removed"), no restating code.
 
-Kavita's *volume* cover is a JPEG and its *series* cover is not — an earlier
-version of this document and of `seriescover.lua` got that backwards and used it
-to justify a Suwayomi-only rule. Which servers get the file is now the reader's
-choice, in ⋮ → Meguru → Settings → `Covers for folders`, one switch per server,
-all on by default.
+## Commits
 
-Leaving that aside: there is no page cache, no cover cache and no database.
-Pages live in a small RAM LRU, a cover is refetched on every call, and the panel
-lists a long-press produces live in a four-entry RAM LRU on the document itself,
-so they are dropped with the book.
+- Conventional Commits, subject line only: `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`, `test:`.
+- One line, max 60 characters, imperative mood, lowercase after the prefix, no trailing period.
+- No body, no bullet lists, no trailer lines (no `Co-Authored-By`, no "Generated with"), no emoji.
+- Describe the effect, not the process. Good: `fix: skip /proc in empty-folder scan`.
+  Bad: `fix: updated browser.lua to try to handle some edge cases`.
+- One logical change per commit. Never bundle unrelated edits.
+- Never commit unless asked.
 
-`meguru.sqlite3` may still be sitting in `settings/` from a version that had one,
-and `cache/meguru/pages` and `.../covers` from a version that wrote them. Nothing
-reads them and nothing sweeps them; delete them by hand once. `Paths.cacheDir`
-itself survives: it is the last-resort folder for a marker when the home folder
-is unusable (`Marker.homeDir`).
+## Comments
 
-The dependency graph is a DAG with no cycles and **exactly one lazy edge**:
-`feed.lua` requires `meguru/naming` inside `Feed.ordered`, because the ordering is
-the one thing both entry points share and an edge at load time would have made it
-circular. (`ui/network/manager` is reached the same lazy way by `doc/document`
-and `seriescover`, and `ui/renderimage` by `rowcover`, but they are KOReader's
-modules, not ours — they are not edges in this graph, and each is deferred for a
-reason of its own: the network manager is a *device* state that need not exist
-where these modules are loaded, and the image backends are dead weight until a
-row's artwork has actually been found on disk.) `ui/panelzoom` requires no `meguru/` module at all — it is handed panels
-as arguments, and with them the reading direction and the rotation direction, both
-as plain strings: the *domain* of those settings stays in `ui/reader` and the viewer
-is told the word. `ui/info` is the same shape of leaf and for the same reason — the
-Info popup is handed a plain table of fields (`Reader.infoFields` gathers them, so
-"the page on screen" keeps its one answer in `ui/reader`) and requires no `meguru/`
-module at all, which is what makes `ui/reader` -> `ui/info` a leaf edge like the
-panel one. `ui/reader` also requires `meguru/driver/base` now, for `Base.kindLabel`
-— the label of a server kind, which moved there from `ui/menu` when a third surface
-needed it and `ui/menu` could not be the home of it (it requires `ui/reader`).
-The edges that do exist between the panel modules are `ui/reader` ->
-`ui/panelzoom`, `doc/document` -> `panel`, `ui/panelzoom` -> `viewport`, and `panel` ->
-`doc/image`. `doc/document`
-and `ui/reader` both require `meguru/local` eagerly — it is a module of ours, it
-loads nothing expensive, and `ui/menu` reaches it through `ui/reader` rather than
-directly so the guard that answers "is this book a local one" exists once. `ui/reader`
-requires `meguru/doc/image` for the same shape of reason: the Saturation row is offered
-only where the pages are decoded in colour, `Image.colorEnabled()` is the one answer to
-that question — the predicate the decode itself asks — and asking it anywhere else would
-be a second answer that could drift from the first. The one
-directory listing in the plugin lives there, and it is `util.findFiles`, KOReader's
-own — not an edge in this graph, for the reason the network manager is not one
-either. `meguru/spread` is required by `doc/document` and by nothing else, and it
-requires nothing: the imposition is arithmetic over a page number and a list of wide
-pages, so it is a leaf, and the two rules it owns about the pair's own fit — the gutter
-a spread keeps and the scale a page cropped short grows by — are numbers in and numbers
-out, the boxes themselves staying where the geometry lives. `meguru/derainbow` is a leaf of
-the same kind and is required by `doc/document` and by `ui/reader` — the first to run the
-filter, the second to decide whether to offer the row — and it requires only `meguru/fs`,
-`meguru/paths` and KOReader's own modules. It is the one module that loads a **shared
-library**, and the library is not ours: vendored from another project into `libs/`, pinned
-at the version its prototypes were written against. That is a dependency of the *filesystem*
-rather than of this graph — the `.so` is not a module and has no edge — and
-`docs/derainbow.md` says what it is, what the pinning costs, and where the row is absent
-anyway.
-
-
-## Where the detail lives
-
-This file is the map: the environment, the file layout, and a way into the rest. The
-design record itself was moved out of it, one subject per file, so that neither a reader
-nor an agent has to load 3500 lines to find one answer. Read the one you need.
-
-- [docs/design-decisions.md](docs/design-decisions.md) — why the design is what it is: no
-  local catalog, a marker carrying only its series' identity, and what two earlier designs
-  cost.
-- [docs/series-state-and-markers.md](docs/series-state-and-markers.md) — the marker's
-  fields, the identity rules behind `item_key`, and what a marker does and does not store.
-- [docs/render-path.md](docs/render-path.md) — how a page is decoded, painted and cached;
-  how the tone rows (contrast, saturation, dithering) reach the pixels; the four log lines;
-  and what a page that could not be loaded says.
-- [docs/driver-notes.md](docs/driver-notes.md) — reading a series feed (the `rel=next`
-  walk, ordering, neighbours) and what Kavita, Suwayomi and Komga each do differently.
-- [docs/opening-a-book.md](docs/opening-a-book.md) — where an open starts: the resume
-  dialog, the server's own position, the silent opens, and the marker planned before it is
-  written.
-- [docs/reading-position.md](docs/reading-position.md) — the same position going the other
-  way: what is sent, when, and the one rule that keeps a server from being walked back.
-- [docs/local-cbz.md](docs/local-cbz.md) — a folder of `.cbz` treated as a series: the
-  natural sort, and why the name grammar was removed.
-- [docs/panel-zoom.md](docs/panel-zoom.md) — the panel preference and its stock cascade,
-  the detector, the three views a long-press can open, and why a panel is toned like the
-  page it came from without this file knowing about it.
-- [docs/two-page-view.md](docs/two-page-view.md) — the landscape two-page view: the
-  imposition that decides which pages pair and where a run starts again, the pair
-  presented to the reader as one page, the gutter the crop would otherwise have
-  thrown away and the rule that gives it back, and how it shares a book with the
-  wide-page rotation.
-- [docs/menus-and-lifecycle.md](docs/menus-and-lifecycle.md) — the menu rows, the curated
-  config dialog and its four tabs, the one action offered to KOReader's gesture editor,
-  the plugin lifecycle facts, and the plugins that replace our wraps.
-- [docs/updating.md](docs/updating.md) — the GitHub release updater: the one artifact both
-  ends name, the install transaction, and what is remembered between checks.
-- [docs/derainbow.md](docs/derainbow.md) — the moiré filter borrowed from another plugin:
-  why that plugin is inert here, the two seams the filter runs at, and the one buffer
-  shape it may touch.
-- [docs/development.md](docs/development.md) — `tools/check.py`'s eleven passes, and the
-  on-device checklist for verifying a change.
-- [docs/known-issues.md](docs/known-issues.md) — open questions and unverified
-  assumptions, each with what would settle it.
-- [docs/security-notes.md](docs/security-notes.md) — how credentials are redacted in
-  markers and log lines, and what is deliberately never scrubbed.
-- [PROTOCOL.md](PROTOCOL.md) — wire-format findings captured from live servers; where that
-  document and an assumption disagree, the observation wins.
+- English only.
+- Explain WHY, never WHAT. If the code says it, do not repeat it.
+- One line per comment, max ~80 characters. No multi-line blocks, banners or section dividers.
+- Never write notes to yourself: no TODO/FIXME/NOTE of your own, no reasoning traces,
+  no alternatives you considered, no references to the task or conversation.
+- Never describe changes: no "added", "changed", "now uses", "fixed", "previously", "refactored".
+- No comment on obvious code (`-- increment counter`, `-- return result`).
+- Do not delete or rewrite existing comments unless the code they describe is removed or changed.
+- If in doubt, write no comment.

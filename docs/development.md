@@ -192,6 +192,11 @@ it is a junction, not a copy, so the repository stays the single source of truth
 cmd /c mklink /J "<koreader>\plugins\meguru.koplugin" "C:\dev\projects\meguru"
 ```
 
+**A plugin's own `require` of `opdsbrowser` or `opdsparser` must be lazy, at the
+call site.** `pluginloader.lua` adds a plugin's directory to `package.path` only
+after that plugin module has itself loaded, so a top-level `require` of another
+plugin's module resolves nothing.
+
 **Read the whole log, not just the crash.** KOReader catches non-fatal errors inside
 `pcall` and logs them as `warning: UNHANDLED EXCEPTION!` plus the message, then carries
 on. So a line like that *before* the fatal crash is a **second, independent bug**. When

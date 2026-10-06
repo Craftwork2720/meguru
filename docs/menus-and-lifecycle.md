@@ -227,6 +227,12 @@ Invariants when touching these rows:
   a write, so its row is flat — a submenu would cost a tap to say less than the row says
   by itself. A second driver with a write path converts it into one, and that is the
   argument it will have to make.
+- **`Covers for folders` is one switch per server, all three on by default**, and the
+  file it governs is `meguru/seriescover`'s `.cover.jpg` in the series folder. It is
+  written for whatever *outside* KOReader reads it: nothing here reads it back, and the
+  plugin never removes it, so turning a server off stops new files and leaves the ones
+  already written. KOReader will not display it either — `coverbrowser` draws a directory
+  as a name and a count, and never looks for a file beside a document.
 - **The separator is *under* the row that carries it** (`touchmenu.lua:714`), and is
   dropped when that row is last on a page (`touchmenu.lua:713`) — so a separator is a
   hint about the list, never a guarantee about the screen. Two lines split `Settings`
@@ -458,6 +464,11 @@ run again. And the insertion point must not be moved earlier to reach it — `ge
 is the seam `switchItemTable` was replaced by precisely because the URL tells a series feed
 apart from a search result and a pagination append, and moving it back re-opens that, for a
 cover.
+
+**The artwork itself is optional, and its shape is a choice rather than a requirement.**
+`assets/meguru-this-series.png` is portrait, authored at 2:3 — what zen-os fits a cover
+into by default — and any size decodes; a larger one costs only bytes on disk. Without the
+file `meguru/rowcover` answers nil and the browser draws its ordinary placeholder.
 
 The repair a reader has if any of this ever breaks again is the same one a mis-sniffed
 kind has: nothing in the UI reaches it, so it is fixed in `hook.lua` or not at all.

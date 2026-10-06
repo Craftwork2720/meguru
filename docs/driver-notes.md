@@ -160,6 +160,13 @@ which is what Kavita and Suwayomi want, since both publish the series image at
 feed level. It is asked by `Base.coverFromFeed`, whose fourth argument is the
 driver.
 
+**The three servers also disagree on what that artwork *is*.** Suwayomi's
+feed-level image on the chapter list arrives as WebP 400x600, Kavita's feed-level
+image on the series feed as WebP 639x908, and Komga's — fetched from REST by
+`Komga.seriesCover`, because OPDS has none — as JPEG 211x300. The file's name is
+not its format, and the three disagree about that too: Kavita's *volume* cover is
+a JPEG while its *series* cover is not.
+
 `catalogURL` is a pure function of the server and the series id and is **never**
 derived from whatever the user happened to be browsing. Kavita's History / On Deck /
 Recently Added feeds are truncated and must never be the source of a sync. Kavita's

@@ -134,6 +134,9 @@ Three consequences that are easy to trip over:
   "Clear cache" row any more, because with no disk cache it would have had nothing
   of its own to clear.
 
+`Paths.cacheDir` is not one of those leftovers: it is the last-resort home for a
+marker when the home folder is unusable (`Marker.homeDir`).
+
 ## The marker
 
 Extension `.meguru`, provider key `"meguru"`. Serialised with `LuaSettings` as

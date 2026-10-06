@@ -251,7 +251,11 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
     direction that invents gutters, and `legacy_image_scaling` (a KOReader setting,
     off by default) turns the second step into nearest-neighbour and makes it worse.
 - **Kavita granularity** is resolved in PROTOCOL.md (entry ↔ stream is 1:1).
-  `driver/generic.lua` is not written yet; see Layout.
+  `driver/generic.lua` is not written yet; see Layout. It would be the `kind =
+  NULL` driver: it can discover a series only by title heuristic and cannot build
+  a canonical `catalogURL`, so it has no feed to walk for a neighbour. Until it
+  exists an unrecognised server is handled by the absence of a driver rather than
+  by one that returns nothing useful.
 - **Komga's `pse:lastRead` has never been seen carrying a value.** Every capture was
   of a library nobody had read, so `readProgress?.page` was absent on every entry and
   the feed looked like a server that tracks nothing — it does. PROTOCOL.md has the
