@@ -832,7 +832,7 @@ Each step must pass before the next:
     | # | do | expected |
     |---|---|---|
     | a | open a Meguru book, bottom menu, **Tone** tab | a **Derainbow** row, last, after Dithering |
-    | b | turn it on | one `Meguru: derainbow WxH = N ms` line, the page repaints, and a **colour** page keeps its colour — if it comes back grey, the `bpp` gate was for nothing and the page was RGB24 |
+    | b | turn it on | one `Meguru: derainbow filter running (WxH, N ms)` line **at info**, then a `Meguru: derainbow WxH = N ms` line per tile at dbg. The page repaints, and a **colour** page keeps its colour — if it comes back grey, the `bpp` gate was for nothing and the page was RGB24 |
     | c | time it against the `page … paint` line beside it | the filter's milliseconds are a fraction of the paint, not a multiple of it. This is the one number `known-issues.md` says has never been measured |
     | d | pan and zoom | no exception in `crash.log`, and no `derainbow skipped` line — a tile is RGB32 at every zoom, and a skip here means the region render came back as something else |
     | e | long-press a panel, and step through the cropped sequence | filtered, and no stall on the first tile of each panel |

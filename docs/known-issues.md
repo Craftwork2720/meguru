@@ -479,7 +479,7 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
 
 - **The filter's cost is measured on the desktop and unmeasured on the target device.** On
   x86-64 under KOReader's SDL build, an 806×1132 tile takes **35–51 ms** — the first tile of a
-  page, then the second, from the `Meguru: derainbow WxH = N ms` line. That is a real cost on
+  page, then the second, measured while this was still a `dbg` line. That is a real cost on
   the page-turn path, and it is roughly what a low-powered e-ink CPU can be expected to
   multiply rather than match. The other plugin's `init_moire_resources` is reported to
   reallocate at image size on essentially every call — its guard compares a padded length

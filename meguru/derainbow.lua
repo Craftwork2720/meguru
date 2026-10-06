@@ -102,6 +102,7 @@ local state = {
     moire = nil,
     initialized = false,
     filter_failed = false,
+    active_reported = false,
 }
 
 -- Whether `Device` answers a given predicate, tolerantly. Every one of these is
@@ -362,6 +363,16 @@ function Derainbow.apply(bb)
             logger.warn("Meguru: derainbow filter failed:", tostring(err))
         end
         return bb
+    end
+    -- One line the first time it actually filters, at info, and then per-tile
+    -- timing at dbg. The first is for the reader: a switch whose whole effect is
+    -- on a panel most devices do not have is otherwise impossible to tell from a
+    -- switch that does nothing. One per session is not noise — it is the same
+    -- shape as `Meguru: colour page rendering`, which is also said once.
+    if not state.active_reported then
+        state.active_reported = true
+        logger.info(string.format(
+            "Meguru: derainbow filter running (%dx%d, %.1f ms)", w, h, nowMs() - t0))
     end
     logger.dbg(string.format("Meguru: derainbow %dx%d = %.1f ms", w, h, nowMs() - t0))
     return bb
