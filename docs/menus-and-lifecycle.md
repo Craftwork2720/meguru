@@ -115,6 +115,17 @@ lookup still happens even though none of stock's tab objects is handed back. The
 is no longer lifted at all: its row is this plugin's, name and all (`Crop`, where
 stock calls it "Page Crop", the tab already being the page's).
 
+**A stock tab that is not found costs only the rows lifted from it, and there is
+no fallback to the whole of `KoptOptions`.** `stockOptionRow` is nil-safe and every
+lookup tolerates nil, so the dialog still builds — the crop, fit, tone and two-page
+rows are this file's, so it is never empty, and stock's rows are exactly what the
+function exists to keep out. An earlier version answered an unrecognised stock layout
+with everything, on the grounds that a wrong menu beat an empty one; it can no longer
+be wrong in that way, and the cost of a missing tab is paid silently. And none of the
+rows here is `advanced = true`, where stock's own Dithering row is: `advanced` rows
+stay hidden until the reader turns advanced options on, and this dialog is curated
+rather than layered — a row offered here is meant to be seen.
+
 **The two rows under "Two pages" belong to it and are dimmed until it is on, and
 that is as close to a group as this menu can come.** *The bottom menu has no
 sub-items at all*: `sub_item_table` is the ⋮ menu's, `ui/widget/menu.lua` and
@@ -341,6 +352,16 @@ Invariants when touching these rows:
   during `ReadSettings`, with the plugin's wrapper already in place.
 - `C_` is **not** a global. Every core file declares `local C_ = _.pgettext`; a plugin
   file that omits it gets a nil call only when a row is built.
+- **`hideStatusBar` reclaims the footer's height itself.** `ReaderFooter:applyFooterMode`
+  re-lays-out the view to give the bar's strip back only when `footer_visible` actually
+  *changes*; an external hid-status-bar patch that ran first has already flipped the flag, so
+  the reclaim is skipped and the strip stays reserved until the next page turn. `ui/reader`'s
+  `hideStatusBar` calls `updateFooterContainer`/`resetLayout(true)` in that case, which is
+  what makes a Meguru book's first page paint full-screen. `showStatusBar` restores the mode
+  from the untouched global `reader_footer_mode` and falls back to page progress when that is
+  off, because an explicit show must always show. The footer is reached through
+  `getStatusBarFooter`, which probes `ReaderView` first and the `ReaderUI` module second so
+  either KOReader layout works.
 
 Three more, about the browser rather than the lifecycle.
 

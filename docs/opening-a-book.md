@@ -137,6 +137,27 @@ reader asked for. That was visible on "previous chapter": with the server sittin
 chapter 7, the only button on offer pointed *forward* to chapter 7 instead of opening
 the chapter tapped.
 
+**`Open.openItemSilently` replaces the document**, and callers have to respect that:
+it writes the marker and switches the reader to it, so a caller must not switch again
+afterwards, and must call it from a point where tearing the current reader down is
+safe — never directly inside a handler that belongs to the reader being replaced. That
+is why the end-of-book advance below defers by one UI tick.
+
+**The end-of-book advance is a wrap on `ReaderStatus:onEndOfBook`, deferred by one
+UI tick.** With `auto_next_item` on, `ui/reader`'s handler finds the next item and opens
+it silently rather than showing KOReader's end-of-book dialog; anything short of a next
+chapter falls through to that dialog rather than reporting, because an end-of-book is
+not the moment for a popup. Switching documents in the middle of the page-turn gesture
+would tear the reader down underneath it, so the open goes through `UIManager:nextTick`
+behind a guard, so a second `EndOfBook` before the tick cannot switch twice; the handler
+is installed on this `ReaderUI`'s own `ReaderStatus`, so any other book keeps the stock
+behaviour. It **walks the series feed**, where an earlier version took only the neighbour
+the old catalog already held — with no catalog there is nothing to already hold, so
+keeping that refusal would make the toggle govern something that can never happen, and
+the walk is asked for, because the reader turned the setting on and finished a volume.
+A local `.cbz` is asked first and differently: its next volume is a file beside it, so
+there is no feed to walk and no connection to need.
+
 **A tap past the dialog cancels — it opens nothing, and it writes nothing.**
 `ButtonDialog` is dismissable by default, and the dialog deliberately sets no
 `tap_close_callback`. An earlier version did, on the reasoning that a dismissal had

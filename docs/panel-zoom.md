@@ -59,6 +59,17 @@ pinned on for good, and would ignore the reader turning it off for that book aft
 That is why "delete unless pinned" is not the same thing as the old unconditional
 delete.
 
+**The file's own answer is stashed when it is read, because the live field is not
+ours by the time a press arrives.** `onReadSettings` records whether this file has an
+answer of its own (`_meguru_panel_zoom_pinned`) and, when it does, keeps that answer in
+`_meguru_panel_zoom_answer`. `panel_zoom_enabled` is stock's gate, and a rival plugin
+that answers the same gesture (Panels+) writes over it *later in the same `ReadSettings`*,
+so `meguruPanelZoomWanted` asks the stash rather than the field; the per-file row
+(`onTogglePanelZoomSetting`) refreshes the stash when the reader answers mid-session.
+A press that finds no panel still falls back to **stock's** `onPanelZoom`, never a
+rival's, so which engine runs for a refused page is this plugin's property rather than
+the page's.
+
 **Two costs are accepted here, deliberately, and neither is a defect to tidy:** a
 file the reader switches with the stock row keeps a copy that outlives any change to
 the preference; and a `.cbz` opened through Meguru can answer differently from the

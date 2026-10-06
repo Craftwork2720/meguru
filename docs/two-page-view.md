@@ -108,6 +108,8 @@ The shape to look for on the device is a page cropped short — a chapter's last
 
 At the end of the book the counter never passes the last page while the last unit is a pair, so nothing would announce the end; the wrapper says `EndOfBook` itself when a forward step has no unit to land on.
 
+**At open the partner page must be warmed before the layout that follows.** A pair is not offered until both pages' sizes are known, and those come from a decode; the other warm is on the page turn (`_gotoPage`'s `prepareSpread`), but at open that turn runs *before* the book's own `spread` answer has been read out of its sidecar, so it warms nothing and the first layout is derived for one page — a single page's zoom applied to a pair's box, which overflows the screen and paints one page of the two. `syncSpread` therefore warms the partner itself, **before** it asks whether the answer changed (a book whose `rotation_mode` is set reaches this with the answer already recorded, so there may be no change to fire on) and treats a warm with no change as a reason to fire `ReZoom` all the same — the sizes it needed have just arrived, and the layout derived without them is the one to replace.
+
 ## Turning the screen
 
 **While two pages are showing, `rotate_wide` does nothing at all** — it neither turns nor restores (`ui/reader`'s `updatePageRotation`). In landscape the pair is already the shape a wide page wants, so a turn would be pointless; and an undo would take the screen to portrait, which stops the pair, which makes the next page narrow again, which undoes the undo.
