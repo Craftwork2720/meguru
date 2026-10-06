@@ -1,33 +1,4 @@
---[[--
-Everything that has to be grafted onto a running ReaderUI for a Meguru book.
-
-None of this is the engine. The engine reads a page; this file makes the *reader
-around it* behave, which means replacing parts of KOReader's own machinery for
-one document and leaving them pristine for every other:
-
-  * the bottom `ConfigDialog` opens with a curated option set — the stock one
-    offers a page-margin and reflow matrix that means nothing for a picture;
-  * the status bar is hidden on open if the reader asked for that;
-  * a page wider than it is tall turns the screen 90° (the standalone version of
-    what `pagenumbercrop.koplugin` does, used when that plugin is absent);
-  * reaching the end of a book opens the next one in the series — walked from
-    the server's feed for a marker, listed out of the folder for a local `.cbz`;
-  * long-pressing a curated row sets that book's value as the plugin-wide
-    default instead of writing a global `kopt_*`.
-
-The last one is the single most important thing here. KOReader's stock
-"set as default" writes `G_reader_settings["kopt_<name>"]` — a *global* default
-that would leak a choice made on a stream book into every PDF opened afterwards.
-Redirecting it is not a nicety; it is the reason this file exists.
-
-## Two shapes of installation
-
-`Reader.install(plugin)` is per-open and assigns the event handlers onto the
-plugin *instance*, so a PDF opened in the same session never sees them at all.
-`Reader.installStatusBarHook()` is class-level and per-process, because
-`ReaderFooter.onReaderReady` belongs to the class and there is no instance to
-hang it on — which is why it is guarded by a module flag.
---]]
+-- Reader-side graft for one Meguru book; see docs/menus-and-lifecycle.md.
 
 local Blitbuffer = require("ffi/blitbuffer")
 local ConfirmBox = require("ui/widget/confirmbox")
@@ -42,8 +13,6 @@ local UIManager = require("ui/uimanager")
 local Screen = require("device").screen
 local logger = require("logger")
 local _ = require("gettext")
--- Not a global: every core file that uses `C_` declares it locally, so a plugin
--- file that skips this line gets a nil call only when the row is built.
 local C_ = _.pgettext
 local ffiutil = require("ffi/util")
 local T = ffiutil.template
@@ -64,29 +33,20 @@ local Settings = require("meguru/settings")
 
 local Reader = {}
 
---- Monotonic milliseconds, for the panel-detection timing in the log line below.
---- The same clock `document.lua` measures with, and for the same reason: the
---- panel scan walks a page's pixels, so its cost is real seconds of a reader's
---- life and `os.clock` would report it as CPU time.
+-- Monotonic ms: os.clock would report CPU time, not the real wait.
 local function nowMs()
     local secs, usecs = ffiutil.gettime()
     return secs * 1000 + usecs / 1000
 end
 
---- Off / clockwise / counter-clockwise, as stored in `kopt_rotate_wide_pages`.
+-- Off / clockwise / counter-clockwise, as stored in `kopt_rotate_wide_pages`.
 local ROTATE_OFF, ROTATE_RIGHT, ROTATE_LEFT = 0, 1, 2
 
---- A wide-page rotation that a *previous* Meguru book in this session left
---- active. KOReader keeps one screen for the whole session, so a book closed
---- mid-spread leaves the next one rotated unless someone reconciles it. Module
---- level because it has to outlive the ReaderUI that set it.
+-- Module level: a rotation a previous book left active outlives that ReaderUI.
 local session_wide_rotate = {}
 
--- Status bar -------------------------------------------------------------------
 
---- The footer instance for a reader UI. Current KOReader hangs it off
---- `ReaderView`; older builds had it as a ReaderUI module. Both are probed so
---- either layout works.
+-- Current KOReader hangs the footer off ReaderView; older builds off ReaderUI.
 local function getStatusBarFooter(ui)
     if not ui then
         return nil
@@ -98,14 +58,7 @@ local function getStatusBarFooter(ui)
     return ui.footer
 end
 
---- Hide the footer through the stock machinery.
----
---- `applyFooterMode` flips `view.footer_visible`, swaps the text generator to
---- "empty" and — but only when visibility actually *changes* — re-lays-out the
---- view to reclaim the bar's height. An external hid-status-bar patch that ran
---- first has already flipped the flag, so that reclaim would be skipped and the
---- bar's strip would stay reserved until the next page turn. Replicating the
---- reclaim here is what makes the first page paint full-screen.
+-- Reclaim the bar: applyFooterMode skips it if the flag was already flipped.
 local function hideStatusBar(footer)
     if not (footer and footer.mode_list and footer.view) then
         return
@@ -131,11 +84,7 @@ local function hideStatusBar(footer)
     end
 end
 
---- Show the footer again, live.
----
---- Restores the mode from the untouched global `reader_footer_mode`. An explicit
---- "show" should always show, so when the user keeps the footer off globally the
---- fallback is page progress rather than re-applying "off".
+-- Explicit show must always show: fall back to page progress, not "off".
 local function showStatusBar(footer)
     if not (footer and footer.mode_list and footer.view) then
         return
@@ -157,9 +106,7 @@ local function showStatusBar(footer)
     end
 end
 
--- Installed exactly once per process: the hook is on the ReaderFooter class and
--- there is no instance to hang it on. The FileManager plugin instance installs
--- it as soon as the plugin loads, so it is in place before any book opens.
+-- Once per process: the hook is on the ReaderFooter class, not an instance.
 local status_bar_hook_installed = false
 
 function Reader.installStatusBarHook()
@@ -177,8 +124,7 @@ function Reader.installStatusBarHook()
     ReaderFooter.onReaderReady = function(self, ...)
         orig(self, ...)
         local doc = self.ui and self.ui.document
-        -- Only this plugin's documents, and only when asked: a PDF in the same
-        -- session opens exactly as stock.
+        -- Only Meguru documents, and only when asked: a PDF opens as stock.
         if not (doc and doc.provider == "meguru") then
             return
         end
@@ -190,41 +136,22 @@ function Reader.installStatusBarHook()
     end
 end
 
--- Wide pages -------------------------------------------------------------------
 
 local function wideRotateIsLeft(value)
     return value == ROTATE_LEFT or value == tostring(ROTATE_LEFT)
 end
 
---- The screen mode one step clockwise (right) or counter-clockwise (left) of
---- `base`. Rotation modes are numbered in quarters, so this is modular
---- arithmetic on 0..3.
+-- Rotation modes are quarters, so this is modular arithmetic on 0..3.
 local function wideRotateTarget(base, left)
     return left and (base + 3) % 4 or (base + 1) % 4
 end
 
---- The page on screen. `ReaderUI` has no `getCurrentPage`; the paging module is
---- where the number lives, and it is absent entirely for a reflowed document.
+-- ReaderUI has no getCurrentPage; paging holds it, absent if reflowed.
 local function currentPage(ui)
     return ui.paging and ui.paging.current_page
 end
 
---- Tell the document whether the landscape it can see is one this plugin turned
---- the screen into, for a wide page.
----
---- **The two are the same screen and two different questions.** "in landscape" asks
---- whether the *reader* is holding the device that way; `Screen` answers whether the
---- framebuffer is rotated, and `updatePageRotation` rotates it for a wide page and
---- back on the next ordinary one. A reader in portrait with a wide image therefore
---- had the screen turned under them and their next page drawn two-up — and it
---- stayed two-up, because a pair being active is exactly what stops the wide
---- rotation being restored (`updatePageRotation`'s first guard). Telling the
---- document which rotation it is looking at is what lets the pair stand down and
---- the rotation come back.
----
---- Asked of the live state rather than remembered from the last call: the answer is
---- only "ours" while the screen is still on the mode this plugin set, so a reader
---- who turns the device themselves — even to that same mode — takes it over.
+-- Asked live, so a reader turning the device to the same mode takes it over.
 local function publishScreenRotation(ui)
     local doc = ui and ui.document
     local state = ui and ui._meguru_rotate_state
@@ -235,19 +162,7 @@ local function publishScreenRotation(ui)
         and Screen:getRotationMode() == state.active
 end
 
---- Re-derive the page box when the two-page view starts or stops.
----
---- **Nothing else has to happen on a page turn**, and that is worth saying because
---- it looks like an omission: the document answers "one page or two" from the
---- live mode and the live orientation every time it is asked (`spreadActive`), so
---- turning a page picks up the pair on its own. What does *not* happen on its own
---- is a re-layout at the moment the answer changes — a rotation, or the reader
---- flipping the row. The page box the reader derived a moment ago is the old
---- shape, and it stays the old shape until something asks it to derive again;
---- `ReZoom` is that verb, and the one the crop rows and `Defaults.apply` use.
----
---- The last answer is kept on the reader UI so this fires on a change and not on
---- every rotation of every book.
+-- Only a rotation or the row changes the answer; a page turn re-reads it live.
 local function syncSpread(ui)
     local doc = ui and ui.document
     if not (doc and doc.provider == "meguru"
@@ -257,22 +172,7 @@ local function syncSpread(ui)
     publishScreenRotation(ui)
     local active = doc:spreadActive() and true or false
 
-    -- **The partner has to be decoded before the layout that follows**, and this is the
-    -- place that can promise it for the *first* paint. A pair is not offered until both
-    -- pages' sizes are known (`spreadUnitFor`), those sizes come from a decode, and the
-    -- other warm is on the page turn (`_gotoPage`'s `prepareSpread`) — but at open that
-    -- turn happens *before* the book's own answer has been read out of its sidecar, so
-    -- it warms nothing, and the first layout is derived for one page: a single page's
-    -- zoom applied to a pair's box, which overflows the screen and paints one page of
-    -- the two. The first turn then fixes it, because by then the warm works — which is
-    -- the shape of the bug this exists for.
-    --
-    -- **Asked before the change test, not inside it.** The test is about the re-layout,
-    -- and a reader can reach this with the answer already recorded — a book whose
-    -- `rotation_mode` is set runs the same code from the rotation seeding, long before
-    -- `ReaderReady` — in which case there is no *change* to fire on and the warm would
-    -- never run. It is idempotent and one fetch at most: `prepareSpread` does nothing
-    -- for a page it already has.
+    -- Warm even if nothing changed: the layout pass would fetch mid-paint.
     local warmed = active and doc:prepareSpread(currentPage(ui)) or false
 
     local changed = active ~= (ui._meguru_spread_active or false)
@@ -280,9 +180,7 @@ local function syncSpread(ui)
         return
     end
     ui._meguru_spread_active = active
-    -- A warm without a change is a pair that has just become *possible* — the sizes it
-    -- needed are in hand now where they were not a moment ago — and the layout derived
-    -- without them is the one that has to go.
+    -- Warm with no change: the pair became possible, so the old box must go.
     if type(ui.handleEvent) == "function" then
         ui:handleEvent(Event:new("ReZoom"))
     end
@@ -291,11 +189,7 @@ local function syncSpread(ui)
     end
 end
 
---- Turn the screen to `mode` through KOReader's own rotation machinery — the
---- same shape as `ReaderView:onSetRotationMode`, minus the notification. A
---- change of portrait/landscape *parity* is a real geometry change, so the UI
---- is asked to re-measure and rebuild its page states; the same parity is just
---- a re-orientation in place.
+-- A parity change is real geometry; same parity is re-orientation in place.
 local function rotateTo(ui, mode)
     local cur = Screen:getRotationMode()
     if mode == cur then
@@ -311,17 +205,12 @@ local function rotateTo(ui, mode)
         end
         ui:handleEvent(Event:new("InitScrollPageStates"))
     end
-    -- A rotation is the one thing that starts or stops the two-page view by
-    -- itself (in "auto" it is the whole of the condition), so the box has to be
-    -- derived again after one. This is the plugin's own rotation; the reader's
-    -- own goes through `ReaderView:rotate` and is caught by `installSpread`.
+    -- A rotation starts or stops the pair, so the box must be re-derived.
     syncSpread(ui)
     logger.dbg("Meguru: wide page, screen rotation", cur, "->", mode)
 end
 
---- Return the screen to the base orientation this session left it in, but only
---- while it is *still* on the wide-rotated mode — never fight a rotation the
---- reader made by hand in the meantime.
+-- Only restore while still on our mode; never fight the reader's own rotation.
 local function restoreWideRotate(state, ui)
     local base, active = state.base, state.active
     state.base, state.active = nil, nil
@@ -330,14 +219,7 @@ local function restoreWideRotate(state, ui)
     end
 end
 
---- Turn the screen for `page` if it is a wide spread, and back if it is not.
----
---- The skip conditions are checked in this order deliberately: a page flip in
---- progress or continuous scroll mode means the page number is not yet settled,
---- so acting on it would rotate for the wrong page. The base orientation is
---- captured lazily — on the first wide page actually shown — so whatever the
---- reader had (their own rotation, or this plugin's seeded `rotation_mode`) is
---- inherited rather than fought.
+-- Base captured lazily, so the reader's own rotation is inherited, not fought.
 local function updatePageRotation(state, ui, page)
     local document = ui and ui.document
     local view = ui and ui.view
@@ -345,18 +227,14 @@ local function updatePageRotation(state, ui, page)
     if not (view and configurable and document.pageIsWide) then
         return
     end
+        -- A flip or scroll means the page number is not settled yet.
     if view.flipping_visible or view.page_scroll then
         return
     end
     if view.state and view.state.page ~= nil and view.state.page ~= page then
         return
     end
-    -- **While two pages are showing, this does nothing at all** — it neither
-    -- turns nor restores. In landscape the pair is already the shape a wide page
-    -- wants, so a turn would be pointless; and an undo would take the screen to
-    -- portrait, which stops the pair, which makes the next page narrow again,
-    -- which undoes the undo. That flip-flop is the whole reason for the guard,
-    -- and it is why the two features can share a book without fighting.
+    -- While a pair shows this does nothing: any turn or undo would flip-flop.
     if type(document.spreadActive) == "function" and document:spreadActive() then
         return
     end
@@ -370,10 +248,7 @@ local function updatePageRotation(state, ui, page)
         return
     end
 
-    -- **One page's shape, never the pair's.** `getNativePageDimensions` answers
-    -- with the pair while two pages are showing, and a pair is wider than tall by
-    -- construction — so asking it here would turn the screen for two pages that
-    -- are only wide because they are lying side by side.
+    -- pageIsWide, not getNativePageDimensions: a pair is wide by construction.
     if not document:pageIsWide(page) then
         restoreWideRotate(state, ui)
         return
@@ -382,8 +257,7 @@ local function updatePageRotation(state, ui, page)
     local cur = Screen:getRotationMode()
     local left = wideRotateIsLeft(value)
     if cur % 2 == 1 then
-        -- Already in a turned orientation: reconcile against what this wide
-        -- page expects rather than rotating a second time from it.
+        -- Already turned: reconcile against what this page expects instead.
         if state.active == cur then
             local expected = wideRotateTarget(state.base, left)
             if expected ~= cur then
@@ -409,9 +283,7 @@ local function updatePageRotation(state, ui, page)
     end
 end
 
---- Reconcile a rotation a previous book left active against the page this book
---- opens on: keep it when that page is itself a wide spread wanting the same
---- turn, otherwise put the screen back.
+-- Keep a leftover rotation only if the page this book opens on wants it.
 local function reconcileWideRotation(state, ui)
     local base, active = session_wide_rotate.base, session_wide_rotate.active
     session_wide_rotate.base, session_wide_rotate.active = nil, nil
@@ -440,8 +312,7 @@ local function reconcileWideRotation(state, ui)
     end
 end
 
---- Wrap the page-turn and scroll-mode seams for this ReaderUI so wide pages are
---- rotated and restored as the reader reads. Once per ReaderUI.
+-- Installed once per ReaderUI so the two seams cannot double-wrap.
 local function installWideRotate(state, ui)
     local paging, view = ui.paging, ui.view
     if not (paging and view) then
@@ -452,8 +323,7 @@ local function installWideRotate(state, ui)
         local orig = paging.onPageUpdate
         paging.onPageUpdate = function(pg, new_page, orig_mode)
             local ret = orig(pg, new_page, orig_mode)
-            -- Only page turns carry a page to evaluate; in continuous mode the
-            -- scroll-mode wrapper below is what restores.
+            -- Only page turns carry a page; continuous scroll is handled below.
             if orig_mode ~= "scrolling" then
                 updatePageRotation(state, ui, new_page)
             end
@@ -480,21 +350,7 @@ local function installWideRotate(state, ui)
     end
 end
 
---- Install the two-page view's seams for this ReaderUI. Once per reader.
----
---- **One gesture turns a whole spread, and this is the whole of how.** KOReader's
---- counter moves by one page and knows nothing about pairs; left alone, a reader
---- on a spread would spend a turn on the second page of it and see the same two
---- pages painted again. So the target is passed through the document's
---- imposition, which answers with the page that *unit* starts at — `spreadSnap`,
---- which also says what a jump means, and what the end of the book looks like
---- when the last unit is a pair.
----
---- The other seam here is rotation. The reader's own rotation never comes through
---- this plugin's `rotateTo` — it goes through ReaderView's own machinery — so the
---- re-derivation `syncSpread` does is hung on `ReaderView:rotate`, which is where
---- that rotation's geometry change lands. Both are needed: `rotateTo` catches the
---- plugin's own wide-page turns, this catches the reader's hand.
+-- Passes the target through spreadSnap so one gesture turns a whole spread.
 local function installSpread(ui)
     local paging, view = ui and ui.paging, ui and ui.view
     if not (paging and view) then
@@ -508,23 +364,8 @@ local function installSpread(ui)
     if not paging._meguru_spread_patched then
         paging._meguru_spread_patched = true
 
-        -- **Which page changes are *turns* and which are *landings*.** Everything
-        -- else in KOReader hands `_gotoPage` a page and means it; these two name
-        -- the next page *from where the reader is*, and the difference is what
-        -- `spreadSnap` needs (see its own comment): a turn whose target is inside
-        -- the unit on screen steps a whole unit, and a landing on that same target
-        -- stays on the spread that contains it.
-        --
-        -- Two marks, and both are the callers that mean it. `onGotoPageRel` is the
-        -- one funnel every tap, swipe and key goes through; `pageFlipping` is the
-        -- skim step, which is relative in the same way and calls `_gotoPage`
-        -- directly, so it has to be marked here or a forward flip inside a spread
-        -- would land back where it started.
-        --
-        -- **And it is cleared whatever the call does** — a `pcall` and a re-raise
-        -- rather than a line after it. A throw from inside a turn would otherwise
-        -- leave the mark set, and the next ordinary landing, a bookmark or a
-        -- handoff pages later, would behave like a turn.
+        -- Marks the two callers that mean a turn; everything else is a landing.
+        -- pcall + re-raise so a throw cannot leave the turn mark set.
         local function marked(orig)
             return function(pg, ...)
                 paging._meguru_spread_turn = true
@@ -552,18 +393,13 @@ local function installSpread(ui)
                 paging._meguru_spread_turn = nil
                 local target, finished = doc:spreadSnap(number, pg.current_page, turn)
                 if finished then
-                    -- The last unit is on screen and the reader turned past the
-                    -- end of the book. `onGotoPageRel` announces that itself only
-                    -- when the counter passes the last page, which it never does
-                    -- while the last unit is a pair — so nothing else would.
+                    -- The last unit is a pair: nothing else announces the end.
                     ui:handleEvent(Event:new("EndOfBook"))
                     return true
                 end
                 if target ~= nil then
                     number = target
-                    -- Warm the page the pair needs *before* the reader lays the
-                    -- page out: that pass asks the document for the pair's box,
-                    -- and a fetch from in there would freeze the paint.
+                    -- Warm before layout; a fetch there would freeze paint.
                     if type(doc.prepareSpread) == "function" then
                         doc:prepareSpread(number)
                     end
@@ -583,9 +419,7 @@ local function installSpread(ui)
         end
     end
 
-    -- And the other way the answer can change without a page turn: continuous
-    -- scroll switches the two-page view off (see `spreadActive`), so the box has
-    -- to be derived again when the reader leaves or enters it.
+    -- Continuous scroll switches the pair off, so re-derive on the way out.
     if not view._meguru_spread_scroll_patched
         and type(view.onSetScrollMode) == "function" then
         view._meguru_spread_scroll_patched = true
@@ -597,23 +431,11 @@ local function installSpread(ui)
         end
     end
 
-    -- Whether two pages are on is decided by `spreadActive`, from the book's own
-    -- value and the screen — so nothing has to be *pushed* here. What this does
-    -- need is a first look, and it is taken at `ReaderReady` and not here:
-    -- `ReadSettings` has not run yet at this point, so a book whose `spread` the
-    -- seeding is about to write still reads as off. See the callback in
-    -- `Reader.install`.
+    -- First look is at ReaderReady; ReadSettings has not run at this point.
     return true
 end
 
---- Apply a new two-page value to the live document and this book's own settings,
---- then lay the page out again in the new shape.
----
---- The value is written where the couple that reads it will find it — the
---- document's configurable, which is the live answer, and the book's sidecar,
---- which is the one it opens with next time — and `syncSpread` is what turns the
---- change into a re-layout. The stored domain is the row's own: "off", "auto",
---- "on".
+-- Writes the live configurable and the sidecar; domain is off/auto/on.
 local function setSpread(ui, value, text)
     local configurable = ui and ui.document and ui.document.configurable
     if not (configurable and configurable.spread ~= nil) then
@@ -631,30 +453,13 @@ local function setSpread(ui, value, text)
     return true
 end
 
---- Apply a new moiré-filter value to the live document and this book's own
---- settings, then repaint.
----
---- The value is written where the two readers of it will find it — the
---- document's configurable, which `derainbow()` asks per paint, and the book's
---- sidecar, which is what it opens with next time — in the row's own 0/1 domain,
---- exactly as `setSpread` writes its own.
----
---- **The repaint is the whole of the invalidation here, and that is worth saying
---- because the rows beside it do far more.** A tone is baked into the *decode*,
---- so moving one drops the entire native cache (`syncTone`); this filter runs on
---- the tile a paint has just produced, so the decodes are still exactly right and
---- the only stale thing is the tiles. Those are refused by their stamp, and
---- `ReZoom` is what asks for them to be produced again — the same verb the crop
---- rows and `Defaults.apply` use.
----
---- Normalised on the way in, because the row's domain is 0/1 and `0` is truthy:
---- a value arriving as a boolean or a string would otherwise be stored as
---- something no row matches, the trap `doc/defaults` documents at length.
+-- Repaint is the whole cost: the filter runs on the tile, not the decode.
 local function setDerainbow(ui, value, text)
     local configurable = ui and ui.document and ui.document.configurable
     if not (configurable and configurable.derainbow ~= nil) then
         return false
     end
+    -- `0` is truthy, so normalise a bool or string before storing.
     value = (value == 1 or value == "1" or value == true) and 1 or 0
     configurable.derainbow = value
     if ui.doc_settings then
@@ -670,22 +475,12 @@ local function setDerainbow(ui, value, text)
     return true
 end
 
---- What the offset switch says when it flips, in the two places that flip it: the
---- *Pair offset* row's own event, and the Dispatcher action a reader can bind a
---- gesture to (`main.lua`). One function so the two cannot come to describe the
---- same setting differently.
+-- One function so the gesture and the row cannot describe it differently.
 local function spreadOffsetNotice(on)
     return on and _("Pair offset: from here") or _("Pair offset: off")
 end
 
---- The offset beside it. Its value is the **page the offset is anchored at** (0
---- for off) rather than a flag — the rule is in `meguru/spread`, and what this
---- does is write it where the document reads it: the live configurable and the
---- book's own sidecar.
----
---- It needs no re-layout of its own beyond the `ReZoom` below: the anchor changes
---- *which* pages a unit holds, never the shape of a unit, so the page box the
---- reader derived is still the right one.
+-- Value is the anchor page (0 = off); the rule itself lives in meguru/spread.
 local function setSpreadOffset(ui, anchor, text)
     local configurable = ui and ui.document and ui.document.configurable
     if not (configurable and configurable.spread_offset ~= nil) then
@@ -696,8 +491,7 @@ local function setSpreadOffset(ui, anchor, text)
         ui.doc_settings:saveSetting("kopt_spread_offset", anchor)
         ui.doc_settings:flush()
     end
-    -- The unit under the reader has almost certainly changed — pairing from a
-    -- different page is the whole of the setting — so the page is laid out again.
+    -- Pairing from another page changes the unit; lay the page out again.
     if type(ui.handleEvent) == "function" then
         ui:handleEvent(Event:new("ReZoom"))
     end
@@ -707,9 +501,7 @@ local function setSpreadOffset(ui, anchor, text)
     return true
 end
 
---- The gutter switch beside the offset. It decides whether `Spread.gutter` is
---- asked at all (`document.lua`'s `_pairLayout`), so the pair's box changes shape
---- and the page has to be laid out again — the same `ReZoom` the offset fires.
+-- Decides whether Spread.gutter is asked, so the pair's box changes shape.
 local function setSpreadGutter(ui, value, text)
     local configurable = ui and ui.document and ui.document.configurable
     if not (configurable and configurable.spread_gutter ~= nil) then
@@ -729,8 +521,7 @@ local function setSpreadGutter(ui, value, text)
     return true
 end
 
---- Apply a new wide-page rotation value to the live document and this book's own
---- settings, then re-evaluate the current page.
+-- Writes the value, then re-evaluates the current page for the new rotation.
 local function setWideRotate(state, ui, value, text)
     local configurable = ui and ui.document and ui.document.configurable
     if not (configurable and configurable.rotate_wide_pages ~= nil) then
@@ -747,40 +538,9 @@ local function setWideRotate(state, ui, value, text)
     return true
 end
 
--- Panel zoom -------------------------------------------------------------------
 
---- Meguru's own default for panel zoom, read and written from the menu row.
----
---- **A default, not an override.** What a file gets is KOReader's own cascade —
---- the answer in the file's sidecar if it has one, and this only when it does
---- not. So the stock ⋮ row keeps working exactly as it always has, one book at a
---- time, and this is what decides for the books nobody has answered for.
----
---- This was once KOReader's per-*extension* entry, which was wrong for a reason
---- worth keeping: the plugin opens `.cbz` too, so a reader looking at a `.cbz`
---- was being shown the answer for markers while the book in front of them
---- followed `cbz`. One preference for everything Meguru opens has no such gap.
---- Which of the panel views a long-press opens: `"crop"`, `"window"` or `"zoom"`.
----
---- **The book's own answer, seeded from the plugin-wide preference** — the same
---- cascade as the Fit row and Crop, read from the configurable the way its
---- sibling `panelZoomDirection` below reads the reading direction and for the same
---- reason: `meguru/doc/defaults` writes the book's value at open, so the preference
---- is what a book with no answer of its own gets, not what every book is stuck
---- with. The first two views show the same panels in the same order and differ in
---- whether the page is cut up to do it; the third walks no steps at all.
---- `meguru/viewport` is what the windows are, and `ui/panelzoom` is what the free
---- one is.
----
---- **Asked only when there *is* a panel view.** Whether there is one is a different
---- question with a different answer — KOReader's own per-book `panel_zoom_enabled`,
---- which the *Reading* tab's *Panel view* row and KOReader's own row both write, and which
---- refuses the press before this is reached (`meguruPanelZoomWanted`). So the three
---- values are the whole domain here, and anything else is a store this build does
---- not know and gets the default.
---- Whether `mode` is one of the three views — the one place the domain is spelled
---- out, asked by `panelViewMode` below and by the *Reading* tab's *Panel view* row, which
---- carries a fourth answer (Off) that is not a view at all.
+-- Whether mode is one of the three views; off is not a view.
+-- panelViewMode: the book's answer, seeded from the plugin-wide preference.
 local function panelViewIsView(mode)
     return mode == "crop" or mode == "window" or mode == "zoom"
 end
@@ -795,26 +555,11 @@ function Reader.panelViewMode(ui)
     if panelViewIsView(seeded) then
         return seeded
     end
-    -- A stored value neither place knows — a newer version's view, or a corrupt
-    -- store — and the answer is **the default and not the original view**, so that
-    -- this line and `Settings.DEFAULTS.panel_view` cannot come to say different
-    -- things. They are two places and they must move together.
+    -- Unknown value; fall back to the default Settings.DEFAULTS.panel_view.
     return "window"
 end
 
---- The direction this book is read in, as `"manga"` or `"comic"`.
----
---- The panel sequence orders a page's panels by this and picks its tap and swipe
---- sides from it, and there is exactly one source: the same value `ReaderView`
---- turns pages with. `ui.view.inverse_reading_order` is KOReader's per-book
---- answer, and the *Reading direction* row and the plugin-wide `manga_order`
---- preference both end there — the document seeds the book's own key from the
---- preference at open time, before `ReadSettings`, and `onMeguruMangaRead` keeps
---- the live value current. So the cascade is already applied, and reading it
---- here cannot drift from what turning a page does.
----
---- A book that answered for itself therefore keeps its answer, which is the same
---- rule the panel-zoom preference follows.
+-- ui.view.inverse_reading_order is the resolved value a page turn obeys.
 function Reader.panelZoomMode(ui)
     local view = ui and ui.view
     if view and view.inverse_reading_order ~= nil then
@@ -827,31 +572,13 @@ function Reader.panelZoomMode(ui)
     return Settings.get("manga_order") and "manga" or "comic"
 end
 
---- Which way this book wants wide things turned: `"left"`, `"right"`, or nil.
----
---- The panel viewer turns a panel that is wider than the screen, and it must turn
---- it the same way the *page* is turned — otherwise a manga the reader has told
---- to go left goes left, and its panels go right. So this reads the very setting
---- that turns the page, `Rotate wide pages`, and hands the word to the viewer:
---- one direction for both, which is the whole point.
----
---- **It reads `configurable`, never `Settings.get("rotate_wide")`.** That
---- preference is only the floor: `Defaults.seedGeometry` writes it into the book's
---- field and its sidecar at open time, so every book already opened has an answer
---- of its own and re-reading the preference here would answer for a book that
---- disagrees with it. (`Reader.panelZoomMode` above reads its cascade for the same
---- reason.)
----
---- nil means the row is off, and then the viewer makes every rotation decision the
---- way it did before this existed.
+-- configurable, never the preference: the preference is only the floor.
 function Reader.panelZoomDirection(ui)
     local configurable = ui and ui.document and ui.document.configurable
     if not (configurable and configurable.rotate_wide_pages ~= nil) then
         return nil
     end
-    -- The row's domain is 0 = off, 1 = right, 2 = left, but a stored value can be
-    -- the string form, which is why `wideRotateIsLeft` is reused rather than the
-    -- comparison being written out again here.
+-- The row's domain is 0/1/2, but a stored value can be the string form.
     local value = configurable.rotate_wide_pages
     if wideRotateIsLeft(value) then
         return "left"
@@ -862,17 +589,7 @@ function Reader.panelZoomDirection(ui)
     return nil
 end
 
---- Stock's own `ReaderHighlight:onPanelZoom`, or nil on a build that moved it.
----
---- **Read off the class and never off the instance.** The instance field is the thing every
---- plugin that wants this gesture overwrites, and whoever installs second captures the other's
---- wrapper as its own "original" — so the class method is the only handle on stock that does
---- not depend on the order the plugin directories sort in. It is what every wrapper here falls
---- back to: a page this detector refuses must land in stock's single-region viewer, never in a
---- second sequence, or which engine ran would depend on the page.
----
---- Lazy and `pcall`ed: it is reached at `ReaderReady` or on a press, when the module is
---- necessarily loaded, and a build that moved it must cost the fallback and not the feature.
+-- Read off the class, never the instance: rivals overwrite the instance field.
 local function nativePanelZoom()
     local ok, ReaderHighlight = pcall(require, "apps/reader/modules/readerhighlight")
     if ok and type(ReaderHighlight) == "table"
@@ -882,20 +599,7 @@ local function nativePanelZoom()
     return nil
 end
 
---- Whether the file in front of the reader wants a panel zoom at all.
----
---- **A book has one unless the book itself says otherwise**, which is what `_meguru_panel_zoom_pinned`
---- records — the reader answering for *this* file with KOReader's own row. There is no plugin-wide
---- switch to consult: the per-file answer is the only one there is, and a file nobody has answered
---- for is the reason the default is yes.
----
---- **Asked here rather than read off `panel_zoom_enabled`, and the difference is the whole reason
---- this function exists.** That field is stock's gate and `ReaderHighlight:onHold` reads it *before*
---- any handler runs, so whichever engine answers the press has to have won it — and another plugin
---- answering the same gesture wins it last, on every `ReadSettings`. A handler that trusted the
---- field would be reading that plugin's answer. `_meguru_panel_zoom_answer` is the file's own
---- answer, stashed by the `onReadSettings` wrap below because the live field it came from is not
---- reliably ours by the time a press arrives.
+-- The file's own answer; the live field may be a rival plugin's by now.
 local function meguruPanelZoomWanted(hl)
     if hl._meguru_panel_zoom_pinned then
         return hl._meguru_panel_zoom_answer == true
@@ -903,21 +607,7 @@ local function meguruPanelZoomWanted(hl)
     return true
 end
 
---- The body of Meguru's own long-press handling.
----
---- Split out of the wrapper below because there are now two wrappers that reach it: the one
---- `installPanelZoom` installs at plugin init, and the one `installOuterPanelZoom` puts on
---- top of a foreign plugin's at `ReaderReady`. A second copy of this body is how the two
---- engines would come to drift a page apart, with only one of them ever exercised.
----
---- `fallback` is the handler a press belongs to when this plugin has nothing to show, and
---- every caller passes **stock's** `onPanelZoom` — never another plugin's. A page this
---- detector refuses must not be handed to a second detector: which engine ran would then
---- depend on the page, which is a failure that cannot be reported.
----
---- It arrives as an argument rather than being captured here because the two wrappers sit at
---- different depths of the same field: what counts as "the original" depends on who installed
---- when, and only the wrapper that *is* the outermost knows what it displaced.
+-- Shared by both wrappers; fallback is stock's handler, never a rival's.
 local function meguruPanelZoom(self, arg, ges, fallback)
     local ui = self.ui
     local doc = ui and ui.document
@@ -929,31 +619,20 @@ local function meguruPanelZoom(self, arg, ges, fallback)
     local view = ui.view
     local pos = view and type(view.screenToPageTransform) == "function"
         and view:screenToPageTransform(ges.pos)
-    -- `page` as well as the point: the document below will happily try to
-    -- fetch page `nil`, which is a socket call rather than an error.
+-- page as well as the point: the document would fetch page nil, a socket call.
     if not (pos and pos.page) then
         fallback(self, arg, ges)
     end
-    -- **The press belongs to the page under the finger.** `pos` is measured in
-    -- the space the view laid out, which with two pages showing is the pair's —
-    -- so page `pos.page` is the unit's first page and `pos.x` runs across both.
-    -- The document maps the point onto the page it is really on, which is the
-    -- page whose panels, page size and crop box everything below then asks for.
-    -- With one page showing this answers what it was handed.
+-- The press belongs to the page under the finger; map the pair point onto it.
     if pos and type(doc.spreadPageAt) == "function" then
         pos.page, pos.x, pos.y = doc:spreadPageAt(pos.page, pos.x, pos.y)
     end
 
     local mode = Reader.panelZoomMode(ui)
-    -- Resolved per press, like `mode`: the row can be changed with the viewer
-    -- closed and the next open follows it.
+-- Resolved per press: the row can change with the viewer closed.
     local direction = Reader.panelZoomDirection(ui)
     local t_start = nowMs()
-    -- **The free view asks no detector**, and that is a property of the view rather
-    -- than a shortcut: it walks no steps, so it has no use for panels, and a page the
-    -- detector would have refused opens in it like any other. What it does need is the
-    -- page's own size — and `getPageDims` *is* the fetch and the decode, so asking it
-    -- puts the bytes in hand that the render will want anyway.
+-- The free view asks no detector: it walks no steps; getPageDims is the fetch.
     if Reader.panelViewMode(ui) == "zoom" then
         local ok_dims, dims = pcall(doc.getPageDims, doc, pos.page)
         if not ok_dims or not dims then
@@ -977,10 +656,7 @@ local function meguruPanelZoom(self, arg, ges, fallback)
         end
         return
     end
-    -- Four values: `getPanelsFromPage` returns panels, accepted and reason,
-    -- and `pcall` adds its own. A missing slot here does not fail — it
-    -- shifts `accepted` into `reason` and the reason into nothing, and the
-    -- feature still works — so the count is worth counting.
+-- Four return values: a missing slot shifts accepted into reason, not fails.
     local ok_detect, panels, accepted, reason = pcall(doc.getPanelsFromPage,
         doc, pos.page, mode)
     if not ok_detect then
@@ -988,17 +664,12 @@ local function meguruPanelZoom(self, arg, ges, fallback)
         fallback(self, arg, ges)
     end
     if not panels then
-        -- One meaning only: the page itself could not be decoded, so there
-        -- is neither a sequence nor a page to show as one. `dbg` because a
-        -- book read offline repeats it per press, the same frequency
-        -- argument the crop-skip line lost on.
+        -- nil panels means exactly one thing: the page would not decode.
         logger.dbg("Meguru: page", pos.page, "panel zoom: no page ("
             .. tostring(reason) .. ")")
         fallback(self, arg, ges)
     end
-    -- The count alone cannot tell a real sequence from the whole-page
-    -- fallback, and those need opposite fixes, so a refused page says so and
-    -- names the test that refused.
+    -- The count cannot tell a real sequence from the whole-page fallback.
     logger.dbg(string.format(
         "Meguru: page %d panel zoom: %d panels%s (%s) in %d ms",
         pos.page, #panels,
@@ -1006,24 +677,12 @@ local function meguruPanelZoom(self, arg, ges, fallback)
         mode, nowMs() - t_start))
 
     local start = Panel.indexAt(panels, pos.x, pos.y) or 1
-    -- **A refused page is shown cropped whatever the preference says.** A page
-    -- the detector would not decompose comes back as one rectangle covering it,
-    -- and the window view would cut that rectangle into a top and a bottom —
-    -- two steps through a splash nobody asked to be stepped through. Cropping
-    -- a whole-page rectangle shows the whole page, which is what a refusal has
-    -- always meant here.
+    -- A refused page is shown cropped; window would cut it into two steps.
     local opts = {
         window = Reader.panelViewMode(ui) == "window" and accepted == true,
-        -- In page coordinates, and the reason it travels: the window view opens
-        -- centred on the finger rather than at the panel's own edge. `pos` is
-        -- already the page point — `screenToPageTransform` above — so nothing
-        -- is converted again here.
+        -- In page coordinates: the window view opens centred on the finger.
         tap = { x = pos.x, y = pos.y },
-        -- The multiple of the page's width on the screen — see `Viewport.fitScale` for
-        -- what that means and for the measure it replaced, and `meguru/settings` for
-        -- where the reader sets it. Read here and written back by the viewer's own
-        -- button: the *store* is the preference, and the view is handed the number
-        -- rather than the preference's name, like the direction and the mode beside it.
+        -- Multiple of the page width on screen; the store is the preference.
         level = Settings.get("panel_zoom_level"),
     }
     local ok_show, shown = pcall(PanelZoom.open, ui, pos.page, panels, start,
@@ -1036,33 +695,7 @@ local function meguruPanelZoom(self, arg, ges, fallback)
     return true
 end
 
---- Leave KOReader's own cascade alone, and give its per-file level the answer this engine wants.
----
---- The switch is the stock ⋮ → Panel zoom (manga/comic) → Allow panel zoom, and stock keeps its
---- answer on two levels: a per-file copy in the sidecar, and a per-extension entry that answers
---- for every file that has none. **Both levels stay exactly where they are.** All this changes is
---- what the second one is: KOReader has nothing at all for the extensions this engine claims, so
---- a file nobody has answered for is told `true` here rather than left to an extension table that
---- does not mention it.
----
---- **There is no plugin-wide switch above that, and there was one.** It was a menu row, and it is
---- gone because it answered a question nobody asked twice: a reader who wants no long-press zoom
---- in a book turns it off *in that book*, with the page in front of them. That per-file level is
---- the one that has always been the interesting one, and it is still stock's own row.
----
---- That is the whole of it, and the reason it is this small is worth keeping from the design it
---- replaces. An earlier version made the extension entry authoritative for markers — read on
---- open, written the moment the row was flipped, and the sidecar copy deleted so nothing could
---- contradict it. That gave one answer for all of a series' chapters, which is right, but it did
---- it by naming an *extension*, and this engine opens `.cbz` too: a reader looking at a `.cbz`
---- was shown the answer for markers while the book in front of them followed `cbz`. One answer
---- for everything this engine opens has no such gap, and costs no machinery.
----
---- The line the wraps below must not cross: a file that was only *opened* may not come away with
---- an answer of its own. Stock writes the live field into the sidecar on every save, so without
---- the third wrap a book opened while the field said on would be pinned on for good, and would
---- survive the reader turning it off — which is precisely the failure the design above was built
---- to avoid, arriving from the other side.
+-- Tells yes only at stock's per-extension level; the per-file row is stock's.
 local function installPanelZoom(ui)
     local hl = ui and ui.highlight
     if not (hl and ui.paging) then
@@ -1073,73 +706,44 @@ local function installPanelZoom(ui)
     end
     hl._meguru_panel_zoom_installed = true
 
-    -- `config` is named rather than reached through `...`, because the cascade
-    -- turns on `config:has(...)`. The rest is still forwarded, so a build that
-    -- hands this one an extra argument does not lose it here.
+    -- `config` is named: the cascade turns on `config:has()`.
     local orig_read = hl.onReadSettings
     hl.onReadSettings = function(self, config, ...)
         if type(orig_read) == "function" then
             orig_read(self, config, ...)
         end
-        -- Did this file answer for itself? Stock has just said so, and its answer
-        -- is the one that keeps winning.
+        -- own: did this file answer for itself? Stock has just said so.
         local own = type(config) == "table" and type(config.has) == "function"
             and config:has("panel_zoom_enabled")
-        -- Remembered for `onSaveSettings` below, which needs to know whether this
-        -- file is allowed to keep a copy. A file answered in an earlier session
-        -- counts exactly as much as one answered in this one.
+        -- Remembered for onSaveSettings, which asks whether a copy may be kept.
         self._meguru_panel_zoom_pinned = own and true or false
-        -- The file's own answer, kept beside the flag that says it answered: the live field it
-        -- was read from is written over by a rival plugin later in this same event, so the
-        -- press asks this instead. See `meguruPanelZoomWanted`.
-        -- Written as a branch and not as `own and self.panel_zoom_enabled or nil`: that idiom
-        -- collapses the file's "off" to nil, which happens to read the same way through
-        -- `meguruPanelZoomWanted` and is the shape this codebase warns about elsewhere — a
-        -- normalising step that turns one valid answer into another.
+        -- The file's own answer, stashed: a rival overwrites the live field.
         if own then
             self._meguru_panel_zoom_answer = self.panel_zoom_enabled == true
         else
             self._meguru_panel_zoom_answer = nil
         end
-        -- **Written unconditionally now, where it used to stand aside for a rival.**
-        -- The field is stock's gate and `ReaderHighlight:onHold` reads it *before* any
-        -- handler runs — so a rival that pins it true (Panels+ does, after every
-        -- `ReadSettings`) would otherwise have Meguru's own preference overruled by a
-        -- plugin the reader may not even have enabled. Writing it here and letting the
-        -- rival write over it costs nothing: the press is decided at the handler, and
-        -- `meguruPanelZoomWanted` asks *this* cascade there rather than the field.
+        -- Written unconditionally: a rival pins it after every ReadSettings.
         if not own then
-            -- Stock put the per-extension entry here, and it has nothing to put there for these
-            -- extensions — `.meguru` is not a format it knows and `.cbz` is one it reads with
-            -- another engine. A file nobody has answered for is told yes, so that the long-press
-            -- works at all; the per-file row is what can say no.
+            -- Stock has no entry for these; unanswered files get yes.
             self.panel_zoom_enabled = true
         end
-        -- Nothing on a streamed page is text, and the fallback reaches
-        -- `getImageFromPosition`, which no engine-less paging document
-        -- answers — a hold that found no panel would land in a text selection
-        -- that cannot exist here. Off is what stock does for a `.cbz` too.
+        -- No text on a streamed page: the fallback hits getImageFromPosition.
         self.panel_zoom_fallback_to_text_selection = false
     end
 
-    -- The stock row flips the live field and nothing else — and that flip is the
-    -- reader answering for *this* file. The one place that is worth knowing from.
+    -- The stock row flips the live field: the reader answering for this file.
     local orig_toggle = hl.onTogglePanelZoomSetting
     hl.onTogglePanelZoomSetting = function(self, ...)
         if type(orig_toggle) == "function" then
             orig_toggle(self, ...)
         end
         self._meguru_panel_zoom_pinned = true
-        -- Stock's row is the reader answering for *this* file, mid-session, and the stash above
-        -- would otherwise still hold the answer the file was opened with.
+        -- Mid-session answer; the stash above still holds the opening answer.
         self._meguru_panel_zoom_answer = self.panel_zoom_enabled
     end
 
-    -- Stock writes the live field into the sidecar on every save, so a file
-    -- nobody switched would be pinned to whatever the preference happened to be
-    -- at the moment it was opened, and would hold that answer after the
-    -- preference moved. The copy is kept only by the file that answered for
-    -- itself; the rest fall back to the preference, every time.
+    -- Delete the sidecar copy unless this file answered, or it pins forever.
     local orig_save = hl.onSaveSettings
     hl.onSaveSettings = function(self, ...)
         if type(orig_save) == "function" then
@@ -1153,43 +757,15 @@ local function installPanelZoom(ui)
         end
     end
 
-    -- The long-press itself.
-    --
-    -- Stock's `onPanelZoom` renders the one region `getPanelFromPage` answered
-    -- with and shows it in a bare `ImageViewer`. This replaces that with the
-    -- panel *sequence* when the page has one, and calls stock's own handler
-    -- every other time — so a page with no panel grid behaves exactly as it did
-    -- before this existed, and the two detectors back each other up rather than
-    -- one being a rewrite of the other.
-    --
-    -- Stock's `onHold` has already gated on `self.panel_zoom_enabled` by the time this runs, so
-    -- the field is not re-read here — see `meguruPanelZoomWanted` for what *is* asked, and why.
-    --
-    -- **One wrapper, installed once, and it never steps aside.** That last part is the whole of
-    -- how two plugins share this gesture without either reading the other's state: a plugin that
-    -- wants it too patches the same field *later* (directories sort, and this one sorts first), so
-    -- it ends up outermost and answers; when it is switched off it delegates to the handler it
-    -- saved, which is this one — and this one simply handles the press rather than checking who
-    -- is above it. Whichever plugin is installed and enabled is therefore the one that answers,
-    -- and the other is never consulted either way.
-    --
-    -- The fallback for a press this detector cannot serve is stock's own handler
-    -- (`nativePanelZoom`), never the other plugin's, so the engine a *refused page* lands in stays
-    -- a property of this plugin rather than of the page.
-    --
+    -- Shows the sequence, falling back to stock's one-region viewer.
     local function press(self, arg, ges)
         if not meguruPanelZoomWanted(self) then
-            -- `false` and not stock: the reader turned the panel zoom off for this file, and
-            -- stock would open the single region under the finger, which is the thing they
-            -- turned off. `onHold` reads that false with the text-selection fallback pinned off,
-            -- so the press does nothing at all — which is what the row promises.
+            -- false, not stock: the reader turned panel zoom off for this file.
             return false
         end
         local native = nativePanelZoom()
         if native == nil then
-            -- Nothing to fall back to on a build that moved that module, and doing nothing is
-            -- the only honest answer: a page this detector refuses would otherwise be handed to
-            -- whatever else holds the gesture, which is the wrong engine chosen silently.
+            -- No native handler to fall back to: doing nothing is honest.
             return false
         end
         return meguruPanelZoom(self, arg, ges, native)
@@ -1199,18 +775,8 @@ local function installPanelZoom(ui)
     return true
 end
 
--- The page a failed fetch leaves behind ----------------------------------------
 
---- What happened, and what to do about it: one sentence per reason.
----
---- The reasons have different fixes and a reader can only act on the one they
---- have — connecting Wi-Fi does nothing about a server that answered 404, and
---- waiting does nothing about Wi-Fi that is off — which is why there are four of
---- these and no single generic one to fall back on.
----
---- The `reason` is the document's, from the fetch that failed (`fetch_failed`);
---- nil means no fetch failed at all — the page arrived and could not be decoded
---- — which is why it has its own sentence rather than borrowing the network's.
+-- One sentence per reason: the fixes differ, so a generic one would mislead.
 local function pageMessageBody(reason, code, server)
     if reason == "offline" then
         return _("You're offline right now.\nConnect to Wi-Fi and try again.")
@@ -1223,20 +789,12 @@ local function pageMessageBody(reason, code, server)
     return _("Something went wrong loading this page.\nTry again in a moment.")
 end
 
---- The whole message: a title that says nothing and a reason that says
---- everything, in that order, because "Can't load this page" is what a reader
---- reads first and the second line is what they act on. Built from
---- `pageMessageBody` rather than beside it so the two cannot drift.
+-- Built from pageMessageBody so the two cannot drift.
 local function pageMessageText(reason, code, server)
     return _("Can't load this page") .. "\n\n" .. pageMessageBody(reason, code, server)
 end
 
---- The laid-out message, rebuilt only when it would say something else.
----
---- This runs from a *paint*: a pan, a zoom step and a menu opening all repaint
---- the page, so laying the text out each time would be work per repaint for a
---- message that cannot have changed. One slot is enough — the message is a
---- property of the page on screen, and a page shows one reason at a time.
+-- Rebuilt only when the message changes; this runs from a paint.
 local function pageMessageWidget(state, key, text, width)
     local cached = state.message
     if cached and cached.key == key and cached.width == width then
@@ -1252,40 +810,14 @@ local function pageMessageWidget(state, key, text, width)
     return widget
 end
 
---- Install the message, and the two resets that make a retry possible.
----
---- The document paints the box and hands over the reason; the wording, the font
---- and the layout are here, which is the same split as everything else in this
---- file — the engine does not know what a reader reads. The painter returns
---- nothing and its answer is not consulted: a document with no painter gets the
---- plain box, and that is a state (the cover path), not a failure.
----
---- **The sentence is the whole of it, and the reason is the point of it.** There
---- was an error *drawing* here for a while — Meguru-chan lying across a big "404"
---- — and it was removed deliberately: the reason is the one thing a picture
---- cannot carry, and that picture claimed the wrong one. A 404 is the internet's
---- shorthand for "broken page", and in Meguru's four cases it is literally right
---- in exactly one (the server answered 404) while being wrong for the two
---- commonest, which never had an HTTP status to show at all. So what a reader
---- gets is the four sentences below, and the asset went with the code that drew
---- it rather than sitting unused beside it.
----
---- There is no Retry button, and that is the design rather than a gap: a page
---- turn *is* the reader asking again, and it is the only gesture that always
---- means it. Turning away and back clears the failed fetches, so the page is
---- fetched once more; a Wi-Fi connection arriving repaints the page under the
---- reader's eyes. What there is not, deliberately, is a dialog: the reader asked
---- for a page and got an explanation in its place, which is the same thing a
---- browser does and does not need dismissing before the book can be read.
+-- A page turn is the retry: no button, no dialog, just the reason in the page.
 local function installPageErrorPage(plugin)
     local ui = plugin.ui
     local doc = ui and ui.document
     if not (doc and type(doc.paintMissingPage) == "function") then
         return false
     end
-    -- The state the painter carries: the laid-out sentence. Nothing else holds
-    -- it — the closure below is what keeps it alive, and it lives exactly as long
-    -- as the document does.
+    -- The painter's state: the laid-out sentence, alive with the document.
     local state = {}
 
     doc.missing_painter = function(target, rect, x, y, failure)
@@ -1294,10 +826,7 @@ local function installPageErrorPage(plugin)
         local reason = failure and failure.reason
         local code = failure and failure.code
         local server = tostring((doc.desc and doc.desc.server_name) or _("The server"))
-        -- A little narrower than the box, so no line ends against the page edge.
-        -- The box is the visible area, so this width is the screen's and stays
-        -- that way through a pan or a zoom — which is what lets the layout below
-        -- be cached at all.
+        -- A little narrower than the box, so no line ends at the page edge.
         local width = math.max(1, math.floor(box_w * 0.8))
         local widget = pageMessageWidget(state,
             table.concat({ tostring(reason), tostring(code), server }, "|"),
@@ -1308,11 +837,7 @@ local function installPageErrorPage(plugin)
             y + math.floor((box_h - size.h) / 2))
     end
 
-    -- A page turn is the reader asking for a page again, so it is what starts a
-    -- new attempt at one that failed. `ReaderPaging:onPageUpdate` returns
-    -- nothing, so the event does reach a plugin module registered after it —
-    -- which is the whole reason this can be a module handler rather than another
-    -- wrap on the paging module.
+    -- A page turn is the retry; onPageUpdate returns nothing, so it reaches us.
     plugin.onPageUpdate = function(self)
         local d = self.ui and self.ui.document
         if d and type(d.clearFetchFailures) == "function" then
@@ -1320,11 +845,7 @@ local function installPageErrorPage(plugin)
         end
     end
 
-    -- The connection came back while the reader stayed on the page: clear the
-    -- failures and repaint, so what they are looking at fills in without a
-    -- page turn. Deferred out of the event, which can arrive from inside a
-    -- network callback. Nothing is repainted when nothing had failed — this
-    -- event also fires once at startup on a device that is already online.
+    -- Connection back: clear failures and repaint; fires once at startup too.
     plugin.onNetworkConnected = function(self)
         local d = self.ui and self.ui.document
         if not (d and type(d.clearFetchFailures) == "function") then
@@ -1343,36 +864,14 @@ local function installPageErrorPage(plugin)
     return true
 end
 
--- Reading progress -------------------------------------------------------------
 
---- How long a burst of page turns collapses into one report.
----
---- **Not a save frequency — the window that collapses a burst.** A reader who
---- flicks through ten pages has one position, not ten, and only the newest is
---- worth sending: a queue would be a backlog of pages nobody is on any more.
----
---- **And a delay rather than `nextTick`, which is the load-bearing half.**
---- `UIManager:nextTick` is `scheduleIn(0, …)`, and `handleInput` runs its due
---- tasks *before* it repaints — so a task armed with no delay runs in the very
---- iteration that is about to paint the page the reader just turned to, and the
---- request would block that paint. A task armed at `now + 1.5` runs in an
---- iteration that begins long after the page is on screen.
+-- Collapses a burst to the newest page; a real delay, or it blocks the paint.
 local PROGRESS_DEBOUNCE_S = 1.5
 
---- How many consecutive failures retire reporting for the rest of the book.
----
---- The request is synchronous, so a server that is up but refusing — or a route
---- that black-holes it — would otherwise cost the reader the request's whole
---- timeout *every page, for as long as they read*. Three is where "unlucky"
---- stops being the better explanation. The count lives on the plugin instance,
---- so it is per book: it costs nothing, it heals on the next one, and it dies
---- with the UI it describes.
+-- Per book: three consecutive failures retire reporting for this book.
 local PROGRESS_MAX_FAILURES = 3
 
---- Send whatever position is waiting, if there is one.
----
---- The whole of the failure policy is here, and it is one sentence: **nothing
---- below may throw, and nothing below shows the reader anything.**
+-- Nothing below may throw, and nothing below shows the reader anything.
 local function reportPending(plugin, st)
     if st.sending or not st.pending then
         return
@@ -1383,9 +882,7 @@ local function reportPending(plugin, st)
         return
     end
     st.sending = true
-    -- pcall'd around the call rather than trusted: this runs from a UI task or
-    -- from an event handler, and a throw in either is a broken book, not a lost
-    -- page number.
+    -- pcall'd: a throw from a task or event breaks the book, not just a page.
     local ok, sent, reason = pcall(Progress.report, st.file, st.desc, page, st.total)
     st.sending = false
     if not ok then
@@ -1393,36 +890,17 @@ local function reportPending(plugin, st)
         return
     end
     if sent then
-        -- The floor rises with the server, which is what makes the next turn
-        -- below it a no-op and a duplicate impossible.
+        -- The floor rises with the server, so the next turn below is a no-op.
         st.floor, st.pending, st.failures = page, nil, 0
         return
     end
-    -- Refused. The position stays, so the closing flush can try it once more, and
-    -- nothing is re-armed here: the next page turn is what asks again.
-    --
-    -- `off`, `offline` and `behind` are not the server's fault and must not count
-    -- towards the breaker. An offline device is asked whether it is online once
-    -- per turn, which costs nothing, and the answer changing is how reporting
-    -- comes back. `behind` never arrives from here — both callers ask
-    -- `Progress.moved` before arming — and it is named anyway so that a caller
-    -- which one day forgets cannot retire the feature by asking for a page the
-    -- server is already past.
+    -- Refused: hold the position; off/offline/behind do not trip the breaker.
     if reason ~= "off" and reason ~= "offline" and reason ~= "behind" then
         st.failures = st.failures + 1
     end
 end
 
---- The per-book state of the position report, or nil when there is nothing to
---- report from.
----
---- Kept on the plugin instance because a plugin instance belongs to one
---- `ReaderUI`, which belongs to one book — the same reason the wide-page rotation
---- state lives there. Nothing about it is written anywhere: `meguru/progress` has
---- why the marker is not a place for it.
----
---- Declared after `reportPending` because `st.pump` closes over it; the reverse
---- order would make the name resolve as a global and find nothing.
+-- Per book, on the plugin instance; declared after reportPending for st.pump.
 local function progressState(plugin)
     local st = plugin._meguru_progress
     if st then
@@ -1441,19 +919,15 @@ local function progressState(plugin)
         file     = doc.file,
         desc     = doc.desc,
         total    = total,
-        -- The server's own position as the floor, so the page the reader lands
-        -- on can never move it backwards. See `Progress.floorFor`.
+        -- The server's position as the floor, so a report can never go back.
         floor    = Progress.floorFor(doc.desc, total),
         pending  = nil,
-        -- The page the closing flush has already tried, so one exit does not pay
-        -- for the same request three times — see `flushProgress`.
+        -- The page the flush already tried, so one exit does not pay thrice.
         flushed  = nil,
         sending  = false,
         failures = 0,
     }
-    -- **One stable reference**, because `UIManager:unschedule` matches a task by
-    -- identity: a fresh closure per page turn would leave orphaned tasks behind
-    -- and report the same position twice.
+    -- One stable reference: unschedule matches by identity, not by closure.
     st.pump = function()
         reportPending(plugin, st)
     end
@@ -1461,7 +935,7 @@ local function progressState(plugin)
     return st
 end
 
---- A page turn: remember where the reader is and arm the debounce.
+-- A page turn: remember where the reader is and arm the debounce.
 local function notePageTurn(plugin, page)
     local st = progressState(plugin)
     if not st or st.failures >= PROGRESS_MAX_FAILURES then
@@ -1471,40 +945,24 @@ local function notePageTurn(plugin, page)
     if page < 1 or page == st.pending then
         return
     end
-    -- At or below the server's own position: not a report, and not a task
-    -- either. This is the half that keeps a finished book finished.
+    -- At or below the server's position: no report, so a finished book stays.
     if not Progress.moved(st.floor, page) then
         return
     end
     st.pending = page
-    -- A page the reader has moved on to is one the closing flush has not tried,
-    -- whatever it tried before it.
+    -- The reader moved on, so the closing flush has not tried this page.
     st.flushed = nil
     UIManager:unschedule(st.pump)
     UIManager:scheduleIn(PROGRESS_DEBOUNCE_S, st.pump)
 end
 
---- Send the page on screen now, because the book is ending.
----
---- The page is read from the UI rather than from `st.pending`, because the
---- debounce may never have fired for it — and the last page of a session is the
---- one most worth having.
----
---- **Deduplicated, because one exit reaches three of these.** Backing out of the
---- reader sends `Close`, and that reaches `onClose`, `onCloseDocument` *and*
---- `onFlushSettings` within a few lines of each other; on a server that is down,
---- a flush without this check would spend three block timeouts on one page. The
---- breaker is bypassed here on purpose — a closing book is the one moment where
---- one blocked request is affordable — so `flushed` is what stands in its place.
+-- Reads the page off screen; deduped since one exit reaches three seams.
 local function flushProgress(plugin)
     local st = progressState(plugin)
     if not st then
         return
     end
-    -- `plugin.ui` is guarded even though a close handler should always have one:
-    -- `currentPage` indexes it directly, and the one thing this path may never do
-    -- is throw — an exception here would come out of a close event, where the
-    -- reader's book is the thing being closed.
+    -- plugin.ui guarded: this path may never throw out of a close event.
     local ui = plugin.ui
     local page = math.floor(tonumber(ui and currentPage(ui)) or 0)
     if Progress.moved(st.floor, page) then
@@ -1514,16 +972,14 @@ local function flushProgress(plugin)
         return
     end
     st.flushed = st.pending
-    -- Also the cleanup: a task armed 1.5s ago would otherwise outlive the book
-    -- and report a position for a document that is gone.
+    -- Also cleanup: a task armed 1.5s ago must not outlive the book.
     UIManager:unschedule(st.pump)
     st.failures = 0
     reportPending(plugin, st)
 end
 
--- Curated ConfigDialog ---------------------------------------------------------
 
---- One stock KOpt row by name, or nil.
+-- One stock KOpt row by name, or nil.
 local function stockOptionRow(tab, name)
     for _, option in ipairs(tab and tab.options or {}) do
         if option.name == name then
@@ -1533,21 +989,7 @@ local function stockOptionRow(tab, name)
     return nil
 end
 
---- The standalone wide-page-rotation row, used only when
---- `pagenumbercrop.koplugin` is absent — its own row is preferred when it is
---- there, because that row drives that plugin's rotation.
----
---- The values match that plugin's own row exactly — `{off, left, right}` — so a
---- book switched between the two keeps identical behaviour and the stored
---- numbers never change meaning. The event is namespaced, so this plugin can
---- never swallow the real plugin's event.
----
---- **The two rows this used to sit beside are gone.** "Page Number Crop" and
---- "No crop on blank pages" were independent toggles over rules that only mean
---- anything together — what a reader wants is "crop the page or not", and all
---- three rules are what cropping a page means here (`document.lua`'s
---- getPageBBox). Their values are therefore no longer read from anywhere: a book
---- that had either turned off keeps the key in its sidecar and gets the rule back.
+-- Only when pagenumbercrop is absent; values match its row exactly.
 local ROTATE_WIDE_ROW = {
     name = "rotate_wide_pages",
     name_text = _("Rotate wide pages"),
@@ -1566,28 +1008,7 @@ local ROTATE_WIDE_ROW = {
     help_text = _([[Automatically rotates the whole view by 90° when the current page is wider than tall (e.g. a double-page spread stored as one big horizontal image), and back when a normal page is shown again.]]),
 }
 
---- Page tone. A row written here rather than lifted from the stock table — which
---- on this menu is not unusual (`Fit`, `Reading direction` and the crop row are ours
---- too), but this is the only one whose *values* are the reason: stock's presets
---- are the wrong shape for a streamed page.
----
---- Its presets stop at 3.0 where stock's run to 50: those are aimed at a badly
---- scanned text page, where crushing everything to black and white is the point,
---- and on artwork they simply burn the picture. Everything else about the row is
---- stock's on purpose, down to the `name` and the `event`, because those two are
---- what stock's own plumbing already listens for:
----
----  * the value goes to `document.configurable.contrast` through `ConfigChange`
----    (`ReaderKoptListener:onConfigChange`, which repaints on it), and *that* is
----    the value the document renders at — in the reader view and in every panel
----    view alike, since a panel never passes through the reader (`document.lua`'s
----    `contrast()`);
----  * the `event` fires `GammaUpdate`, which updates `ReaderView.state.gamma`
----    (which is what invalidates the reader's own page buffer) and shows the
----    stock "Contrast set to: %1." notification.
----
---- So this row carries no handler of its own in this plugin. Nothing it does
---- needs one: the two things it triggers are already handled, by stock.
+-- Stock's row apart from the presets; the value and event are stock's.
 local CONTRAST_ROW = {
     name = "contrast",
     name_text = _("Contrast"),
@@ -1598,9 +1019,7 @@ local CONTRAST_ROW = {
     default_pos = 2,
     default_value = 1.0,
     event = "GammaUpdate",
-    -- The fine-tune spinner, which is how a reader reaches a value the presets
-    -- do not name. Its own bounds match the presets rather than stock's 0.8-50,
-    -- for the reason above.
+    -- Fine-tune spinner; bounds match the presets, not stock's 0.8-50.
     more_options = true,
     more_options_param = {
         value_step = 0.1, value_hold_step = 0.5,
@@ -1610,25 +1029,7 @@ local CONTRAST_ROW = {
     help_text = _([[Page tone, applied by the renderer: above 1.0 darkens and hardens the page, below it lifts and flattens it. It applies to panels as well. Long-press this row to set what new Meguru books start at.]]),
 }
 
---- Whether the page is dithered as it is written to the screen.
----
---- Stock's row, stock's name and stock's event, for the reason the Contrast row
---- above gives: `ConfigChange` is what writes `configurable.sw_dithering`, and
---- `SWDitheringUpdate` is what `ReaderView:onSWDitheringUpdate` already listens
---- for — it assigns `document.sw_dithering` and shows the notification. That is
---- the very field this document's blit reads (`drawPage` picks `ditherblitFrom`
---- or `blitFrom` from it), so this row needs no handler here either.
----
---- **`args` are booleans where the row's own `values` are 0/1, and that is
---- load-bearing rather than stylistic.** The event's payload goes straight into
---- `document.sw_dithering`, and `0` is truthy in Lua: passing the stored domain
---- through would leave the page dithered at "off". Stock's row carries booleans
---- in `args` for exactly this reason, while the value the configurable and the
---- sidecar keep stays 0/1.
----
---- Not `advanced = true`, unlike stock's: `advanced` rows are hidden until the
---- reader turns advanced options on, and this menu is curated rather than
---- layered — a row offered here is a row meant to be seen.
+-- Stock's row and event; args are booleans since 0 is truthy; not advanced.
 local DITHERING_ROW = {
     name = "sw_dithering",
     name_text = _("Dithering"),
@@ -1640,23 +1041,8 @@ local DITHERING_ROW = {
     help_text = _([[Dithers the page into sixteen grey levels as it is written to the screen, which is how a scanned page has been shown here so far. Off writes each pixel flat instead — smoother on a screen whose controller dithers an 8-bit framebuffer itself, banded on one that does not. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
 }
 
---- The moiré filter, offered only where it can actually run.
----
---- **Not a stock row, and deliberately not the other plugin's row either.**
---- `derainbowify.koplugin` hangs its own switch off `KoptOptions`' contrast
---- section, which a Meguru book never reads — that plugin is inert here, which
---- is the whole reason `meguru/derainbow` exists — and its handler reaches for
---- `self.ui.rolling`, which a page-turning reader does not have. So this is the
---- plugin's own row on its own event, answered by `setDerainbow` below.
----
---- **Gated on two questions, both asked live.** `Derainbow.available()` is
---- whether this device has that plugin's libraries at all — a colour panel, a
---- platform it builds for, and both `.so` files on disk; `Image.colorEnabled()`
---- is whether pages are being decoded in colour right now. The second is not
---- belt-and-braces: the filter's C refuses anything that is not an RGB32 buffer,
---- and that refusal is a *safety* rule rather than a preference (see
---- `meguru/derainbow`). This is the menu agreeing with the render path rather
---- than offering a switch whose effect the next paint would decline to produce.
+-- Own event; derainbowify's switch is on KoptOptions, which this never reads.
+-- Offered only when the libraries load and pages decode in colour.
 local DERAINBOW_ROW = {
     name = "derainbow",
     name_text = _("Derainbow"),
@@ -1668,24 +1054,7 @@ local DERAINBOW_ROW = {
     help_text = _([[Removes the rainbow shimmer that fine black-and-white artwork picks up on a colour e-ink screen, by filtering the page as it is painted. Needs the filter's native libraries, which ship with the plugin; without them this row is not offered. Costs a moment on each page's first paint. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
 }
 
---- Colour intensity, for the screens that can show it.
----
---- Stock's row again, and its own preset list kept as it is — where the Contrast
---- row's had to be narrowed for artwork, stock's saturation presets (`0.2` to
---- `2.0`) already describe what a reader would want to do to a comic page, so
---- there is nothing to correct. `event = "SaturationUpdate"` is stock's, and
---- `ReaderView:onSaturationUpdate` is what answers it: the notification, and
---- `state.saturation` for the reader view's own copy. The document reads its
---- `configurable` instead (see its `saturation()`), for the reason Contrast
---- documents — a panel never passes through `ReaderView`.
----
---- **Offered only where the pages are decoded in colour**, which is one predicate
---- and not two: `Image.colorEnabled()` is the answer the decode itself asks for
---- (the reader's colour setting *and* a framebuffer that can hold it), so on a
---- grayscale screen this row would set a value that `adjustSaturation` returns
---- early on — a switch that does nothing, which is what this curated menu exists
---- to keep out. Stock gates the same row on `hasColorScreen()` and
---- `isColorEnabled()`, which is the same pair of questions asked in two places.
+-- Stock's row and presets unchanged; offered only where pages decode in colour.
 local SATURATION_ROW = {
     name = "saturation",
     name_text = _("Saturation"),
@@ -1705,50 +1074,14 @@ local SATURATION_ROW = {
     help_text = _([[Colour intensity of the page: below 1.0 the colours are drained towards grey, above it they are pushed further apart, and 1.0 is the file's own colour. It applies to panels as well. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
 }
 
---- Whether the Dithering row is worth offering at all.
----
---- `BB_dither_blit_to` honours the dither for a **BB8 destination and is a plain
---- blit for every other one** (`base/blitbuffer.c`), so on a colour screen the
---- switch would change nothing at all — and a row that sets a value with no
---- visible effect is what this curated menu exists to keep out. `fb_bpp == 8` is
---- the same test `Image.colorEnabled` uses, read live: the framebuffer depth
---- KOReader read from the kernel, and the one description of "the destination is
---- the 8-bit one".
----
---- Read when the dialog is built rather than at module load, because it is a
---- property of the session's screen and every other live question in this file is
---- asked the same way.
+-- fb_bpp == 8: BB_dither_blit_to dithers an 8-bit destination only, read live.
 local function ditheringOffered()
     return Screen ~= nil and Screen.fb_bpp == 8
 end
 
---- The option set the bottom menu opens with for a streamed book.
----
---- Rows are pulled *live* from the global `KoptOptions` table rather than from a
---- snapshot: `pagenumbercrop.koplugin` injects its rows into that table when it
---- initialises, which may be after this plugin did, and reading it here is what
---- makes them appear regardless of init order.
----
---- Only options this engine actually implements are kept. The deliberately
---- omitted stock rows (page margins, auto-straighten, the whole reflow and
---- zoom-matrix family) would each set a value with no visible effect, which is
---- worse than not offering them.
+-- Pulls stock rows live from KoptOptions; keeps what the engine implements.
 local function buildCuratedOptions(ui)
-    -- The stock tabs are found for the rows they hold — by their **icons**, which
-    -- is the only name `KoptOptions` gives them — and for nothing else. The dialog
-    -- that comes back is three tabs of this plugin's own (see the return below),
-    -- so a stock tab is a place to lift a row from, not a shape to reuse.
-    --
-    -- **There is no fallback to the whole of `KoptOptions` any more**, and there
-    -- was one: it answered a stock layout we did not recognise with everything,
-    -- on the grounds that a wrong menu beat an empty one. It cannot be wrong now
-    -- in that way — the crop row, the fit row, the tone rows and the two-page rows
-    -- are this file's, so the dialog is never empty — and stock's rows are exactly
-    -- what this function exists to keep out of a streamed book. A tab that is not
-    -- found costs exactly the rows lifted from it — `stockOptionRow` is nil-safe,
-    -- and every one of those lookups already tolerates nil — and costs them
-    -- silently, which is the price of the rows this file owns being enough to
-    -- build a working menu without it.
+-- Stock tabs found by icon; a missing one costs only the rows lifted from it.
     local rotation_tab, pageview_tab
     for _, tab in ipairs(KoptOptions) do
         if tab.icon == "appbar.rotation" and not rotation_tab then
@@ -1766,13 +1099,9 @@ local function buildCuratedOptions(ui)
     rotation_options[#rotation_options + 1] =
         stockOptionRow(rotation_tab, "rotate_wide_pages") or ROTATE_WIDE_ROW
 
-    -- **Page**: the page's own shape — how it is fitted and what is cut off it. The
-    -- picture is the *tone* tab's business, next door.
+-- Page: the page's own shape. The picture is the tone tab's business.
     local page_options = {
-        -- Computed live from the reader's own zoom mode, so the row reflects what
-        -- the book is actually showing even after a manual pinch, and falls back
-        -- to the plugin preference when the current zoom is one of the three fits
-        -- does not name (a manual pinch, "page", ...).
+-- Computed live from the reader's zoom mode, falling back to the preference.
         {
             name = "opdsbook_fit",
             name_text = _("Fit"),
@@ -1799,22 +1128,10 @@ local function buildCuratedOptions(ui)
             end,
             help_text = _([[How a page is zoomed to the screen: full shows the whole cropped page, width fills the screen width, height fills the screen height.]]),
         },
-        -- Our own *Crop* row, not the stock one: the stock row carries the
-        -- semi-manual define-an-area flow, which needs a crop box to persist and a
-        -- streamed page has none. Only the two states the engine realises are
-        -- offered, and both fire the core "ReZoom" so the new box applies to the
-        -- page on screen immediately.
-        --
-        -- "Page Number Crop" and "No crop on blank pages" were rows here — the
-        -- stock ones `pagenumbercrop.koplugin` injects when it is installed, this
-        -- file's own copies when it is not — and they are folded into "auto"
-        -- instead: the engine no longer reads either value (`document.lua`'s
-        -- getPageBBox), so their help text lives on this row now, which is the only
-        -- place a reader can still learn what the crop does.
+-- Our own Crop row: stock's define-an-area flow needs a box a stream lacks.
         {
             name = "trim_page",
-            -- **"Crop", not "Page Crop"**: the tab this row is on is already the
-            -- page's, so the word was saying it twice.
+-- "Crop", not "Page Crop": the tab is already the page's.
             name_text = _("Crop"),
             toggle = { C_("Crop", "none"), C_("Crop", "auto") },
             values = { 3, 1 },
@@ -1825,32 +1142,13 @@ local function buildCuratedOptions(ui)
         },
     }
 
-    -- *View mode* — stock's own `page_scroll` row, and the one row in this dialog
-    -- whose label does not say what it does until a reader tries both — belongs on
-    -- *Page*, directly under *Fit*: they are the same question asked of two axes, how
-    -- much of the page is on the screen and whether the next one is beside it or below
-    -- it. Inserted rather than appended, because the crop row follows *Fit* and has to
-    -- keep following it; a build whose stock `pageview` tab is missing simply has no
-    -- such row to offer, which is why this is a lookup and not a row of ours.
+-- Stock's page_scroll row, under Fit: the same question on the other axis.
     local page_view = stockOptionRow(pageview_tab, "page_scroll")
     if page_view then
         table.insert(page_options, 2, page_view)
     end
 
-    -- **Tone**: what the page looks like, where the three tabs before it are about the
-    -- shape of what is shown. It is the tab this plugin's dialog had before its rows
-    -- were regrouped, and it is back for the reason it was chosen then: a reader who
-    -- knows a PDF's contrast tab looks for these in one place, and the crop is
-    -- not one of them.
-    --
-    -- Contrast is the one that is always offered; the other three are each about *this
-    -- screen* rather than about the page — saturation is a colour operation, a
-    -- dither is how the page is written to an 8-bit framebuffer, and Derainbow is a
-    -- filter for a colour panel's own artefact — so each appears only where the
-    -- screen can honour it. The first three are in stock's order (`appbar.contrast`
-    -- lists them Contrast, Saturation, ... Dithering), so a reader who knows that tab
-    -- finds the same things in the same places; Derainbow is this plugin's own and
-    -- goes last, where it costs nothing to a reader who is not looking for it.
+-- Tone: what the page looks like, not its shape; each row gated on the screen.
     local tone_options = { CONTRAST_ROW }
     if Image.colorEnabled() then
         tone_options[#tone_options + 1] = SATURATION_ROW
@@ -1862,21 +1160,11 @@ local function buildCuratedOptions(ui)
         tone_options[#tone_options + 1] = DERAINBOW_ROW
     end
 
-    -- **Reading**: what a page turn does, how many pages are on the screen, and
-    -- what a long-press does.
-    --
-    -- The two rows below "Two pages" belong to it and are dimmed until it is on,
-    -- which is as close as this menu can come to the group a reader would draw:
-    -- **the bottom menu has no sub-items at all** — `sub_item_table` is the ⋮
-    -- menu's (`ui/widget/menu.lua`), and `ConfigDialog` implements none of it — so
-    -- a parent and its children can be ordered and gated here, never indented.
+-- Reading: what a page turn does, how many pages, and what a long-press does.
     local reading_options = {}
     reading_options[#reading_options + 1] = {
         name = "opdsbook_manga",
-        -- **Named for the question, not for one of its two answers**: the row was
-        -- "Invert read (manga mode)", which told a reader who reads manga what they
-        -- already knew and told everyone else nothing. `values` and `args` are
-        -- unchanged — 0 is left to right, 1 is manga — so nothing stored moves.
+-- Named for the question, not one answer; values and args are unchanged.
         name_text = _("Reading direction"),
         toggle = {
             C_("Reading direction", "left to right"),
@@ -1888,14 +1176,7 @@ local function buildCuratedOptions(ui)
         event = "MeguruMangaRead",
         help_text = _([[Which way the pages are read. "left to right" is a western book; "manga (right to left)" is a Japanese one, where the pages turn the other way and the earlier page of a spread is the right-hand one. Remembered for this book; new Meguru books start in manga order — long-press this row to change that default.]]),
     }
-    -- **The two-page group, in the order a reader meets it.** "Two pages" is the
-    -- switch; the two rows under it are what it makes available, and both are
-    -- inert while it is off (`enabled_func`) — which is the only thing telling a
-    -- reader they belong to it, this menu having no way to indent them (see the
-    -- note on the tab above).
-    --
-    -- **"off" is the default**, so nothing about an existing book changes until a
-    -- reader asks.
+-- Rows under Two pages are gated while it is off; the menu cannot indent them.
     reading_options[#reading_options + 1] = {
         name = "spread",
         name_text = _("Two pages"),
@@ -1912,9 +1193,7 @@ local function buildCuratedOptions(ui)
     }
     reading_options[#reading_options + 1] = {
         name = "spread_offset",
-        -- **"Pair", not "Page"**: what the row moves is where a *pair* starts, and
-        -- a reader who has just read "Two pages" above it needs the word that ties
-        -- the two together.
+-- "Pair", not "Page": the row moves where a pair starts.
         name_text = _("Pair offset"),
         toggle = {
             C_("Pair offset", "off"),
@@ -1924,12 +1203,7 @@ local function buildCuratedOptions(ui)
         args = { 0, 1 },
         default_value = 0,
         event = "MeguruSpreadOffsetUpdate",
-        -- **The row shows the run the reader is in, not the value in the book.**
-        -- The stored answer is a *page* (see `meguru/spread`), and it says nothing
-        -- by itself about the pages on screen: a wide page ends an offset without
-        -- the stored value changing at all. So the switch is answered live, which
-        -- is what makes "the offset ended" something the reader can see rather
-        -- than something they have to infer from the pairing.
+-- Shows the run the reader is in, not the stored page: a wide page ends it.
         current_func = function()
             local doc = ui and ui.document
             local page = ui and ui.paging and ui.paging.current_page
@@ -1938,8 +1212,7 @@ local function buildCuratedOptions(ui)
             end
             return doc:spreadOffsetHere(page) and 1 or 0
         end,
-        -- Inert while there is only ever one page on the screen — a switch that
-        -- changes nothing is what this curated menu exists to keep out.
+-- Inert with one page on screen; a switch that changes nothing is kept out.
         enabled_func = function(configurable)
             return configurable.spread ~= nil and configurable.spread ~= "off"
         end,
@@ -1953,32 +1226,17 @@ local function buildCuratedOptions(ui)
         args = { 0, 1 },
         default_value = 1,
         event = "MeguruSpreadGutterUpdate",
-        -- Inert with nothing showing two pages, like the offset above and for the
-        -- same reason.
+-- Inert with nothing showing two pages, like the offset above.
         enabled_func = function(configurable)
             return configurable.spread ~= nil and configurable.spread ~= "off"
         end,
         help_text = _([[The crop trims each page's inner margin, which would butt the two pages of a spread together at the middle. With this on, the space left over once the artwork is fitted to the screen goes back into that gutter — never more than the margin the page itself has, and never enough to make the artwork smaller. With it off, a pair is drawn exactly as the crop left it. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
     }
 
-    -- **One row for the three views and Off**, and Off is not a fourth view at all
-    -- but KOReader's own per-book answer for whether there is a panel zoom — which
-    -- is why neither the display nor the write here is a plain assignment; see
-    -- `current_func` and `onMeguruPanelViewUpdate`.
-    --
-    -- One row for both questions because that is the question a reader has: what
-    -- happens when I hold on a page. Splitting them is how a row ends up showing a
-    -- view while the long-press does nothing. Last in this tab because it is what
-    -- a *touch* does, where the rows above are what a page turn does.
+-- One row for the three views and Off; Off is KOReader's per-book answer.
     reading_options[#reading_options + 1] = {
         name = "panel_view",
-        -- **Named for what it sets, not for the gesture that sets it**: "Long-press"
-        -- named the way in, which the row's own help text has to explain anyway, and
-        -- said nothing to a reader who had not tried it. Its three answers are the
-        -- views' own names, and lower case as they are written here: they are the
-        -- values of a switch, not headings. The switch inside the viewer carries the
-        -- same three words, letter for letter, so a reader who learns one of them in
-        -- either place recognises it in the other.
+-- Named for what it sets, not the gesture; the viewer carries the same words.
         name_text = _("Panel view"),
         toggle = {
             C_("Panel view", "off"),
@@ -1990,9 +1248,7 @@ local function buildCuratedOptions(ui)
         args = { "off", "crop", "window", "zoom" },
         default_value = "window",
         event = "MeguruPanelViewUpdate",
-        -- The two keys this row answers for, read as one value: the book's own
-        -- answer for whether there is a panel zoom (its stash, not the live
-        -- field — see `meguruPanelZoomWanted` for why), and then the view.
+-- Two keys as one value: the file's panel-zoom answer, then the view.
         current_func = function()
             local hl = ui and ui.highlight
             if hl and not meguruPanelZoomWanted(hl) then
@@ -2003,18 +1259,7 @@ local function buildCuratedOptions(ui)
         help_text = _([[What holding on a page does. "panel cut" shows the panels the detector found, one at a time; "pan & zoom" keeps the page whole and moves a window over it; "free view" shows the page alone. "off" leaves the long-press to KOReader, and applies to this book only. Long-press this row to make a view the default for new books. This is Meguru's own panel view — a panel plugin that answers the long-press itself is its own.]]),
     }
 
-    -- **Four tabs of this plugin's own, and the order is a reader's**: what a page
-    -- turn does, what shape the page is, how it is turned, and what it looks like.
-    -- Stock's own four do not come back — the rows are this plugin's, the fit row and
-    -- the crop row among them — and neither do stock's icons, which is the other thing
-    -- `meguru/icons` is for.
-    --
-    -- **The fourth entry is not a tab and has no panel.** It is the Info popup's
-    -- button, and `installInfoPanel` intercepts the panel switch its icon would
-    -- otherwise cause — so `options` is empty rather than absent, which is what
-    -- keeps a stray `panel_index` from indexing nil. `CURATED_PANELS` is the
-    -- count of the entries that *are* panels, and is what the remembered panel
-    -- index is clamped against.
+-- Four tabs plus the Info button; CURATED_PANELS counts only the panels.
     return {
         prefix = "kopt",
         { icon = Icons.tab("reading"), options = reading_options },
@@ -2025,23 +1270,10 @@ local function buildCuratedOptions(ui)
     }
 end
 
---- How many tabs the curated dialog actually has panels for.
----
---- Not `#config_options`, which counts the Info button as well. The two were the
---- same number while every entry was a panel, and they stopped being the same
---- number the moment one of them was a button — which is also when the clamp
---- below would have started opening the dialog on an empty panel.
+-- Counts panels, not entries: #config_options includes the Info button.
 local CURATED_PANELS = 4
 
---- Long-press a curated row to set it as the default for *future* Meguru books.
----
---- Without this the stock handler would write a global `kopt_*`, leaking a
---- choice made while reading a stream into every PDF opened afterwards. Rows
---- this plugin has no preference for get no "set as default" at all — the stock
---- handler is swallowed rather than allowed to fall through — and a row whose
---- *value* is not the thing a preference holds declines that one value the same
---- way, saying so rather than writing something meaningless (the long-press row's
---- Off, below).
+-- Redirects set-as-default onto the plugin preference, not a global kopt_*.
 local function redirectDefaults(config)
     local dialog = config and config.config_dialog
     if not (dialog and type(dialog.onMakeDefault) == "function") then
@@ -2057,13 +1289,7 @@ local function redirectDefaults(config)
             return true
         end
         local value = values and values[position]
-        -- **The one row with a value a preference cannot hold.** The long-press row's
-        -- first answer, Off, is not a view: it is KOReader's own per-book
-        -- `panel_zoom_enabled`, and whether there is a panel view is per-book by
-        -- design (`meguruPanelZoomWanted`: "the per-file answer is the only one there
-        -- is"). So there is no default to set for it, and saying so is better than a
-        -- ConfirmBox that writes a view called "off" and leaving `Settings` to hold a
-        -- word nothing reads. The three views below it are ordinary defaults.
+-- Off is not a view: no preference can hold it, so say so.
         if name == "panel_view" and value == "off" then
             UIManager:show(Notification:new{
                 text = _("Off applies to this book only — a default is one of the three views."),
@@ -2071,11 +1297,7 @@ local function redirectDefaults(config)
             })
             return true
         end
-        -- Every row is stored in its own domain, which is what `Settings`
-        -- declares and what `seedRowValue` copies back verbatim. The manga row
-        -- is the exception: it carries 0/1 because a boolean would be swallowed
-        -- by the `or` ConfigDialog uses to fall back on `configurable`, while
-        -- the preference behind it is a real boolean.
+-- Each row in its own domain; the manga row converts 0/1 to the boolean stored.
         if name == "opdsbook_manga" then
             value = value == 1
         end
@@ -2091,49 +1313,18 @@ local function redirectDefaults(config)
     end
 end
 
---- Make the last menubar icon open the Info popup instead of switching panels.
----
---- **A tab that is not a tab.** The dialog's tab bar is built from
---- `config_options`, one icon per entry, and every icon dispatches the same
---- `ShowConfigPanel` event — so the only way to add a button to that bar is to
---- add an entry and answer the event for it. Swallowing it here is that answer:
---- the popup is shown and `true` goes back, which is "handled" as far as
---- `handleEvent` is concerned, and `panel_index` is deliberately **not** written.
----
---- Not writing it is both the behaviour and the safety. The highlight stays on
---- the tab the reader was on, dismissing the popup leaves them on that tab, and
---- `ReaderConfig:onSaveSettings` — which writes `config_dialog.panel_index` back
---- into the sidecar as `config_panel_index` — can never record an index that
---- names no panel.
----
---- **Installed on the instance, and it needs no guard**, which is why it
---- belongs beside `redirectDefaults` above rather than on the class: `orig`
---- builds a new dialog on every open, and this runs once on each one, so there
---- is nothing to accumulate and nothing that outlives the menu it was installed
---- for. (`curateConfigMenu`'s own guard is a different problem — a foreign plugin
---- *replacing* the handler it installed — and cannot arise here, because nobody
---- outside this file knows the name of this method's wrapper.)
----
---- It is installed *after* `orig` returns, and that ordering is load-bearing:
---- `ReaderConfig:onShowConfigMenu` calls `onShowConfigPanel(last_panel_index)`
---- itself, to reopen on the remembered tab, and that call must reach the stock
---- method. Installed before it, a book that remembered the last tab would open
---- its menu on the popup.
+-- Answers ShowConfigPanel for the Info button; writes no panel_index.
 local function installInfoPanel(config)
     local dialog = config and config.config_dialog
     if not (dialog and type(dialog.onShowConfigPanel) == "function") then
         return
     end
-    -- The last icon, which is the entry `buildCuratedOptions` adds for it. Taken
-    -- off the table the dialog was actually built from rather than written down
-    -- as a number here, so the button and the icon cannot come apart.
+-- The last icon, taken off the built table so button and icon cannot diverge.
     local info_index = #dialog.config_options
     local orig = dialog.onShowConfigPanel
     dialog.onShowConfigPanel = function(self, index, ...)
         if index == info_index then
-            -- `config.ui` is this ReaderUI, the same one the rows are built for
-            -- — so the popup reads the document that is on the screen now,
-            -- rather than whatever a plugin instance was last handed.
+-- config.ui is this ReaderUI, so the popup reads the document on screen now.
             Info.show(Reader.infoFields(config.ui))
             return true
         end
@@ -2141,33 +1332,10 @@ local function installInfoPanel(config)
     end
 end
 
---- Reported once per process, not once per repair: the second installation is a
---- decision a reader might ask about ("why does this menu look different"), and
---- the answer is worth one line rather than one per book.
+-- Reported once per process, not once per repair.
 local config_menu_repair_logged = false
 
---- Swap the stock bottom-menu handler for one that opens a curated dialog.
----
---- Modules init before plugins and this wrap is installed at plugin init, so
---- every later open of the bottom menu goes through it. The original handler is
---- called unchanged, so persistence, the remembered panel index and everything
---- else about the flow is untouched.
----
---- **The guard is the wrapper itself rather than a flag, and that is the whole
---- of what makes a second installation possible.** `rakuyomi.koplugin` assigns
---- `ui.config.onShowConfigMenu` on the *instance*, wholesale and without calling
---- the original — its own comment reads `--patch
---- frontend/apps/reader/modules/readerconfig.lua` — and it does it from a
---- `registerPostInitCallback`, which is later than every plugin's init. Plugins
---- load by sorted path, so `meguru.koplugin` always comes *before* it and
---- whatever this installs at our init is gone before the reader is up. A flag
---- saying "we installed once" cannot see that, because it stays true; holding
---- the function we installed can, because a foreign assignment is then simply a
---- different value in the field.
----
---- Chaining is the other half: `orig` is whatever is in the field *now*, so a
---- replacement's own work — Rakuyomi's chapter bar among its buttons — survives
---- ours. Returns whether it installed, which is what the caller logs on.
+-- Guard is the wrapper, not a flag, so a foreign replacement is repaired.
 local function curateConfigMenu(plugin)
     local config = plugin.ui and plugin.ui.config
     if not (config and type(config.onShowConfigMenu) == "function") then
@@ -2179,16 +1347,9 @@ local function curateConfigMenu(plugin)
     local orig = config.onShowConfigMenu
     local wrapper = function(cfg, ...)
         local stock_options = cfg.options
-        -- `cfg.ui` is this ReaderUI; the dialog is built from this table inside
-        -- `orig`, so the Fit row's live highlight gets it through the closure.
+-- cfg.ui is this ReaderUI; options are swapped before orig builds the dialog.
         cfg.options = buildCuratedOptions(cfg.ui)
-        -- The remembered panel index was stored against the *full* stock list,
-        -- so an index past the end of the curated one would show the wrong tab
-        -- or crash. **Clamped to the panels rather than to the entries**, because
-        -- the entries now include the Info button: a book read with stock
-        -- KOReader can carry a `config_panel_index` anywhere up to stock's seven
-        -- (that clamp is `ReaderConfig:onReadSettings`), and one landing on the
-        -- button would open the menu on an empty panel.
+-- Clamped to panels, not entries: a stock index could land on the Info button.
         if type(cfg.last_panel_index) ~= "number" or cfg.last_panel_index < 1 then
             cfg.last_panel_index = 1
         elseif cfg.last_panel_index > CURATED_PANELS then
@@ -2197,8 +1358,7 @@ local function curateConfigMenu(plugin)
         local ret = orig(cfg, ...)
         redirectDefaults(cfg)
         installInfoPanel(cfg)
-        -- The dialog keeps its own reference to the curated set; hand the
-        -- module's field back so nothing else ever sees the subset.
+-- Hand the module's stock options back so nothing else sees the subset.
         cfg.options = stock_options
         return ret
     end
@@ -2207,11 +1367,8 @@ local function curateConfigMenu(plugin)
     return true
 end
 
--- Next and previous in the series ----------------------------------------------
 
---- The item, series and server of the book on screen, or nil when its series was
---- never catalogued — a marker opened with no database behind it still reads, it
---- just has no neighbours.
+-- The item, series and server on screen; nil if it was never catalogued.
 local function seriesContext(ui)
     local doc = ui and ui.document
     if not (doc and type(doc.seriesContext) == "function") then
@@ -2224,17 +1381,7 @@ local function seriesContext(ui)
     return context
 end
 
---- The folder this book shares with its neighbours, or nil when it has none.
----
---- The other source of "where am I in the series", and nil for every book whose
---- series is a feed's: only a `.cbz` opened through Meguru answers. Exported
---- because the reader menu needs the same answer to decide whether to draw the
---- two rows at all, and two copies of this guard is two places for the two
---- surfaces to disagree about which books have them.
----
---- It lists the folder — that is the only way to know whether there is a second
---- book to move to — so it is a question for a menu build and for a tap, never
---- for a paint.
+-- The shared folder for a local .cbz; exported so both surfaces use one guard.
 function Reader.localSeriesOf(ui)
     local doc = ui and ui.document
     if not (doc and type(doc.localSeries) == "function") then
@@ -2243,35 +1390,7 @@ function Reader.localSeriesOf(ui)
     return doc:localSeries()
 end
 
---- Everything the Info popup shows, gathered where each answer already lives.
----
---- **The page comes from `currentPage` above rather than from a second read of
---- `ui.paging`.** That helper is this file's answer to "the page on screen" —
---- the progress report is built on the same call — and a popup holding its own
---- copy is a popup that can disagree with the number being sent to the server.
----
---- The metadata is whatever the document already publishes about itself, so
---- neither shape is served a fiction: `getDocumentProps` is the `doc_props` seam
---- (ComicInfo for an archive, the title alone for a marker — see its own note on
---- why a streamed book is given no author), and the marker's descriptor carries
---- the series and the server.
----
---- **A local `.cbz` is not given its folder as a series, and that is a decision
---- this popup made rather than an omission.** `localSeriesOf` above would name it
---- — the plugin treats a folder holding two same-extension books as the series
---- so that "open next in series" has somewhere to go — but that is a rule about
---- *navigation*, and it names any such folder, a flat library included. Asked as
---- metadata it would answer `Series: Books` for a folder of fifty unrelated
---- books, and on a folder that is simply called `empty` it produced a row that
---- reads as a placeholder rather than as a name. What this popup reports is what
---- the file carries, so a `.cbz` with no ComicInfo has no series to show.
----
---- Fields with nothing behind them are **absent rather than empty**, and the
---- popup drops them. A streamed book has no author and a local one has no
---- server, and neither is an omission worth a row saying so.
----
---- Nil for anything that is not a Meguru book, which is the gate every handler
---- in this file uses.
+-- Shows only what the file carries; absent values are absent rows.
 function Reader.infoFields(ui)
     local doc = ui and ui.document
     if not (doc and doc.provider == "meguru") then
@@ -2293,23 +1412,13 @@ function Reader.infoFields(ui)
         local desc = doc.desc or {}
         fields.series   = desc.series_name
         fields.language = desc.lang
-        -- The server, as the kind of server it is — "Kavita", not "Kavita dom".
-        -- `desc.server_name` is the catalogue's *title* in `settings/opds.lua`,
-        -- which is the key its credentials are found under and a name the reader
-        -- chose for their own bookkeeping rather than anything about this book;
-        -- two catalogues on one server differ by it, and nothing else here does.
-        -- Which server a book came from is a fact about the book; what the reader
-        -- called that catalogue is not, so only the kind is shown.
+-- server_kind, not the catalogue title: which server is a fact about the book.
         fields.server   = desc.server_kind and Base.kindLabel(desc.server_kind) or nil
     end
     return fields
 end
 
---- The one refusal, in the one wording, for both ways of having no neighbour.
----
---- Shared rather than written twice, for the reason `openPrepared` gives about
---- its own message: the same situation reaching the reader with two different
---- texts is how a bug in one of them becomes invisible.
+-- One refusal wording for both directions, so the two cannot drift.
 local function showNoNeighbor(which, name)
     UIManager:show(InfoMessage:new{
         text = which == "next"
@@ -2318,26 +1427,7 @@ local function showNoNeighbor(which, name)
     })
 end
 
---- Ask this series' own feed for the item either side of the one being read.
----
---- **The feed is the only source, and it is read on the ask.** A marker holds no
---- sibling list: the design that put one there is the one this plugin replaced,
---- and it failed for a reason that has nothing to do with where the list lived.
---- A copy is written once and never repaired, so it answers with the series as
---- it was — silently, for as long as the file exists, and in the old plugin it
---- was copied forward into every marker an auto-open created. Asking the feed
---- cannot go stale, and it costs one walk in a gesture that asked for one.
----
---- `Feed.planForMarker` turns the marker into a driver and a canonical feed URL
---- (falling back to the stream template for a marker that predates
---- `server_kind`), `Feed.walk` fetches it, `Feed.ordered` puts it in reading
---- order and `Feed.neighbor` picks. Nothing is written: the neighbour gets a
---- marker of its own when it is opened, and this book's is left as it was.
----
---- Bounded like the row above a series feed bounds its own walk, because this
---- runs inside a tap and a walk is a run of synchronous HTTP requests.
----
---- Returns the item, or nil plus a reason.
+-- The feed is the only source and is read on the ask; nothing is written.
 local function neighborFromFeed(doc, context, which)
     local plan, reason = Feed.planForMarker(doc.desc, {
         max_pages = Feed.TAP_PAGES,
@@ -2355,43 +1445,18 @@ local function neighborFromFeed(doc, context, which)
     if not walker.complete then
         return nil, tostring(walker.reason)
     end
-    -- `title_order` comes off the driver: whether this server's feed is already
-    -- in reading order is its answer to give, not this function's to guess.
+-- title_order comes off the driver: its answer, not this function's to guess.
     local sequence = Feed.ordered(Feed.collect(walker, plan),
         { title_order = plan.driver and plan.driver.orderFromTitles })
     return Feed.neighbor(sequence, context.item_key, which)
 end
 
---- Open the neighbour this reader asked for, from the series' own feed.
----
---- **This replaces the document.** `Open.openItemSilently` writes the marker and
---- switches the reader to it, so a caller must not switch again afterwards, and
---- must call this from a point where tearing the reader down is safe — never
---- directly inside a handler that belongs to the reader being replaced.
----
---- **It does not ask, and that is deliberate.** Tapping "find the next chapter"
---- names one specific book, so there is no question to put: the resume dialog
---- belongs where the reader opens a *series* view and the server may disagree
---- about where they got to. Before this, the tap went through `openCatalogItem`
---- and the dialog could answer with a different chapter than the one tapped —
---- most visibly on "previous chapter" while the server sat further along.
----
---- A `false` return means "nothing was opened" — there is no chapter that way,
---- the walk failed, or there is no connection. It never means "try again later
---- on your own": the walk is synchronous and its answer is final.
----
---- The feed is asked every time, so there is no state here to go stale and no
---- guard to keep two walks apart. What replaced the old per-series guard is that
---- there are no longer two walkers: the background walk an OPDS add used to
---- start is gone with the catalog it was filling.
+-- Replaces the document; never asks, because the tap named one specific book.
 function Reader.openNeighbor(plugin, which)
     local ui = plugin and plugin.ui
     local doc = ui and ui.document
 
-    -- A local archive first, and **before the connection test below**. Its
-    -- series is a folder listing, so this path is offline by construction:
-    -- asking for Wi-Fi here would be prompting for something it does not need,
-    -- and would then re-run the whole thing through the manager for nothing.
+-- Local first, before the connection test: a folder listing needs no network.
     local spot = Reader.localSeriesOf(ui)
     if spot then
         local path, why = Local.neighbor(doc.file, which)
@@ -2405,16 +1470,11 @@ function Reader.openNeighbor(plugin, which)
     end
 
     local context = seriesContext(ui)
-    -- No context: the marker carries no series identity. There is nothing to
-    -- walk — no server, no series id, so no feed URL can be built for it. This
-    -- is the marker-written-without-a-catalog case, and it is meant to read
-    -- without neighbours rather than prompt for anything.
+-- No context: no series identity, so no feed URL; it reads without neighbours.
     if not context then
         return false
     end
-    -- A walk is a run of HTTP requests, so it needs a connection the same way a
-    -- page fetch does; the manager prompts for one rather than letting the walk
-    -- fail on its first request, and only re-runs this once one exists.
+-- A walk is HTTP, so it needs a connection; the manager prompts and re-runs.
     if not NetworkMgr:isConnected() then
         NetworkMgr:willRerunWhenConnected(function()
             Reader.openNeighbor(plugin, which)
@@ -2428,19 +1488,12 @@ function Reader.openNeighbor(plugin, which)
         showNoNeighbor(which, context.series_name)
         return false
     end
-    -- openItemSilently reports its own failures, in more detail than a caller
-    -- could; all that is wanted back here is whether it worked.
+-- openItemSilently reports its own failures; only whether it worked is wanted.
     return Open.openItemSilently(plugin, context, item) ~= nil
 end
 
 
---- Mark a finished book complete, the way the stock handler we are standing in
---- for would have.
----
---- Shared by both branches below rather than written into each: it is the half
---- of "auto-open the next one" that has nothing to do with *finding* the next
---- one, and two copies of it would be two chances to drop it on one path only —
---- silently, and only for the reader who has `end_document_auto_mark` on.
+-- Shared by both branches so auto-mark cannot be dropped on one path only.
 local function autoMarkFinished(ui, status)
     local g = rawget(_G, "G_reader_settings")
     if not (g and type(g.isTrue) == "function"
@@ -2455,12 +1508,7 @@ local function autoMarkFinished(ui, status)
     end)
 end
 
---- Run `open` on the next UI tick, at most once per end-of-book.
----
---- This handler runs in the middle of a page-turn gesture, and switching
---- documents there would tear the reader down underneath that gesture. Hence the
---- defer; hence also the guard, so a second EndOfBook arriving before the tick
---- cannot switch twice.
+-- Deferred, once: switching mid-gesture would tear the reader down.
 local function deferOpen(status, open)
     if status._meguru_auto_pending then
         return
@@ -2472,11 +1520,7 @@ local function deferOpen(status, open)
     end)
 end
 
---- When a book reaches its end, open the next one instead of showing KOReader's
---- stock end-of-book dialog.
----
---- Installed on this ReaderUI's own ReaderStatus instance, so any other book
---- keeps the pristine behaviour and the wrap dies with its UI.
+-- Installed on this ReaderUI's own ReaderStatus, so other books stay stock.
 local function installEndOfBookHook(plugin)
     local ui = plugin.ui
     local status = ui and ui.status
@@ -2492,28 +1536,8 @@ local function installEndOfBookHook(plugin)
         if not Settings.get("auto_next_item") then
             return orig(status_self, ev)
         end
-        -- **This walks, and that reverses an earlier refusal.** It used to take
-        -- only the neighbour the catalog already held, on the grounds that
-        -- reaching the end of a volume would otherwise start a network walk
-        -- nobody asked for. That reasoning rested on the catalog: a background
-        -- walk after an OPDS add meant the neighbour was normally already there,
-        -- so falling through cost nothing but a stock dialog.
-        --
-        -- With no catalog there is nothing to already hold, so keeping the
-        -- refusal would not preserve the behaviour — it would make the toggle
-        -- govern something that can never happen. And the walk here *is* asked
-        -- for: the reader turned `auto_next_item` on and finished a volume.
-        -- The cost is one bounded walk per finished book, and only for a reader
-        -- who opted in.
-        --
-        -- Anything short of "there is a next chapter" falls through to
-        -- KOReader's own dialog rather than reporting: an end-of-book is not the
-        -- moment for a popup saying the series has no more.
-        --
-        -- A local `.cbz` is asked first and asked *differently*: its next volume
-        -- is a file beside it, so there is no feed to walk and no connection to
-        -- need. The listing is one `lfs.dir`, and a folder that offers nothing
-        -- is the same "short of a next chapter" as an exhausted feed.
+-- The walk is asked for: auto_next_item is on and a volume finished.
+-- Anything short of a next chapter falls through to KOReader's dialog.
         local spot = Reader.localSeriesOf(ui)
         if spot then
             local path = Local.neighbor(ui.document.file, "next")
@@ -2537,49 +1561,27 @@ local function installEndOfBookHook(plugin)
         end
         autoMarkFinished(ui, status_self)
         deferOpen(status_self, function()
-            -- Opened from the item the walk already returned, not through
-            -- `Reader.openNeighbor`: that would walk the same feed a second
-            -- time and, finding nothing, put a popup over a reader who has
-            -- just finished a book. Opens the item itself; do not switch
-            -- again here.
+-- Opens the item the walk returned; do not switch again here.
             pcall(Open.openItemSilently, plugin, context, next_item)
         end)
         return true
     end
 end
 
--- Installation -----------------------------------------------------------------
 
---- Whether the page being drawn is inverted for night mode — the question
---- `MeguruDocument:drawPage` asks itself before it cancels the inversion over the
---- region it drew. The surround has to answer it the same way the page does, or
---- one of the two reads as the other's negative.
+-- The same answer drawPage uses, or the surround reads as the page's negative.
 local function pageIsInverted(document)
     local configurable = document and document.configurable
     return configurable ~= nil and configurable.nightmode_document == 1
         and Screen.night_mode == true
 end
 
---- Rec.601 luminance, the same weights `lumaAt` in the document measures with —
---- this file asks the same question about a colour, so it uses the same answer.
+-- Rec.601, the same weights the document's lumaAt uses.
 local function lumaOf(r, g, b)
     return math.floor((4898 * r + 9618 * g + 1869 * b) / 16384)
 end
 
---- Whether a margin reads as *paper* rather than as a colour: light on every
---- channel and near-neutral. The night rule below takes paper to the black the
---- screen already is, and must leave a coloured margin alone — the inverse of a
---- yellow frame is blue, which is not a darker version of it but a different
---- colour, and a reader with a yellow-bordered volume did not ask for a blue one.
----
---- The two bounds are a definition, and both sides are chosen deliberately. A
---- colour is *excluded* by one channel being dark (a yellow frame's blue is 0) or
---- by a spread no paper has; everything light and neutral is *included*, cream
---- paper among it. That is the safe direction: what this rule does to a paper
---- margin is make it dark, which is what a margin wants on a dark screen, while
---- the cost of including an off-white *tint* is only that it darkens too — a
---- pale-blue paper margin goes dark rather than glowing, which is not the
---- surprise that turning a yellow border blue would be.
+-- Paper: light on every channel and near-neutral; a colour is left alone.
 local PAPER_MIN_CHANNEL = 200
 local PAPER_MAX_SPREAD = 48
 local function isPaper(r, g, b)
@@ -2588,23 +1590,7 @@ local function isPaper(r, g, b)
     return lo >= PAPER_MIN_CHANNEL and hi - lo <= PAPER_MAX_SPREAD
 end
 
---- Set the reader's two surround fields from a margin colour (`{r, g, b}`), or
---- back to what the reader had when there is no margin to match.
----
---- The fields are KOReader's own (`ReaderView.outer_page_color`, painted by
---- `drawPageSurround`, and `page_bgcolor`, its continuous-mode twin) and any
---- Blitbuffer colour is legal in them: a grayscale screen converts it to its
---- luminance by the same weights, so a grey margin and a coloured one take the
---- same road and only a colour screen can tell them apart.
----
---- **Night mode asks for the darker of the colour and its inverse, and then
---- inverts what it paints.** The first half is the rule: on a page being read in
---- the dark the letterbox must not become a light band, so a black margin stays
---- black and a white one comes out the black the screen already is (the
---- comparison is by luminance; the inversion is per channel). The second half is
---- the display's own inversion of every fill under night mode, which the page
---- cancels for itself by inverting the region it drew — so the colour painted
---- here is the one that will *come out* as the colour chosen above.
+-- Night mode takes paper to black, leaves a colour, then inverts the fill.
 local function setCropMarginColor(plugin, ui, margin)
     local view = ui and ui.view
     local stock = plugin._meguru_view_color
@@ -2614,29 +1600,17 @@ local function setCropMarginColor(plugin, ui, margin)
     local color
     plugin._meguru_surround = nil
     if margin then
-        -- The margin's own colour, per page and unrounded. Rounding it to the grid
-        -- the page is dithered on was tried and is *worse*: a margin drifting
-        -- between 247 and 248 lands on two different levels of that grid, so the
-        -- letterbox jumps a whole step instead of moving a level. What the drift
-        -- needs is the honest value, not a coarser one.
+-- Per page and unrounded: snapping to the dither grid made the letterbox jump.
         local r, g, b = margin.r, margin.g, margin.b
         if pageIsInverted(ui.document) then
             if isPaper(r, g, b) then
-                -- Paper goes to the black the screen already is, so a
-                -- white-margined page stops being a band brighter than everything
-                -- around it.
+-- Paper goes to the black the screen already is.
                 r, g, b = 255 - r, 255 - g, 255 - b
             end
-            -- A colour is left where it is: the reader sees the margin they have,
-            -- in the dark as in the light. What follows is the display's own
-            -- inversion of every fill under night mode, which the page cancels for
-            -- itself by inverting the region it drew — so this hands over the
-            -- colour that will *come out* as the one chosen above.
+-- A colour is left alone; the fill is inverted as the display will invert it.
             r, g, b = 255 - r, 255 - g, 255 - b
         end
-        -- What the two stock fields get is a *grey* of the same brightness, for
-        -- the one path that still paints them (continuous mode). The colour
-        -- itself goes through `_meguru_surround`, painted below.
+-- The stock fields get a grey of the same brightness, for continuous mode.
         color = Blitbuffer.gray(1 - lumaOf(r, g, b) / 255)
         plugin._meguru_surround = { r = r, g = g, b = b }
     end
@@ -2644,19 +1618,7 @@ local function setCropMarginColor(plugin, ui, margin)
     view.page_bgcolor = color or stock.page
 end
 
---- Ask the document for the margin this page's crop took off, remember it, and
---- paint the surround with it. Called on a page turn and once at install.
----
---- Inert wherever the crop is not: with "Crop" off, or on a page the scan
---- refused or found no margin on, `cropMarginColor` answers nil and the reader's
---- own surround colour is restored. That is also what keeps this from arguing
---- with `meguru/doc/image`, whose panel mask is white by a written decision — the
---- colour here is only trusted on a page the crop actually trimmed.
----
---- The *asking* happens here, on a turn, and deliberately not in the paint that
---- follows: a cold crop means a decode, and a decode inside a paint is the one
---- thing this document's render path exists to avoid. The remembered value is
---- what the paint then re-derives from.
+-- Asked on a turn, not in the paint: a cold crop is a decode.
 local function applyCropMarginColor(plugin, ui, page)
     local document = ui and ui.document
     local configurable = document and document.configurable
@@ -2675,18 +1637,7 @@ local function applyCropMarginColor(plugin, ui, page)
     setCropMarginColor(plugin, ui, margin)
 end
 
---- Re-derive the surround on every paint, from the margin a turn remembered.
----
---- **This is the seam that makes night mode come out right, and it cannot be the
---- page turn.** Night mode is toggled between turns — the reader's own
---- `DeviceListener` flips the screen and then dirties the whole view
---- (`Screen:toggleNightMode` then `UIManager:setDirty("all", "full")`), with no
---- turn anywhere in it — so a level decided on the turn is one inversion out of
---- date by the time that repaint runs, and a black-bordered book shows a *white*
---- band around the page. The page itself has no such gap because `drawPage` asks
---- its question while drawing; this asks `pageIsInverted` in the same place, one
---- call above the surround's own paint. Nothing is computed from the page here —
---- the remembered margin is a number, and the rest is two field writes.
+-- Re-derived per paint, not per turn: night mode is toggled with no turn in it.
 local function installCropMarginColor(plugin, ui)
     local view = ui and ui.view
     if not (view and type(view.paintTo) == "function") then
@@ -2699,20 +1650,7 @@ local function installCropMarginColor(plugin, ui)
     end
 end
 
---- Paint the letterbox in the margin's colour, after stock has painted it grey.
----
---- **The colour cannot travel in `outer_page_color`.** Stock's `drawPageSurround`
---- fills with `bb:paintRect`, whose value goes through a Color8 first — a grey
---- whatever colour it is handed — so a yellow margin came out light grey, which is
---- the bug this fixes. `paintRectRGB32` is the fill that carries channels, and it
---- honours the target's inverse flag exactly as the plain one does, so the
---- night-mode colour computed above is still the one to hand it.
----
---- The whole view rectangle is filled and stock's own fills are left underneath
---- it: `ReaderView:paintTo` draws the page immediately after this, so the page
---- covers itself and what is left showing is the letterbox. Continuous mode does
---- not come through here at all — it paints `page_bgcolor` from
---- `drawPageBackground` — so there the grey in that field is what shows.
+-- outer_page_color paints grey via Color8; paintRectRGB32 carries the channels.
 local function installCropMarginPaint(plugin, ui)
     local view = ui and ui.view
     if not (view and type(view.drawPageSurround) == "function") then
@@ -2729,9 +1667,7 @@ local function installCropMarginPaint(plugin, ui)
     end
 end
 
---- Graft everything reader-side onto `plugin` for the document it has open.
---- A no-op for any other document, so a PDF in the same session never grows a
---- Meguru row or a wrapped seam.
+-- Grafts everything reader-side; a no-op for any non-Meguru document.
 function Reader.install(plugin)
     local ui = plugin and plugin.ui
     local doc = ui and ui.document
@@ -2739,9 +1675,7 @@ function Reader.install(plugin)
         return false
     end
 
-    -- What the surround was before this plugin touched it. Captured once per
-    -- reader, before anything here writes the fields, which is the idiom stock's
-    -- own cropping module uses for the same two fields (`readercropping`).
+-- Captured before anything writes them, as stock's own cropping module does.
     if ui.view and not plugin._meguru_view_color then
         plugin._meguru_view_color = {
             outer = ui.view.outer_page_color,
@@ -2753,72 +1687,36 @@ function Reader.install(plugin)
 
     local rotate_state = {}
     plugin._meguru_rotate_state = rotate_state
-    -- The same table on the reader, because `syncSpread` is ui-scoped and has to be
-    -- able to ask whether a rotation is still this plugin's (`publishScreenRotation`).
+-- Same table on the reader: syncSpread has to ask if a rotation is still ours.
     ui._meguru_rotate_state = rotate_state
 
-    -- Standalone wide-page rotation, unless pagenumbercrop.koplugin is already
-    -- driving this document — one owner of a screen's rotation, not two. Both of
-    -- its markers are probed, since either may be present depending on which of
-    -- its patches applied.
-    --
-    -- **Read here, which is as early as this plugin gets**, and the two plugins
-    -- are constructed in path order (`pluginloader.lua:289`), so a plugin whose
-    -- init runs *after* this one has not patched yet and neither marker is set:
-    -- then both rotations are installed. That is redundant rather than wrong —
-    -- `updatePageRotation` reconciles against the screen's own rotation instead
-    -- of toggling it, so the second call is a no-op — and it is unobservable
-    -- either way, which is why this is a note and not a guard.
+-- Skip our rotation when pagenumbercrop owns the document; both markers probed.
     local pagenumbercrop_owns = doc._pagenum_cache ~= nil
         or (ui.paging and ui.paging._page_number_crop_patched)
     if not pagenumbercrop_owns then
         installWideRotate(rotate_state, ui)
         plugin._meguru_wide_rotate_installed = true
-        -- A previous Meguru book may have left the screen rotated for a wide
-        -- spread. Reconcile once layout has settled.
+-- A previous book may have left the screen rotated; reconcile after layout.
         if session_wide_rotate.base ~= nil then
             UIManager:scheduleIn(0.1, function()
                 pcall(reconcileWideRotation, rotate_state, ui)
-                -- The reconcile either *keeps* a rotation a previous book left
-                -- active or puts the screen back, and both change what the two-page
-                -- view is looking at — so the document is told which it is
-                -- (`publishScreenRotation`) before the first layout is trusted.
+-- Either way, tell the document before the first layout is trusted.
                 syncSpread(ui)
             end)
         end
     end
 
-    -- The two-page view's own seams, and unlike the rotation above this is
-    -- installed whatever else is: it is not a second answer to a question
-    -- another plugin answers, it is a question nothing else asks at all.
-    --
-    -- **One interaction is left open and is recorded in `docs/known-issues.md`:**
-    -- with `pagenumbercrop.koplugin` installed *and* the two-page view on, that
-    -- plugin's own wide-page rotation reads a pair through this document's
-    -- geometry, sees something wider than tall, and turns the screen — which
-    -- stops the pair, which makes the next page narrow again. Our guard cannot
-    -- catch it, because that path never comes through our rotation.
+-- Installed whatever else is: the pair is a question no other plugin asks.
     installSpread(ui)
 
-    -- Installed here, before the `ReadSettings` event reaches ReaderHighlight,
-    -- so the value the reader sees is the one this decides and not the one
-    -- stock read out of the book's sidecar a moment later.
+-- Before ReadSettings, so our answer beats the one stock reads a moment later.
     installPanelZoom(ui)
 
-    -- Also before the first paint: the painter is what stands between a failed
-    -- page and a reader looking at a gray rectangle with nothing to read.
+-- Before the first paint: the painter stands between a failed page and a blank.
     installPageErrorPage(plugin)
 
-    -- **Chained, not merged into the installer above**, which is where it would
-    -- otherwise belong: `installPageErrorPage` returns early for a document with
-    -- no `paintMissingPage`, and a page turn is not a painter's business —
-    -- hanging the position report on that guard would stop it silently on the
-    -- day the guard changes. Chaining is this file's own idiom (see
-    -- `installPanelZoom` and `curateConfigMenu`), and the captured handler is
-    -- whatever the field holds *now*, so the failed-page retry survives.
-    --
-    -- A turn that arrives without a page number falls back to the page on screen,
-    -- which is where the paging module keeps it.
+-- Chained, not merged: a page turn is not a painter's business.
+-- A turn with no page number falls back to the page on screen.
     local page_error_handler = plugin.onPageUpdate
     plugin.onPageUpdate = function(self, page)
         if type(page_error_handler) == "function" then
@@ -2829,20 +1727,11 @@ function Reader.install(plugin)
         applyCropMarginColor(plugin, self.ui or ui, turned)
     end
 
-    -- And the page the book opens on, which no page turn announces.
+-- The page the book opens on, which no page turn announces.
     applyCropMarginColor(plugin, ui, currentPage(ui))
 
-    -- And whenever the crop moves with no turn in it. The Crop row fires the
-    -- reader's own `ReZoom` rather than a page turn, so switching it — `none` to
-    -- `auto` most visibly — left the newly cropped page inside the colour the
-    -- *uncropped* one answered: invisible on a white margin, where the reader's own
-    -- surround already matches, and on a coloured one it reads as the crop not
-    -- working at all.
-    --
-    -- Wrapped on the handler that derives the box, so the crop is warm by the time
-    -- the colour is asked for — which is what keeps the asking off the paint, where
-    -- a cold crop would be a decode. A plugin `onReZoom` would not do:
-    -- `ReaderZooming:onReZoom` returns true and consumes the event.
+-- The Crop row fires ReZoom, not a turn, so the surround must be re-asked here.
+-- On the handler that derives the box, so the crop is warm by then.
     local zooming = ui.zooming
     if zooming and type(zooming.onReZoom) == "function" then
         local zooming_rezoom = zooming.onReZoom
@@ -2855,14 +1744,7 @@ function Reader.install(plugin)
 
     curateConfigMenu(plugin)
 
-    -- And again once the reader is up, because a plugin can replace the method
-    -- *after* ours is in place — see `curateConfigMenu`. `ReaderReady` is the
-    -- seam that is provably later than that: `ReaderUI:init` fires the event and
-    -- only *then* runs its `postReaderReadyCallback` list
-    -- (`readerui.lua:517-522`), while a replacement installed from a post-init
-    -- callback has already happened by the time init returns. Without this the
-    -- reader sees the stock, uncrated dialog — and nothing reports it, because
-    -- the menu still works.
+-- Re-installed at ReaderReady, provably later than a plugin's replacement.
     if type(ui.registerPostReaderReadyCallback) == "function" then
         ui:registerPostReaderReadyCallback(function()
             if curateConfigMenu(plugin) and not config_menu_repair_logged then
@@ -2872,41 +1754,17 @@ function Reader.install(plugin)
             end
         end)
 
-        -- **And the page-number crop is this plugin's, whatever else is
-        -- installed.** `pagenumbercrop.koplugin` patches the same seam from its
-        -- own init, and its analysis is the one this plugin was ported from —
-        -- without the width bound that keeps a sound effect or a boxed title
-        -- from being removed as if it were a number. A reader who has both
-        -- installed gets this plugin's crop.
-        --
-        -- This is the seam for it, and *not* the install above: plugins are
-        -- constructed one after another in `ReaderUI:init`, so a take-back done
-        -- there is only as late as this plugin's own turn — whichever of the two
-        -- inits runs last would decide it. `postReaderReadyCallback` is provably
-        -- later than all of them: `ReaderUI:init` fires `ReaderReady` and only
-        -- then runs that list (`readerui.lua:517-522`), and the reader's first
-        -- paint comes after init returns. Taking it back here also re-derives the
-        -- box (below), which is still before that paint — so nothing is drawn
-        -- twice.
+-- Take the crop seam back at ReaderReady, later than every plugin's init.
         ui:registerPostReaderReadyCallback(function()
             if type(doc.takeBackPageBBox) ~= "function" or not doc:takeBackPageBBox() then
                 return
             end
             logger.info("Meguru: took the crop seam back from pagenumbercrop")
-            -- It had patched, so its answer may be in the box already derived
-            -- for the page this book opened on: that box is derived during
-            -- `ReadSettings`, which runs after every plugin's init. Derive it
-            -- again, for the same reason the seeded rows do
-            -- (`meguru/doc/defaults`).
+-- It may already be in the box derived during ReadSettings, so derive it again.
             ui:handleEvent(Event:new("ReZoom"))
         end)
 
-        -- And the two-page view's first look, here rather than at install for
-        -- the reason the take-back above is here: every plugin's seeding has run
-        -- by now, so a book the plugin preference gives "on" to is laid out two-
-        -- up from its first paint instead of staying one page until something
-        -- else asks. `syncSpread` fires nothing when the answer is off, which is
-        -- every book that has not asked for it.
+-- First look at the pair; every plugin's seeding has run by now.
         ui:registerPostReaderReadyCallback(function()
             syncSpread(ui)
         end)
@@ -2940,18 +1798,7 @@ function Reader.install(plugin)
         return true
     end
 
-    -- The offset row, whose value is *where* rather than *whether*.
-    --
-    -- The row is a switch — off and on — and "on" means **from here**: the offset
-    -- is anchored at the page the reader is on, so it applies to the run they are
-    -- reading and no other. That single rule is what makes it do both things the
-    -- reader asked for at once: a wide page ends the offset by itself (the anchor
-    -- is not in the new run), and setting the row again past one anchors it there.
-    -- See `meguru/spread` for the rule and what was rejected in its place.
-    --
-    -- Compared, never tested: `value` arrives in the row's 0/1 domain and `0` is
-    -- truthy in Lua, so `value and …` would read a stored "off" as on — the trap
-    -- `meguru/doc/defaults`' `seedRowValue` documents at length.
+-- "On" means from here; compared, never tested, since 0 is truthy.
     plugin.onMeguruSpreadOffsetUpdate = function(self, value)
         local ui = self.ui
         local anchor = 0
@@ -2962,14 +1809,7 @@ function Reader.install(plugin)
         return true
     end
 
-    -- The same flip, for a reader who would rather have a gesture than a menu: the
-    -- Dispatcher action `main.lua` registers fires this event, and what it does is
-    -- exactly what the row's switch does — off when the run the reader is in is
-    -- already offset, and anchored *here* when it is not.
-    --
-    -- **Installed per reader, like every handler in this block**, which is what
-    -- makes the Dispatcher action safe to leave bound outside a Meguru book: the
-    -- event arrives, no instance has the method, and nothing happens.
+-- Same flip for the gesture action; installed per reader, inert elsewhere.
     plugin.onMeguruPairOffsetToggle = function(self)
         local ui = self.ui
         local doc = ui and ui.document
@@ -2983,19 +1823,16 @@ function Reader.install(plugin)
     end
 
     plugin.onMeguruSpreadGutterUpdate = function(self, value)
-        -- Compared, never tested: 0 is truthy in Lua (see the row).
+-- Compared, never tested: 0 is truthy in Lua (see the row).
         value = (value == 1 or value == "1" or value == true) and 1 or 0
         setSpreadGutter(self.ui, value,
             value == 1 and _("Flexible gutter: on") or _("Flexible gutter: off"))
         return true
     end
 
-    -- The moiré switch. `DERAINBOW_ROW` is this plugin's own row, so this is its
-    -- only handler: the other plugin answers its own switch by reaching for
-    -- `self.ui.rolling` and a `document.buffer`, neither of which a page-turning
-    -- reader here has.
+-- Own row, own handler; the other plugin's needs a rolling view we lack.
     plugin.onMeguruDerainbowUpdate = function(self, value)
-        -- Compared, never tested: 0 is truthy in Lua (see the row).
+-- Compared, never tested: 0 is truthy in Lua (see the row).
         value = (value == 1 or value == "1" or value == true) and 1 or 0
         setDerainbow(self.ui, value,
             value == 1 and _("Derainbow: on") or _("Derainbow: off"))
@@ -3028,18 +1865,12 @@ function Reader.install(plugin)
             self.ui.doc_settings:saveSetting("inverse_reading_order", enabled)
             self.ui.doc_settings:flush()
         end
-        -- The same live path the built-in menu uses: flips the flag, re-maps
-        -- the touch zones and notifies.
+-- The built-in menu's live path: flips the flag, remaps touch zones, notifies.
         local view = self.ui.view
         if view and type(view.onToggleReadingOrder) == "function" then
             view:onToggleReadingOrder(enabled)
         end
-        -- **And the document is told, because it is the one that draws a pair.**
-        -- Which page of a pair goes on which side is the reading direction's
-        -- business, and the document cannot read `view.inverse_reading_order`
-        -- (it is not a configurable, and the document is opened before the
-        -- reader exists) — so it keeps its own copy, seeded from the same
-        -- sidecar key at open and kept in step here.
+-- The document keeps its own copy: it draws a pair and cannot read the view.
         local doc = self.ui and self.ui.document
         if doc then
             doc.spread_rtl = enabled
@@ -3057,28 +1888,8 @@ function Reader.install(plugin)
         return true
     end
 
-    -- The *Reading* tab's *Panel view* row: one of the three views, or off.
-    --
-    -- **Two keys, one answer, which is why this is more than an assignment.**
-    -- `panel_view` holds a view and nothing else, so Off cannot be stored in it —
-    -- and it has already been written there by the time this runs, because the
-    -- dialog writes the chosen value through `ReaderKoptListener:onConfigChange`
-    -- and fires the row's own event after it. The Off branch therefore puts the
-    -- reader's own view back: that is a deliberate, narrow normalisation of the
-    -- kind this codebase distrusts — one row, one value, one direction — and the
-    -- alternative was a view key that could also mean "no view", i.e. two keys
-    -- answering the same question and parting company the moment KOReader's own
-    -- *Allow panel zoom* row was used.
-    --
-    -- Whether there *is* a panel zoom is KOReader's `panel_zoom_enabled`, whose only
-    -- stock setter is a toggle that ignores its argument
-    -- (`ReaderHighlight:onTogglePanelZoomSetting`). So the field is first put where
-    -- that flip has to start from, and the flip then leaves it on the wanted answer
-    -- — and sets the pin and the book's own answer from it, in the wrap
-    -- `installPanelZoom` installs, which is what `meguruPanelZoomWanted` reads at
-    -- the press. Both halves are needed: a rival panel plugin moves the field on
-    -- every `ReadSettings`, and the row would otherwise name a view while the press
-    -- went nowhere.
+-- panel_view holds only a view, so Off puts the reader's own view back.
+-- Put panel_zoom_enabled where the stock flip must start, then flip it.
     plugin.onMeguruPanelViewUpdate = function(self, value)
         local ui = self.ui
         local doc = ui and ui.document
@@ -3114,8 +1925,7 @@ function Reader.install(plugin)
         return true
     end
 
-    -- The rotation is restored first and the position reported last, so the
-    -- screen is the right way up before anything waits on a socket.
+-- Rotation restored first, so the screen is right before a socket wait.
     plugin.onCloseDocument = function(self)
         if self._meguru_wide_rotate_installed then
             restoreWideRotate(self._meguru_rotate_state, self.ui)
@@ -3132,16 +1942,8 @@ function Reader.install(plugin)
         flushProgress(self)
     end
 
-    -- **The two seams that end a session without closing the book**, and both are
-    -- needed: closing the lid runs `UIManager:flushSettings()` and *then*
-    -- broadcasts `Suspend`, so both arrive a moment apart and the second finds
-    -- nothing left to send — which is what `flushed` is for. Backing out to the
-    -- FileManager reaches `onCloseDocument` and neither of these.
-    --
-    -- Assigned rather than chained because neither is assigned anywhere else in
-    -- this plugin; the four that were already assigned above are extended in
-    -- place for the opposite reason — a second assignment to any of them would
-    -- silently replace the first.
+-- Both seams needed: flushSettings and Suspend arrive a moment apart.
+-- Assigned, not chained: neither is assigned elsewhere in this plugin.
     plugin.onFlushSettings = function(self)
         flushProgress(self)
     end
