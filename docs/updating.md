@@ -91,9 +91,11 @@ perfectly good archive as "not a Meguru release". A device did exactly that.
 
 **Nothing on disk but markers** now has an exception of a different shape than
 `seriescover`'s: `<data>/ota/meguru/` holds the archive, the staged tree and the
-backup for the length of one attempt, and `ota` is entirely ours, so every
+backup for the length of one attempt, and `ota` is entirely ours, so a
 failure path clears the whole directory in one `purgeDir` rather than picking
-off what that stage happened to write. A 477 KB zip left on the card after a
+off what that stage happened to write. The exception is a swap whose restore
+rename also fails: there the function returns and purges nothing, because the
+backup is then the only surviving copy. A 477 KB zip left on the card after a
 failed attempt would be exactly the thing this codebase does not do. It sits
 under the data directory rather than in `cache/meguru` because the staged tree
 has to *become* the plugin directory by rename, and a rename cannot cross

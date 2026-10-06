@@ -238,8 +238,8 @@ Invariants when touching these rows:
   a page's own rows.
 - **`Covers for folders` is the one thing below `Settings`, and it is an exception
   rather than a precedent.** Its three rows are switches for one feature, and as flat
-  rows they would take `Settings` from six entries to nine while naming servers instead
-  of the thing they belong to. The level is bought back by the row above them saying
+  rows they would take the reader's `Settings` from seven entries to nine — eight to ten
+  on a book with a series — while naming servers instead of the thing they belong to. The level is bought back by the row above them saying
   what the group *is* — which is the whole job `Settings` does one level up, and the
   reason "one level deep" existed. A second such submenu should have to make the same
   argument. **The position report is the case that did not make it**: one server accepts

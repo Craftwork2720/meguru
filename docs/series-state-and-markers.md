@@ -9,9 +9,10 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
 **There is no store. A marker and the server's own feed are the whole of it.**
 
 A marker carries twelve fields plus a version: the identity of the book
-(`server_name`, `series_remote_id`, `series_name`, `server_kind`, `item_key`),
-what opens its stream (`template`, `count`, `last_read`), and what a feed can be
-asked for when it is reachable (`lang`, `cover_url`, `series_cover_url`). The
+(`server_name`, `series_remote_id`, `series_name`, `server_kind`, `item_key`), its
+own `title`, what opens its stream (`template`, `count`, `last_read`), and what a
+feed can be asked for when it is reachable (`lang`, `cover_url`,
+`series_cover_url`). The
 first two groups are enough to open and read the book with no network and no
 configuration; the third is enough to build the one URL that describes its series
 and to say which translation is being read.

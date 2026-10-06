@@ -453,7 +453,7 @@ document's `opdsbook_manga`, and then to the plugin-wide
 `Settings.get("manga_order")`, only when the view cannot answer. The document is told
 the mode rather than reading it, because a document has no view.
 
-**The viewer is four overrides on `ImageViewer`, and stock does the rest.**
+**The viewer subclasses `ImageViewer`, and stock does the rest.**
 `ui/panelzoom.lua` passes a list of **lazy functions** — `ImageViewer:init` and
 `switchToImageNum` both call an entry that is a function — so panels the reader never
 reaches are never rendered, and each render goes through `drawPagePart`, whose LRU
@@ -498,8 +498,9 @@ boundary, so the second panel becomes unreachable and the symptom looks like bro
 navigation rather than a hidden bar. **`tools/check.py` cannot see this**: it keys on
 names, and a field reached through `self` is not one. The gesture is the test.
 
-The four overrides are `switchToImageNum` (recompute `rotated` per panel, then release
-the one left behind, then re-arm the warm), `onShowNextImage` / `onShowPrevImage`
+The overrides that carry a reason of their own are `switchToImageNum` (recompute
+`rotated` per panel, then release the one left behind, then re-arm the warm),
+`onShowNextImage` / `onShowPrevImage`
 (boundary past either end), and `onTap` / `onSwipe`. **Those last two exist for one
 reason:** stock picks the sides from `BD.mirroredUILayout()` — the UI language — and a
 manga read in a Polish UI gets stock's answer backwards. Everything else is delegated
@@ -1162,7 +1163,7 @@ agree with the cropped one, which has always shown a panel from its start. What 
 protecting — that a tap near a panel's edge, clamped to the page, does not leave the panel
 half seen — is kept by the walk itself: every stop of the panel is pushed, in order.
 
-**What it reuses, unchanged.** `ImageViewer` and its four overrides: with the image
+**What it reuses, unchanged.** The inherited `ImageViewer` behaviour: with the image
 screen-sized and best fit still `scale_factor == 0`, `onSwipe`'s gate, `onTap`'s thirds,
 the hardware keys and the close contract all behave exactly as they do for a panel. The
 buffers are the document's tiles (`image_disposable = false`, released on the step just
