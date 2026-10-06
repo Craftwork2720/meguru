@@ -23,6 +23,7 @@ local Feed = require("meguru/feed")
 local Icons = require("meguru/icons")
 local Defaults = require("meguru/doc/defaults")
 local Image = require("meguru/doc/image")
+local Catalog = require("meguru/ui/catalog")
 local Info = require("meguru/ui/info")
 local Local = require("meguru/local")
 local Open = require("meguru/ui/open")
@@ -1414,6 +1415,13 @@ function Reader.infoFields(ui)
         fields.language = desc.lang
 -- server_kind, not the catalogue title: which server is a fact about the book.
         fields.server   = desc.server_kind and Base.kindLabel(desc.server_kind) or nil
+    end
+-- Only a catalogued book: the button opens its series on the server.
+    local context = seriesContext(ui)
+    if context and doc.desc then
+        -- The marker itself, not the context: the template names the driver.
+        local desc = doc.desc
+        fields.show_in_opds = function() Catalog.showIn(ui, desc) end
     end
     return fields
 end

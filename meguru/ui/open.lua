@@ -21,6 +21,7 @@ local RowCover = require("meguru/rowcover")
 local SeriesCover = require("meguru/seriescover")
 local Settings = require("meguru/settings")
 local Sources = require("meguru/sources")
+local Catalog = require("meguru/ui/catalog")
 
 Base.loadDrivers()
 
@@ -398,32 +399,11 @@ local function handToReader(host, file)
     return handOff(file, function() host.ui:openFile(file) end)
 end
 
--- Close the OPDS window a book is being opened from.
--- Left open it stays under the reader and shows again as the reader exits.
--- host is the OPDS plugin on this path; a file-manager host has no browser.
-local function closeBrowser(host)
-    local browser = host and host.opds_browser
-    if type(browser) ~= "table" then
-        return
-    end
-    -- The plugin's own close, which also drops any open download list.
-    local close = browser.close_callback
-    if type(close) ~= "function" then
-        UIManager:close(browser)
-        return
-    end
-    local ok, err = pcall(close)
-    if not ok then
-        logger.warn("Meguru: could not close the OPDS browser:", err)
-        UIManager:close(browser)
-    end
-end
-
 -- Hand a prepared marker over, reporting the one failure that matters.
 -- Used by both catalog open paths so message and arming cannot drift.
 local function openPrepared(host, file)
     -- Before the handoff: nothing left to be revealed by the reader's exit.
-    closeBrowser(host)
+    Catalog.closeBrowser(host)
     if handToReader(host, file) then
         return file
     end

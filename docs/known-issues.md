@@ -476,3 +476,16 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   answers its own event and never takes that path. What would settle it is that plugin guarding
   the call, which is a one-line fix upstream; what it costs is a crash for a reader who bound
   the gesture, which is also a reason to say so in the README rather than only here.
+
+- **The OPDS browser opened over the reader is a surface stock never shows.** Show in OPDS is
+  reachable from the reader's Info popup, and `OPDS:onShowOPDSCatalog` builds a browser around
+  whatever `ui` it is handed, expecting a file manager: `close_callback` guards
+  `self.ui.file_chooser`, `onReturn` and `init` are host-agnostic, and the plugin's own catalog
+  row is gated on `not self.ui.document`, so nothing else on that path minds. One thing does:
+  the *Choose folder* button of a book's download dialog reaches
+  `self._manager.ui.folder_shortcuts`, which a `ReaderUI` has no field for. That is inside
+  KOReader's own dialog, one tap away from a browser opened this way, and Meguru does not wrap
+  a foreign dialog's callbacks to paper over it. What would settle it is that button on a
+  device (checklist item 29); what it costs is one error in the log and a button that does
+  nothing, for a reader who got to that dialog from the reader rather than from the file
+  manager.

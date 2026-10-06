@@ -102,7 +102,9 @@ promise made before the walk that would have to keep it — and the local `.cbz`
 is what decides whether the rows exist at all: a lone book in a folder gets none,
 rather than two that answer "no next chapter".
 
-Nothing is written or fetched; dismissing it is `ButtonDialog`'s own tap-outside.
+Nothing is written, and dismissing the popup is `ButtonDialog`'s own tap-outside. The one row
+that reaches the network is **Show in OPDS**, which opens the browser on the book's own
+series — the other direction of this plugin's row above a feed.
 
 **The split between *Page* and *Tone* is the one thing to keep straight when moving a
 row**: the three tabs before *Tone* are about the *shape* of what is shown — how it is
@@ -369,6 +371,16 @@ Invariants when touching these rows:
   `getStatusBarFooter`, which probes `ReaderView` first and the `ReaderUI` module second so
   either KOReader layout works.
 
+- **A plugin's `on*` methods are not functions.** `pluginloader` replaces every handler whose
+  name starts with `on` with a `HandlerSandbox` **callable table** — it exists to get useful
+  stack traces out of plugin handlers — and it does that for every plugin load, not only under
+  `-d`. So `type(plugin.onSomething) == "function"` is always false, and a feature gated that
+  way is silently dead: `Catalog.showIn` refused to open the browser for as long as its guard
+  asked for a function, while `mizu`'s navbar gets it right by asking `if opds and
+  opds.onShowOPDSCatalog`. Test truthiness and call it with a colon — the sandbox forwards
+  `self` — and note the trap does **not** reach a widget's own methods, nor a plugin method
+  that merely begins with `op` (`openDownloadedFile`).
+
 Four more, about the browser rather than the lifecycle.
 
 **`OPDSParser:parse` returns the document wrapped under its own root element.**
@@ -431,6 +443,34 @@ never shows this because `OPDS:openDownloadedFile` closes the browser first.
 open download list. Both rows land there: the one above a series feed through
 `openCatalogItem`, the one in the download dialog through `openAsBook`, which additionally
 prefers the built-in `openDownloadedFile` on builds that have it.
+
+**"Show in OPDS" is the same window entered from the other end.** Two surfaces ask for it:
+the Info popup, to which `Reader.infoFields` hands a callback (`ui/info` still requires no
+module of ours — it is given a function and closes its own dialog), and a row in the
+file-manager long-press dialog, added through `FileManager:addFileDialogButtons` to all
+four widgets that draw one. The reader draws those same classes for its own History and
+Collections, so the host is resolved **from the dialog's owner at tap time** and never
+captured at registration; only a dialog `UIManager:isWidgetShown` agrees is open counts,
+because `file_dialog` outlives the dialog it was set on.
+
+`Catalog.showIn` then resolves the marker, finds the server by `server_name` in
+`settings/opds.lua`, and builds the feed with the same `driver.catalogURL` call the resume
+walk uses — `lang` travels, since Suwayomi picks the translation by it. A marker that names
+no series (a flat one, or a server with no driver) opens that server's own root instead, and
+a server missing from the settings gets a message and no browser at all. The jump is
+`OPDS:onShowOPDSCatalog()` followed by four fields set on the browser it just made:
+`root_catalog_title`, `root_catalog_username` and `root_catalog_password` (every fetch is
+authenticated with those) and `catalog_title` — a fetched OPDS 1 feed sets no title, and the
+"+" button concatenates it — and then `updateCatalog(url)`. **Nothing is painted in
+between**: `UIManager:show` only queues a repaint and the fetch is synchronous, so the
+catalog list the browser was built on never reaches the screen. The back arrow pops the
+one-entry `paths` stack and lands on the **full server list**, not on this server.
+
+Seeding `root_catalog_title` is load-bearing beyond the title bar: it is the key the
+`parseFeed` wrap files `last_feed` under, so the view this opens is the same one the browser
+reaches by hand — the row above the feed works inside it, and so does `ctx.url` for Komga.
+The browser opened from the *reader* is the one case stock never has; what that costs is in
+`known-issues.md`.
 
 ### Another plugin may replace the wraps, so they are installed twice
 

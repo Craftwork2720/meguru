@@ -7,6 +7,7 @@ local logger = require("logger")
 local _ = require("gettext")
 
 local Association = require("meguru/association")
+local Catalog = require("meguru/ui/catalog")
 local Defaults = require("meguru/doc/defaults")
 local Hook = require("meguru/hook")
 local Icons = require("meguru/icons")
@@ -44,6 +45,10 @@ function Meguru:init()
     -- Wrap the OPDS browser; failure disables the button, not the plugin.
     Hook.install()
     Open.setFallbackHost(self)
+    -- File dialogs are the file manager's: the reader's first init has none.
+    if not (self.ui and self.ui.document) then
+        Catalog.installFileDialogRow(self.ui)
+    end
     self:registerProvider()
 
     -- Class-level, once per process: in place before any book's dialog builds.

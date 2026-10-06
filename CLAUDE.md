@@ -23,7 +23,7 @@ main.lua            plugin class: provider registration, menu dispatch, reader i
 meguru/             core modules (paths, fs, settings, net, feed, marker, pse, panel, ...)
 meguru/driver/      per-server drivers: base, suwayomi, kavita, komga
 meguru/doc/         Document subclass, image decoding, per-book defaults
-meguru/ui/          open, reader, panelzoom, info, menu
+meguru/ui/          open, reader, panelzoom, info, menu, catalog
 assets/             optional artwork and tab icons
 libs/               vendored moire filter (not ours, unmodified, pinned; see libs/README.md)
 tools/check.py      automated guard, not part of the plugin

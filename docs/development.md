@@ -821,3 +821,23 @@ Each step must pass before the next:
     | j | delete `<plugin dir>/libs/`, restart, open a book whose `kopt_derainbow` is `1` | it opens **unfiltered**, with no error and no `derainbow` line, and the row is absent. The probe is silent when the files are simply missing — only a *failed load of files that were there* warns |
     | k | put the files back and open the book again | the row returns and the filter runs; nothing about the book had to change, because the value lives in the book and the availability lives in the install |
     | l | turn the row off again on a page already shown | it repaints unfiltered immediately. A tile keeps its old pixels until the stamp is compared, and `ReZoom` is what asks for new ones |
+
+29. **Show in OPDS, from both ends.** Wipe the series' markers first: a v1 marker carries no
+    `series_remote_id`, so it tests the fallback below rather than the feature.
+
+    | # | do | expected |
+    |---|---|---|
+    | a | in the reader, bottom menu → info icon → **Show in OPDS**, wifi **off** | one wifi prompt, then the browser opens **already on the series' volume list**. The catalog list it was built on must never appear, not even for a frame |
+    | b | same, wifi on | no prompt, same landing. One `Meguru: showed …` at info naming the series, the server and "the series feed" — and **no URL**, since a Kavita key is a path segment of one |
+    | c | the back arrow | the **full server list**, not this server. Tapping a book there still offers ▶ over the feed — the retention key is the title this jump sets |
+    | d | close the browser | back in the reader, bottom menu still open, no repaint of the catalog |
+    | e | a flat marker — no `series_remote_id` | opens the server's own root; the log line says "the server root" |
+    | f | edit a marker's `server_name` to one absent from `settings/opds.lua` | the "no catalog entry" message, nothing opens, no exception |
+    | g | rename `settings/opds.lua` away and reopen the book | same message; the book still reads and pages still turn |
+    | h | in the file manager, long-press a `.meguru` | a **Show in OPDS** row at the bottom of the dialog; tapping closes the dialog and opens the browser on the series |
+    | i | the same from History, a Collection, FileSearcher, and the **reader's own** History | the same, each time — the reader's copy is the one that proves the host is taken from the dialog's owner rather than captured at registration |
+    | j | long-press a folder, and a non-`.meguru` file | **no row at all** |
+    | k | an empty file renamed `x.meguru` | the "could not read the book file" message, no row missing and no exception |
+    | l | each of Kavita, Komga and Suwayomi | the series feed, in the book's own language for Suwayomi, and Komga behind a path-prefixed catalog root |
+    | m | open the browser from `a`, tap a book, tap **Choose folder** | the finding in `known-issues.md`: stock's own button reaches for `folder_shortcuts` on a reader and does nothing. Record what it actually does |
+    | n | regression: from a reader-opened browser, open a book with ▶ and close it | no flash of the catalog underneath — item 13 still holds |

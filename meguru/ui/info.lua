@@ -144,19 +144,33 @@ function Info.show(fields)
     local measured = page and total and total > 0
     local percent = measured and math.min(1, math.max(0, page / total)) or 0
 
+    -- Declared first: both rows close the dialog they are buttons of.
     local dialog
+    -- Offered only when handed one: a local book has no catalog to show.
+    local buttons = {}
+    if type(fields.show_in_opds) == "function" then
+        buttons[#buttons + 1] = {
+            {
+                text = _("Show in OPDS"),
+                callback = function()
+                    UIManager:close(dialog)
+                    fields.show_in_opds()
+                end,
+            },
+        }
+    end
+    buttons[#buttons + 1] = {
+        {
+            text = _("Close"),
+            callback = function() UIManager:close(dialog) end,
+        },
+    }
+
     dialog = ButtonDialog:new{
         -- No derivable title: the header says what the popup is, not the book.
         title = (type(fields.title) == "string" and fields.title ~= "")
             and fields.title or _("Book info"),
-        buttons = {
-            {
-                {
-                    text = _("Close"),
-                    callback = function() UIManager:close(dialog) end,
-                },
-            },
-        },
+        buttons = buttons,
     }
 
     -- Width from the dialog: the same answer its own title is wrapped to.
