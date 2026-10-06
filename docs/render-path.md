@@ -337,6 +337,61 @@ own surround already matches. It is re-asked from a wrap on `ReaderZooming:onReZ
 rather than from the paint, because a cold crop is a decode and that handler is the
 one that has just derived the box the colour comes from.
 
+**MuPDF subsamples an oversized JPEG while it decodes.** That is what makes a monster spread
+survivable on a low-RAM device, and why MuPDF is tried first: the full-resolution buffer a
+`RenderImage`/TurboJPEG decode would force — 5405x3840, over 7 MB, and up to ~6900x4913 on
+some servers — never exists. `RenderImage` remains the fallback for bytes MuPDF cannot open
+and for builds without the binding, and it is the one path where a full-resolution decode can
+still happen.
+
+**Lossless sources are the exception to that.** PNG, BMP, TIFF and GIF decode at full native
+size inside MuPDF and are scaled afterwards, so a very large one forces a transient of
+`native_w * native_h * 3-4` bytes. `MAX_LOSSLESS_NATIVE_PIXELS` (20 Mpx, roughly 60–80 MB)
+bounds it: a lossless page above it is refused before the decode is attempted, while oversized
+JPEGs are exempt at any size. The budget therefore limits only *retained* resolution and RAM;
+the decode peak is set by MuPDF's subsampling.
+
+**That refusal exists to prevent a second, fatal attempt.** Retrying such a page through the
+`RenderImage` fallback is a ~100 MB malloc that OOM-kills the process on a low-memory device,
+so a lossless page over the cap returns a `DECODE_TOO_LARGE` sentinel distinct from a plain
+nil, and callers refuse it up front rather than fall through.
+
+**The budget is by area, not by longest edge.** A long-edge cap punishes a tall page without
+measure: an 800x20000 manhwa strip and a 4000x5000 scan are capped on the same side, so the
+strip loses 9.8x of its width while the scan loses 2.4x — and width is all a reader sees of a
+strip, which is scrolled rather than shrunk to fit. An area cap reduces both axes by the same
+factor and bounds memory absolutely. Concretely, the strip keeps 410 px of width against 82
+under the long-edge cap, while a 2600x3700 (9.6 Mpx) spread loses 34% per axis; a 1600x2400
+page is 3.8 Mpx against the 4 Mpx default and decodes at its natural size.
+
+**`openDocumentFromText`'s `magic` argument is not optional, though it reads as a hint.** Nil
+raises `argument error: missing file type` from libwrap-mupdf — a message that names no call
+site and arrives as a non-fatal UNHANDLED EXCEPTION — which means the page never decoded. A
+present-but-wrong type is a different, louder error (`cannot find document handler for file
+type: '<x>'`), which is what makes a sniffed type safe to guess. Only types in the wrapper's
+handler table are claimed; `image/webp` is not, so a WEBP page falls through to `RenderImage`
+deliberately.
+
+**The local-cbz path can be less guarded than the streamed one.** Only the streamed path knows
+its source format, from the page bytes, so only it can refuse an oversized lossless page; a
+local cbz entry has no bytes to sniff, and a size-only refusal would wrongly reject oversized
+JPEG entries. A huge PNG inside a cbz keeps its transient full-resolution decode inside MuPDF,
+then the retained decode is capped and RAM returns to baseline — the stock `DocumentMuPDF`
+profile, and the one place local rendering is less guarded than the streamed path. The two
+engines agree on page numbering, so order and count never disagree.
+
+**`maskToQuad`'s `planes` are half-planes.** `{A, B, C}` means "inside is `A*x + B*y + C <=
+0`", in the caller's coordinate space; substituting `x = nx + tx*nw/tw` and
+`y = ny + ty*nh/th` turns each into one in tile coordinates, so no per-pixel transform is
+needed and the tile is walked by row.
+
+**`rasterFor` reduces three pixel shapes to one number.** BB8A takes the *darker* of its two
+channels — a PNG's alpha is not a brightness, and the minimum keeps translucent white from
+reading as content — and `getInverse()` is honoured, so an inverted page scans as the reader
+sees it, which is why the detector does not give up on a dark page. Its closure reads through
+`data:byte`, copying the buffer into a Lua string once per call, because the scan runs tens of
+thousands of reads and one copy beats one ffi cast per read.
+
 ### Contrast and saturation
 
 **The bottom menu's Contrast and Saturation rows are stock KOReader's, applied the way

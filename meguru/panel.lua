@@ -1,109 +1,4 @@
---[[--
-Finding the panels on a page, and the order a reader meets them in.
-
-This is the detector behind the panel *sequence*: a long-press opens the panel
-under the finger and then walks the rest of the page in reading order. Nothing
-here knows what a document is — it takes a decoded BlitBuffer and returns
-rectangles in that buffer's own coordinates, and the caller owns the buffer, the
-page and the fetch.
-
-## How a panel is found
-
-The page is scaled down to a small scan, and what comes out of that scan is an
-**ink map**: a cell is ink when its luminance is far enough from the page's own
-estimated background. The map is then sliced by a **recursive X-Y cut**: find the
-widest empty band across the region, split there, and recurse into both halves
-until a region has no empty band left. Comic and manga pages are laid out as
-nested bands — a page splits into tiers, a tier into panels — so slicing on the
-widest empty band reproduces that structure directly.
-
-Two things complicate the cut, and both are ported:
-
-* **Panels are not always square.** A gutter tilted by two degrees leaves no
-  column empty from top to bottom, which stops the straight cut dead. When no
-  straight gutter exists and something already looks part-empty, a ladder of
-  slopes from 2 to 8 degrees either way is tried instead
-  (`PANEL_SHEAR_SLOPES`), and the projection is taken along the slanted line.
-  The split is then **one line through the middle of the empty run that
-  projection found**, which is where the separator sits at the region's own
-  mid-height. A rectangle cannot follow a slanted separator, so each child keeps
-  a wedge of its neighbour on one side and gives one up on the other; what the
-  cut must not do is land `drift` cells off the separator, which is where the
-  band the run maps to put it.
-* **A page furniture strip is not a panel.** A scanlation credit line clears both
-  size floors comfortably and would be shown to the reader as a panel holding no
-  artwork. `emitLeaf` rejects it on the *conjunction* of elongated and nearly
-  inkless — neither test alone works, and the table in that function's comment is
-  the measurement that says so.
-
-## Why the thresholds matter more than the algorithm
-
-The numbers below are **1.3's**, and they are not to be "tidied" towards the
-reference's later ones: porting that version's cut *with that version's defaults*
-is what produced two of this detector's device failures. The thresholds, the
-failures and the reasoning live in **CLAUDE.md, "Panel zoom, and the panel
-sequence"** — one copy, deliberately, because a second copy of a threshold is a
-second answer waiting to happen.
-
-The connected-component detector that later version switched to is deliberately
-**not** ported. It keeps a component and the panel it sits inside as two separate
-boxes, because it merges only boxes that entirely contain one another, and the
-symptom a reader sees is the same panel appearing twice with slightly different
-crops. The cut cannot produce that: its leaves are disjoint by construction, each
-one a region no gutter divides.
-
-## What is not ported
-
-* **the drawn-border pass** (`segment_border_split`). It exists for western comics
-  whose panels bleed edge to edge with only an artist's black stroke between
-  them. It is off in 1.3's own defaults, and the source gives a good reason to
-  leave it there: at ink-map resolution a shared border between two panels and a
-  black line drawn *through* one panel — a horizon, a caption rule, a letterbox
-  band — produce byte-identical maps, so the pass splits real panels in half on
-  any page carrying such a line. Off, those pages read correctly and genuinely
-  bled layouts fall back to "one panel instead of two", which costs the reader
-  far less than a panel cut in half.
-* **`component_holes`** and the whole component pipeline, for the reason above.
-* **the Leptonica/K2PDFOpt fallback** the reference reaches for when a map cannot
-  be built at all. Meguru's pages are always fixed-layout rasters of a known
-  format, so a map that cannot be built is a page that cannot be decoded.
-
-## A panel is a quadrilateral, and its rectangle is only the box around it
-
-The cut reasons about rectangles because every projection and every gutter in it
-is axis-aligned, but the panel a reader is shown is bounded by *lines* — and a
-panel whose borders are slanted is the case this detector exists for. So a leaf
-carries both: `x, y, w, h` is the bounding rectangle, and `planes` is the four
-half-planes of the quadrilateral inside it, `A*x + B*y + C <= 0` for the inside.
-
-The two are the same rectangle on a page whose panels are square, and differ by
-a wedge wherever one is not — which is the wedge a rectangle crop cannot help
-showing, and the reason the crop follows `planes` instead. `meguru/doc/image`
-masks the rendered tile to them; `Panel.indexAt` tests a touch against them.
-
-## The coordinate space
-
-Panels come back in the **full native page** space — the space `self.dims` lives
-in, and the space `drawPagePart` expects. The scan's own coordinates never escape
-this module. Note the cell→native conversion in `segment` deliberately produces
-floats; see the comment there.
-
-## Two things about the ffi arrays
-
-The ink map and the two projection accumulators — one per axis, reused by every
-node of the recursion — are all `ffi.new` arrays, and this is the only place in
-the plugin that reaches for one. That is deliberate: a map is dense (every cell
-is read, many times), it must be **0-based** to keep the reference's index
-arithmetic faithful, and a 480x720 scan as a Lua table would be megabytes of heap
-on a device that already holds three decoded pages. Two consequences to keep in
-mind when editing:
-
-* **`#map.data` is not a length.** The length operator does not work on cdata
-  arrays; `map.w` and `map.h` are the only sizes there are.
-* **LuaJIT bounds-checks cdata only in debug builds.** A mis-clipped traversal
-  corrupts the heap instead of raising, so the range arithmetic in `project` and
-  the two sheared projections is not a style choice.
---]]
+-- Panel detection: a decoded page in, ordered panel rectangles out.
 
 local ffi = require("ffi")
 local RenderImage = require("ui/renderimage")
@@ -112,153 +7,43 @@ local Image = require("meguru/doc/image")
 
 local Panel = {}
 
--- The scan's *width*, not its long side. The reference renders at
--- `zoom = min(1, segment_target_width / native.w)` and the difference is
--- load-bearing: a 1600x2400 page maps to 480x720, one cell per 3.3 page pixels,
--- so a 10-pixel printed gutter is 3 cells wide and survives as a detectable
--- band. A cap on the long side would map it to 320x480 — one cell per 5 pixels,
--- the same gutter 2 cells wide, and against a `min_gutter` of 1 it is one bad
--- column away from being no gutter at all.
 local PANEL_SCAN_WIDTH = 480
 
--- A ceiling on the scan's cell count, and the only deviation from the
--- reference's sizing. With the width rule above, cells = 230400 * (h / w), so
--- this begins to bite past a 5.2:1 page — a manga page is 1.5:1 and a spread
--- 0.7:1, so the only shape it touches is a webtoon strip. Without it an
--- 800x20000 strip scans at 480x12000, some 35 MB of arrays, on a plugin whose
--- whole native budget is 12 MB. With it, that strip scans at 219x5477 — about
--- 3.7 page pixels per cell — and a strip is the one shape whose answer is "one
--- panel, the whole page" anyway.
 local PANEL_SCAN_MAX_CELLS = 1200000
 
--- How far a cell's luminance must depart from the page's own background to
--- count as ink. Relative, never absolute: this is what lets a white-on-black
--- page map the same way as a black-on-white one.
 local PANEL_INK_DELTA = 40
 
--- The outer ring the background is sampled from, as a fraction of the shorter
--- side. A page's border is the one place guaranteed to be background.
 local PANEL_BG_RING_FRAC = 0.01
--- The mid-grey band. A median background inside it may be an average of paper
--- and artwork rather than a colour the page contains, which is what the
--- near-white separator test below recovers from.
 local PANEL_BG_MID_LO = 32
 local PANEL_BG_MID_HI = 224
--- **A dark page keeps a cell of its own background around each panel**: a crop is
--- otherwise flush, which is right on paper — the panel's own black border is its
--- frame there — and leaves bright artwork bare on a viewer whose field is white.
 local PANEL_DARK_BG_LUMA = 128
 local PANEL_DARK_FRAME_CELLS = 1
--- What "near-white" means to that test, how much of a row or column must be
--- that white to count as spanning, and how much of each axis is excluded as
--- interior margin.
 local PANEL_SEPARATOR_MIN_LUMA = 245
 local PANEL_SEPARATOR_FRAC = 0.80
 local PANEL_SEPARATOR_EDGE_FRAC = 0.03
 
--- The bodies of ink, and the evidence a panel's frame leaves. **A veto, not a
--- detector.** The cut decides where the panels are; these say only where a body of
--- ink that shows a frame *is*, so that a split can be refused when it would run
--- through one — the case in which an empty line is not a separator but a hole in a
--- panel's own drawing. The five values are the reference's component detector's,
--- unchanged, which is why they are named for what they feed here rather than for
--- the pipeline they came from.
---
--- `PANEL_BODY_FRAME_SUPPORT` is what `lineSupport` has to reach for a side to count
--- as drawn, and `..._TOL_FRAC` is how far a side's cells may wander from the fitted
--- line, in cells, as a fraction of the map's shorter side — it is what forgives a
--- frame's own stroke being two cells thick. `PANEL_BODY_FRAME_MIN` is how many of
--- the four sides have to be drawn: **one**, which is the reference's own rule for
--- calling a body framed, and the reason a body that spans several panels with a
--- single straight edge can veto the split between them.
+-- One drawn side is enough to call a body framed (the reference's own rule).
 local PANEL_BODY_MIN_SIDE_FRAC = 0.02
 local PANEL_BODY_MIN_AREA_FRAC = 0.002
 local PANEL_BODY_FRAME_SUPPORT = 0.80
 local PANEL_BODY_FRAME_TOL_FRAC = 0.003
 local PANEL_BODY_FRAME_MIN = 1
 
--- **The number this detector lives or dies by.** What fraction of a line's span
--- may still carry ink and have the line count as empty. 1.3's 0.005 is ten times
--- stricter than the later version's 0.05, and the difference is a white band
--- inside a drawing: at 0.05 a faintly bright strip reads as a gutter and the cut
--- splits the panel in half, and at 0.005 it has to be genuinely empty to count.
---
--- **Strictness alone does not close it, and an earlier version of this comment
--- implied that it did.** A band that *is* genuinely empty — across the panel and
--- across the region, with only the frame's two side strokes in the row, which is
--- under the allowance on any page whose frame is a hairline — still splits the
--- panel in two, because a projection has no way to tell it from a separator. That
--- is what the bodies above are for, and `meguru-probe/controls/08` is the drawn
--- page that shows both halves: 0.005 alone gives two leaves, the veto gives one.
 local PANEL_GUTTER_INK_RATIO = 0.005
--- The thinnest band worth splitting on, as a fraction of the map's shorter side,
--- floored at **one** cell. A fraction of the *map*, so it stays a fixed fraction
--- of the page whatever the scan resolution is — raising the resolution alone does
--- not make narrower gutters detectable, the ratio has to come down with it.
---
--- **One cell rather than two, and the ratio moved with it, because a separator
--- one line thick is still a separator.** This is the narrowest of the three
--- ways this detector misses a panel, and the only one that turned out to be
--- closable: measured on the second reported chapter, three of the five nodes
--- that merge have a line *under* the ink threshold and were refused for being
--- alone — a row with 2 ink cells out of 450 against a `PANEL_GUTTER_INK_RATIO`
--- allowance of 2.25, a column with 2 out of 198. Across 21 pages the change
--- moves exactly two of them (p33 2→3, p100 1→2) and leaves every other page
--- alone, including all three full-page illustrations and every control. The
--- other two nodes have no such line at all — 82 ink cells out of 480 — and stay
--- merged; see CLAUDE.md for the whole measurement.
---
--- 0.004 rather than 0.005 for the arithmetic and not for taste: `min_gutter` is
--- `floor(min_dimension * this)`, and 0.005 of a 480-cell map floors to 2. The
--- floor alone cannot do it — on this scan geometry the shorter side is the width,
--- which is 480 for every page that fills the screen.
 local PANEL_GUTTER_RATIO = 0.004
 
--- A leaf smaller than either of these is not a panel: it is a rule, a caption
--- tick, or scan noise.
 local PANEL_MIN_SIDE_FRAC = 0.03
 local PANEL_MIN_AREA_FRAC = 0.005
--- ...and a leaf that is both very elongated and almost inkless is page
--- furniture. The test is a *conjunction* on purpose; `emitLeaf` carries the
--- measurement that shows why neither half works alone.
 local PANEL_SLIVER_ASPECT = 4
 local PANEL_SLIVER_INK_FRAC = 0.02
 
 local PANEL_MAX_DEPTH = 6
 local PANEL_MAX_PANELS = 40
 
--- Acceptance. A lone panel is believed when it covers this much of the page;
--- otherwise the cut latched onto one blob and missed the rest. Then the panels
--- have to cover at least this much of the page between them, and retain at least
--- this much of the area they cover.
 local PANEL_SINGLE_PANEL_RATIO = 0.6
 local PANEL_PAGE_COVERAGE_MIN = 0.4
 local PANEL_COVERAGE_MIN = 0.5
 
--- Slopes tried when no straight gutter exists, as dx per unit y.
---
--- Panels are rarely drawn perfectly square, and a gutter tilted by even two
--- degrees leaves no column empty from top to bottom, which is enough to stop the
--- straight cut entirely. The ladder covers under a degree to eight and a half
--- either way. 1.3 ships this search **on**, and that is what a skewed page
--- needs; the later version turned it off, which is one of the two failures this
--- module has already been through.
---
--- **The step is 0.015 rather than 1.3's 0.035, and a thin gap is why.** The
--- projection shears by `floor(slope * (x - xmid) + 0.5)`, so a ladder that is
--- half a step off the true angle walks the gap across the region: at a step of
--- 0.035 the drift over a 480-cell width is up to 8 cells, and a separator two
--- cells thick then spreads over three or four projected lines and none of them
--- is empty. A reader reported exactly that shape — "it merges panels with a
--- slanted gap more often than the rectangular ones" — and it is the shear's own
--- arithmetic rather than their page.
---
--- Measured against a 0.005 step, which is six times the work, this one gives the
--- identical panel count on every page tried (nine of the second chapter's, ten
--- of the first's, including the reference page at 6 panels, whose tier separator
--- sits at 0.115 — nearer to 0.120 than to 0.105, so this is that page's
--- regression test). The finer ladder moves one page: the second chapter's page
--- 35, 3 panels to 4.
 local PANEL_SHEAR_SLOPES = {
     0.015, -0.015,   -- 0.86 degrees
     0.030, -0.030,   -- 1.7
@@ -271,65 +56,20 @@ local PANEL_SHEAR_SLOPES = {
     0.135, -0.135,   -- 7.7
     0.150, -0.150,   -- 8.5
 }
--- The slanted search runs only this deep, and only where an axis already has a
--- near-empty line: a splash page has no such line, and the search cannot succeed
--- on one anyway.
 local PANEL_SHEAR_MAX_DEPTH = 4
 local PANEL_SHEAR_TRIGGER = 0.35
--- Every `step`-th line is sampled in the sheared projections. Only the axis the
--- slope runs along may be stepped — the other must be visited in full, or the
--- lines that were skipped read as empty and become phantom gutters.
+-- Only the slope's own axis may be stepped, or skipped lines read as gutters.
 local PANEL_SHEAR_STEP = 2
 
--- **How empty a sheared line has to be, and it has to be empty.** The straight
--- cut allows a line `PANEL_GUTTER_INK_RATIO` of its span, which on a 480-wide
--- scan is 2.4 cells — slack for the hair of JPEG noise a printed gutter carries.
--- The sheared projection must not be given the same slack, and the reason is
--- arithmetic rather than taste: it samples every `PANEL_SHEAR_STEP`-th column, so
--- a line's count is drawn from half as many cells and its variance is that much
--- wider, while `span` here is `width / step` — so the same ratio buys the same
--- 1.2 cells of allowance on a projection with twice the noise. A near-empty line
--- *through white artwork* then reads as a gutter, the shear splits a panel down
--- the middle of its own drawing, and the piece it cuts off is a strip of that
--- drawing with a wedge of its neighbour — a third panel that is really the gap.
---
--- Zero is not a tuned-down number: it is the same standard the straight cut is
--- named for ("a complete white gutter"), and it is the one thing the sheared
--- projection can honestly claim, because a real separator on a skewed page is
--- empty there by construction. Measured on a twelve-page sample it changes
--- nothing except the page it fixes.
 local PANEL_SHEAR_INK_RATIO = 0
 
--- The line the ladder found is re-measured from the pixels, and these are the four
--- guards that keep that measurement honest. See `refineShearedSplit` for the page that
--- made this necessary and for what each one is bracketed against.
---
--- **The residual is the load-bearing one.** A trough whose centre steps — which is what a
--- paper page's tier gutter does where a bubble pokes into it — fits a straight line with a
--- *small* residual if the fit is taken over few points, and this one refuses it: measured
--- on `k198473`'s page 34 the per-line fit gives a residual of 10.6 cells, against 1.78 on
--- the page it is for. The slope ceiling is the ladder's own reach plus a step, so a fit
--- that leaves that range is not describing a separator this cut could have found.
 local PANEL_SHEAR_FIT_MIN_SAMPLES = 8
 local PANEL_SHEAR_FIT_MIN_FRAC = 0.25
 local PANEL_SHEAR_FIT_MAX_RESIDUAL = 2.5
 local PANEL_SHEAR_FIT_SLOPE_MAX = 0.165
--- Below this the ladder's own slope is already the measured one, and the cut is left
--- exactly as it was — which is what keeps the change off every page whose separators are
--- straight or nearly so.
 local PANEL_SHEAR_REFINE_EPS = 0.010
 
--- ---------------------------------------------------------------------------
--- The ink map
--- ---------------------------------------------------------------------------
-
--- Is there a near-white line running across (or down) the page?
---
--- The interior margins are excluded — a page's own edge is not a separator —
--- and the early exits are what keep this cheap: once enough of a line has been
--- seen it answers yes, and once the cells left cannot reach the threshold it
--- stops looking at that line. Both bounds use `>=` against a count that can
--- only grow, so neither can skip a qualifying line.
+-- Both early exits use `>=` on a growing count, so neither can skip a line.
 local function hasWhiteSeparator(raster)
     local w, h = raster.w, raster.h
     local luma = raster.luma
@@ -368,15 +108,6 @@ local function hasWhiteSeparator(raster)
     return false
 end
 
--- The page's background: the median luminance of its outer ring, with one
--- correction.
---
--- Median and not mean, because a ring that is three quarters paper and one
--- quarter a bleed has a mean somewhere in between — a colour the page does not
--- contain anywhere. The correction covers the other failure: a mid-grey median
--- may be paper dimmed by a scan, and if some row or column of the page is
--- genuinely near-white, that white is the paper and the median is a lie. Seeing
--- one spanning near-white line is the evidence for it.
 local function backgroundFor(raster)
     local w, h = raster.w, raster.h
     local ring = math.max(1, math.floor(math.min(w, h) * PANEL_BG_RING_FRAC))
@@ -421,11 +152,7 @@ local function backgroundFor(raster)
     return 255
 end
 
--- The ink map over the scan, as a dense 0-based byte array.
---
--- `native_w`/`native_h` are the *page's* size, not the scan's: `scale_x` and
--- `scale_y` are what turn a cell back into page pixels, and the scan is one step
--- on the way rather than the thing being measured.
+-- `#map.data` is not a length: cdata has no `#`, so `map.w`/`map.h` are the sizes.
 local function buildInkMap(raster, bg, native_w, native_h)
     local w, h = raster.w, raster.h
     local data = ffi.new("uint8_t[?]", w * h)
@@ -447,9 +174,6 @@ local function buildInkMap(raster, bg, native_w, native_h)
         h = h,
         data = data,
         ink = ink,
-        -- The background this map was cut against, and the one thing the frame
-        -- below needs to know about the page it came from: a dark one is kept
-        -- around a panel. See `PANEL_DARK_BG_LUMA`.
         bg = bg,
         native_w = native_w,
         native_h = native_h,
@@ -458,21 +182,6 @@ local function buildInkMap(raster, bg, native_w, native_h)
     }
 end
 
--- ---------------------------------------------------------------------------
--- Bodies of ink, and the veto they arm
--- ---------------------------------------------------------------------------
-
--- What fraction of one side is supported by a single straight line.
---
--- This is what makes the evidence indifferent to a *tilted* panel: the boundary of
--- a frame drawn at six degrees is still a straight line, and a straight line is
--- exactly what is being looked for — where a gutter-based cut has to search a whole
--- ladder of slopes for it. Several well-separated sample pairs (a and b) make the
--- answer insensitive to a balloon protruding through one corner, and a curved face
--- outline does not support a straight line over most of its extent.
---
--- `values` is indexed from `first`, and `tolerance` is in cells: it is what
--- forgives the frame's own stroke being two cells thick.
 local function lineSupport(values, first, last, tolerance)
     local span = last - first
     if span <= 0 then
@@ -504,16 +213,8 @@ local function lineSupport(values, first, last, tolerance)
     return best
 end
 
--- What stands in for "this line has no cell" in the four side arrays below.
 local INF = 100000000
 
--- How many of the body's four sides are a straight line.
---
--- The left and right sides are read as the body's own leftmost and rightmost cell
--- in each row, the top and bottom as its topmost and bottommost in each column: a
--- frame's side is a straight run, and reading it as an extreme per line is what
--- makes a slanted one read as a line rather than as a wall. The arrays are indexed
--- by the *absolute* cell number, which is what `lineSupport` above expects.
 local function frameSides(scratch, queue, count, map_width, box, tolerance)
     for y = box.y, box.y + box.h - 1 do
         scratch.left[y], scratch.right[y] = INF, -1
@@ -558,46 +259,10 @@ local function frameSides(scratch, queue, count, map_width, box, tolerance)
     return sides
 end
 
--- Every substantial 8-connected body of ink whose frame evidence says it is a
--- panel, as a box in map cells.
---
--- **This is the whole of what the cut takes from the reference's component
--- detector, and it stops well short of it.** The reference goes on to drop bodies
--- contained in larger ones, to require a *small* body to show a sampled frame, to
--- join the floating bodies to the framed neighbour they are flush against or to the
--- tier they sit in, and then calls the result its panels. None of that is here,
--- because a veto needs to know where a panel's box is and not which boxes are
--- panels in the end — and the containment rule in particular would be dead weight:
--- a box lying inside another is a *subset* of the veto it is already under.
---
--- One pass over the map with a queue; a body is walked once and its extent
--- accumulated as it goes. Bodies below both size floors are dropped before any
--- evidence is computed, which is what keeps the cost proportional to the page's
--- real structure rather than to its noise — and what keeps a stipple of small ink,
--- or a page of text, from arming a veto.
 local function collectBodies(map)
     local width, height, data = map.w, map.h, map.data
     local tolerance = math.max(1, math.min(width, height) * PANEL_BODY_FRAME_TOL_FRAC)
-    -- Both arrays are allocated per call and left to the collector, where the
-    -- reference keeps one of each for the life of the process and releases them
-    -- with `clearScratch`. A detection is a long-press, so reuse would buy a second
-    -- lifecycle to keep in step and nothing a reader can feel; the peak is the same
-    -- either way, since the reference's arrays are sized to the largest map it has
-    -- seen and stay resident until the book is closed.
-    --
-    -- The queue is sized to the map's own ink count rather than to its cell count,
-    -- and that is a bound rather than an estimate: a cell enters it when it is first
-    -- marked seen, once, so one body can never put more in it than the page has ink
-    -- — and the count is already measured, `buildInkMap` returns it. On the widest
-    -- map this scan allows that is the difference between 1.4 MB and 4.8 MB, which
-    -- matters on a device whose whole native budget is 12. The seen map has no such
-    -- bound and stays one byte per cell.
-    --
-    -- Where the count is missing the size falls back to the cell count and **not**
-    -- to something small: a queue one entry long would corrupt the heap instead of
-    -- raising, because LuaJIT bounds-checks cdata only in a debug build. An empty
-    -- map is the one case where one is right, and it is right because nothing is
-    -- ever pushed into it.
+    -- Sized to the ink count, never lower: LuaJIT bounds-checks cdata only in debug.
     local queue_size = width * height
     if map.ink then
         queue_size = math.max(1, map.ink)
@@ -634,9 +299,6 @@ local function collectBodies(map)
                 if y > bottom then
                     bottom = y
                 end
-                -- Clip the columns once per cell, then walk contiguous offsets: the
-                -- same 8-connected traversal without redoing the bounds and the row
-                -- arithmetic for every neighbour.
                 local first_x, last_x = math.max(0, x - 1), math.min(width - 1, x + 1)
                 for ny = math.max(0, y - 1), math.min(height - 1, y + 1) do
                     local row = ny * width
@@ -664,21 +326,6 @@ local function collectBodies(map)
     return bodies
 end
 
--- The body whose interior this band runs through, or nil.
---
--- `x0..x1` and `y0..y1` are the band's own extent in cells, inclusive, and `axis`
--- says which of the two the cut would separate along. The band has to lie
--- *strictly* inside the body on that axis — a band at the body's own edge is its
--- frame, and cutting along a frame is what the cut is for — and the body has to
--- span the region on the other, so that a body a node merely clips at its edge
--- does not veto a split of that node.
---
--- **The second condition is the conservative one and its price is named rather
--- than hidden:** two framed panels side by side with a white band across both
--- leave neither body spanning the region, so no veto fires and the cut still runs
--- through them. Widening it to a plain overlap catches that case and refuses more
--- legitimate splits with it, and on the only sample there is neither choice fires
--- on anything that changes a leaf — see "Known open items".
 local function blocked(ctx, x0, x1, y0, y1, axis)
     local bodies = ctx.bodies
     if not bodies then
@@ -699,22 +346,8 @@ local function blocked(ctx, x0, x1, y0, y1, axis)
     return nil
 end
 
--- ---------------------------------------------------------------------------
--- Projections
--- ---------------------------------------------------------------------------
-
--- Ink counts per row and per column over a sub-rectangle, in the caller's two
--- accumulators.
---
--- **Inclusive on all four bounds**, and indexed by the *absolute* cell number
--- rather than by an offset from the region. Both are the reference's shape and
--- both matter: `trimRange` and `findWidestGutter` below take the same absolute
--- indices, so an accumulator based at the region's corner would have every
--- index off by however far the region starts from the page edge.
---
--- The accumulator is sized to the whole map and reused by every node of the
--- recursion, so a node zeroes exactly the span it is about to fill and reads
--- only within it.
+-- Inclusive bounds, absolute indices -- trimRange and findWidestGutter agree.
+-- The accumulator is reused by every node, so a node zeroes only its own span.
 local function project(map, x0, y0, x1, y1, rows, cols)
     local data, map_w = map.data, map.w
     for x = x0, x1 do
@@ -733,7 +366,6 @@ local function project(map, x0, y0, x1, y1, rows, cols)
     end
 end
 
--- Shrink a range to the first and last line that carry ink.
 local function trimRange(projection, from, to)
     while from <= to and projection[from] == 0 do
         from = from + 1
@@ -744,19 +376,7 @@ local function trimRange(projection, from, to)
     return from, to
 end
 
--- The widest interior run of near-empty lines, or nil and a length of 0.
---
--- Runs touching either end of the range are page or panel margins, not
--- separators between two siblings, so they are never split points — and a run
--- that reaches the far end of the range is never closed by the loop at all,
--- which is the same rule by construction rather than by a second test.
---
--- `span` is the region's extent on the *perpendicular* axis, since that is what
--- a line's ink count is a fraction of, and `ink_ratio` is
--- `PANEL_GUTTER_INK_RATIO`. Note `max_ink` is deliberately **not** floored to a
--- count of one: at a ratio this strict, a single inked cell on an otherwise
--- empty line has to keep the line out of the running, and an integer floor would
--- hand that line back as a gutter.
+-- max_ink is deliberately unfloored: one inked cell has to keep a line out.
 local function findWidestGutter(projection, from, to, span, ink_ratio, min_length)
     local max_ink = span * ink_ratio
     local best_start, best_stop, best_length = nil, nil, 0
@@ -783,13 +403,6 @@ local function byLengthDesc(a, b)
     return a.length > b.length
 end
 
--- Every interior gutter run in a projection, widest first.
---
--- The slanted search cannot just take the widest run, which is why this exists
--- beside `findWidestGutter`: a run whose cut would land on the region's own edge
--- is no use even when it is the longest one there, and a narrower run further in
--- is. It also has to be able to look past a gutter it has already split on, now
--- sitting against the region's edge.
 local function collectGutters(projection, from, to, span, ink_ratio, min_length)
     local max_ink = span * ink_ratio
     local gutters = {}
@@ -817,20 +430,6 @@ local function collectGutters(projection, from, to, span, ink_ratio, min_length)
     return gutters
 end
 
--- ---------------------------------------------------------------------------
--- The slanted search
--- ---------------------------------------------------------------------------
-
--- Column ink counts taken along lines sheared by `slope`.
---
--- **Only the y loop may be stepped.** Every x must still be visited, or the
--- columns that were skipped read as empty and become phantom gutters — which is
--- the one way this projection fails silently rather than obviously.
---
--- `shift` is the shear expressed in cells at this row, measured from the
--- region's vertical centre so the band rotates about the middle rather than
--- sliding off one end. A cell found at `x` is counted at `x - shift`, which is
--- where it would sit on the un-sheared axis.
 local function projectColumnsSheared(map, x0, y0, x1, y1, slope, cols, step)
     for x = x0, x1 do
         cols[x] = 0
@@ -857,8 +456,6 @@ local function projectColumnsSheared(map, x0, y0, x1, y1, slope, cols, step)
     end
 end
 
--- Row ink counts taken along lines sheared by `slope` — the mirror of the column
--- pass, so here only the *x* loop may be stepped.
 local function projectRowsSheared(map, x0, y0, x1, y1, slope, rows, step)
     for y = y0, y1 do
         rows[y] = 0
@@ -888,29 +485,6 @@ local function minInRange(projection, from, to)
     return smallest
 end
 
--- Try one slope, returning the axis it splits on and **the line to cut on**.
---
--- The cut is a line, not the band the run maps back to. `shift` is measured from
--- the region's own mid-line, so at that line the sheared projection's axis *is*
--- the page's axis: a run of empty lines in the projection is a run of empty
--- columns (or rows) through the middle of the region, and the separator lies
--- somewhere inside that run. Its middle is where the line is taken.
---
--- **The band, and the two children it used to be handed to, is the defect this
--- replaces.** Widening the run by `drift` at each end gives the axis range the
--- separator sweeps over the *whole* region, and both children were given all of
--- it — so each crop overlapped the other by twice the drift, and the cut itself
--- landed up to `drift` cells away from the separator. On a page whose tiers are
--- tilted that is not a wedge, it is most of a panel: measured on a 480-wide scan
--- at 6.5 degrees over a 482-cell region, `drift` is 28 cells, a 5-cell run
--- becomes a 61-cell band, and a two-panel split cut 30 cells above the boundary
--- left one child holding the bottom of both tiers — which then blocked every
--- later split inside it and came out as `1 panel` where the page has two.
---
--- The interior test is the straight search's own rule — a run that touches an
--- end of the range is a margin, not a separator — and `collectGutters` has
--- already enforced it on the run; what is left to check is that the *cut* is
--- inside, which `split > left and split < right` says directly.
 local function trySlope(map, left, top, right, bottom, ctx, slope)
     local width = right - left + 1
     local height = bottom - top + 1
@@ -937,35 +511,6 @@ local function trySlope(map, left, top, right, bottom, ctx, slope)
     return nil
 end
 
--- The separator's line, measured from the pixels instead of taken from the ladder.
---
--- **The ladder's slope is not the separator's angle, and this is the measurement that says
--- so.** `findShearedSplit` takes the *first* slope whose sheared projection shows an empty
--- run, and a slope shallower than the true one reads empty just as well whenever the trough
--- is thick — which is why `PANEL_SHEAR_INK_RATIO = 0` does not close it: the projection *is*
--- the "is this line empty" test, and a wrong-angle line through a thick trough passes it.
--- On the reported page (Kavita `chapterId=187445`, page 11, a dark page whose tiers are
--- drawn at about -0.115) the ladder answered -0.090 for one region and -0.060 for the region
--- inside it — for one physical separator — while the drawn border measures -0.113. Both
--- panels' crops cut across their border as a result: measured with the real mask, the edge
--- stood 31 px above the drawn border at one end of the crop and the box clipped about 50 px
--- off the panel's corner.
---
--- So the ladder is left to do what it is good at — *finding* that a separator is there, and
--- where at the region's mid-line — and the line's angle comes from the pixels: across the
--- region, the middle of the empty trough that line sits in. The trough is walked
--- **unbounded**, and a run reaching the region's own edge is refused, which is the straight
--- cut's own rule (`findWidestGutter`) and what keeps a page's outer margin from reading as a
--- separator.
---
--- Measured on that page: 391 of 417 lines give a trough, slope -0.1119, residual 1.78 cells;
--- the region inside it 119 lines, -0.1134, 0.94.
---
--- Returns `split, slope` for the fitted line, `nil` when the measurement cannot serve (and
--- the ladder's line stands), or **`false` when the fitted line lands on the region's own
--- edge** — a residual band left by the parent's cut rather than a separator, which must not
--- be re-taken as one. That third answer is what keeps a child from overwriting the line its
--- parent gave it.
 local function refineShearedSplit(map, left, top, right, bottom, axis, split, slope)
     local data, width = map.data, map.w
     local rows = axis == "rows"
@@ -977,7 +522,6 @@ local function refineShearedSplit(map, left, top, right, bottom, axis, split, sl
         from, to, lo_bound, hi_bound = top, bottom, left, right
         mid = math.floor((top + bottom) / 2)
     end
-    -- A cell of the map, addressed along the line (`along`) and across it (`across`).
     local function inked(along, across)
         if rows then
             return data[across * width + along] == 1
@@ -1045,17 +589,7 @@ local function refineShearedSplit(map, left, top, right, bottom, axis, split, sl
     return refined, b
 end
 
--- Look for a split along slanted lines.
---
--- Whichever slope worked last is overwhelmingly likely to work again on the same
--- page — a page is skewed by one angle, not by a different one in each corner —
--- so the hint is tried before the rest of the ladder, and the ladder skips it.
---
--- **The hint is the *measured* slope** wherever `refineShearedSplit` could measure one, so
--- the page's later regions start from the angle the page is actually drawn at and cannot
--- describe one separator two ways. A candidate whose fitted line lands on the region's own
--- edge ends the search rather than moving on to the next slope: every slope would find the
--- same residual band, because there is no separator here to find.
+-- The last slope that worked is tried first: one page, one skew angle.
 local function findShearedSplit(map, left, top, right, bottom, ctx)
     local function attempt(slope)
         local axis, split = trySlope(map, left, top, right, bottom, ctx, slope)
@@ -1093,42 +627,6 @@ local function findShearedSplit(map, left, top, right, bottom, ctx)
     return nil
 end
 
--- ---------------------------------------------------------------------------
--- The cut
--- ---------------------------------------------------------------------------
-
--- Record a terminal region as a panel candidate, in map cells.
---
--- The size floors alone do not describe a panel. A scanlation credit strip, a
--- footer rule or a row of page furniture clears both of them comfortably — on a
--- 480x720 map a 182x20 credit line is 3640 cells against a 1728-cell area floor,
--- and both its sides beat the 14-cell side floor — and then gets shown to the
--- reader as a panel holding no artwork.
---
--- Neither half of what gives it away is sufficient alone. Measured against a
--- typical page:
---
--- | leaf | ink share | aspect | |
--- | --- | --- | --- | --- |
--- | credit strip 182x20 | 0.96% | 9.1:1 | furniture |
--- | inset panel 60x60 | 1.51% | 1:1 | panel |
--- | letterbox panel 458x60 | 7.95% | 7.6:1 | panel |
--- | strip panel 40x600 | 6.94% | 15:1 | panel |
---
--- An ink floor on its own would take the inset panel (1.51%) before it took the
--- credit strip (0.96%); an aspect limit on its own would take both legitimately
--- elongated panels. Only the *conjunction* isolates furniture: a leaf has to be
--- both stretched out and nearly empty to be rejected, which is what a strip of
--- page furniture is and what none of the real panels are.
---
--- The ink floor is a share of the *page's* ink rather than an absolute count, so
--- a mostly-blank page with one small drawing still gives that drawing ~100% of
--- the page's ink and keeps it.
---
--- `edges` rides along with the rectangle and is what the *crop* is built from:
--- the box is the region the cut reasoned about, and the edges are the panel's
--- own four borders, which are slanted wherever a sheared split found them. See
--- the note on `cut`.
 local function emitLeaf(x0, y0, x1, y1, ink, ctx, out, edges)
     local w = x1 - x0 + 1
     local h = y1 - y0 + 1
@@ -1145,40 +643,6 @@ local function emitLeaf(x0, y0, x1, y1, ink, ctx, out, edges)
     table.insert(out, { x = x0, y = y0, w = w, h = h, edges = edges })
 end
 
--- Split a region on its widest gutter, recursing until none remains.
---
--- Inclusive bounds throughout, and the region handed on to a child is the
--- **trimmed** one — so a page margin is excluded once, at the level that found
--- it, rather than being carried down and re-trimmed at every step.
---
--- ## The second thing a region carries: its four edges
---
--- The bounds above are what the recursion reasons about, and they are axis
--- aligned because every projection and every gutter in this file is. The panel
--- they describe is not: a sheared split put its separator on a *line*, and that
--- line is the panel's own border — the crop has to follow it or the reader sees
--- a wedge of the panel next door along the slant. So `edges` carries the four
--- borders this region has been given so far, each one a line rather than a
--- number:
---
--- * `l` and `r` are vertical sides, `x = a + b*y`
--- * `t` and `bo` are horizontal ones, `y = a + b*x`
--- * `b = 0` is a straight edge, and is what every edge starts as
---
--- A split replaces the one edge it made, for both of its children — the same
--- line for each, so the two crops meet exactly on the separator instead of
--- overlapping by a row. The line a sheared split leaves is `split + slope *
--- (x - xmid)`, which is the definition of the constant index that projection
--- found: `projectRowsSheared` counts a cell at `x` under `x - shift`, and
--- `shift` is zero at the region's own mid-line, so the run's index *is* the
--- separator's position there.
---
--- The trim has the last word on a side it moved: a bound the trim pulled inward
--- is the panel's own border, and the edge becomes that constant. A bound still
--- sitting where the region's did was made by a split, and keeps the split's
--- line. That is the whole of the rule, and it is what makes the crop exact in
--- both directions at once — a panel whose border the flat cut ran past gets the
--- rows back, and one it ran short of gives them up.
 local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
     if x1 < x0 or y1 < y0 or #out >= PANEL_MAX_PANELS then
         return
@@ -1196,10 +660,7 @@ local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
     local et = top == y0 and edges.t or { a = top, b = 0 }
     local ebo = bottom == y1 and edges.bo or { a = bottom, b = 0 }
 
-    -- Summed here, while the projections still describe *this* region: the
-    -- sheared search below overwrites both buffers, and the recursive calls
-    -- overwrite them again. Rows outside the trimmed range carry no ink by
-    -- definition, so this is the region's exact ink count.
+    -- Summed before the sheared search and recursion overwrite the shared buffers.
     local region_ink = 0
     for y = top, bottom do
         region_ink = region_ink + ctx.rows[y]
@@ -1213,18 +674,6 @@ local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
         local col_start, col_stop, col_length =
             findWidestGutter(ctx.cols, left, right, height, ctx.ink_ratio, ctx.min_gutter)
 
-        -- Every value needed below is already a local, so the children are free
-        -- to overwrite the shared projection buffers.
-        --
-        -- **A row of a panel's own drawing that happens to be empty across the
-        -- region is the one thing a projection cannot tell from a separator**, so
-        -- the bodies say it instead: a candidate whose band runs through a framed
-        -- body's box is refused. What is left when no candidate survives is that
-        -- panel, emitted as a single leaf — a merge, which a reader sees, rather
-        -- than a panel cut in two, which they also see but cannot name.
-        --
-        -- It is a veto on a *candidate* and not on the node: the other axis is still
-        -- tried, and a page whose bodies are all refused by neither is untouched.
         local row_hit = row_length > 0
             and blocked(ctx, left, right, row_start, row_stop, "rows")
         local col_hit = col_length > 0
@@ -1249,39 +698,12 @@ local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
             return
         end
 
-        -- Nothing straight. The panels may simply not be square, so look along
-        -- slanted lines -- but only when something already looks part-empty. A
-        -- splash page has no such line and skips a search that cannot succeed.
-        --
-        -- **And only when no candidate was refused**, which is not the same as
-        -- nothing having been found: an empty line that ran through a detected panel
-        -- is evidence that the region *is* that panel, and splitting it at an angle
-        -- is the same mistake as splitting it straight.
-        --
-        -- The split is one line through the middle of the empty run the sheared
-        -- projection found, and the children do not share it: the separator is
-        -- slanted and their crops are rectangles, so each keeps a wedge of its
-        -- neighbour on one side and gives one up on the other, and which way
-        -- round that falls is decided by where on the page the reader is
-        -- looking. What it is not is a cut placed `drift` cells off the
-        -- separator with both children given the whole band, which is what
-        -- `trySlope` above carries the measurement of.
         if row_length == 0 and col_length == 0
             and depth <= PANEL_SHEAR_MAX_DEPTH
             and (minInRange(ctx.cols, left, right) <= height * PANEL_SHEAR_TRIGGER
                 or minInRange(ctx.rows, top, bottom) <= width * PANEL_SHEAR_TRIGGER) then
             local axis, split = findShearedSplit(map, left, top, right, bottom, ctx)
             if axis then
-                -- The line the separator actually lies on, and the same one for
-                -- both children: `split` is that line at the region's mid — the
-                -- value the projection found, moved onto the trough's measured
-                -- centre by `refineShearedSplit` — and `slope` is the measured
-                -- angle, so `xmid`/`ymid` are recomputed exactly as
-                -- `projectRowsSheared`/`projectColumnsSheared` computed them.
-                --
-                -- `mid` is that mid-line, and the band below is where the line runs
-                -- across the region: a slanted line is not one cell, so the veto is
-                -- asked about the whole strip it sweeps and not about `split`.
                 local slope = ctx.slope_hint
                 local bx0, bx1, by0, by1, mid, line
                 if axis == "cols" then
@@ -1321,11 +743,6 @@ local function cut(map, x0, y0, x1, y1, edges, depth, ctx, out)
         { l = el, r = er, t = et, bo = ebo })
 end
 
--- The cells of a dark page's background to keep outside one edge of a leaf, or none.
---
--- The strip asked about is the one just outside the edge: ink anywhere in it is a
--- neighbour's artwork or the panel's own bleed, and not a frame. Off the page is none
--- too, which costs nothing — the box is clamped to the page either way.
 local function frameCells(map, x0, y0, x1, y1)
     if x0 < 0 or y0 < 0 or x1 > map.w - 1 or y1 > map.h - 1 then
         return 0
@@ -1342,25 +759,19 @@ local function frameCells(map, x0, y0, x1, y1)
     return PANEL_DARK_FRAME_CELLS
 end
 
--- Segment a page ink map into panel rectangles in native page coordinates.
 local function segment(map)
     local min_dimension = math.min(map.w, map.h)
     local ctx = {
-        -- Absolute-indexed, sized to the whole map, and reused by every node.
         rows = ffi.new("int32_t[?]", map.h),
         cols = ffi.new("int32_t[?]", map.w),
         ink_ratio = PANEL_GUTTER_INK_RATIO,
         min_gutter = math.max(1, math.floor(min_dimension * PANEL_GUTTER_RATIO)),
         min_side = math.max(4, math.floor(min_dimension * PANEL_MIN_SIDE_FRAC)),
         min_area = math.floor(map.w * map.h * PANEL_MIN_AREA_FRAC),
-        -- Zero when the map did not report its ink total, which disables the
-        -- content floor rather than rejecting every sliver on the page.
+        -- A zero ink total disables the sliver floor instead of rejecting every leaf.
         sliver_ink = math.floor((map.ink or 0) * PANEL_SLIVER_INK_FRAC),
         shear_step = PANEL_SHEAR_STEP,
         slope_hint = nil,
-        -- The framed bodies of ink a split may not run through. Computed once, over
-        -- the same map the cut is about to walk; an empty list means no veto and the
-        -- cut behaves exactly as it did before this existed.
         bodies = collectBodies(map),
     }
 
@@ -1370,41 +781,6 @@ local function segment(map)
           t = { a = 0, b = 0 }, bo = { a = map.h - 1, b = 0 } },
         0, ctx, cells)
 
-    -- A rectangle lying entirely inside another is a *piece of it*, not a panel.
-    --
-    -- **The symptom this was written for is gone, and the rule is kept as a guard
-    -- on the invariant rather than as a fix for it.** The sheared split used to
-    -- hand both children the whole projected band, so a child split again on that
-    -- same band left a strip of it behind whose top reached back over the other
-    -- child's box — the upper panel's bottom rows, the band, and a sliver of the
-    -- lower panel. That rectangle sat inside the upper panel's, so the reader saw
-    -- the same artwork twice and the lower panel arrived with its top cut off.
-    -- (*This* rule and `PANEL_SHEAR_INK_RATIO` were both needed for it, on
-    -- different pages, and neither alone fixed both.)
-    --
-    -- With the split taken as one line through the middle of the run — see
-    -- `trySlope` — the two children are disjoint along the axis they were split
-    -- on and a trim only ever shrinks one, so no leaf can contain another. That
-    -- is a property of the shape of the cut rather than of this code, and it is
-    -- why the rule is not deleted with the text above it: it costs a few hundred
-    -- integer comparisons on a list capped at `PANEL_MAX_PANELS`, and the change
-    -- that would make it live again is a change to the cut. Measured across the
-    -- 23-page sample it now drops nothing, where it used to drop that strip.
-    --
-    -- The test is on the map's cells, before the conversion to native, because in
-    -- cells the comparison is exact: the conversion expands every rectangle by a
-    -- cell on each side and works in floats, either of which could separate two
-    -- boxes that contain one another here.
-    --
-    -- The history is worth keeping because it is the same mistake twice over: an
-    -- earlier version had the rule and dropped it on the evidence of a single page
-    -- where it removed nothing, and the honest reading of that was "it does not
-    -- fix *this* page", not "the rule does nothing".
-    --
-    -- The one thing it costs is an inset panel — a small panel drawn inside a larger
-    -- one is a contained rectangle and would be dropped. That needs the cut to have
-    -- separated the surround from the inset, and a surround is not a rectangle, so
-    -- it is believed rare; it has not been measured on a page that has one.
     local kept = {}
     for i, cell in ipairs(cells) do
         local contained = false
@@ -1425,52 +801,13 @@ local function segment(map)
     end
     cells = kept
 
-    -- Cell -> native. **The crop is the cells the ink was found in and nothing
-    -- more**, apart from the frame a dark page keeps — see `PANEL_DARK_BG_LUMA`.
-    -- Nothing is shaved by that: the ink of the first and of the last cell lies
-    -- *inside* those cells, so what is left over is the quantisation's own, under a
-    -- cell a side.
-    --
-    -- `a` is a cell *index* — the region's first cell on a start edge and its last
-    -- on an end one — so the crop runs from the *start* of the first cell to the
-    -- *end* of the last: `a` at the left and the top, `a + 1` at the right and the
-    -- bottom. Reading that index as a line is what the two versions before this did,
-    -- and both showed: `- 1`/`+ 1` left a cell of paper above and to the left of
-    -- every panel and none below or to the right, and `- 1`/`+ 2` evened those out by
-    -- adding paper to all four sides. The measurements are in docs/panel-zoom.md.
-    --
-    -- A slanted edge is a line and not an index, and keeps its own rule: there the
-    -- box is the bound of the line and the mask cuts to it, so what is seen is the
-    -- quad, and the paper beside it is the wedge a slanted separator costs.
-    --
-    -- The conversion is applied to the edges rather than to the box, so the box and
-    -- the shape agree: a panel whose sides are all straight is cropped to exactly
-    -- the box, with nothing painted over. These are floats, and deliberately not
-    -- rounded: everything downstream compares or multiplies them, and
-    -- `panelTileKey` is where they become integers.
-    --
-    -- **`planes` is what the crop is, and it replaces the rectangle as the panel's
-    -- shape.** Four half-planes, `A*x + B*y + C <= 0` for the inside, in native
-    -- page coordinates — the space `Image.renderRegion` masks in and the space
-    -- `Panel.indexAt` tests a touch against. A rectangle cannot follow a slanted
-    -- border, and a panel whose border is slanted is the whole reason this exists:
-    -- the crop has to be the quadrilateral the cut's four lines bound, or the
-    -- reader is shown a wedge of the panel next door along the slant.
-    --
-    -- The box is the *bounding* one, taken by evaluating each edge over the span
-    -- the region covers rather than by intersecting the lines with each other.
-    -- Every edge is monotonic, so its extremes are at the ends of that span, and a
-    -- parallel pair — which a page's near-vertical sides are — has no intersection
-    -- to find at all. It can only ever come out bigger than the quad, and the quad
-    -- is what the mask cuts to.
+    -- Deliberately floats: `panelTileKey` is where they become integers.
     local panels = {}
-    -- Does this page keep a frame of its own background around its panels?
     local dark = (map.bg or 255) < PANEL_DARK_BG_LUMA
     for _, cell in ipairs(cells) do
         local e = cell.edges
         local x0n, x1n = cell.x * map.scale_x, (cell.x + cell.w - 1) * map.scale_x
         local y0n, y1n = cell.y * map.scale_y, (cell.y + cell.h - 1) * map.scale_y
-        -- The cells of that frame, per side, before the edges are converted.
         local fl, fr, ft, fb = 0, 0, 0, 0
         if dark then
             local n, w, h = PANEL_DARK_FRAME_CELLS, cell.w, cell.h
@@ -1479,11 +816,7 @@ local function segment(map)
             ft = frameCells(map, cell.x, cell.y - n, cell.x + w - 1, cell.y - 1)
             fb = frameCells(map, cell.x, cell.y + h, cell.x + w - 1, cell.y + h + n - 1)
         end
-        -- A vertical edge is x = a + b*y and a horizontal one y = a + b*x, both in
-        -- cells; converting a line is converting its coefficients, not two points.
-        -- The `+ 1` on the end edges is the end of their cell; the start edges
-        -- need nothing, because their index already names the edge the crop
-        -- starts at. See the note above.
+        -- Converting a line converts its coefficients, not two points.
         local l = { a = (e.l.a - fl) * map.scale_x,
                     b = e.l.b * map.scale_x / map.scale_y }
         local r = { a = (e.r.a + 1 + fr) * map.scale_x,
@@ -1516,15 +849,6 @@ local function segment(map)
     return panels
 end
 
--- ---------------------------------------------------------------------------
--- Acceptance
--- ---------------------------------------------------------------------------
-
--- Is this segmentation worth showing to a reader?
---
--- Returns `true`, or `false` and the test that refused — the reason reaches the
--- log, which is the only way to tell a page that genuinely has one panel from
--- one the cut failed on.
 local function accept(panels, map)
     local count = #panels
     if count == 0 then
@@ -1547,13 +871,6 @@ local function accept(panels, map)
         max_y = math.max(max_y, panel.y + panel.h)
     end
 
-    -- One panel, decided before anything else. A rectangle covering most of the
-    -- page is the right answer twice over: it is what a splash page is, and it
-    -- is the best the cut can do on a layout with no straight gutters (a
-    -- diagonal split, say), so refusing it would only cost a full-resolution
-    -- render to reach the same rectangle. A *small* lone rectangle is different:
-    -- the cut latched onto one blob and missed the rest, which is worth saying
-    -- no to.
     if count == 1 then
         if largest_area >= page_area * PANEL_SINGLE_PANEL_RATIO then
             return true
@@ -1573,18 +890,6 @@ local function accept(panels, map)
     return true
 end
 
--- ---------------------------------------------------------------------------
--- Reading order
--- ---------------------------------------------------------------------------
-
--- Group the panels into rows by their top edge.
---
--- Every member is measured against the row's own **fixed** top and never
--- chained from the previous member: with a chain, a staircase of slightly lower
--- panels grows one row all the way down the page. The tolerance shrinks with
--- the shortest member seen so far, so a row of small panels cannot swallow a
--- tall neighbour — and a borderless panel's ink often starts below its framed
--- neighbour's top edge, which is the offset this tolerance exists to forgive.
 local function buildRows(panels)
     local sorted = {}
     for i, p in ipairs(panels) do
@@ -1619,8 +924,6 @@ local function buildRows(panels)
     return rows
 end
 
--- Is every part of `later` on the leading side of `panel`? The leading side is
--- the left for a comic and the right for a manga.
 local function isLeadingOf(later, panel, manga)
     if manga then
         return later.x >= panel.x + panel.w
@@ -1628,14 +931,6 @@ local function isLeadingOf(later, panel, manga)
     return later.x + later.w <= panel.x
 end
 
--- The reading order, with the deferred trailing panel.
---
--- A panel that is not its row's first can sit *beside* a tall neighbour in a
--- later row rather than above it — a wide strip at the top of the layout with
--- the stack it belongs after running down one side. Emitting row by row would
--- put it before that stack; holding it until the last later row it overlaps
--- puts it after, which is the order the page is read in
--- (1,2,3,5,6,7,4 rather than 1,2,3,4,5,6,7).
 local function sortReadingOrder(panels, manga)
     local rows = buildRows(panels)
     local sorted = {}
@@ -1680,9 +975,7 @@ local function sortReadingOrder(panels, manga)
             deferred[row_index] = nil
         end
     end
-    -- Every hold is bounded by a later row index, so the loop above flushes all
-    -- of them; this is here so that a future change to the hold rule ends with
-    -- the panel somewhere rather than nowhere.
+    -- The loop above already flushes every hold; this guards a future change to it.
     for row_index = 1, #rows do
         if deferred[row_index] then
             for _, panel in ipairs(deferred[row_index]) do
@@ -1697,25 +990,7 @@ local function sortReadingOrder(panels, manga)
     return panels
 end
 
--- ---------------------------------------------------------------------------
--- The module
--- ---------------------------------------------------------------------------
-
--- The panels of one page, in reading order.
---
--- Returns `panels, accepted, reason`, and **`panels` is never empty once
--- `native_bb` was readable**: a page the cut could not make sense of comes back
--- as a single rectangle covering the whole page, with `accepted` false and the
--- failing test in `reason`. The caller can therefore always open something, and
--- the log can always say which of the two it is looking at. `nil` means one
--- thing only — there was no page buffer to read.
---
--- The background this page was mapped against is a local and stops here: what
--- the crop paints outside a panel is white, and `meguru/doc/image` says why the
--- page's own estimate is not it.
---
--- `native_bb` belongs to the document's native LRU and is **not** freed here.
--- The scan copy this makes is freed on every path out.
+-- native_bb belongs to the document's native LRU and is not freed here.
 function Panel.detect(native_bb, manga)
     if not native_bb then
         return nil, false, "no page buffer"
@@ -1745,8 +1020,7 @@ function Panel.detect(native_bb, manga)
 
     local ok_raster, scan_raster = pcall(Image.rasterFor, scan)
     if scan ~= native_bb then
-        -- The scan copy is C-side owned, so it is freed here whatever the
-        -- raster accessor did with it.
+        -- The scan copy is C-side owned, so free it whatever the raster accessor did.
         scan:free()
     end
     if not ok_raster or not scan_raster then
@@ -1758,9 +1032,7 @@ function Panel.detect(native_bb, manga)
     local panels = segment(map)
     local accepted, reason = accept(panels, map)
     if not accepted then
-        -- A whole-page panel is a rectangle, and its mask is the page: naming the
-        -- four edges explicitly rather than leaving `planes` nil keeps the one
-        -- shape every consumer reads.
+        -- The four edges are named rather than left nil, so consumers read one shape.
         return { { x = 0, y = 0, w = native_w, h = native_h,
                    planes = { { A = -1, B = 0, C = 0 },
                               { A = 1, B = 0, C = -native_w },
@@ -1770,24 +1042,6 @@ function Panel.detect(native_bb, manga)
     return sortReadingOrder(panels, manga and true or false), true
 end
 
--- Which panel a point falls in, or the nearest one when it falls in a gutter.
---
--- The **smallest** containing panel wins rather than the first in reading
--- order. The cut's leaves are disjoint, so this can only matter for panels that
--- a caller handed over itself — a sheared split used to be able to produce two
--- neighbours overlapping by a wedge, and the more specific answer to "which
--- panel is under the finger" is then the smaller rectangle rather than the
--- larger one that merely includes it.
---
--- **The test is the panel's own quadrilateral**, not its bounding box. Those
--- differ along every slanted border, and the bounding box is the wrong answer
--- there in the direction that matters: a press just outside a tilted panel, in
--- the corner its box covers and the panel does not, belongs to the neighbour.
---
--- The nearest-by-centre fallback has to exist: a press that lands on a
--- separator is a reader aiming at a panel, and refusing to answer would turn
--- the gesture into a no-op for no better reason than that they missed.
--- Returns nil only when there are no panels at all.
 function Panel.indexAt(panels, x, y)
     if not (panels and #panels > 0) then
         return nil

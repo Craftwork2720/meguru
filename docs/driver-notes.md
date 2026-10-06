@@ -210,3 +210,39 @@ mis-sniffed server can no longer be corrected from the UI at all. The repair a
 reader has left is to delete the book's markers, which loses nothing but their
 directory placement: reading progress lives in the sidecars beside them.
 
+**`base_url` is always the real catalog root, credentials and API key included**, obtained
+from `sources.lua` at call time and never stored. The `servers.root_url` column holds only the
+redacted form used for diagnostics, and it cannot be fetched from — which is the point.
+
+**Removing the credential from a stored stream template is deliberately not a driver hook,
+and cannot be.** The read side is `Marker.load`, which has no driver: a marker is designed to
+open with no database, and the kind would have to come from the catalog. Making it a hook would
+move the secret out of the marker and leave nothing able to put it back. A server whose
+credential sits somewhere else gets another rule in `credential.lua`, where the read path can
+reach it.
+
+**A `resolveSeries` answer carries the book's own `title`, and a `series_name` arriving there
+outranks `seriesName`'s derivation.** An aggregate titles a book differently from its series
+feed, so a marker written from one route and a marker written from the other would be two files
+for one book, and `Marker.dirFor` would make the folder twice. The precedence is not
+convenience: the derivation peels trailing parentheticals and volume tokens off a *book*, while
+the server's own series title cannot disagree with the series feed about what the series is
+called — and `Marker.dirFor` keys the folder on that name alone.
+
+**`resolveSeries` is only asked after `discover` has failed.** `discover` runs in a loop over a
+whole feed (`freshResumeTarget`, `feedSeries`) and over every registered driver
+(`Base.kindFor`), so a request there would turn one tap into a network walk. A caller that
+already has an answer from `discover` must not ask this one, and the loop callers must stay as
+they are.
+
+**`progressRequest(desc, page)` is handed the marker's own descriptor**, because that is where
+a book keeps the two things a write needs — its stream `template` and its `count` — and neither
+is an argument a caller should have to invent. The verb is not a field: a driver describes a
+URL and a body, and the engine knows the method. Nil is the ordinary answer and there is
+deliberately **no default**, unlike `resolveStream`: "no hook" and "a hook that answered nil"
+both mean no report, but they are different facts, and a default would erase the difference
+between a driver that opted out and one that failed.
+
+**`ctx` carries `lang`, the translation the reader was browsing in, and only Suwayomi selects
+on it.**
+

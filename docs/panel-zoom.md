@@ -312,7 +312,7 @@ across the 23-page sample it now drops nothing. It stays because that is a prope
 shape of the cut rather than of this code: it costs a few hundred integer comparisons on a
 list capped at `PANEL_MAX_PANELS`, and the change that would make it live again is a change
 to the cut. Removing it on the evidence of a sample where it does nothing is the exact
-mistake its own history records — see the comment in `segment`.
+mistake its own history records.
 
 The two rules cost different things and neither is free. The strict ratio could
 regress a page whose separator is a real gutter carrying JPEG noise, since the sheared
@@ -322,8 +322,8 @@ have to be a rectangle for the cut to produce one) and has not been measured on 
 that has one; if a small panel ever goes missing, that is the first thing to look at.
 The other is page furniture: a scanlation
 credit line clears both size floors comfortably, so `emitLeaf` rejects it on the
-*conjunction* of elongated and nearly inkless. Neither test works alone, and that
-function's comment carries the measurement that says so.
+*conjunction* of elongated and nearly inkless. Neither test works alone, and the
+measurement below, under *page furniture*, says so.
 
 The scan targets the page's **width**, not its long side, and that is not cosmetic: a
 1600x2400 page maps to 480x720 — one cell per 3.3 page pixels, so a 10-pixel printed
@@ -680,6 +680,70 @@ length of local 'panels' (a nil value)` on the first device run. It is also logg
 call may throw, or a viewer is left on the stack while the caller is told the open failed
 — and the caller falls back to stock with a Meguru viewer still up.
 
+**The reference's ink-map fallback is not ported, and does not need to be.** It reaches for
+Leptonica/K2PDFOpt when an ink map cannot be built at all; a Meguru page is always a
+fixed-layout raster of a known format, so a map that cannot be built is a page that could not
+be decoded.
+
+**The detector's arrays are `ffi`, and this module is the only place in the plugin that uses
+one.** The map is dense — every cell is read many times — and must be 0-based to keep the
+reference's index arithmetic faithful; at 480x720 a Lua table would be megabytes of heap on a
+device already holding three decoded pages.
+
+**`PANEL_SCAN_MAX_CELLS` bounds the map's memory.** Cells are `230400 * (h/w)`, so the cap
+first bites past 5.2:1: an 800x20000 strip would otherwise scan at 480x12000, some 35 MB of
+arrays against a whole native budget of 12 MB. Capped, it scans at 219x5477, about 3.7 page
+pixels per cell — and a strip is the one shape whose answer is "one panel, the whole page"
+either way. Capping the scan's **long** side instead is the alternative that was rejected: it
+maps a 1600x2400 page to 320x480, one cell per 5 page pixels, leaving a 10-pixel printed
+gutter only 2 cells wide against a `min_gutter` floor of 1.
+
+**`PANEL_GUTTER_RATIO` is a fraction of the map**, so it stays a fixed fraction of the page at
+any scan resolution: raising the resolution alone does not make narrower gutters detectable,
+and the ratio has to come down with it.
+
+**The acceptance tests are sized to what the cut can actually do.** A lone panel is believed
+when it covers at least `PANEL_SINGLE_PANEL_RATIO` (0.6) of the page — that is what a splash
+page is, and on a layout with no straight gutters it is the best the cut can do, so refusing
+it would cost a full-resolution render to reach the same rectangle. A *small* lone rectangle
+is refused instead: the cut latched onto one blob and missed the rest. Several panels must
+cover at least `PANEL_PAGE_COVERAGE_MIN` (0.4) of the page and retain at least
+`PANEL_COVERAGE_MIN` (0.5) of the area they cover.
+
+**Page furniture is rejected by a conjunction, and one test cannot do it.** A scanlation credit
+line, a footer rule or a row of furniture clears both size floors comfortably, and would be
+shown as a panel holding no artwork:
+
+| leaf | ink share | aspect | |
+|---|---|---|---|
+| credit strip 182x20 | 0.96% | 9.1:1 | furniture |
+| inset panel 60x60 | 1.51% | 1:1 | panel |
+| letterbox panel 458x60 | 7.95% | 7.6:1 | panel |
+| strip panel 40x600 | 6.94% | 15:1 | panel |
+
+An ink floor alone would take the inset panel before the credit strip; an aspect limit alone
+would take both legitimately elongated panels. The ink floor is a share of the *page's* ink
+rather than an absolute count, so a mostly-blank page with one small drawing still gives that
+drawing ~100% of the page's ink and keeps it.
+
+**The component walk's queue is sized to the ink count** — a bound, not an estimate: a cell
+enters the queue once, when first marked seen, so one body can never put more in it than the
+page has ink, and `buildInkMap` has already measured that. On the widest map the scan allows
+that is 1.4 MB against 4.8 MB, on a device whose whole native budget is 12 MB. Where the count
+is missing the size falls back to the cell count, not to something small.
+
+**A leaf's box comes from the edges' extremes, not from intersections.** Each edge is
+evaluated over the span the region covers rather than intersected with its neighbours: every
+edge is monotonic, so its extremes are at the ends of that span, and a parallel pair — which a
+page's near-vertical sides are — has no intersection to find at all. The box can only come out
+bigger than the quad, and the quad is what the mask cuts to.
+
+**`Panel.indexAt` answers with the smallest containing panel**, not the first in reading order:
+the cut's leaves are disjoint, so this can only matter for a caller that handed over its own
+list, and the smaller rectangle is the more specific answer to "which panel is under the
+finger". A press that lands in a gutter falls back to the nearest panel by centre — the reader
+is aiming at a panel, and refusing would turn the gesture into a no-op for having missed.
+
 ### The other view: a window over the page
 
 **A long-press opens one of two views, and the book's own answer picks which.** Cropped — the
@@ -810,6 +874,31 @@ rounded to whole page pixels (the tile key names it), and that rounding times th
 residual. It is under a pixel until the scale passes 1, which is a page narrower than the
 screen. The default is **1.7**, the middle of the three: a typical page then renders at about
 1.31 screen pixels per page pixel — a mild magnification of the file, where 1.9 asks 1.47.
+
+**Panels arrive from `meguru/panel` in the full-native space with fractional coordinates**,
+and `viewport.whole` rounds each one once, before any anchoring or clamping: clamping a
+fractional edge would put a fraction straight back into the rectangle the tile key is built
+from.
+
+**The window is clamped to the page because `Image.renderRegion` has no defined content past
+the page's edge**, so a fitted window on a page smaller than itself would otherwise name a
+rectangle outside the page.
+
+**`frameFor` is the single place a step's `out_w`/`out_h` is derived from the scale**, so the
+output size can never drift from the rectangle beside it; the tile LRU keys on both, and two
+that disagreed would be two entries for one picture.
+
+**`Viewport.stepNearest` carries the reader's place across a re-open at a new level.** It
+matches a step by its **start corner**, not by index, because a level change rebuilds the walk
+and a different scale gives a panel a different number of stops — and the start corner is what
+`positions` anchors a stop to, so the match is exact.
+
+**Two `positions` entries can round to the same coordinate**, when a panel overflows an axis by
+less than one page pixel; `positions` drops the duplicate, so every view a caller is handed is
+distinct and the walk can push all of them without re-checking.
+
+**`PANEL_WINDOW_TOLERANCE` is a ratio of the window, not a length**, so the same number reads
+identically on any screen.
 
 ### A panel the window *nearly* holds is eased, not stepped
 
