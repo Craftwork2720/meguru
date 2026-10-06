@@ -192,6 +192,14 @@ be made, and both callers report that. And `openAsBook` does **not** go through
 into the OPDS form while `commitMarker` would look them up in `sources` — which is
 precisely what has not been flushed yet.
 
+**Nothing records where a marker was written, and that has a cost.** The catalog
+used to keep an item's marker path, which is how an open found a file the current
+settings no longer derived. With no catalog there is no such column: `markerPathFor`
+recomputes the path from the same two functions that chose it. So a reader who
+changes the marker folder gets a **second marker** for a book they had already
+opened — the new open lands in the new folder and the old file is left where it was.
+Nothing sweeps the old one.
+
 Every button routes through a single `once(action)`, so a double tap cannot open two
 books. **`once` is not what stops the dialog reopening after the open** — it is
 per-dialog and dies with it.
