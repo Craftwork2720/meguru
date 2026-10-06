@@ -369,7 +369,7 @@ Invariants when touching these rows:
   `getStatusBarFooter`, which probes `ReaderView` first and the `ReaderUI` module second so
   either KOReader layout works.
 
-Three more, about the browser rather than the lifecycle.
+Four more, about the browser rather than the lifecycle.
 
 **`OPDSParser:parse` returns the document wrapped under its own root element.**
 `createFlatXTable` starts from `{}` and assigns the root's children under the root's
@@ -419,6 +419,18 @@ the first version and it was wrong. A Kavita series feed also carries entries wi
 stream link (a special, a cover-only row) that `discover` cannot place, so one of them
 was enough to send every open back to a stale answer, producing exactly the symptom the
 fresh read exists to remove.
+
+**The browser has to be closed before the handoff, or it comes back over the reader's
+exit.** Browsing a catalog happens in an `OPDSBrowser` widget stacked *above* the file
+manager, and opening a book closes only the file manager — `FileManager:onShowingReader`
+calls its own `onClose`. The browser is not on that path, so a book opened from it without
+closing it first reveals the catalog again the moment the reader closes. Stock's "Read now"
+never shows this because `OPDS:openDownloadedFile` closes the browser first.
+`openPrepared` therefore closes it before handing the file over, through the plugin's own
+`close_callback` — the same close a tap outside the browser performs, so it also drops an
+open download list. Both rows land there: the one above a series feed through
+`openCatalogItem`, the one in the download dialog through `openAsBook`, which additionally
+prefers the built-in `openDownloadedFile` on builds that have it.
 
 ### Another plugin may replace the wraps, so they are installed twice
 

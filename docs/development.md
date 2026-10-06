@@ -285,7 +285,9 @@ Each step must pass before the next:
     not Meguru.
 13. **No destination dialog anywhere.** `▶ Meguru this series` with the wifi off still
     prompts for a connection and then opens, straight into the resume dialog. Neither it
-    nor the top-of-feed row ever asks for a folder.
+    nor the top-of-feed row ever asks for a folder. **Both rows close the catalog window
+    on the way in**: close the book and the file manager is what comes back, with no
+    flash of the OPDS browser underneath.
 14. **A dismissed dialog leaves nothing at all.** List the marker folder first. Tap a
     volume in a series feed, then tap *past* the resume dialog: no `.meguru` appears,
     **no series folder appears**, and nothing new appears in the library or in History.
