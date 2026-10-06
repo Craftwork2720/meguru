@@ -44,12 +44,9 @@ in that table are judgement calls and are named as such there: `keywords` takes
 **Element names are matched case-insensitively, and that is a requirement.**
 `ComicInfo.xsd` declares the language element as `LanguageISO` and declares no
 second spelling — but the files in hand write `<LanguageIso/>`, lowercased, which
-is ComicRack's spelling, so the divergence is the **writer's** rather than a
-version of the schema. (An earlier draft of this paragraph said the schema had
-renamed it between versions. It had not been checked; the XSD was, and it says
-otherwise.) An exact match would have missed it on the very files this was
-written for, and missed it silently. Measured against two synthetic archives, one
-per spelling.
+is ComicRack's spelling, so the divergence is the **writer's**. An exact match would
+have missed it on the very files this was written for, and missed it silently.
+Measured against two synthetic archives, one per spelling.
 
 **The XSD carries no documentation at all** — no `xs:annotation`, so nothing
 settles what `Genre` means against `Tags`, or whether `Writer` is the author.

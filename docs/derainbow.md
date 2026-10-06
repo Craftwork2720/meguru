@@ -22,18 +22,12 @@ It reaches KOReader through four wraps and one menu section:
 | `CreDocument:drawCurrentView` | the reflowable buffer |
 | `KoptOptions` / `CreOptions` | where its switch is inserted |
 
-A Meguru book is none of those. `MeguruDocument` renders pages itself, through MuPDF
-(`meguru/doc/image`), and hands them to the screen from its own `drawOnePage`; it answers
-`self.koptinterface = {}` as a stub, so nothing reaches KoptInterface at all. The switch
-never appears either, because it is inserted into options tables a Meguru book does not
-have — the plugin's reader menu is its own (`ui/reader`).
+A Meguru book is none of those. `MeguruDocument` renders pages itself through MuPDF and
+answers `self.koptinterface = {}`, so nothing reaches KoptInterface and the switch never appears.
 
 `Document.hintPage` is the one hook that could have fired, and it does not:
 `MeguruDocument:hintPage` overrides that slot with its own prefetch loop and never calls
-the base method, so `derainbowify`'s wrap is shadowed.
-
-**Nothing about this is a conflict.** Both plugins install, load and run. The other one
-simply never sees a page.
+the base method, so `derainbowify`'s wrap is shadowed — but nothing here is a conflict.
 
 ## Where the filter runs
 
@@ -160,10 +154,7 @@ whether the rainbow actually goes away has never been observed at all.
 
 ## The value, and the stamp
 
-Per book, like the tone rows beside it: `configurable.derainbow` and the book's own
-`kopt_derainbow`, seeded from the plugin-wide `derainbow` preference (`doc/defaults`), with
-the row on the Tone tab. Long-press sets the default for new books, through the same
-`Defaults.PREFERENCE_FOR` entry every other row uses.
+Per book, like the tone rows beside it, seeded from the plugin-wide `derainbow` preference.
 
 **A book that carries a stored `1` opens unfiltered where the libraries are missing**, and
 that is a property of `MeguruDocument:derainbow()` rather than of the seeding: the accessor

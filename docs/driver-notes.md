@@ -50,10 +50,7 @@ The rules that make a walk safe, each of which has a reason:
   so conflating the two made the *normal* answer for a finished series look like a
   failure and sent both the row and the resume fetch down their degraded paths.
 
-**Nothing is stored, so there is nothing to keep in step.** No transaction, no
-generation sweep, no shrink gate, no TTL, no backoff, no resumable stepper driven
-from a UI tick. All of that existed to maintain a materialised view of feeds, and
-the view is what was removed.
+**Nothing is stored, so there is nothing to keep in step** — no transaction, sweep or TTL.
 
 **A repeated `item_key` is one book, and the copy that carries the server's page
 is the one that describes it.** `Feed.dedupe` is the whole of that rule, and it
@@ -123,10 +120,7 @@ newest-first while `currentResumeTarget` fetches `sort=number_asc`. The same ser
 answered "furthest read" with the lowest-numbered chapter of the newest hundred on
 one screen and the true furthest on the other.
 
-Nothing rewrites other books. A marker is written only for the book being opened,
-and the walk that finds a neighbour leaves every file alone — including the one it
-was asked from. That is the whole difference from the design this replaced, where a
-stale list was the only list there was.
+Nothing rewrites other books: a marker is written only for the book being opened.
 
 ## Drivers
 

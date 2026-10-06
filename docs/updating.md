@@ -141,11 +141,8 @@ pagenumbercrop's behaviour and is the wrong shape.
 
 ### The row, and what it is not
 
-*Check for updates* is the one row under `Settings` that is not a preference:
-it stores nothing, and it is the only row there that can be *done* rather than
-set. It is behind a `separator` on the `Set Meguru as default reader for .cbz`
-row above it, and it is the reason the "one seam only" note on separators was
-retired.
+*Check for updates* is the one row under `Settings` that is not a preference: it stores
+nothing, and it is the only row there that can be *done* rather than set.
 
 `Updater.checkForUpdates` goes through `NetworkMgr:runWhenOnline`, which asks
 for a connection when there is none — the right thing for a tap, and the one

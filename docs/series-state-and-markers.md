@@ -73,9 +73,6 @@ thumbnail it extracts, so a cover already has somewhere else to live, and a stor
 of our own would have made meguru write one. The last step goes through the page
 pipeline, so it also warms the same byte store a page turn does.
 
-A marker written before the two cover fields existed has neither, and falls through
-to page 1 — which is what every book got before they were stored.
-
 **Nothing cached is ever filed under a book's name.** That is a rule with a
 history, and the history is worth keeping because it is the cheapest way to see why
 it must not be undone. Page bytes lived on disk once, named after the marker's
@@ -129,19 +126,14 @@ Three consequences that are easy to trip over:
   perfectly good decoded page sat in the LRU. `getPageDims` is deliberately *not*
   guarded — it is the decoder, and a live native would have answered from
   `self.dims` before reaching it.
-- **Files a previous version left in `cache/meguru/pages` and `.../covers` are
-  nobody's problem.** Nothing reads them and nothing sweeps them — there is no
-  "Clear cache" row any more, because with no disk cache it would have had nothing
-  of its own to clear.
+- **Files a previous version left in `cache/meguru/pages` and `.../covers` are nobody's
+  problem.** Nothing reads or sweeps them, and there is no "Clear cache" row any more.
 
-`Paths.cacheDir` is not one of those leftovers: it is the last-resort home for a
-marker when the home folder is unusable (`Marker.homeDir`).
+`Paths.cacheDir` is not a leftover: it is a marker's last-resort home (`Marker.homeDir`).
 
 ## The marker
 
-Extension `.meguru`, provider key `"meguru"`. Serialised with `LuaSettings` as
-`return { meguru = {...} }`, matching the `DocSettings` sidecar beside it.
-`Marker.new` is the one place the shape lives.
+Extension `.meguru`, provider key `"meguru"`, serialised with `LuaSettings` like the sidecar.
 
 `server_name` is the **catalog title**, which is the key credentials are looked up
 by in `settings/opds.lua`. **No secret is stored in the marker** — `template`,
@@ -165,10 +157,7 @@ rebuilt. A file written before this still carries the number and nothing reads i
 `Marker.VERSION` is 2, and nothing reads that either — it is a note for whoever
 finds an old file.
 
-`Marker.seriesContext(desc)` is the projection of the fields above that describe the
-series, and it is what every caller outside the marker module uses — the reader
-menu, the resume dialog, the feed planner. A v1 marker answers nil for the fields it
-lacks, and each reader of them already has a fallback.
+`Marker.seriesContext(desc)` is the projection of the series fields every outside caller uses.
 
 `resolveStream` runs again whenever a page stream is about to be resolved from a
 feed, with the stored `template` as the offline fallback. For Suwayomi this is

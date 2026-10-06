@@ -53,8 +53,7 @@ one. It runs eleven passes:
    Six shapes were injected to self-test it: the forward reference (with and without a
    call), a forward declaration, a name bound nowhere, and the two shapes checks 4 and
    6 own.
-6. **A lowercase name reached through a `.` or a `:`** — `data:byte(off + 1)` with no
-   `local data` anywhere.
+6. **A lowercase name reached through a `.` or a `:`** — `data:byte(off + 1)`, unbound.
 7. **The marker's field list.** `Marker.new` is the contract between the code that
    writes a marker and the code that reads one, and Lua checks neither end. A field read
    off a descriptor that `Marker.new` does not copy is nil on the device — and nil is a
@@ -133,23 +132,8 @@ pass was self-tested by injecting the real failure and confirming the checker re
 a formality: of the passes written across this project, four were wrong on the first
 attempt and passed on the very bug they existed to catch.
 
-**Two modules are mirrored rather than reasoned about**, and both are mirrored
-because they are pure arithmetic with rules that are easy to state and easy to
-get wrong: `tools/panelprobe.py` for the panel detector, and `tools/spreadcheck.py`
-for `meguru/spread.lua` — the two-page imposition, the rule that gives a spread its
-gutter, and the rule that grows a page cropped short into what the pair is not
-using. The second checks *properties* rather than fixtures: that the units
-tile a book exactly once for every set of wide pages and both offsets, that asking
-from either page of a pair answers the same pair, that turning walks the units
-without stalling at the last pair, the gutter's four rules over a grid of
-artwork sizes, margins and screen shapes, the growth's three — the taller half
-untouched, the shorter one stopping at its height and at the room there is, and the
-pair's own fit unchanged — over a grid of unevenly cropped pairs and both fits, and
-**the two rules composed in `_pairLayout`'s order**, where the property that earns
-the grid is that the *Flexible gutter* row does not decide whether a page is grown:
-asked the other way round, the paper took the room the short page needed and the
-growth showed only with the row turned off, which is exactly what the first version
-of it did.
+**Two modules are mirrored rather than reasoned about**, because each is pure arithmetic
+with rules easy to get wrong: `tools/panelprobe.py` and `tools/spreadcheck.py`.
 Run it as `python tools/spreadcheck.py`;
 it prints a walk of the page it is checking, which is the only way to read what
 the imposition does without a device. It checks the rules, not fixtures: that the
@@ -171,8 +155,6 @@ than as passed. The traps of the same shape: `and`/`or` folding (`x and f or nil
 `nil` in a table constructor ending the array part, `#` on a table with holes, and
 integer division or bitwise operators under 5.1.
 
-**`tools/scan_sql.py` is gone**, with the SQL it guarded.
-
 ### Verifying on the device
 
 No automated tests, so verification is a running KOReader. Run with `-d` or read
@@ -192,10 +174,8 @@ it is a junction, not a copy, so the repository stays the single source of truth
 cmd /c mklink /J "<koreader>\plugins\meguru.koplugin" "C:\dev\projects\meguru"
 ```
 
-**A plugin's own `require` of `opdsbrowser` or `opdsparser` must be lazy, at the
-call site.** `pluginloader.lua` adds a plugin's directory to `package.path` only
-after that plugin module has itself loaded, so a top-level `require` of another
-plugin's module resolves nothing.
+**A plugin's own `require` of `opdsbrowser` or `opdsparser` must be lazy, at the call
+site**, because `pluginloader.lua` adds the directory to `package.path` only afterwards.
 
 **Read the whole log, not just the crash.** KOReader catches non-fatal errors inside
 `pcall` and logs them as `warning: UNHANDLED EXCEPTION!` plus the message, then carries
@@ -396,14 +376,9 @@ Each step must pass before the next:
     Then the **content crop**, which these two views work their zoom out from and the cropped
     view does not touch at all. With *Crop* at `auto` (bottom menu → the *Page* tab → *auto*),
     long-press the same page and compare it against the same page with the crop off:
-    **the same level is now closer.** The margin was in the denominator of every level — a tenth
-    of the page given to paper was a tenth of the magnification given away — so taking it out
-    shortens the ladder: at the level the reader was on the window covers *less* page, and a
-    panel that fitted in one pass can need two or four. That is the price rather than a defect,
-    and the same *on-screen* size is reached about a notch lower. What the crop buys is that
-    `1.0×` is now the width of the **artwork** rather than the width of the artwork plus its
-    paper, so a scan with fat margins is no longer permanently under-magnified at every level
-    the reader can reach.
+    **the same level is now closer.** The margin was in the denominator of every level, so
+    taking it out shortens the ladder and the same *on-screen* size is reached a notch lower.
+    What the crop buys: `1.0×` is now the width of the **artwork**, not artwork plus paper.
     **The margin must still be reachable**: pan the free view towards a page edge and the paper
     must come into view, because only the fit was cropped and the window is still the page's.
     Then set *Crop* to `none` and long-press again: everything must be **exactly** as it
@@ -558,12 +533,8 @@ Each step must pass before the next:
     one touched, not only the ones after it. **And the boundary in both directions**:
     swiping forward off the last panel opens the next page's **first** panel at its
     start, and swiping back off the first opens the previous page's **last** panel at
-    its **end** — the bottom of it, the corner nearest where the reader came from. It
-    used to open the previous page at its first panel, from the top, and then at the
-    last panel's top, and both were wrong for the same reason. Then the
-    direction: in manga order a panel too wide for the window must be walked from its
-    **right** edge to its left, and in Comic mode from left to right — the same thing
-    the reading direction already does to the panel order. And a splash page the detector refuses
+    its **end** — the bottom of it, the corner nearest where the reader came from. In manga
+    order a panel too wide for the window is walked right-to-left; in Comic mode, left-to-right. And a splash page the detector refuses
     must open whole, cropped, whatever this preference says.
 19. **A book that cannot get its pages says why, once, and stops asking.** With the wifi
     off, open a marker: the page area holds *Can't load this page / You're offline right

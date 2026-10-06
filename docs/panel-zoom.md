@@ -121,8 +121,7 @@ handles the press.
 
 ### The sequence
 
-**A long-press shows the page's panels in reading order, one at a time.** It used to
-show exactly one: the region under the finger, in a bare `ImageViewer`.
+**A long-press shows the page's panels in reading order, one at a time.**
 
 `meguru/panel.lua` is the detector, and it is pure: a decoded page goes in
 (`Image.rasterFor`), ordered panels come out in **full native** coordinates. It

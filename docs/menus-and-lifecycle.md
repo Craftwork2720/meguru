@@ -40,9 +40,8 @@ silently wear `appbar.pageview`, which is the *Reading* tab's.
   — directly under *Fit*, the same question asked of the other axis) and crop.
 - **Rotation** — rotation mode and the wide-page rotation.
 - **Tone** — contrast, saturation, dithering and Derainbow: what the page *looks like*,
-  where the three before it are about its shape. It had a tab of its own before the rows
-  were regrouped, was folded into *Page* for a while, and is back — a reader who knows a
-  PDF's contrast tab looks for these in one place, and the crop is not one of them. The
+  where the three before it are about its shape. A reader who knows a PDF's contrast tab
+  looks for these in one place, and the crop is not one of them. The
   first three are stock's own wiring; Derainbow is this plugin's, and is the one row here
   that can be absent because a library would not load rather than because a reader turned
   it off ([derainbow](derainbow.md)), below.
@@ -95,10 +94,7 @@ answers `Series: Books` for a flat library, and on a folder that happens to be c
 popup reports is what the file carries, so a `.cbz` with no ComicInfo has no series to
 show — and the folder name stays where it means something, in the navigation rows.
 
-Nothing is written and nothing is fetched — no sidecar key, no
-marker field, no request — and dismissing it is `ButtonDialog`'s own tap-outside. The
-popup consumes every tap while it is up, which is also why that icon cannot open a second
-one.
+Nothing is written or fetched; dismissing it is `ButtonDialog`'s own tap-outside.
 
 **The split between *Page* and *Tone* is the one thing to keep straight when moving a
 row**: the three tabs before *Tone* are about the *shape* of what is shown — how it is
@@ -319,8 +315,6 @@ Invariants when touching these rows:
   engine, folded into *Crop* (`document.lua`'s getPageBBox). The take-back fires
   `ReZoom` when it took something back — the box for the page a book opens on is derived
   during `ReadSettings`, with the plugin's wrapper already in place.
-- Every menu surface Meguru writes is a `TouchMenu`; the plugin no longer has a
-  plain-`Menu` surface of its own.
 - `C_` is **not** a global. Every core file declares `local C_ = _.pgettext`; a plugin
   file that omits it gets a nil call only when a row is built.
 
@@ -350,10 +344,6 @@ the others (a search result list, most visibly). `genItemTableFromURL` is *hande
 URL*, and the URL is what tells the four apart. The decision is made where the evidence
 is rather than reconstructed from how the switch was called.
 
-A row with no `acquisitions` is read by `onMenuSelect` as a **catalog link**, and it
-navigates to the row's `url` — so a row of ours must carry a marker field and have
-`onMenuSelect` wrapped to intercept it. The row buys nothing on its own.
-
 The row is offered only when **every** entry of the feed discovers to the same series.
 A feed listing *series* has entries with no stream at all, so they fail `discover` and
 the row is not offered — which is why it appears on a list of a series' volumes and
@@ -371,10 +361,6 @@ was enough to send every open back to a stale answer, producing exactly the symp
 fresh read exists to remove.
 
 ### Another plugin may replace the wraps, so they are installed twice
-
-**The four `OPDSBrowser` wraps are installed at plugin load *and* again every time a
-browser is constructed.** The second one is the load-bearing one, and the reason is a
-plugin called `zenos.koplugin`, which ships a patch of the OPDS browser.
 
 The mechanics are about load order, and none of it is specific to zen-os.
 `pluginloader.lua:289` sorts the enabled plugins **by path** before instantiating them,
@@ -470,9 +456,6 @@ cover.
 `assets/meguru-this-series.png` is portrait, authored at 2:3 — what zen-os fits a cover
 into by default — and any size decodes; a larger one costs only bytes on disk. Without the
 file `meguru/rowcover` answers nil and the browser draws its ordinary placeholder.
-
-The repair a reader has if any of this ever breaks again is the same one a mis-sniffed
-kind has: nothing in the UI reaches it, so it is fixed in `hook.lua` or not at all.
 
 **The reader's bottom menu is the same story in a second place, and it is
 `rakuyomi.koplugin` that tells it.** Its `MangaReader:addRakuOptionsToReader`

@@ -26,22 +26,15 @@ marker's `last_read` is the page the *server* says the reader stopped on. It is 
 a mirror of local progress and never overrides it: `ui/open.lua`'s `offerResume`
 asks whenever there is a choice.
 
-- **Whether the book has been read here decides the wording, not whether to ask.**
-  Gating the question on "never opened here" made the one case worth asking about
-  unreachable: a reader who read volume 3 here and got to volume 5 elsewhere got no
-  question at all. The gate is "is there anything to offer instead", and a book
-  already being read with nothing further along opens where it was left, silently.
+- **Whether the book has been read here decides the wording, not whether to ask.** The
+  gate is "is there anything to offer instead"; with nothing further along, it opens silently.
 - **The dialog is gated on the server, not on "is there anything to show".** No
   server answer means no question — what the reader asked for needs none. That is
   also what keeps the dialog from ever having one button: the reader's own button is
   unconditional, so a server answer makes two, and no server answer means the dialog
   is not built.
-- **The button for the book the reader clicked is always there, and removing it once
-  broke the feature.** Clicking an unread volume 11 while the server said volume 5
-  left a single button pointing at volume 5, and a tap past the dialog cancels — so
-  volume 11 was unreachable. Choosing it for an unread book has to write page 1, or
-  `MeguruDocument:init`'s silent seed would open at the server's page anyway and the
-  server's answer would win a question the reader just answered.
+- **The button for the book the reader clicked is always there.** Choosing it for an
+  unread book writes page 1, or `init`'s silent seed would open at the server's page instead.
 - **Every button names the book it opens, and the title names the series.** The
   question is where in the *series* to carry on, so the title is `series.name`;
   because it cannot name both books, each button names its own. Two buttons reading
@@ -81,8 +74,7 @@ counter merely correlates with it. The "or the last one" half is not decoration:
 series read to the end has nothing unfinished, and "nowhere to continue" is not what
 this button is for — a reader who finished chapter 177 and taps again is at chapter
 177, and a button that vanished would be saying the series is empty. This replaced
-"the last entry with any progress at all", which answered volume 3-4 for a reader who
-had read 1-2 today and dipped two pages into 3-4 yesterday.
+"the last entry with any progress at all".
 
 **`firstUnread` deliberately stops where the `▶` button carries on.** The row above
 a series feed uses `firstUnfinished` alone and answers "nothing unread" for a fully

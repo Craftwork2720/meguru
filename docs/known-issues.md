@@ -27,12 +27,6 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   could not be applied` ever appears in a log, the panel fell back to stock's direction
   and the repair is the forked override — the failure is otherwise silent, which is
   checklist item 21.6.
-- **The 90-vs-270 mapping was derived from stock's comment and was wrong.** It came from
-  `imageviewer.lua:429`'s `rotate_clockwise and 270 or 90` with "unintuitive, but this
-  does it" beside it, and it made panels turn *with* the device where the row names the
-  device and the panel turns against it. Found on a device, fixed by crossing the two
-  constants in `panelRotationAngle`. Now observed rather than derived, so treat it as
-  settled — and note that the row's word is the one thing that never was.
 - **The panel detector has a measurement harness, and it is the only way anything in
   it has ever been decided rather than argued.** `tools/panelprobe.py` is a faithful
   port of `meguru/panel.lua` - the ink predicate, both projections, the recursive cut,
@@ -405,19 +399,6 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   silently cut page on exactly those, since nothing in the log tells them from a correct crop. The
   synthetic control is the gate: a dark page with a small light element must come back whole, and
   it does.
-
-- **A jump to the second page of the spread on screen used to read as "one further", and
-  is now told apart.** `MeguruDocument:spreadSnap` could only guess: a relative turn and an
-  absolute landing arrive as the same `_gotoPage` call with the same target, so it read a
-  target inside the unit already showing as the reader's gesture — and a page *inside* the
-  spread became the next spread. **The panel viewer is where that cost something visible**:
-  browsing page 4's panels and stepping to page 5's left the reader on 6+7 when they came
-  out, one spread further on than the page they had been looking at. It is settled by
-  marking the two callers that mean a turn (`onGotoPageRel`, the gesture funnel, and
-  `pageFlipping`, the skim step) where they are wrapped in `ui/reader.lua` and answering
-  everything else as a landing — the unit that contains the page — rather than by inferring
-  intent from the number. `tools/spreadcheck.py` checks both answers, and the landing rule
-  was self-tested by injecting the old behaviour back (2456 failing cases).
 
 - **Two-page view and `pagenumbercrop.koplugin` both on: that plugin's wide-page rotation can
   turn the screen for a pair, and the flip-flop is not caught.** Meguru's own guard stands

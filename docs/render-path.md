@@ -8,29 +8,17 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
 
 **A page is grayscale on a grayscale screen and colour on a colour one, and the
 answer is the reader's own setting.** `Image.colorEnabled()` asks
-`device.screen:isColorEnabled()` — stock KOReader's own answer, the same source
-`CanvasContext` reads to set `is_color_rendering_enabled`
-(`canvascontext.lua:53`) — and the three places that decode a page through MuPDF
-set `doc.color` from it rather than forcing `false`. **It is asked at decode time
-and never cached**, because that function is live: it reads
-`G_reader_settings.color_rendering` (the reader's stock colour toggle) and falls
-back to what the screen can do (`device.lua:264-270`). A cached answer would make
-that toggle inert until a restart.
+`device.screen:isColorEnabled()`, and the three places that decode a page through
+MuPDF set `doc.color` from it rather than forcing `false`. **It is asked at decode
+time and never cached**, because it reads the reader's live `color_rendering`
+toggle and falls back to what the screen can do; a cached answer would make that
+toggle inert until a restart.
 
-The distinction is not cosmetic and it is not new behaviour on e-ink: on a Kindle
-`color_rendering` is unset and the screen reports no colour, so the predicate is
-`false` and the grayscale path is **exactly what it always was**. What the change
-fixes is a colour framebuffer, where the plugin used to decode colour away and a
-reader had no way to tell why.
-
-**The predicate has a second condition, and it is not about what the reader
-asked for but about what survives the blit.** `screen:isColorEnabled()` alone
-says only that colour is *wanted*; `BB_blit_to` dispatches on the **target's**
-type (`base/blitbuffer.c`), and an RGB source landing in an 8bpp target runs
-`RGB_To_A` — luminosity, colour discarded, irreversibly. So
-`Image.colorEnabled()` also requires `screen.fb_bpp ~= 8`, which is the depth
-KOReader read from the kernel. `nil` is not 8: a desktop build never sets the
-field, and a desktop is where colour most obviously works.
+**The predicate has a second condition, and it is about what survives the blit.**
+`screen:isColorEnabled()` says only that colour is *wanted*; an RGB source landing
+in an 8bpp target runs `RGB_To_A` — luminosity, colour discarded, irreversibly. So
+`Image.colorEnabled()` also requires `screen.fb_bpp ~= 8`, the depth KOReader read
+from the kernel. `nil` is not 8: a desktop build never sets the field.
 
 **Colour here is only ever as good as KOReader's road to the panel, and that road
 is Kobo-only — which is why a Kindle Colorsoft will stay grayscale.** The
@@ -105,10 +93,9 @@ device and the page follows the row. That is KOReader's split, not this plugin's
 `kopt_sw_dithering` is a per-document MuPDF setting and `Screen.sw_dithering` is a
 device one, which stock's own file manager exposes as "software dithering".
 
-**On the colour branch the flag is `Screen.sw_dithering`, and the argument above
-does not apply** — it is about a same-format grayscale copy, and there the tiles
-are RGB and the destination is RGB. `init` logs which branch it took, once, and
-that line is the only place a log says whether colour is on.
+**On the colour branch the flag is `Screen.sw_dithering`**, since tiles and destination
+are both RGB; `init` logs which branch it took, once — the only log that says whether
+colour is on.
 
 **What colour costs is memory, and it is the one number this change does not
 touch.** `max_native_pixels` counts **pixels, not bytes** — `cappedDim` has no
@@ -141,10 +128,6 @@ calibrated against it; it is what the reference panel detector's
 explicitly. The formula appears in three places (`Image.rasterFor` and twice in
 `doc/document.lua`'s crop scan) and they must move together — a fourth copy that
 kept the mean would reintroduce exactly this, one consumer at a time.
-
-`decodeRegion` builds its tiles in the source's own type, and
-`decodeNativeRenderImage` was already colour — which is how a fallback and a
-primary could disagree about colour before this.
 
 The night-mode invert stays on the *destination* (`target:invertRect`) rather than
 `invertblitFrom` on the tile. With grayscale tiles the latter would be legal and
@@ -259,10 +242,6 @@ what it is given, so a buffer rendered outside `cacheTile` would be lost —
 BlitBuffers are malloc'd outside the Lua heap. And when there is no source to
 render from, it falls back to stock's screen-fit shape rather than to nothing: a
 long-press that does nothing is a worse failure than a softer panel.
-
-`decodeRegion` stays, and stays first-class: it is still the only path for
-`_meguruAnalysisBB`, where a strip wants a cut of a page *already decoded* and must
-not pay a fresh open and render per strip.
 
 `_regionSource` opens a streamed page's one-page document **from the byte LRU and
 only from it** — `readCachedPage`, never `fetchPage`. A fetch here would be a
@@ -445,9 +424,7 @@ that global, exactly as it would from stock's own button.
 ### Log lines
 
 Four lines make the render path decidable from a device log. **All four are at
-`dbg`, and were at `info` for as long as they were being used** — a line that fires
-once per page or per paint is worth reading while the render path is under a
-microscope and is noise afterwards, and `-d` is what brings them back:
+`dbg`**, because a line that fires once per page is noise except under `-d`:
 
 - `Meguru: page N prepared in X ms, fetch F ms (decode D ms, WxH)` — what a page
   turn waited for, split into the two costs with different fixes: the fetch is the
@@ -498,9 +475,8 @@ book and buries the warnings that are rare. Frequency wins.
 
 ### A page that could not be loaded
 
-There are four ways to have no page — no connection, a server that never answered, a
-server that answered 404, a page that arrived and would not decode — and each one
-says so in the place the page would be.
+There are four ways to have no page — no connection, no answer, a 404, a page that
+would not decode — and each says so in the place the page would be.
 
 - **No socket is opened without a connection.** `MeguruDocument:hasConnection` gates
   `fetchPage` and `getCoverPageImage`. It is a *device* state, not a probe: Wi-Fi

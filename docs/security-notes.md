@@ -38,9 +38,7 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   neither should be "simplified". The one place that had escaped this — `noteFeed`'s
   `feed parsed` line, which printed the browsed catalog URL raw — now goes through it
   too.
-- **Credentials are read from `settings/opds.lua` and go nowhere else.** A marker with a
-  `<redacted>` field resolves the credential at load so the book can be read at all;
-  nothing sends one except a page fetch and, on Komga, the position report.
+- **Credentials are read from `settings/opds.lua` and go nowhere else.**
 - **The position report is the one thing this plugin sends *to* a server.** A page number,
   to the server the book came from, with the credential in the same Basic header a page
   fetch already sends — so the write adds no new place a secret can appear.
