@@ -26,6 +26,9 @@ local DEFAULTS = {
     auto_next_item    = true,
     manga_order       = true,
 
+    -- Local .cbz: title and fields from the archive's own ComicInfo.xml.
+    comic_info        = true,
+
     -- Seed for a book's kopt_panel_view; "window" shows the page uncropped.
     panel_view        = "window",
 

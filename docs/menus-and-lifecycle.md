@@ -238,8 +238,9 @@ Invariants when touching these rows:
   `tools/check.py` pass 9 is the same trap seen from the loop's side.
 - **A `Settings` submenu on both surfaces** — the reader's holds the rows that are about
   a book being read (auto-open next in series, report reading progress, hide status bar,
-  save folder, subfolder per server, `Covers for folders`, default reader for `.cbz`,
-  check for updates), the FileManager's the ones that are not. **No panel row is among
+  save folder, subfolder per server, `Covers for folders`, `Read metadata from
+  ComicInfo.xml`, default reader for `.cbz`, check for updates), the FileManager's the
+  ones that are not. **No panel row is among
   them**, and that is a decision rather than an omission: the panel choices are per book,
   and a preference row here would be a plugin-wide answer to a per-book question. Two live
   in the viewer's own button row, where the reader can see what they do while looking at
@@ -251,8 +252,9 @@ Invariants when touching these rows:
   a page's own rows.
 - **`Covers for folders` is the one thing below `Settings`, and it is an exception
   rather than a precedent.** Its three rows are switches for one feature, and as flat
-  rows they would take the reader's `Settings` from seven entries to nine — eight to ten
-  on a book with a series — while naming servers instead of the thing they belong to. The level is bought back by the row above them saying
+  rows they would take the reader's `Settings` from eight entries to ten — nine to
+  eleven on a book with a series — while naming servers instead of the thing they
+  belong to. The level is bought back by the row above them saying
   what the group *is* — which is the whole job `Settings` does one level up, and the
   reason "one level deep" existed. A second such submenu should have to make the same
   argument. **The position report is the case that did not make it**: one server accepts
@@ -270,7 +272,7 @@ Invariants when touching these rows:
   hint about the list, never a guarantee about the screen. Three lines split the
   reader's `Settings` into its four groups, and each sits on the row that *ends* a
   group: `Hide status bar` (behaviour above, book location below), `Subfolder per
-  server` (location above, covers and the `.cbz` row below) and the default-reader row
+  server` (location above, covers and the `.cbz` rows below) and the default-reader row
   (preferences above, *Check for updates*, the one action, below). The FileManager
   holds only the last two.
 - **The FileManager's `Meguru` submenu carries nothing but that `Settings` row.** Both

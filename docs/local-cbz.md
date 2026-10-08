@@ -30,6 +30,10 @@ folds only because the descriptor it projects has no series *field* for the titl
 to sit beside. And **the entry is read once per document** (`self._comic_info`,
 with `false` for "read, none there"), because it opens the archive.
 
+**The read has an off switch**, the `Settings` row `Read metadata from ComicInfo.xml`,
+checked in `_localComicProps` ahead of that cache: an off library never opens an
+archive for metadata, and the file name is the title again.
+
 **The whole schema is read and seven fields are used, because `doc_props` has
 seven slots.** `ComicInfo` v2.1 declares about forty elements and `BookInfo`
 draws exactly `title`, `authors`, `series`, `series_index`, `language`,

@@ -134,6 +134,16 @@ local function coverRow()
     }
 end
 
+local function comicInfoRow()
+    return {
+        text = _("Read metadata from ComicInfo.xml"),
+        help_text = _("A local .cbz is titled from the ComicInfo.xml inside it — its own title, author, series, language and summary — rather than from the file name. With this off, the file name is the only title."),
+        keep_menu_open = true,
+        checked_func = function() return Settings.get("comic_info") end,
+        callback = function() Settings.toggle("comic_info") end,
+    }
+end
+
 -- Rows come from `Progress.KINDS`, so a new driver needs no change here.
 local function progressRows()
     local rows = {}
@@ -162,6 +172,7 @@ end
 function Menu.addFileManagerItems(plugin, menu_items)
     local settings = destinationRows()
     settings[#settings + 1] = coverRow()
+    settings[#settings + 1] = comicInfoRow()
     settings[#settings + 1] = defaultReaderRow()
     settings[#settings + 1] = updateRow()
 
@@ -261,6 +272,7 @@ function Menu.addReaderItems(plugin, menu_items)
         settings[#settings + 1] = row
     end
     settings[#settings + 1] = coverRow()
+    settings[#settings + 1] = comicInfoRow()
     settings[#settings + 1] = defaultReaderRow()
     settings[#settings + 1] = updateRow()
 

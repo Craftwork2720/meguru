@@ -1015,6 +1015,9 @@ end
 
 -- Local .cbz props from ComicInfo.xml, title falling back to the file name.
 function MeguruDocument:_localComicProps()
+    if not Settings.get("comic_info") then
+        return { title = self:_localTitle() }
+    end
     if self._comic_info == nil then
         self._comic_info = ComicInfo.read(self.file) or false
     end
