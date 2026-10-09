@@ -38,10 +38,10 @@ the release it was asked for" check cannot disagree about which form is
 canonical.
 
 **A development build carries its branch in the version**
-(`1.5.0-dev-derainbow-filter`), and the hyphen makes the tag a prerelease that
+(`1.5.1-dev-derainbow-filter`), and the hyphen makes the tag a prerelease that
 `/releases/latest` skips — so an installed Meguru is never offered one, and a
 dev build is replaced by hand. Its digits alone compare, so it is not offered
-the plain `1.5.0` release either.
+the plain `1.5.1` release either.
 
 It earned itself on `v0.9.2`, which was tagged one commit before the version
 bump landed: the run failed at that step, skipped the build and created no
