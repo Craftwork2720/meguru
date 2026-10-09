@@ -147,7 +147,9 @@ and the two are not the same question.
 | every monochrome reader | no | — | no | — |
 
 **Only the desktop has been run.** The filter was exercised there on a real page of a
-local `.cbz` (806×1132 tiles, 36–51 ms) and on synthetic buffers; the rest of the table is
+local `.cbz` (806×1132 tiles, 36–51 ms), on synthetic buffers, and headlessly through all
+three views — one page, both halves of a spread, every panel tile — with
+`tools/derainbowprobe.lua` (14–70 ms a tile); the rest of the table is
 what the code says, not what anyone has seen. `docs/known-issues.md` records the two
 consequences that matter most — the unmeasured cost on an ARM reader, and the fact that
 whether the rainbow actually goes away has never been observed at all.

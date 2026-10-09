@@ -807,6 +807,12 @@ Each step must pass before the next:
     largely black-and-white artwork, which is where the artefacts and the filter both live.
     [derainbow](derainbow.md) is the design; what follows is what only a device can answer.
 
+    **The wiring half is checkable without one.** `tools/derainbowprobe.lua` is a user patch
+    that opens a local `.cbz` headlessly and drives one page, a spread and panel zoom: a byte
+    diff per seam, a line per tile, and timings. Rows `d`, `e` and `f` below are what it
+    stands in for — it cannot answer `a`, `g`, `i`–`l`, which are the menu and the cover, nor
+    the one question a colour panel exists for: whether the shimmer goes away.
+
     | # | do | expected |
     |---|---|---|
     | a | open a Meguru book, bottom menu, **Tone** tab | a **Derainbow** row, last, after Dithering |
