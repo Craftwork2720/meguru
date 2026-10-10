@@ -122,13 +122,14 @@ function Base.stripSuffix(text, suffix)
     return text
 end
 
+-- Argument order is the preference; Komga lists the small thumbnail first.
 function Base.link(entry, ...)
-    for _, link in ipairs(entry and entry.link or {}) do
-        if type(link) == "table" then
-            for i = 1, select("#", ...) do
-                if link.rel == select(i, ...) then
-                    return link
-                end
+    local links = entry and entry.link or {}
+    for i = 1, select("#", ...) do
+        local wanted = select(i, ...)
+        for _, link in ipairs(links) do
+            if type(link) == "table" and link.rel == wanted then
+                return link
             end
         end
     end
@@ -162,9 +163,9 @@ function Base.coverFromFeed(feed, entry, base_url, driver)
 end
 
 -- Always the entry's own image, not the feed's series cover every book shares.
--- Thumbnail first: an item cover is fetched per book, a series cover once.
+-- The full image, not the thumbnail: Komga's is 211x300 against 844x1200.
 function Base.coverFromEntry(entry, base_url)
-    local link = Base.link(entry, OPDS_THUMBNAIL_REL, OPDS_IMAGE_REL)
+    local link = Base.link(entry, OPDS_IMAGE_REL, OPDS_THUMBNAIL_REL)
     if not link then
         return nil
     end

@@ -531,6 +531,17 @@ along in the stream URL's query — so `Komga.discover` reads the series id out 
 the **feed's own URL** instead (`/series/([^/?]+)`), which the engine passes as
 `ctx.url`.
 
+**The two image links are not the same picture, and the small one comes first.**
+`/thumbnail/small` measures 211x300; `/thumbnail` measures 844x1200. The block above is
+in feed order, so a caller that names both rels and returns the first match *in that
+order* serves the smaller one however it ordered its arguments — the order asked for has
+to be the preference, not the order emitted. Komga is the only one of the three that
+serves the two at different sizes: Kavita and Suwayomi emit the same URL under both rels.
+
+Series artwork is a different endpoint with no larger variant to ask for:
+`GET /api/v1/series/{id}/thumbnail` takes no parameters (`/v3/api-docs`) and answers
+about 210x300 for every series, which is what a `.cover.jpg` gets.
+
 The consequence used to be that an aggregate could not be opened from.
 `books/latest`, `ondeck` and `keep-reading` list books from every series and
 carry no series id in any entry, so there was nothing in the feed to identify the
