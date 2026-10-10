@@ -921,8 +921,9 @@ function MeguruDocument:streamCredentials()
     return Sources.credentials(desc.server_name, self.file)
 end
 
--- A fork cannot make Android's JNI network call (koreader#14628): the parent
--- asks live and remembers; the cover browser's fork reads what it left.
+-- Android's network check is a JNI call, and coverbrowser opens a document in a
+-- fork where JNI aborts the process (koreader#14628): the parent asks live and
+-- remembers, and only a fork on Android has to read what the parent left.
 local posix_ok = pcall(require, "ffi/posix_h")
 local getpid = posix_ok and C.getpid or nil
 local parent_pid = getpid and tonumber(getpid()) or nil
@@ -933,7 +934,8 @@ function MeguruDocument:hasConnection()
     if self.local_cbz then
         return true
     end
-    if parent_pid and tonumber(getpid()) ~= parent_pid then
+    if parent_pid and tonumber(getpid()) ~= parent_pid
+        and Device:isAndroid() then
         return parent_connected
     end
     local ok, NetworkMgr = pcall(require, "ui/network/manager")
