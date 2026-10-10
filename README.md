@@ -1,4 +1,3 @@
-# Meguru
 
 <p align="center">
   <picture>
