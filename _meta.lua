@@ -14,5 +14,5 @@ the server's own chapter list when you ask for it.]]),
 -- Load-bearing: the updater compares releases to it, so bump before tagging.
 -- A hyphen after the version marks a prerelease, which /releases/latest skips.
 -- Only its digits compare, so a dev build is replaced by hand, not updated.
-    version = "1.5.2",
+    version = "1.5.3",
 }
