@@ -1,3 +1,5 @@
+
+
 # Meguru
 
 <p align="center">
@@ -6,15 +8,11 @@
   </picture>
 </p>
 
-<p align="center">
-  <img src="https://img.shields.io/github/v/release/Craftwork2720/meguru" alt="Release">
-  <img src="https://img.shields.io/github/license/Craftwork2720/meguru" alt="License">
-  <img src="https://img.shields.io/github/downloads/Craftwork2720/meguru/total" alt="Downloads">
-</p>
+
 
 <br>
 
-[**Download meguru.koplugin.zip**](https://github.com/Craftwork2720/meguru/releases/latest/download/meguru.koplugin.zip)
+<p align="center"> <a href="https://github.com/Craftwork2720/meguru/releases/latest/download/meguru.koplugin.zip"><img src="https://img.shields.io/badge/Download-meguru.koplugin.zip-735DA8?style=for-the-badge&logo=github&logoColor=white&labelColor=1f2328" alt="Download meguru.koplugin.zip"></a> </p>
 
 A manga reader for KOReader that can also stream manga straight from your server (Kavita, Suwayomi, Komga), with no downloading.
 
