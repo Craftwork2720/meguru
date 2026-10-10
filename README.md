@@ -1,5 +1,3 @@
-
-
 # Meguru
 
 <p align="center">
@@ -8,16 +6,17 @@
   </picture>
 </p>
 
-
-
 <br>
 
 <p align="center"> <a href="https://github.com/Craftwork2720/meguru/releases/latest/download/meguru.koplugin.zip"><img src="https://img.shields.io/badge/Download-meguru.koplugin.zip-735DA8?style=for-the-badge&logo=github&logoColor=white&labelColor=1f2328" alt="Download meguru.koplugin.zip"></a> </p>
 
-A manga reader for KOReader that can also stream manga straight from your server (Kavita, Suwayomi, Komga), with no downloading.
+<br>
 
-- **Local reader**: opens `.cbz` files on your device. Faster than the stock mupdf reader on large files and built for manga.
-- **OPDS streaming client**: pages load one at a time as you read. Each volume or chapter still shows up in your library as an ordinary book.
+Meguru is a manga reader for KOReader. It's faster than the stock mupdf reader on large files and built for manga: auto-crop, manga mode, two-page view, night mode and panel zoom.
+
+It opens `.cbz` files on your device, and can also stream manga straight from your server (Kavita, Suwayomi, Komga) through OPDS, with no downloading. Streams open in the same reader, so everything works the same.
+
+**Contents:** [Installation](#installation) · [The reader](#the-reader) · [OPDS streaming](#opds-streaming)
 
 ## Installation
 
@@ -25,9 +24,10 @@ A manga reader for KOReader that can also stream manga straight from your server
 2. Copy the `meguru.koplugin` folder into `koreader/plugins/`.
 3. Restart KOReader.
 
-To uninstall, delete the folder.
+## The reader
 
-## Features
+Works the same for local `.cbz` files and `.meguru` streams.
+
 
 | Feature | What it does |
 |---|---|
@@ -54,7 +54,7 @@ In Panel Cut and Pan & Zoom, a middle tap opens a button row: the first button i
 
 Panel zoom is on for books Meguru opens. To turn it off for a book, use KOReader's own ⋮ → *Panel zoom (manga/comic)* row.
 
-## Opening .cbz files
+### Opening .cbz files
 
 Use **Open with… → Meguru** in the file browser.
 
@@ -63,7 +63,17 @@ If a file has a `ComicInfo.xml` (what Rakuyomi writes), its title, author and su
 > [!IMPORTANT]
 > On first run Meguru becomes the default reader for `.cbz` (once, and it leaves any reader you already chose alone). To undo it or turn it back on: ⋮ → Tools → Meguru → Settings → *Set Meguru as default reader for .cbz*. You can also tick *Always use this engine for file type* in the "Open with…" dialog; that choice wins over the automatic one.
 
+### Moving through a series
+
+⋮ → Tools → Meguru opens the next or previous chapter, fetching it if needed. Turn on **Auto-open next in series** (same Settings submenu) to do it automatically when you finish a chapter.
+
+This also works for local `.cbz` folders, in natural order (`2.cbz` before `10.cbz`). The rows only appear when there is another book to move to.
+
+<br>
+
 ## OPDS streaming
+
+An optional extra: read straight from your server in the same reader, with all the features above.
 
 Requires the built-in OPDS plugin (enabled by default), pointed at a Kavita, Suwayomi or Komga server.
 
@@ -97,12 +107,6 @@ Meguru: Now That We Draw
 
 The first button always opens the stream you tapped. Tapping outside the dialog cancels.
 
-### Moving through a series
-
-⋮ → Tools → Meguru opens the next or previous chapter, fetching it if needed. Turn on **Auto-open next in series** (same Settings submenu) to do it automatically when you finish a chapter.
-
-This also works for local `.cbz` folders, in natural order (`2.cbz` before `10.cbz`). The rows only appear when there is another book to move to.
-
 ### Good to know
 
 - A stream needs a reachable server. If a page can't load, the reason is shown on the page and it fills in when you're back online.
@@ -110,7 +114,6 @@ This also works for local `.cbz` folders, in natural order (`2.cbz` before `10.c
 - **Check for updates** in ⋮ → Tools → Meguru → Settings. It never installs without asking.
 - A stream can't be exported as a real `.cbz`.
 - If you uninstall the plugin, existing `.meguru` files stop opening.
-
 
 ## License
 
