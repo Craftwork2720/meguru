@@ -11,6 +11,7 @@ local Catalog = require("meguru/ui/catalog")
 local Defaults = require("meguru/doc/defaults")
 local Hook = require("meguru/hook")
 local Icons = require("meguru/icons")
+local Image = require("meguru/doc/image")
 local MeguruDocument = require("meguru/doc/document")
 local Menu = require("meguru/ui/menu")
 local Open = require("meguru/ui/open")
@@ -53,6 +54,9 @@ function Meguru:init()
 
     -- Class-level, once per process: in place before any book's dialog builds.
     Icons.install()
+
+    -- Before any document opens, and in the parent: see Image.rememberScreen.
+    Image.rememberScreen()
 
     -- Registered here so the gesture editor lists it from the file browser too.
     self:onDispatcherRegisterActions()

@@ -4,6 +4,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 local CanvasContext = require("document/canvascontext")
 local Document = require("document/document")
 local DrawContext = require("ffi/drawcontext")
+local ffi = require("ffi")
 local Geom = require("ui/geometry")
 local RenderImage = require("ui/renderimage")
 local Screen = require("device").screen
@@ -31,6 +32,8 @@ local Sources = require("meguru/sources")
 local Spread = require("meguru/spread")
 local util = require("util")
 local ffiutil = require("ffi/util")
+
+local C = ffi.C
 
 local function clamp(v, lo, hi)
     return math.max(lo, math.min(hi, v))
@@ -639,13 +642,13 @@ function MeguruDocument:init()
         self.sw_dithering = Screen.sw_dithering and true or false
         logger.info(string.format(
             "Meguru: colour page rendering (sw_dithering=%s; eink=%s, fb_bpp=%s, hw_dither=%s)",
-            tostring(self.sw_dithering), tostring(Device:hasEinkScreen()),
+            tostring(self.sw_dithering), tostring(Image.einkScreen()),
             tostring(Screen.fb_bpp), tostring(Device:canHWDither())))
     else
         self.sw_dithering = true
         logger.info(string.format(
             "Meguru: tile->screen dithering forced ON (sw_dithering; eink=%s, fb_bpp=%s, hw_dither=%s)",
-            tostring(Device:hasEinkScreen()), tostring(Screen.fb_bpp),
+            tostring(Image.einkScreen()), tostring(Screen.fb_bpp),
             tostring(Device:canHWDither())))
     end
 
@@ -918,13 +921,25 @@ function MeguruDocument:streamCredentials()
     return Sources.credentials(desc.server_name, self.file)
 end
 
+-- A fork cannot make Android's JNI network call (koreader#14628): the parent
+-- asks live and remembers; the cover browser's fork reads what it left.
+local posix_ok = pcall(require, "ffi/posix_h")
+local getpid = posix_ok and C.getpid or nil
+local parent_pid = getpid and tonumber(getpid()) or nil
+local parent_connected = true
+
 -- Device state, not a probe: Wi-Fi off can only fail, not detect a dead server.
 function MeguruDocument:hasConnection()
     if self.local_cbz then
         return true
     end
+    if parent_pid and tonumber(getpid()) ~= parent_pid then
+        return parent_connected
+    end
     local ok, NetworkMgr = pcall(require, "ui/network/manager")
-    return ok and NetworkMgr ~= nil and NetworkMgr:isConnected()
+    local connected = ok and NetworkMgr ~= nil and NetworkMgr:isConnected() or false
+    parent_connected = connected
+    return connected
 end
 
 -- Forget fetch failures on a page turn or the connection returning.

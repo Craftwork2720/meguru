@@ -29,23 +29,49 @@ local function bbBytesPerPixel(bb_type)
     return nil
 end
 
--- Same source stock's CanvasContext reads; follows the reader's own setting.
--- False on any failure: a surprise here costs colour, never a crash.
+-- The screen's own answers, taken once at plugin init. Android answers both
+-- through JNI, and the cover browser opens a document inside a fork, where a
+-- JNI call aborts the process (koreader#14628 fixed only the colour one).
+local screen_color, screen_eink
+
+-- Called from plugin init: the parent is the one place these may be asked.
+function Image.rememberScreen()
+    local ok, Device = pcall(require, "device")
+    if not ok or type(Device) ~= "table" then
+        return
+    end
+    local scr = Device.screen
+    if scr and type(scr.isColorScreen) == "function" then
+        local ok_color, value = pcall(scr.isColorScreen, scr)
+        screen_color = ok_color and value == true or false
+    end
+    if type(Device.hasEinkScreen) == "function" then
+        local ok_eink, value = pcall(Device.hasEinkScreen, Device)
+        screen_eink = ok_eink and value == true or false
+    end
+end
+
+function Image.einkScreen()
+    return screen_eink == true
+end
+
+-- The reader's own colour row wins and is read live; only the screen's answer
+-- is a cache (see rememberScreen). A failure costs colour, never a crash.
 function Image.colorEnabled()
     local ok, Device = pcall(require, "device")
     if not ok or type(Device) ~= "table" then
         return false
     end
     local scr = Device.screen
-    if not (scr and type(scr.isColorEnabled) == "function") then
+    -- An 8-bit framebuffer would throw the colour away, whichever answer won.
+    if not scr or scr.fb_bpp == 8 then
         return false
     end
-    local ok_call, enabled = pcall(scr.isColorEnabled, scr)
-    if not (ok_call and enabled) then
-        return false
+    local g = rawget(_G, "G_reader_settings")
+    if g and type(g.has) == "function" and g:has("color_rendering") then
+        return g:isTrue("color_rendering")
     end
-
-    return scr.fb_bpp ~= 8
+    return screen_color == true
 end
 
 -- Area, not longest edge: a tall strip is not punished more than a wide scan.
