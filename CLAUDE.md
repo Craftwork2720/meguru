@@ -68,6 +68,29 @@ Read the one you need, not all of them.
 - Docs hold only what the code cannot show: server behaviour, quirks, open questions,
   security rules. No history ("previously", "was removed"), no restating code.
 
+## Tasks
+
+Tasks and ideas are tracked in GitHub Issues, not in files. Don't add TODO lists or
+task files to the repo.
+
+### Reading
+
+- Use `gh issue list` and `gh issue view <n>` freely to check existing issues.
+
+### Writing
+
+- Never create, edit, comment on, label or close issues unless explicitly asked.
+- If something deserves an issue, suggest it in one line and wait for an answer.
+- Check `gh issue list` for duplicates before creating one.
+
+### Style
+
+- Always write issues, comments, commit messages and PR descriptions in English.
+- Titles: short, imperative (e.g. `Add "Show in OPDS" to hold file menu`).
+- Body: only what is needed (problem or goal, expected behaviour, logs if relevant).
+  Use a `- [ ]` checklist for multi-step work.
+- Labels: `bug`, `enhancement`, `idea`. Don't invent new ones.
+
 ## Commits
 
 - Conventional Commits, subject line only: `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`, `test:`.
@@ -76,6 +99,8 @@ Read the one you need, not all of them.
 - Describe the effect, not the process. Good: `fix: skip /proc in empty-folder scan`.
   Bad: `fix: updated browser.lua to try to handle some edge cases`.
 - One logical change per commit. Never bundle unrelated edits.
+- Reference existing issues in commits and PRs (`Fixes #12`, `Refs #12`), but only
+  when the issue was mentioned or clearly matches the work.
 - Never commit unless asked.
 
 ## Comments
