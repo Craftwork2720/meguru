@@ -201,7 +201,7 @@ local firstUnfinishedOrLast = Feed.firstUnfinishedOrLast
 local firstIn = Feed.firstIn
 
 -- The items a feed page describes; a repeated item_key collapses.
--- Dedupe keeps the copy carrying the server's own page (see Feed.dedupe).
+-- Dedupe keeps the entry the feed places for the book (see Feed.dedupe).
 -- The one place entries become items; driverItemFor does not come through it.
 local function itemsFrom(driver, feed, feed_url, ctx)
     local items, _, replaced = Feed.dedupe(
@@ -209,7 +209,7 @@ local function itemsFrom(driver, feed, feed_url, ctx)
     for _, lost in ipairs(replaced) do
         logger.info("Meguru: dropped duplicate feed entry",
             lost.display_title or lost.title,
-            "- it describes a book whose other entry carries the server's page")
+            "- the feed's own entry for that book is the one kept")
     end
     return items
 end

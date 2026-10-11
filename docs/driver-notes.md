@@ -57,8 +57,9 @@ The rules that make a walk safe, each of which has a reason:
 
 **Nothing is stored, so there is nothing to keep in step** — no transaction, sweep or TTL.
 
-**A repeated `item_key` is one book, and the copy that carries the server's page
-is the one that describes it.** `Feed.dedupe` is the whole of that rule, and it
+**A repeated `item_key` is one book, and the copy that states it best is the one
+kept: a page outranks none, and between copies that state the same the entry below
+the head is the book.** `Feed.dedupe` is the whole of that rule, and it
 has exactly two callers: `Feed.collect`, which walks a chain, and `itemsFrom` in
 `ui/open.lua`, which is the one place in that file where feed entries become
 items — the three list-parsing sites (`freshResumeTarget`, and `seriesItems`
@@ -87,8 +88,15 @@ in the series. A survivor that inherited the slot of the copy it displaced would
 put the chapter the reader is *in* at the head of the series, because that copy is
 the feed's first entry: "next chapter" would answer the first volume, and
 "previous" would say there is none. `Feed.dedupe` therefore sorts its survivors by
-the index each was found at. It is the same defect as the lost page and it comes
-from the same entry — the alias claiming a position that belongs to a book.
+the index each was found at, and never by the slot of a copy at the head of the
+feed: Kavita inserts the alias there and nowhere else, so between two copies that
+state the same page — or neither stating one — the entry below the head holds the
+book's place. The second case is the one a page rule cannot reach, and it is the
+common one: `GetContinuePoint` answers with a chapter the reader has never opened
+whenever every chapter before it is fully read, and a chapter with no progress row
+carries no `p5:lastRead` on either copy. With the alias holding the head slot, the
+chapter the reader is on answers "next" with the one after the next — a skip, on
+any series whose read marks come from a client that reports real page numbers.
 
 **And it reads no title, which is a requirement rather than a preference: these
 OPDS switches are per user.** `Include Continue From Entry` decides whether the

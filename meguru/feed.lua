@@ -101,8 +101,17 @@ function Feed.walk(url, opts)
     return walker.pages, walker.complete, walker.reason, walker.count
 end
 
+-- A page outranks none; between equals the head copy is the shortcut.
+local function displaces(held, item, index)
+    if held.item.last_read == nil and item.last_read ~= nil then
+        return true
+    end
+    return held.index == 1 and index ~= 1
+        and held.item.last_read == item.last_read
+end
+
 -- A copy carrying `last_read` is the book; one without it is only a shortcut.
--- `replaced` is the copies given up for one that carried a page.
+-- `replaced` is the copies given up for the one that states the book better.
 function Feed.dedupe(items)
     local at, kept, dropped, replaced = {}, {}, 0, {}
     for index, item in ipairs(items or {}) do
@@ -117,7 +126,7 @@ function Feed.dedupe(items)
                 kept[#kept + 1] = { item = item, index = index }
             else
                 dropped = dropped + 1
-                if kept[slot].item.last_read == nil and item.last_read ~= nil then
+                if displaces(kept[slot], item, index) then
                     replaced[#replaced + 1] = kept[slot].item
                     kept[slot] = { item = item, index = index }
                 end
