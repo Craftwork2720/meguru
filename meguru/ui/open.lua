@@ -105,15 +105,17 @@ end
 -- Record the server kind from the name the feed signs itself with.
 -- Best-effort: an unrecognised author leaves the kind unknown.
 -- <author> is a child of <feed>, so read the unwrapped feed like the entries.
+-- Re-asked of every feed: a catalog repointed at another server changes answer.
 function Open.noteCatalogAuthor(browser, catalog)
     local name = catalogTitle(browser)
-    if not name or sniffed[name] then
+    if not name then
         return
     end
     local feed = Net.feedFrom(catalog)
     local kind = Base.kindFromAuthor(feed and feed.author)
-    if kind then
+    if kind and kind ~= sniffed[name] then
         sniffed[name] = kind
+        -- Logged on change: this line is how a repointed catalog shows up.
         logger.dbg("Meguru: catalog", name, "looks like", kind)
     end
 end
