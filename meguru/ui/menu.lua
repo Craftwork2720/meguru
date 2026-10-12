@@ -198,11 +198,12 @@ end
 
 -- Drawn from the series, not a neighbour: a possible next is one walk away.
 -- The `.cbz` list is built once per document: a new volume shows next open.
-local function addNeighborRow(plugin, rows, which)
+local function addNeighborRow(plugin, rows, which, separator)
     rows[#rows + 1] = {
         text = which == "next"
             and _("Open next in series")
             or _("Open previous in series"),
+        separator = separator,
         callback = function()
             -- Deferred: the walk may replace this document and this handler.
             UIManager:nextTick(function()
@@ -225,7 +226,8 @@ function Menu.addReaderItems(plugin, menu_items)
     local rows = {}
     if context then
         addNeighborRow(plugin, rows, "next")
-        addNeighborRow(plugin, rows, "previous")
+        -- Separator: the series rows end here; Meguru's settings follow below.
+        addNeighborRow(plugin, rows, "previous", true)
     end
 
     local settings = {}

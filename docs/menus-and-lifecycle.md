@@ -274,7 +274,17 @@ Invariants when touching these rows:
   group: `Hide status bar` (behaviour above, book location below), `Subfolder per
   server` (location above, covers and the `.cbz` rows below) and the default-reader row
   (preferences above, *Check for updates*, the one action, below). The FileManager
-  holds only the last two.
+  holds only the last two. The reader's *Meguru* list carries one more of its own, under
+  *Open previous in series*: the series rows are about the book you are in, and
+  `Settings` — and everything under it — is not.
+- **`Hide status bar` looks like it closes the menu, and the close is KOReader's.** Hiding
+  the footer fires `ReaderFooterVisibilityChange`, `ReaderView` answers it with a
+  `SetDimensions`, and `ReaderMenu:onSetDimensions` closes and reopens the whole reader
+  menu, because that widget cannot re-lay out in place (`readermenu.lua:448`). Every other
+  row here carries a `checked_func`, which is what `TouchMenu:onMenuSelect` keeps open, so
+  this is the one row that loses its place. Deliberately left alone: suppressing it means
+  monkey-patching a core reader module for a menu nicety, and KOReader's own *Overlap
+  status bar* (`reclaim_height`) removes the cause instead.
 - **The FileManager's `Meguru` submenu carries nothing but that `Settings` row.** Both
   surfaces use the key `meguru`, which is safe because the two `menu_items` tables are
   per-surface and never shared, and `Meguru:addToMainMenu` dispatches on whether a
