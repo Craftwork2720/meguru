@@ -677,7 +677,7 @@ function MeguruDocument:init()
                 self.spread_rtl = ds:isTrue("inverse_reading_order") and true or false
             end
             -- Used as recorded; another reader's position has no lead to trim.
-            local page = not opened_before and tonumber(desc.last_read) or nil
+            local page = not opened_before and desc and tonumber(desc.last_read) or nil
             if page and page > 1 and page <= count then
                 ds.data.last_page = math.floor(page)
                 ds:flush()
