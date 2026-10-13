@@ -146,6 +146,14 @@ four rules over a grid of artwork sizes, margins and screen shapes, the growth's
 three over a grid of unevenly cropped pairs, and the two of them composed in
 `_pairLayout`'s order, where the row must not decide whether a page is grown.
 
+**None of the passes is a parser, and the gap is wider than pass 1 suggests.** A stray
+comma where a statement ends — `help_text = _("…"),` under an `if`, copied from the
+table-constructor style — is a syntax error that block balance cannot see, and the
+plugin then fails to load *whole*, which is the failure the passes exist to prevent.
+With a Lua at hand (WSL has KOReader's, `/usr/lib/koreader/luajit`) the check that does
+parse is one line per touched file: `luajit -e 'assert(loadfile("meguru/ui/menu.lua"))'`.
+Run it over everything a change touched before the tree goes to a device.
+
 A Python mirror of Lua logic models values, not Lua's evaluation rules, and the
 difference has shipped a crash. `meguru/credential.lua`'s `restoreTemplate` ended
 `return (s:gsub(...))` — parentheses truncate a multi-value expression to one, so the
@@ -847,3 +855,24 @@ Each step must pass before the next:
     | l | each of Kavita, Komga and Suwayomi | the series feed, in the book's own language for Suwayomi, and Komga behind a path-prefixed catalog root |
     | m | open the browser from `a`, tap a book, tap **Choose folder** | the finding in `known-issues.md`: stock's own button reaches for `folder_shortcuts` on a reader and does nothing. Record what it actually does |
     | n | regression: from a reader-opened browser, open a book with ▶ and close it | no flash of the catalog underneath — item 13 still holds |
+
+30. **A change in one chapter is the series', and only a change is.** Two volumes of one
+    series (markers from the same feed, or two `.cbz` in one folder), and one book of a
+    different series.
+
+    | # | do | expected |
+    |---|---|---|
+    | a | in volume 1, bottom menu → **Two pages: on** and **Crop: none**, close, open volume 2 | volume 2 opens with both. The log carries one `Meguru: series s|…|… answers …` per learning |
+    | b | in volume 2, set **Crop: auto**, then reopen volume 1 | volume 1 shows **auto** — the series' answer beats what that book had stored for itself |
+    | c | open volume 3 of that series (never opened here) | it opens with the series' answers, not with the plugin preferences |
+    | d | turn **Rotation** on wide pages on, close the book while a **wide page** is on screen, open volume 2 | volume 2 opens in the reader's own orientation: the plugin's own wide-page turn is not the reader's answer for the series |
+    | e | **Panel view: off** in one volume, then the next | the next volume's long-press does nothing either — the fourth answer travels like the views |
+    | f | the book of another series | its rows do not move |
+    | g | open and close a volume changing **nothing** | no `answers` log line, and no `.meguru-series.lua` is written |
+    | h | long-press a row → **Set as default** | the confirmation also writes that row into the series: the next volume shows it, not the series' older answer |
+    | i | a lone `.cbz` in a folder of one, and a marker with no `series_name` | no series at all: no file, rows behave as before this feature |
+    | j | after `a`–`f`, list the series folder and `settings.reader.lua` | one `.meguru-series.lua` **in the series folder**, invisible in the file browser, holding one entry named by the series; `meguru_trim_page`, `meguru_spread` and every other `meguru_*` preference untouched. Copy the folder elsewhere and open a volume from the copy: the answers come with it |
+    | k | make the series folder read-only and change a row | one `could not write` warning naming the file, and the row still applies to the book being read — the answers are simply not kept |
+    | l | ⋮ → Meguru → **Remember settings for this series** off, change a row, close, open volume 2 | volume 2 does **not** get the change, and the log says the series keeps its books apart. The file still holds the old rows. Turn the row back on, change another row: it publishes again |
+    | m | the same row in a folder of unrelated `.cbz` | it reads **Remember settings for this folder** there — a local book's series is its folder, and the row says so. Turned off, it stops the leak: each comic keeps its own settings from then on |
+    | n | the same rows on a lone `.cbz`, and in a PDF | no row at all |
