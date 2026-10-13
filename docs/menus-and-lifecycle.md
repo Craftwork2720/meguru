@@ -237,10 +237,10 @@ Invariants when touching these rows:
   loop is indexed (`for i = 1, #Progress.KINDS`) for exactly this reason;
   `tools/check.py` pass 9 is the same trap seen from the loop's side.
 - **A `Settings` submenu on both surfaces** — the reader's holds the rows that are about
-  a book being read (auto-open next in series, report reading progress, hide status bar,
-  save folder, subfolder per server, `Covers for folders`, `Read metadata from
-  ComicInfo.xml`, default reader for `.cbz`, check for updates), the FileManager's the
-  ones that are not. **No panel row is among
+  a book being read (auto-open next in series, report reading progress, full refresh on
+  every page turn, hide status bar, save folder, subfolder per server, `Covers for
+  folders`, `Read metadata from ComicInfo.xml`, default reader for `.cbz`, check for
+  updates), the FileManager's the ones that are not. **No panel row is among
   them**, and that is a decision rather than an omission: the panel choices are per book,
   and a preference row here would be a plugin-wide answer to a per-book question. Two live
   in the viewer's own button row, where the reader can see what they do while looking at
@@ -250,10 +250,27 @@ Invariants when touching these rows:
   FileManager's depth is a deliberate cost, paid so the two menus read the same. No
   `sorting_hint` exists below the top-level `meguru` item — the sorter only ever orders
   a page's own rows.
+- **`Full refresh on every page turn` is a switch of the plugin's own, not a second door
+  onto KOReader's.** It never writes `full_refresh_count`, so KOReader's *Full refresh
+  rate* keeps governing every other book and the menus, and the row covers Meguru books
+  alone. The ask is made at the turn rather than stored: the plugin requests a `"full"` of
+  the whole screen, and the view has just asked for the same repaint as `"partial"`, so
+  `_refresh`'s collision pass merges the two regions and `update_mode` keeps the stronger
+  mode (`uimanager.lua:1138`) — **one flashing repaint, not two**, and nothing is painted
+  twice. An explicit full also zeroes the promotion counter (`uimanager.lua:1214`), so with
+  the row on the stock rate has no partial refreshes left to count inside a Meguru book.
+  Read per turn, it applies to the book already open and stores nothing. **Two
+  consequences are left as they fall.** In continuous mode `_refresh` forces every mode to
+  `"fast"` while `UIManager.currently_scrolling` is set (`uimanager.lua:1208`), which is
+  the hole stock's own rate falls into as well. And a redraw that is not a turn flashes
+  too: a zoom mode change and the reflow toggle both ask for `RedrawCurrentPage`, i.e. a
+  `PageUpdate` carrying the page already on screen (`readerpaging.lua:1212`,
+  `readerzooming.lua:732`) — the page is being repainted either way, so a flash on it is
+  what the row promises.
 - **`Covers for folders` is the one thing below `Settings`, and it is an exception
   rather than a precedent.** Its three rows are switches for one feature, and as flat
-  rows they would take the reader's `Settings` from eight entries to ten — nine to
-  eleven on a book with a series — while naming servers instead of the thing they
+  rows they would take the reader's `Settings` from nine entries to eleven — ten to
+  twelve on a book with a series — while naming servers instead of the thing they
   belong to. The level is bought back by the row above them saying
   what the group *is* — which is the whole job `Settings` does one level up, and the
   reason "one level deep" existed. A second such submenu should have to make the same

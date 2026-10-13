@@ -162,6 +162,17 @@ local function progressRows()
     return rows
 end
 
+-- Meguru's own switch, scoped to Meguru books: KOReader's rate is left alone.
+local function fullRefreshRow()
+    return {
+        text = _("Full refresh on every page turn"),
+        help_text = _("Flashes the screen on each page turn, so a page cannot leave its ghost on the next one. This covers Meguru books only — other books, and the menus, keep KOReader's own full refresh rate."),
+        keep_menu_open = true,
+        checked_func = function() return Settings.get("refresh_each_page") end,
+        callback = function() Settings.toggle("refresh_each_page") end,
+    }
+end
+
 local function settingsRow(rows)
     return {
         text = _("Settings"),
@@ -171,6 +182,7 @@ end
 
 function Menu.addFileManagerItems(plugin, menu_items)
     local settings = destinationRows()
+    settings[#settings + 1] = fullRefreshRow()
     settings[#settings + 1] = coverRow()
     settings[#settings + 1] = comicInfoRow()
     settings[#settings + 1] = defaultReaderRow()
@@ -255,6 +267,7 @@ function Menu.addReaderItems(plugin, menu_items)
     for _, row in ipairs(progressRows()) do
         settings[#settings + 1] = row
     end
+    settings[#settings + 1] = fullRefreshRow()
 
     settings[#settings + 1] = {
         text = _("Hide status bar"),

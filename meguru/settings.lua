@@ -26,6 +26,9 @@ local DEFAULTS = {
     auto_next_item    = true,
     manga_order       = true,
 
+    -- Flashes each page turn in a Meguru book; KOReader's rate governs the rest.
+    refresh_each_page = false,
+
     -- Local .cbz: title and fields from the archive's own ComicInfo.xml.
     comic_info        = true,
 

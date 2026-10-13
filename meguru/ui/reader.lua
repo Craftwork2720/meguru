@@ -1645,6 +1645,14 @@ local function applyCropMarginColor(plugin, ui, page)
     setCropMarginColor(plugin, ui, margin)
 end
 
+-- Asked per turn, so the row is live for the book already open; the ask rides
+-- the repaint the turn causes, since "full" outranks the view's "partial".
+local function flashPageTurn()
+    if Settings.get("refresh_each_page") then
+        UIManager:setDirty(nil, "full")
+    end
+end
+
 -- Re-derived per paint, not per turn: night mode is toggled with no turn in it.
 local function installCropMarginColor(plugin, ui)
     local view = ui and ui.view
@@ -1733,6 +1741,7 @@ function Reader.install(plugin)
         local turned = page or (self.ui and currentPage(self.ui))
         notePageTurn(self, turned)
         applyCropMarginColor(plugin, self.ui or ui, turned)
+        flashPageTurn()
     end
 
 -- The page the book opens on, which no page turn announces.
