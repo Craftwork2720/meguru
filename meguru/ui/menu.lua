@@ -11,6 +11,7 @@ local SeriesCover = require("meguru/seriescover")
 local Marker = require("meguru/marker")
 local Open = require("meguru/ui/open")
 local Reader = require("meguru/ui/reader")
+local SeriesState = require("meguru/seriesstate")
 local Settings = require("meguru/settings")
 local Updater = require("meguru/updater")
 
@@ -162,6 +163,37 @@ local function progressRows()
     return rows
 end
 
+-- Named for the unit the reader has: a local book's series is its folder, and a
+-- stream's is the series the feed gave it. nil when a book has neither.
+local function shareRow(plugin)
+    local doc = plugin.ui and plugin.ui.document
+    if not SeriesState.keyFor(doc) then
+        return nil
+    end
+    local function shared()
+        return SeriesState.sharedFor(plugin.ui and plugin.ui.document)
+    end
+    -- Two texts, not one with a word swapped: the folder is the whole rule for a
+    -- local book, and the reason to turn this off is a different one there.
+    local text, help_text
+    if doc and doc.local_cbz then
+        text = _("Remember settings for this folder")
+        help_text = _("Settings you change are remembered for every .cbz in this folder.")
+    else
+        text = _("Remember settings for this series")
+        help_text = _("Settings you change are remembered for the whole series.")
+    end
+    return {
+        text = text,
+        help_text = help_text,
+        keep_menu_open = true,
+        checked_func = shared,
+        callback = function()
+            SeriesState.setShared(plugin.ui and plugin.ui.document, not shared())
+        end,
+    }
+end
+
 -- Meguru's own switch, scoped to Meguru books: KOReader's rate is left alone.
 local function fullRefreshRow()
     return {
@@ -266,6 +298,10 @@ function Menu.addReaderItems(plugin, menu_items)
     -- A behaviour row, so it joins the group above the separator.
     for _, row in ipairs(progressRows()) do
         settings[#settings + 1] = row
+    end
+    local share = shareRow(plugin)
+    if share then
+        settings[#settings + 1] = share
     end
     settings[#settings + 1] = fullRefreshRow()
 

@@ -6,7 +6,27 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
 
 ## Series state, and where it lives
 
-**There is no store. A marker and the server's own feed are the whole of it.**
+**There is no store of the series' *content*. A marker and the server's own feed
+are the whole of it.** What the reader *chose* while reading is a different thing and
+has one: `meguru/seriesstate` keeps the bottom menu's row answers in **one hidden
+`.meguru-series.lua` file in the series' own folder** — `{ [identity] = { rows } }`,
+written and read like a marker. The file travels with the library, so a copied or
+restored collection keeps its answers, and a book's sidecar stays the copy the reader
+machinery reads and writes: the file is what a book with nothing of its own, or with
+something stale of its own, is seeded from. See `docs/menus-and-lifecycle.md` for the
+row list, the precedence rule and why the identity sits inside the file.
+
+Two things the folder costs, and both are deliberate. **A marker with no series name
+has no folder of its own** — it is written to the marker base folder, shared with every
+other such book — so it keeps no answers at all and behaves as books did before this
+existed. **And a series whose books end up in two folders** (the marker base or the
+per-server subfolder changed between downloads) keeps two files, one per folder, where
+a store keyed by identity alone would have kept one. **Either cost can be sidestepped
+where it matters**: *Remember settings for this series* — *for this folder* on a local
+`.cbz` — in the reader's Meguru menu,
+writes `share = false` into the entry, which is the escape from a folder of unrelated
+comics — one series by this plugin's only rule for a local folder — and the rows already
+learned are kept, so the switch is reversible.
 
 A marker carries twelve fields plus a version: the identity of the book
 (`server_name`, `series_remote_id`, `series_name`, `server_kind`, `item_key`), its

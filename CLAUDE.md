@@ -36,7 +36,8 @@ Not yet written: `driver/generic.lua`. An unrecognised server has no driver.
 - Module graph is a DAG. The only lazy edge is `feed.lua` -> `meguru/naming`.
 - `ui/panelzoom` and `ui/info` require no `meguru/` module; they are handed plain data.
 - `meguru/spread` and `meguru/derainbow` are leaves.
-- Only markers are written to disk, plus `.cover.jpg` from `meguru/seriescover`.
+- Only markers are written to disk, plus `.cover.jpg` from `meguru/seriescover` and
+  the series' own `.meguru-series.lua` from `meguru/seriesstate`.
 - Reading position is sent to the server for Komga only, and is opt-out per server.
 - Never modify `libs/` by hand.
 

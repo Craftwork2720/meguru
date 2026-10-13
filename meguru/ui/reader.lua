@@ -1039,7 +1039,7 @@ local DITHERING_ROW = {
     default_value = 0,
     event = "SWDitheringUpdate",
     args = { false, true },
-    help_text = _([[Dithers the page into sixteen grey levels as it is written to the screen, which is how a scanned page has been shown here so far. Off writes each pixel flat instead — smoother on a screen whose controller dithers an 8-bit framebuffer itself, banded on one that does not. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+    help_text = _([[Dithers the page into sixteen grey levels as it is written to the screen, which is how a scanned page has been shown here so far. Off writes each pixel flat instead — smoother on a screen whose controller dithers an 8-bit framebuffer itself, banded on one that does not. Remembered for this series; long-press this row to set what new Meguru books start at.]]),
 }
 
 -- Own event; derainbowify's switch is on KoptOptions, which this never reads.
@@ -1052,7 +1052,7 @@ local DERAINBOW_ROW = {
     args = { false, true },
     default_value = 0,
     event = "MeguruDerainbowUpdate",
-    help_text = _([[Removes the rainbow shimmer that fine black-and-white artwork picks up on a colour e-ink screen, by filtering the page as it is painted. Needs the filter's native libraries, which ship with the plugin; without them this row is not offered. Costs a moment on each page's first paint. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+    help_text = _([[Removes the rainbow shimmer that fine black-and-white artwork picks up on a colour e-ink screen, by filtering the page as it is painted. Needs the filter's native libraries, which ship with the plugin; without them this row is not offered. Costs a moment on each page's first paint. Remembered for this series; long-press this row to set what new Meguru books start at.]]),
 }
 
 -- Stock's row and presets unchanged; offered only where pages decode in colour.
@@ -1072,7 +1072,7 @@ local SATURATION_ROW = {
         value_min = 0.2, value_max = 2.0,
         precision = "%.1f",
     },
-    help_text = _([[Colour intensity of the page: below 1.0 the colours are drained towards grey, above it they are pushed further apart, and 1.0 is the file's own colour. It applies to panels as well. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+    help_text = _([[Colour intensity of the page: below 1.0 the colours are drained towards grey, above it they are pushed further apart, and 1.0 is the file's own colour. It applies to panels as well. Remembered for this series; long-press this row to set what new Meguru books start at.]]),
 }
 
 -- fb_bpp == 8: BB_dither_blit_to dithers an 8-bit destination only, read live.
@@ -1175,7 +1175,7 @@ local function buildCuratedOptions(ui)
         args = { false, true },
         default_value = 1,
         event = "MeguruMangaRead",
-        help_text = _([[Which way the pages are read. "left to right" is a western book; "manga (right to left)" is a Japanese one, where the pages turn the other way and the earlier page of a spread is the right-hand one. Remembered for this book; new Meguru books start in manga order — long-press this row to change that default.]]),
+        help_text = _([[Which way the pages are read. "left to right" is a western book; "manga (right to left)" is a Japanese one, where the pages turn the other way and the earlier page of a spread is the right-hand one. Remembered for this series; new Meguru books start in manga order — long-press this row to change that default.]]),
     }
 -- Rows under Two pages are gated while it is off; the menu cannot indent them.
     reading_options[#reading_options + 1] = {
@@ -1190,7 +1190,7 @@ local function buildCuratedOptions(ui)
         args = { "off", "auto", "on" },
         default_value = "off",
         event = "MeguruSpreadUpdate",
-        help_text = _([[Shows two pages side by side, the way a printed book falls open. "in landscape" does it only while the screen is turned on its side, "always" in either orientation. A page the artist drew as one wide image is always shown whole and on its own, and the pairing starts again after it, so a printed spread never lands halfway through a pair. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+        help_text = _([[Shows two pages side by side, the way a printed book falls open. "in landscape" does it only while the screen is turned on its side, "always" in either orientation. A page the artist drew as one wide image is always shown whole and on its own, and the pairing starts again after it, so a printed spread never lands halfway through a pair. Remembered for this series; long-press this row to set what new Meguru books start at.]]),
     }
     reading_options[#reading_options + 1] = {
         name = "spread_offset",
@@ -1231,7 +1231,7 @@ local function buildCuratedOptions(ui)
         enabled_func = function(configurable)
             return configurable.spread ~= nil and configurable.spread ~= "off"
         end,
-        help_text = _([[The crop trims each page's inner margin, which would butt the two pages of a spread together at the middle. With this on, the space left over once the artwork is fitted to the screen goes back into that gutter — never more than the margin the page itself has, and never enough to make the artwork smaller. With it off, a pair is drawn exactly as the crop left it. Remembered for this book; long-press this row to set what new Meguru books start at.]]),
+        help_text = _([[The crop trims each page's inner margin, which would butt the two pages of a spread together at the middle. With this on, the space left over once the artwork is fitted to the screen goes back into that gutter — never more than the margin the page itself has, and never enough to make the artwork smaller. With it off, a pair is drawn exactly as the crop left it. Remembered for this series; long-press this row to set what new Meguru books start at.]]),
     }
 
 -- One row for the three views and Off; Off is KOReader's per-book answer.
@@ -1257,7 +1257,7 @@ local function buildCuratedOptions(ui)
             end
             return Reader.panelViewMode(ui)
         end,
-        help_text = _([[What holding on a page does. "panel cut" shows the panels the detector found, one at a time; "pan & zoom" keeps the page whole and moves a window over it; "free view" shows the page alone. "off" leaves the long-press to KOReader, and applies to this book only. Long-press this row to make a view the default for new books. This is Meguru's own panel view — a panel plugin that answers the long-press itself is its own.]]),
+        help_text = _([[What holding on a page does. "panel cut" shows the panels the detector found, one at a time; "pan & zoom" keeps the page whole and moves a window over it; "free view" shows the page alone. "off" leaves the long-press to KOReader, and is remembered for the series like the views are. Long-press this row to make a view the default for new books. This is Meguru's own panel view — a panel plugin that answers the long-press itself is its own.]]),
     }
 
 -- Four tabs plus the Info button; CURATED_PANELS counts only the panels.
@@ -1290,10 +1290,10 @@ local function redirectDefaults(config)
             return true
         end
         local value = values and values[position]
--- Off is not a view: no preference can hold it, so say so.
+-- Off is not a view, and a preference can only hold one of the three.
         if name == "panel_view" and value == "off" then
             UIManager:show(Notification:new{
-                text = _("Off applies to this book only — a default is one of the three views."),
+                text = _("Off cannot be a default — a default is one of the three views."),
                 timeout = 2,
             })
             return true
@@ -1302,12 +1302,16 @@ local function redirectDefaults(config)
         if name == "opdsbook_manga" then
             value = value == 1
         end
+        local ui = config.ui
         UIManager:show(ConfirmBox:new{
             text = T(_("Set default %1 to %2?"), name_text or "",
                 (labels and labels[position]) or ""),
             ok_text = _("Set as default"),
             ok_callback = function()
                 Settings.set(preference, value)
+                -- Taught to the series too: its own answer would otherwise mask
+                -- the default the reader just set, in every book of it.
+                Defaults.learnSeries(ui, preference, value)
             end,
         })
         return true
@@ -1942,6 +1946,14 @@ function Reader.install(plugin)
         return true
     end
 
+-- Loud, not swallowed: a failure here would lose the reader's answers quietly.
+local function publishSeries(plugin)
+    local ok, err = pcall(Defaults.publishSeries, plugin.ui)
+    if not ok then
+        logger.warn("Meguru: could not publish the series' settings:", err)
+    end
+end
+
 -- Rotation restored first, so the screen is right before a socket wait.
     plugin.onCloseDocument = function(self)
         if self._meguru_wide_rotate_installed then
@@ -1949,6 +1961,7 @@ function Reader.install(plugin)
             self._meguru_wide_rotate_installed = false
         end
         flushProgress(self)
+        publishSeries(self)
     end
 
     plugin.onClose = function(self)
@@ -1957,16 +1970,21 @@ function Reader.install(plugin)
             self._meguru_wide_rotate_installed = false
         end
         flushProgress(self)
+        publishSeries(self)
     end
 
 -- Both seams needed: flushSettings and Suspend arrive a moment apart.
 -- Assigned, not chained: neither is assigned elsewhere in this plugin.
+-- SaveSettings would be the seam, but ReaderKoptListener consumes that event
+-- long before a plugin is reached (readerkoptlistener.lua:60).
     plugin.onFlushSettings = function(self)
         flushProgress(self)
+        publishSeries(self)
     end
 
     plugin.onSuspend = function(self)
         flushProgress(self)
+        publishSeries(self)
     end
 
     return true

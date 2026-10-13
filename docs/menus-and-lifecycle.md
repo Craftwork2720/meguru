@@ -6,10 +6,11 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
 
 ## Reading options and the menus
 
-Meguru books share KOReader's per-book `kopt_*` settings, so the bottom `ConfigDialog`
-is **curated** rather than replaced: rows the engine does not implement (page margins,
-auto-straighten, the reflow and zoom-matrix family) are dropped, because each would set
-a value with no visible effect.
+Meguru books share KOReader's per-book `kopt_*` settings — and, in front of them, one
+set of answers per series — so the bottom `ConfigDialog` is **curated** rather than
+replaced: rows the engine does not implement (page margins, auto-straighten, the reflow
+and zoom-matrix family) are dropped, because each would set a value with no visible
+effect.
 
 **The four tabs carry this plugin's icons, and a PDF's carry KOReader's**, which is
 worth knowing before anyone "simplifies" it. `meguru/icons` gives the tabs names of
@@ -181,10 +182,11 @@ them as one, including putting the book's view back into the view key when `off`
 because the dialog has already written the chosen value there by the time the row's event fires.
 It is seeded from the `panel_view` preference like every other row here, and its long-press sets
 that preference as on every other row — with one value it refuses: `off` is not a view, so no
-preference could hold it, and `redirectDefaults` answers for that case with a notification
-instead of writing a word nothing reads. Whether there is a panel view is the per-file answer by
-design, and that is the one place in this dialog where "set as default" is declined rather than
-performed.
+*preference* could hold it, and `redirectDefaults` answers for that case with a notification
+instead of writing a word nothing reads. **The series store is a different slot and does hold
+it**: the fourth answer travels like the three views, so turning the panel view off in one
+chapter turns it off in the next, and the only place "set as default" is still declined is the
+one that could never have worked.
 
 **One row is also offered to KOReader's gesture editor**, where a reader binds a tap, a swipe or a key to it instead: *Meguru: toggle pair offset (two-page view)*, registered by `main.lua` as `meguru_pair_offset` and listed under **Fixed layout documents**, beside *Toggle page flipping* and *Toggle panel zoom* — prefixed because that list is shared with stock's own actions, so nothing in it would otherwise say whose it is. It fires `MeguruPairOffsetToggle`, and the handler for it is installed per reader like every other handler in `ui/reader.lua` — which is what makes the action safe to leave bound outside a Meguru book: the event arrives, no instance has the method, and nothing happens. The section is a list rather than a gate, so every fixed-layout document is *offered* it for the same reason.
 
@@ -194,16 +196,62 @@ The one thing that must not be missed: KOReader's stock "set as default" writes 
 **global** `G_reader_settings["kopt_<name>"]`, which would leak a choice made while
 reading a stream into every PDF opened afterwards. `ui/reader.lua` redirects it onto
 the plugin preference and swallows rows the plugin has no preference for — that
-redirection is the reason that file exists.
+redirection is the reason that file exists. **It teaches the series as well**: the same
+confirmation writes the value into the store for the series being read, because a series
+answer already standing for that row would otherwise mask the default the reader just
+set, in every book of that series.
 
 Invariants when touching these rows:
+
+- **A row's value is resolved in three layers, and the series comes first.** The store
+  is `meguru/seriesstate`: **one hidden `.meguru-series.lua` file in the series' own
+  folder**, beside the markers or the `.cbz` files, holding `{ [identity] = { rows } }`.
+  The identity inside it is `server_name|series_remote_id` for a marker — the same shape
+  the store had when it lived in `G_reader_settings`, kept because one folder can hold
+  two series whose names sanitize the same way, and because a marker falls back to an
+  ancestor folder when its own cannot be made — and the fixed name `series` for a local
+  book, whose folder *is* its series and whose file must survive the folder being copied
+  to another path. `Defaults.apply`
+  asks the file, then the book's own sidecar, then the plugin preference,
+  writing whatever won back into the sidecar. **What puts a row there is a change**: at
+  open the plugin remembers what the fourteen rows say (`Defaults.beginSeries`), and at
+  close it publishes the ones that differ (`Defaults.publishSeries`), so opening and
+  closing a book nobody adjusted publishes nothing, and a row the reader moved in
+  chapter 1 answers in chapters 2 and 3 and in every volume reopened since. The rows are
+  read live (`configurable`, `zooming.zoom_mode`, `view.inverse_reading_order`,
+  `highlight.panel_zoom_enabled`), never from the sidecar: that is what catches the panel
+  viewer's own switch and the pair-offset gesture, and what keeps `ReaderConfig`'s save
+  order out of the answer. **`SaveSettings` is not the seam it looks like**:
+  `ReaderKoptListener` consumes that event (`readerkoptlistener.lua:60`) before any
+  plugin is reached, so the publish hangs off the four hooks the plugin already has for
+  progress — `onCloseDocument`, `onClose`, `onFlushSettings`, `onSuspend`. **The reader
+  can take one unit out of the sharing**: *Remember settings for this series* — *for
+  this folder* on a local `.cbz`, whose series is the folder — writes `share = false`
+  into that entry, which both stops
+  the seeding and refuses every later publish for every book of it, and writes nothing
+  else — the rows already learned stay, so the switch is reversible and costs the file
+  one key. It is the escape from a folder of unrelated comics, which this plugin counts
+  as one series; it is offered only where a book has a series at all.
+- **Three rows are not one value in one key even here.** `spread_offset` stores the
+  *answer*, never the anchor page — a page number means nothing in another book, so `on`
+  is anchored at each book's opening page. `rotation_mode` is read only when the screen
+  is not rotated by this plugin's own wide-page turn: KOReader etches the live screen
+  rotation into that row at every save (`readerview.lua:1222`), and a turn the plugin
+  asked for is not the reader's answer. And `panel_view` brings KOReader's per-file
+  `panel_zoom_enabled` with it, which is why its `off` is stored rather than resolved.
 
 - **A row's `values` stay in the row's own domain.** `trim_page` is `{3,1}`
   (none/auto), `rotate_wide_pages` is `0/1/2`, the toggles are `0/1`, `fit` is a
   string. `seedRowValue` copies the stored value through verbatim for exactly this
   reason: `0` is a valid choice *and* is truthy in Lua, so any normalising step
   (`value and 1 or 0`) silently turns "off" into "on" and "crop: none" into "crop:
-  auto".
+  auto". **The mirror of that trap is `false`**, which is a real answer on the reading
+  direction row: `answers.manga_order or fallback` drops "left to right" and answers
+  with the preference, and it did, in the first cut of the series seed. It came back in
+  the share switch, where `entry.share = shared and nil or false` wrote `false` for
+  *both* answers (`true and nil` is `nil`, so `or false` always wins), and a probe caught
+  it: **a value that can be `false` is only ever read by comparison (`~= nil`) and only
+  ever written by a branch**, never through `and`/`or`.
 - **`sorting_hint` must name an existing menu item, in that surface's own order
   table.** `menusorter` does `findById(...)` and then indexes the result without
   checking, so a hint naming nothing throws out of the entire menu build and takes
@@ -237,8 +285,9 @@ Invariants when touching these rows:
   loop is indexed (`for i = 1, #Progress.KINDS`) for exactly this reason;
   `tools/check.py` pass 9 is the same trap seen from the loop's side.
 - **A `Settings` submenu on both surfaces** — the reader's holds the rows that are about
-  a book being read (auto-open next in series, report reading progress, full refresh on
-  every page turn, hide status bar, save folder, subfolder per server, `Covers for
+  a book being read (auto-open next in series, report reading progress, remember
+  settings for this series (for this folder on a local `.cbz`), full refresh on every
+  page turn, hide status bar, save folder, subfolder per server, `Covers for
   folders`, `Read metadata from ComicInfo.xml`, default reader for `.cbz`, check for
   updates), the FileManager's the ones that are not. **No panel row is among
   them**, and that is a decision rather than an omission: the panel choices are per book,
@@ -269,8 +318,8 @@ Invariants when touching these rows:
   what the row promises.
 - **`Covers for folders` is the one thing below `Settings`, and it is an exception
   rather than a precedent.** Its three rows are switches for one feature, and as flat
-  rows they would take the reader's `Settings` from nine entries to eleven — ten to
-  twelve on a book with a series — while naming servers instead of the thing they
+  rows they would take the reader's `Settings` from nine entries to eleven — eleven to
+  thirteen on a book with a series — while naming servers instead of the thing they
   belong to. The level is bought back by the row above them saying
   what the group *is* — which is the whole job `Settings` does one level up, and the
   reason "one level deep" existed. A second such submenu should have to make the same

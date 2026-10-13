@@ -99,10 +99,16 @@ end
 
 -- Seed per-book defaults here: stock defaults are wrong for a fixed layout.
 function Meguru:onReadSettings(_config)
-    local ok, err = pcall(Defaults.apply, self.ui, self.ui and self.ui.document)
+    local document = self.ui and self.ui.document
+    local ok, err = pcall(Defaults.apply, self.ui, document)
     if not ok then
         -- A stock-default book still reads, just wrong: never cost the open.
         logger.warn("Meguru: could not seed per-book defaults:", err)
+    end
+    -- After the seeds: the baseline is what the series answered, not the book.
+    local ok_series, err_series = pcall(Defaults.beginSeries, self.ui, document)
+    if not ok_series then
+        logger.warn("Meguru: could not read the series' settings:", err_series)
     end
 end
 

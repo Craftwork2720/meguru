@@ -2,6 +2,7 @@
 
 local logger = require("logger")
 
+local SeriesState = require("meguru/seriesstate")
 local Settings = require("meguru/settings")
 
 local Defaults = {}
@@ -33,16 +34,143 @@ Defaults.PREFERENCE_FOR = {
 }
 local PREFERENCE_FOR = Defaults.PREFERENCE_FOR
 
--- The book's own value from the sidecar, else the preference, then stored back.
+-- A series answer is stored under the preference's name, so the two agree.
+local function preferenceOf(name)
+    return PREFERENCE_FOR[name] or name
+end
+
+local function seriesValue(series, name)
+    return series and series[preferenceOf(name)]
+end
+
+local function configurableOf(ui)
+    return ui and ui.document and ui.document.configurable
+end
+
+-- The three views the row offers; "off" is KOReader's own switch, not a view.
+local function panelViewIsView(value)
+    return value == "crop" or value == "window" or value == "zoom"
+end
+
+-- The 14 rows a series answers as one. Read live, never from the sidecar: a row
+-- is what the reader sees, whichever writer moved it, and ReaderConfig's save
+-- order never enters into it. Values come back in the store's own domain.
+local SERIES_READERS = {
+    trim_page = function(ui)
+        local c = configurableOf(ui)
+        return c and c.trim_page
+    end,
+    rotate_wide_pages = function(ui)
+        local c = configurableOf(ui)
+        return c and c.rotate_wide_pages
+    end,
+    page_scroll = function(ui)
+        local c = configurableOf(ui)
+        return c and c.page_scroll
+    end,
+    -- Stock etches the live screen rotation into this row at every save, and
+    -- this plugin rotates the screen itself for a wide page: a turn it asked
+    -- for is not the reader's answer for the series.
+    rotation_mode = function(ui)
+        local doc = ui and ui.document
+        local state = ui and ui._meguru_rotate_state
+        if doc and doc.spread_rotated_by_plugin and state and state.active ~= nil then
+            return nil
+        end
+        local c = configurableOf(ui)
+        return c and c.rotation_mode
+    end,
+    contrast = function(ui)
+        local c = configurableOf(ui)
+        return c and c.contrast
+    end,
+    saturation = function(ui)
+        local c = configurableOf(ui)
+        return c and c.saturation
+    end,
+    derainbow = function(ui)
+        local c = configurableOf(ui)
+        return c and c.derainbow
+    end,
+    sw_dithering = function(ui)
+        local c = configurableOf(ui)
+        return c and c.sw_dithering
+    end,
+    spread = function(ui)
+        local c = configurableOf(ui)
+        return c and c.spread
+    end,
+    spread_gutter = function(ui)
+        local c = configurableOf(ui)
+        return c and c.spread_gutter
+    end,
+    -- The answer, never the anchor: a page number means nothing in another book.
+    spread_offset = function(ui)
+        local doc = ui and ui.document
+        if not (doc and type(doc._spreadAnchor) == "function") then
+            return nil
+        end
+        return doc:_spreadAnchor() ~= 0 and 1 or 0
+    end,
+    -- Two keys as one answer: the file's own switch says off, else the view.
+    panel_view = function(ui)
+        local hl = ui and ui.highlight
+        if hl and hl.panel_zoom_enabled == false then
+            return "off"
+        end
+        local c = configurableOf(ui)
+        return c and c.panel_view
+    end,
+    -- A zoom mode the reader reached some other way (page, free) is no fit.
+    opdsbook_fit = function(ui)
+        local mode = ui and ui.zooming and ui.zooming.zoom_mode
+        for fit, zoom_mode in pairs(FIT_TO_ZOOM_MODE) do
+            if zoom_mode == mode then
+                return fit
+            end
+        end
+        return nil
+    end,
+    opdsbook_manga = function(ui)
+        local view = ui and ui.view
+        if not (type(view) == "table" and view.inverse_reading_order ~= nil) then
+            return nil
+        end
+        return view.inverse_reading_order and true or false
+    end,
+}
+
+-- Every row the reader can see, in the store's domain; a row with no answer is
+-- absent rather than nil, so a diff never reads a value nobody holds.
+local function seriesValues(ui)
+    local values = {}
+    for name, read in pairs(SERIES_READERS) do
+        local ok, value = pcall(read, ui)
+        if ok and value ~= nil then
+            values[preferenceOf(name)] = value
+        end
+    end
+    return values
+end
+
+-- The series' answer, else the book's own sidecar value, else the preference.
 -- Read the sidecar, not configurable: that holds global kopt_* defaults.
 -- Pass the value through untouched; 0 is valid and truthy, so never normalise.
-local function seedRowValue(ds, name)
+local function seedRowValue(ds, name, series)
+    local value = seriesValue(series, name)
+    if value ~= nil then
+        if ds then
+            ds:saveSetting("kopt_" .. name, value)
+        end
+        return value
+    end
+
     local current = ds and ds:readSetting("kopt_" .. name)
     if current ~= nil then
         return current
     end
 
-    local value = Settings.get(PREFERENCE_FOR[name] or name)
+    value = Settings.get(preferenceOf(name))
     if value == nil then
         return nil
     end
@@ -61,23 +189,92 @@ function Defaults.seedLayout(ui, configurable)
 end
 
 -- Seeds the geometry rows; spread and offset are strings/numbers, not booleans.
-function Defaults.seedGeometry(ui, configurable)
+function Defaults.seedGeometry(ui, configurable, series)
     local ds = ui.doc_settings
     for _, name in ipairs{
-        "trim_page", "rotate_wide_pages", "panel_view",
-        "spread", "spread_offset", "spread_gutter",
+        "trim_page", "rotate_wide_pages", "spread", "spread_gutter",
     } do
-        local value = seedRowValue(ds, name)
+        local value = seedRowValue(ds, name, series)
         if value ~= nil then
             configurable[name] = value
         end
     end
 end
 
--- Overwrites the tone a global kopt_* may have put in, from the preference.
-function Defaults.seedTone(ui, configurable)
+-- Two keys as one row: the view, and KOReader's per-file on/off for the gesture.
+function Defaults.seedPanelView(ui, configurable, series)
+    local ds = ui.doc_settings
+    local value = seriesValue(series, "panel_view")
+    if value == nil then
+        value = seedRowValue(ds, "panel_view", nil)
+        if value ~= nil then
+            configurable.panel_view = value
+        end
+        return
+    end
+
+    local hl = ui.highlight
+    if value == "off" then
+        -- The same three fields the row's off branch sets, so a turn-on later
+        -- in this book has a view to come back to.
+        if hl then
+            hl.panel_zoom_enabled = false
+            hl._meguru_panel_zoom_pinned = true
+            hl._meguru_panel_zoom_answer = false
+        end
+        if ds then
+            ds:saveSetting("panel_zoom_enabled", false)
+        end
+        local stored = ds and ds:readSetting("kopt_panel_view")
+        if not panelViewIsView(stored) then
+            stored = Settings.get("panel_view")
+        end
+        configurable.panel_view = panelViewIsView(stored) and stored or "window"
+        return
+    end
+
+    if not panelViewIsView(value) then
+        return
+    end
+    configurable.panel_view = value
+    if ds then
+        ds:saveSetting("kopt_panel_view", value)
+    end
+    -- Unpinned, so the save wrapper drops this file's own answer: the series'
+    -- view is the one that stands.
+    if hl then
+        hl.panel_zoom_enabled = true
+        hl._meguru_panel_zoom_pinned = false
+    end
+end
+
+-- The store keeps the answer; "on" is anchored at the page the book opens on.
+function Defaults.seedSpreadOffset(ui, configurable, series)
+    local ds = ui.doc_settings
+    local value = seriesValue(series, "spread_offset")
+    if value == nil then
+        value = seedRowValue(ds, "spread_offset", nil)
+        if value ~= nil then
+            configurable.spread_offset = value
+        end
+        return
+    end
+
+    local on = value == 1 or value == "1" or value == true
+    local anchor = 0
+    if on then
+        anchor = (ui.paging and ui.paging.current_page) or 1
+    end
+    configurable.spread_offset = anchor
+    if ds then
+        ds:saveSetting("kopt_spread_offset", anchor)
+    end
+end
+
+-- Overwrites the tone a global kopt_* may have put in, from the series.
+function Defaults.seedTone(ui, configurable, series)
     for _, name in ipairs{ "contrast", "saturation" } do
-        local value = seedRowValue(ui.doc_settings, name)
+        local value = seedRowValue(ui.doc_settings, name, series)
         if value ~= nil then
             configurable[name] = value
         end
@@ -85,23 +282,26 @@ function Defaults.seedTone(ui, configurable)
 end
 
 -- Always has a preference and no stock key, so there is no global to displace.
-function Defaults.seedDerainbow(ui, configurable)
-    local value = seedRowValue(ui.doc_settings, "derainbow")
+function Defaults.seedDerainbow(ui, configurable, series)
+    local value = seedRowValue(ui.doc_settings, "derainbow", series)
     if value ~= nil then
         configurable.derainbow = value
     end
 end
 
 -- Three answers: seeds from the value the page is actually being drawn with.
-function Defaults.seedDither(ui, configurable)
+function Defaults.seedDither(ui, configurable, series)
     local ds = ui.doc_settings
     local doc = ui.document
-    local value = ds and ds:readSetting("kopt_sw_dithering")
+    local value = seriesValue(series, "sw_dithering")
+    if value == nil then
+        value = ds and ds:readSetting("kopt_sw_dithering")
+    end
     if value == nil then
         value = Settings.get("dither")
-        if value ~= nil and ds then
-            ds:saveSetting("kopt_sw_dithering", value)
-        end
+    end
+    if value ~= nil and ds then
+        ds:saveSetting("kopt_sw_dithering", value)
     end
     if value ~= nil then
         -- Normalise by comparison, never "and 1 or 0", which reads 0 as "on".
@@ -120,16 +320,9 @@ function Defaults.seedDither(ui, configurable)
 end
 
 -- Page view, not stock continuous scroll; the live view must be switched too.
-function Defaults.seedScrollMode(ui, configurable)
-    local ds = ui.doc_settings
-    local value = ds and ds:readSetting("kopt_page_scroll")
-    if value == nil then
-        -- Already 0 or 1; 0 is truthy in Lua, so pass it through unchanged.
-        value = Settings.get("page_scroll")
-        if ds then
-            ds:saveSetting("kopt_page_scroll", value)
-        end
-    end
+function Defaults.seedScrollMode(ui, configurable, series)
+    -- Already 0 or 1; 0 is truthy in Lua, so pass it through unchanged.
+    local value = seedRowValue(ui.doc_settings, "page_scroll", series)
     configurable.page_scroll = value
 
     local view = ui.view
@@ -140,12 +333,15 @@ function Defaults.seedScrollMode(ui, configurable)
 end
 
 -- Only for a reader who chose one: unset keeps whatever KOReader decided.
-function Defaults.seedRotation(ui, configurable)
+function Defaults.seedRotation(ui, configurable, series)
     local ds = ui.doc_settings
-    if ds and ds:readSetting("kopt_rotation_mode") ~= nil then
-        return
+    local mode = seriesValue(series, "rotation_mode")
+    if mode == nil then
+        if ds and ds:readSetting("kopt_rotation_mode") ~= nil then
+            return
+        end
+        mode = Settings.get("rotation_mode")
     end
-    local mode = Settings.get("rotation_mode")
     if mode == nil then
         return
     end
@@ -177,16 +373,22 @@ function Defaults.seedNightMode(ui, configurable)
     end
 end
 
--- A book keeps its own zoom; only one with none takes the plugin-wide fit.
-function Defaults.seedFit(ui)
+-- The series' fit first, then the book's own zoom, then the plugin-wide one.
+function Defaults.seedFit(ui, series)
     local zooming = ui.zooming
     if not (zooming and type(zooming.setZoomMode) == "function") then
         return
     end
     local ds = ui.doc_settings
-    local desired = ds and ds:readSetting("zoom_mode")
-    if desired == nil then
-        desired = FIT_TO_ZOOM_MODE[Settings.get("fit")]
+    local fit = seriesValue(series, "opdsbook_fit")
+    local desired
+    if fit ~= nil then
+        desired = FIT_TO_ZOOM_MODE[fit]
+    else
+        desired = ds and ds:readSetting("zoom_mode")
+        if desired == nil then
+            desired = FIT_TO_ZOOM_MODE[Settings.get("fit")]
+        end
     end
     if desired and zooming.zoom_mode ~= desired then
         zooming:setZoomMode(desired)
@@ -202,15 +404,20 @@ function Defaults.apply(ui, doc)
         return false
     end
     local configurable = doc.configurable
+    -- Read once: a series answer comes before anything the book has of its own.
+    local key = SeriesState.keyFor(doc)
+    local series = key and SeriesState.answersFor(doc) or nil
     Defaults.seedLayout(ui, configurable)
-    Defaults.seedGeometry(ui, configurable)
-    Defaults.seedTone(ui, configurable)
-    Defaults.seedDerainbow(ui, configurable)
-    Defaults.seedDither(ui, configurable)
-    Defaults.seedScrollMode(ui, configurable)
-    Defaults.seedRotation(ui, configurable)
+    Defaults.seedPanelView(ui, configurable, series)
+    Defaults.seedGeometry(ui, configurable, series)
+    Defaults.seedSpreadOffset(ui, configurable, series)
+    Defaults.seedTone(ui, configurable, series)
+    Defaults.seedDerainbow(ui, configurable, series)
+    Defaults.seedDither(ui, configurable, series)
+    Defaults.seedScrollMode(ui, configurable, series)
+    Defaults.seedRotation(ui, configurable, series)
     Defaults.seedNightMode(ui, configurable)
-    Defaults.seedFit(ui)
+    Defaults.seedFit(ui, series)
 
     -- The reader derived the page's box before these seeds; re-derive it now.
     if type(ui.handleEvent) == "function" then
@@ -218,8 +425,52 @@ function Defaults.apply(ui, doc)
         ui:handleEvent(Event:new("ReZoom"))
     end
 
-    logger.dbg("Meguru: seeded per-book defaults for", doc.file)
+    logger.dbg("Meguru: seeded per-book defaults for", doc.file,
+        series and ("from series " .. key) or "with no series answers")
     return true
+end
+
+-- What the rows say as the book opens: a save compares against this, so only a
+-- row the reader actually moved becomes the series' answer.
+function Defaults.beginSeries(ui, doc)
+    if not (ui and doc and doc.provider == "meguru") then
+        return false
+    end
+    local key = SeriesState.keyFor(doc)
+    ui._meguru_series_key = key
+    ui._meguru_series_seed = key and seriesValues(ui) or nil
+    return true
+end
+
+-- Publishes the rows this session moved; returns how many the series learned.
+function Defaults.publishSeries(ui)
+    local key = ui and ui._meguru_series_key
+    local seed = ui and ui._meguru_series_seed
+    if not (key and seed) then
+        return 0
+    end
+    local current = seriesValues(ui)
+    local changes = {}
+    local count = 0
+    for name, value in pairs(current) do
+        -- tostring: a value read back as "1" is the 1 that was written.
+        if tostring(value) ~= tostring(seed[name]) then
+            changes[name] = value
+            count = count + 1
+        end
+    end
+    -- Re-baselined either way: a second save publishes nothing again.
+    ui._meguru_series_seed = current
+    if count > 0 then
+        SeriesState.learn(ui.document, changes)
+    end
+    return count
+end
+
+-- The long-press names a preference; a series already answering that row would
+-- otherwise mask the new default in every book of the series.
+function Defaults.learnSeries(ui, name, value)
+    return SeriesState.learn(ui and ui.document, { [name] = value })
 end
 
 return Defaults

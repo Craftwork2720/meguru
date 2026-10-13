@@ -27,6 +27,7 @@ local Marker = require("meguru/marker")
 local Panel = require("meguru/panel")
 local Naming = require("meguru/naming")
 local PSE = require("meguru/pse")
+local SeriesState = require("meguru/seriesstate")
 local Settings = require("meguru/settings")
 local Sources = require("meguru/sources")
 local Spread = require("meguru/spread")
@@ -662,14 +663,25 @@ function MeguruDocument:init()
             desc.title or "?", count, self.file))
     end
 
+    -- The series' direction must land here: stock reads this key at ReadSettings,
+    -- before any seed of ours runs, and only here can it be written that early.
+    -- Compared, never tested: "left to right" is a false answer, not a missing one.
+    local answers = SeriesState.answersFor(self)
+    local from_series = answers and answers.manga_order
+    local direction = from_series
+    if direction == nil then
+        direction = Settings.get("manga_order")
+    end
     -- Seed Reading direction only if absent; last_read only for a first open.
     local ok_ds, DocSettings = pcall(require, "docsettings")
     if ok_ds then
         local opened_before = DocSettings:hasSidecarFile(self.file)
         local ok_seed, err = pcall(function()
             local ds = DocSettings:open(self.file)
-            if ds:readSetting("inverse_reading_order") == nil then
-                ds:saveSetting("inverse_reading_order", Settings.get("manga_order"))
+            if direction ~= nil
+                and (ds:readSetting("inverse_reading_order") == nil
+                    or from_series ~= nil) then
+                ds:saveSetting("inverse_reading_order", direction)
                 ds:flush()
             end
             -- Same key lays out a pair: RTL puts the earlier page on the right.
