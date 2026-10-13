@@ -90,7 +90,8 @@ function Meguru:onDispatcherRegisterActions()
     Dispatcher:registerAction("meguru_pair_offset", {
         category = "none",
         event = "MeguruPairOffsetToggle",
-        title = _("Toggle pair offset (two-page view)"),
+        -- Prefixed: the Fixed layout list is shared, and nothing else says whose.
+        title = _("Meguru: toggle pair offset (two-page view)"),
         -- paging=true puts it in the fixed-layout section, a list not a gate.
         paging = true,
     })
