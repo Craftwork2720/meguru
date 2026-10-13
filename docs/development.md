@@ -274,11 +274,15 @@ Each step must pass before the next:
     enabled that means the second row down, under `AI Assistant` and above `Read timer`;
     with it disabled the row is the first thing on the page. Turning the AI plugin on
     must move the row under it rather than leaving a second copy behind. Nothing
-    anywhere offers a cover, a cache to clear, a library or a server list. Inside `Settings`, on both surfaces: `Auto-open next in series` (reader
-    only), `Hide status bar` + a line, `Main
-    folder for .meguru streams: …`, `Subfolder per server` + a line, `Set Meguru as
-    default reader for .cbz`. The folder row opens the picker and shows the new path
-    afterwards; the toggle's checkbox survives a restart; a new book lands in
+    anywhere offers a cover, a cache to clear, a library or a server list. Inside
+    `Settings`, first on both surfaces, the `OPDS` row **and a line under it**; then
+    `Auto-open next in series` (reader only), `Hide status bar` + a line; then `Read
+    metadata from ComicInfo.xml`, `Set Meguru as default reader for .cbz` + a line,
+    `Check for updates`. Inside `OPDS`: `Report reading progress to Komga` (reader
+    only), `Main folder for .meguru streams: …`, `Subfolder per server` + a line,
+    `Covers for folders` — three rows in the FileManager, where there is no book to
+    report from. The folder row opens the picker and comes back **on the `OPDS` list**
+    with the new path; the toggle's checkbox survives a restart; a new book lands in
     `<base>/<server>/<series>` when the toggle is on. With a PDF open there is no Meguru
     row and nothing logs `menu id not found`.
 
@@ -777,7 +781,7 @@ Each step must pass before the next:
     | d | turn *backwards*, then stop | **no** line. The floor refuses a page the server is already past, and a finished book is never un-finished |
     | e | back out of the reader, then open the same book from History | no second report for a page already sent, and the reader's own place is untouched |
     | f | close the lid mid-book | a report goes out on suspend — the last page of a session is the one most worth having |
-    | g | untick ⋮ → Meguru → Settings → *Report reading progress to Komga*, turn a page | no line, and it stops **at the next page** rather than at the next book |
+    | g | untick ⋮ → Meguru → Settings → `OPDS` → *Report reading progress to Komga*, turn a page | no line, and it stops **at the next page** rather than at the next book |
     | h | turn Wi-Fi off and read on | no line, no dialog, nothing on screen; turning Wi-Fi back on resumes reporting without reopening the book |
     | i | point the catalogue at a Komga behind a path prefix | the logged URL keeps the prefix (`…/komga/api/v1/books/…/read-progress`) |
     | j | read a **Suwayomi** book | no line at all — its own page fetches already tell its server, and it is deliberately not on the list |

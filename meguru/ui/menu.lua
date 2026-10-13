@@ -73,7 +73,7 @@ local function destinationRows()
             text = _("Subfolder per server"),
             help_text = _("New streams go in a folder named after the OPDS server (e.g. \"kavita\"), then their series. Streams already saved are not moved."),
             keep_menu_open = true,
-            -- Separator: the storage rows above, what opens the book below.
+            -- Separator: the location rows above, Covers for folders below.
             separator = true,
             checked_func = function()
                 return Settings.get("marker_server_dir")
@@ -212,10 +212,31 @@ local function settingsRow(rows)
     }
 end
 
+-- The servers' group: what a server is told, and what is written for it.
+-- `report_rows` is empty on the FileManager, which has no book to report from.
+local function opdsRow(report_rows)
+    local rows = {}
+    for i = 1, #report_rows do
+        rows[#rows + 1] = report_rows[i]
+    end
+    local locations = destinationRows()
+    for i = 1, #locations do
+        rows[#rows + 1] = locations[i]
+    end
+    rows[#rows + 1] = coverRow()
+
+    return {
+        text = _("OPDS"),
+        help_text = _("The rows whose subject is a server rather than the book on screen: where a stream's files are saved on this device, and the cover files written beside the series folder for other programs."),
+        -- Separator: the servers' group ends; the rows about this book follow.
+        separator = true,
+        sub_item_table = rows,
+    }
+end
+
 function Menu.addFileManagerItems(plugin, menu_items)
-    local settings = destinationRows()
+    local settings = { opdsRow({}) }
     settings[#settings + 1] = fullRefreshRow()
-    settings[#settings + 1] = coverRow()
     settings[#settings + 1] = comicInfoRow()
     settings[#settings + 1] = defaultReaderRow()
     settings[#settings + 1] = updateRow()
@@ -296,9 +317,6 @@ function Menu.addReaderItems(plugin, menu_items)
     end
 
     -- A behaviour row, so it joins the group above the separator.
-    for _, row in ipairs(progressRows()) do
-        settings[#settings + 1] = row
-    end
     local share = shareRow(plugin)
     if share then
         settings[#settings + 1] = share
@@ -308,7 +326,7 @@ function Menu.addReaderItems(plugin, menu_items)
     settings[#settings + 1] = {
         text = _("Hide status bar"),
         keep_menu_open = true,
-        -- Separator ends the behaviour group; book-location rows follow.
+        -- Separator ends the behaviour group; the servers' group follows.
         separator = true,
         checked_func = function()
             return Settings.get("hide_status_bar")
@@ -319,10 +337,7 @@ function Menu.addReaderItems(plugin, menu_items)
             plugin:onMeguruHideStatusBar(on)
         end,
     }
-    for _, row in ipairs(destinationRows()) do
-        settings[#settings + 1] = row
-    end
-    settings[#settings + 1] = coverRow()
+    settings[#settings + 1] = opdsRow(progressRows())
     settings[#settings + 1] = comicInfoRow()
     settings[#settings + 1] = defaultReaderRow()
     settings[#settings + 1] = updateRow()

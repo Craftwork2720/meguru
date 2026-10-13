@@ -284,12 +284,14 @@ Invariants when touching these rows:
 - **A `for _` loop would shadow gettext's `_` in `ui/menu.lua`.** Its progress rows
   loop is indexed (`for i = 1, #Progress.KINDS`) for exactly this reason;
   `tools/check.py` pass 9 is the same trap seen from the loop's side.
-- **A `Settings` submenu on both surfaces** — the reader's holds the rows that are about
-  a book being read (auto-open next in series, report reading progress, remember
-  settings for this series (for this folder on a local `.cbz`), full refresh on every
-  page turn, hide status bar, save folder, subfolder per server, `Covers for
-  folders`, `Read metadata from ComicInfo.xml`, default reader for `.cbz`, check for
-  updates), the FileManager's the ones that are not. **No panel row is among
+- **A `Settings` submenu on both surfaces, and both open it with an `OPDS` row** — the
+  reader's holds the rows that are about a book being read (auto-open next in series,
+  remember settings for this series — for this folder on a local `.cbz` —, full refresh
+  on every page turn, hide status bar, `OPDS`, `Read metadata from ComicInfo.xml`, default
+  reader for `.cbz`, check for updates), the FileManager's the ones that are not. `OPDS`
+  is where the rows whose subject is a server live: the position report (reader only —
+  a consent the FileManager has no book to give), the save folder, subfolder per server
+  and `Covers for folders`. **No panel row is among
   them**, and that is a decision rather than an omission: the panel choices are per book,
   and a preference row here would be a plugin-wide answer to a per-book question. Two live
   in the viewer's own button row, where the reader can see what they do while looking at
@@ -316,17 +318,22 @@ Invariants when touching these rows:
   `PageUpdate` carrying the page already on screen (`readerpaging.lua:1212`,
   `readerzooming.lua:732`) — the page is being repainted either way, so a flash on it is
   what the row promises.
-- **`Covers for folders` is the one thing below `Settings`, and it is an exception
-  rather than a precedent.** Its three rows are switches for one feature, and as flat
-  rows they would take the reader's `Settings` from nine entries to eleven — eleven to
-  thirteen on a book with a series — while naming servers instead of the thing they
-  belong to. The level is bought back by the row above them saying
-  what the group *is* — which is the whole job `Settings` does one level up, and the
-  reason "one level deep" existed. A second such submenu should have to make the same
-  argument. **The position report is the case that did not make it**: one server accepts
-  a write, so its row is flat — a submenu would cost a tap to say less than the row says
-  by itself. A second driver with a write path converts it into one, and that is the
-  argument it will have to make.
+- **`Covers for folders` is the one thing below `OPDS`, and it is an exception rather
+  than a precedent.** Its three rows are switches for one feature, and as flat rows they
+  would take the `OPDS` list from four entries to six, three of them naming servers
+  instead of the file they write. The level is bought back by the row above them saying
+  what the group *is* — which is the whole job `Settings` does one level up, and of
+  `OPDS` one level down. The rule is that a level has to be bought, not that there is
+  only ever one. **`OPDS` is the second level under `Settings`, and it was bought by a
+  regroup rather than by the conversion this bullet used to predict**: four rows name a
+  server, or a file that answers to one — the position report, *Main folder for .meguru
+  streams*, *Subfolder per server* and `Covers for folders` — and the row above them says
+  what none of them can say alone, that their subject is the server and not the book on
+  screen. The prediction was that **a second driver with a write path** would convert the
+  position row into a submenu; no second driver arrived, and what moved the row was the
+  regroup. One server accepting a write is what keeps that row a single switch; it was
+  never what kept it out of the servers' list. The cost is one tap on rows that name the
+  server anyway, and it is paid so that `Settings` holds the rows about the book in hand.
 - **`Covers for folders` is one switch per server, all three on by default**, and the
   file it governs is `meguru/seriescover`'s `.cover.jpg` in the series folder. It is
   written for whatever *outside* KOReader reads it: nothing here reads it back, and the
@@ -337,10 +344,12 @@ Invariants when touching these rows:
   dropped when that row is last on a page (`touchmenu.lua:713`) — so a separator is a
   hint about the list, never a guarantee about the screen. Three lines split the
   reader's `Settings` into its four groups, and each sits on the row that *ends* a
-  group: `Hide status bar` (behaviour above, book location below), `Subfolder per
-  server` (location above, covers and the `.cbz` rows below) and the default-reader row
-  (preferences above, *Check for updates*, the one action, below). The FileManager
-  holds only the last two. The reader's *Meguru* list carries one more of its own, under
+  group: `Hide status bar` (reading behaviour above, the servers' group below), the
+  `OPDS` row (the servers above, the book's own rows below) and the default-reader row
+  (preferences above, *Check for updates*, the one action, below). The FileManager holds
+  the `OPDS` and default-reader lines. A fourth line lives *inside* `OPDS`, on
+  *Subfolder per server*, where it has always sat: the location rows above, `Covers for
+  folders` below. The reader's *Meguru* list carries one more of its own, under
   *Open previous in series*: the series rows are about the book you are in, and
   `Settings` — and everything under it — is not.
 - **`Hide status bar` looks like it closes the menu, and the close is KOReader's.** Hiding

@@ -88,7 +88,7 @@ The same **▶ Meguru this series** row at the top of a series listing opens the
 
 ### Where streams are saved
 
-File browser → Tools → Meguru → Settings:
+File browser → Tools → Meguru → Settings → **OPDS**:
 
 - **Main folder for .meguru streams: …** set once, used for all new streams. Existing streams are not moved.
 - **Subfolder per server**: saves to `<folder>/<server>/<series>/`
@@ -109,7 +109,7 @@ The first button always opens the stream you tapped. Tapping outside the dialog 
 ### Good to know
 
 - A stream needs a reachable server. If a page can't load, the reason is shown on the page and it fills in when you're back online.
-- Creating a stream also saves a `.cover.jpg` in its folder (can be turned off in Settings).
+- Creating a stream also saves a `.cover.jpg` in its folder (can be turned off in Settings → OPDS → Covers for folders).
 - **Check for updates** in ⋮ → Tools → Meguru → Settings. It never installs without asking.
 - A stream can't be exported as a real `.cbz`.
 - If you uninstall the plugin, existing `.meguru` files stop opening.
