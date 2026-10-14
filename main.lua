@@ -1,7 +1,6 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
 
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
-local Dispatcher = require("dispatcher")
 local logger = require("logger")
 
 local _ = require("gettext")
@@ -58,9 +57,6 @@ function Meguru:init()
     -- Before any document opens, and in the parent: see Image.rememberScreen.
     Image.rememberScreen()
 
-    -- Registered here so the gesture editor lists it from the file browser too.
-    self:onDispatcherRegisterActions()
-
     -- Hook lives on ReaderFooter, no instance to hang it on: once per process.
     Reader.installStatusBarHook()
 
@@ -82,19 +78,6 @@ function Meguru:registerProvider()
     logger.info("Meguru: registered ." .. Paths.MARKER_EXT
         .. " and .cbz document providers")
     Association.claimOnce()
-end
-
--- Called from init and from the Dispatcher broadcast, so register exactly once.
--- One action: the pair-offset toggle, the same flip the row's switch makes.
-function Meguru:onDispatcherRegisterActions()
-    Dispatcher:registerAction("meguru_pair_offset", {
-        category = "none",
-        event = "MeguruPairOffsetToggle",
-        -- Prefixed: the Fixed layout list is shared, and nothing else says whose.
-        title = _("Meguru: toggle pair offset (two-page view)"),
-        -- paging=true puts it in the fixed-layout section, a list not a gate.
-        paging = true,
-    })
 end
 
 -- Seed per-book defaults here: stock defaults are wrong for a fixed layout.

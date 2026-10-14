@@ -188,7 +188,7 @@ it**: the fourth answer travels like the three views, so turning the panel view 
 chapter turns it off in the next, and the only place "set as default" is still declined is the
 one that could never have worked.
 
-**One row is also offered to KOReader's gesture editor**, where a reader binds a tap, a swipe or a key to it instead: *Meguru: toggle pair offset (two-page view)*, registered by `main.lua` as `meguru_pair_offset` and listed under **Fixed layout documents**, beside *Toggle page flipping* and *Toggle panel zoom* — prefixed because that list is shared with stock's own actions, so nothing in it would otherwise say whose it is. It fires `MeguruPairOffsetToggle`, and the handler for it is installed per reader like every other handler in `ui/reader.lua` — which is what makes the action safe to leave bound outside a Meguru book: the event arrives, no instance has the method, and nothing happens. The section is a list rather than a gate, so every fixed-layout document is *offered* it for the same reason.
+**One row is also offered to KOReader's gesture editor**, where a reader binds a tap, a swipe or a key to it instead: *Meguru: toggle pair offset (two-page view)*, registered as `meguru_pair_offset` and listed under **Fixed layout documents**, beside *Toggle page flipping* and *Toggle panel zoom* — prefixed because that list is shared with stock's own actions, so nothing in it would otherwise say whose it is. **It exists only while one of our books is open**, because that list is per process and not per book: `ui/reader.lua` registers it in `Reader.install` and removes it from `onCloseDocument` and `onClose`, so a Meguru book offers it and no other surface does. Left registered everywhere, it was offered to the file browser and to every fixed-layout document as well — the section is a list rather than a gate, and a gesture bound in the file browser is a gesture a reader watches do nothing. A binding already made is unaffected: it lives in the profile, and the action it names is back the next time a book of ours is open. The action fires `MeguruPairOffsetToggle`, and the handler for it is installed per reader like every other handler in `ui/reader.lua`.
 
 Its behaviour is the row's, exactly: off when the run the reader is in is already offset, anchored *here* when it is not. The two write through one function (`setSpreadOffset`) and announce through one (`spreadOffsetNotice`), so a gesture and a menu row cannot come to describe the same setting differently. Anything else here could be offered the same way — `Dispatcher:registerAction` is one table per action and the handler is one method — but a gesture is worth binding for the row a reader reaches for *while looking at the page*, and that is this one.
 
@@ -726,6 +726,7 @@ any name ending in `.koplugin`, so that is the only reliable source — and
 idempotent because `init` runs once for the FileManager and again for every book opened.
 The marker's `mimetype` is its own (`application/x-koreader-meguru-stream`) rather than a
 comic one, because a marker is not an archive and nothing else should claim it.
-`onDispatcherRegisterActions` is called from `init` *and* by the Dispatcher's own
-broadcast, so `registerAction`'s own guard is what keeps the gesture action registered
-exactly once.
+`main.lua` registers nothing with the Dispatcher: the one gesture action is
+`ui/reader.lua`'s, since it is wanted exactly while one of our books is open, and the
+Dispatcher's own registration broadcast reaches every window in the stack — the file
+browser's instance among them, which has no document to judge by.

@@ -2,6 +2,7 @@
 
 local Blitbuffer = require("ffi/blitbuffer")
 local ConfirmBox = require("ui/widget/confirmbox")
+local Dispatcher = require("dispatcher")
 local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
 local Font = require("ui/font")
@@ -1687,6 +1688,24 @@ local function installCropMarginPaint(plugin, ui)
     end
 end
 
+-- Only while one of our books is open: the Dispatcher's list is per process.
+local PAIR_OFFSET_ACTION = "meguru_pair_offset"
+
+local function registerPairOffsetAction()
+    Dispatcher:registerAction(PAIR_OFFSET_ACTION, {
+        category = "none",
+        event = "MeguruPairOffsetToggle",
+        -- Prefixed: the Fixed layout list is shared, and nothing else says whose.
+        title = _("Meguru: toggle pair offset (two-page view)"),
+        -- paging=true puts it in the fixed-layout section, a list not a gate.
+        paging = true,
+    })
+end
+
+local function unregisterPairOffsetAction()
+    Dispatcher:removeAction(PAIR_OFFSET_ACTION)
+end
+
 -- Grafts everything reader-side; a no-op for any non-Meguru document.
 function Reader.install(plugin)
     local ui = plugin and plugin.ui
@@ -1704,6 +1723,9 @@ function Reader.install(plugin)
     end
     installCropMarginColor(plugin, ui)
     installCropMarginPaint(plugin, ui)
+
+-- Offered to the gesture editor for as long as this book is the one open.
+    registerPairOffsetAction()
 
     local rotate_state = {}
     plugin._meguru_rotate_state = rotate_state
@@ -1956,6 +1978,7 @@ end
 
 -- Rotation restored first, so the screen is right before a socket wait.
     plugin.onCloseDocument = function(self)
+        unregisterPairOffsetAction()
         if self._meguru_wide_rotate_installed then
             restoreWideRotate(self._meguru_rotate_state, self.ui)
             self._meguru_wide_rotate_installed = false
@@ -1965,6 +1988,7 @@ end
     end
 
     plugin.onClose = function(self)
+        unregisterPairOffsetAction()
         if self._meguru_wide_rotate_installed then
             restoreWideRotate(self._meguru_rotate_state, self.ui)
             self._meguru_wide_rotate_installed = false
