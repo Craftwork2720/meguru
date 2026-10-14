@@ -234,6 +234,11 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
     table.sort(samples, function(a, b) return a.l < b.l end)
     local n = #samples
     local light = samples[math.max(1, math.floor(n * 0.85))]
+    -- The letterbox wants the page's paper, not the dimmest thing that still
+    -- passes for it: a scan's margins are shaded unevenly, and a flat fill of the
+    -- 85th percentile reads as light grey beside a white margin on a colour
+    -- screen. The crop's own background keeps the 85th.
+    local paper = samples[math.max(1, math.floor(n * 0.95))]
     local surface
     if isPaperSample(light) then
         surface = light
@@ -246,6 +251,7 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
             surface = sample
         end
     end
+    noteSurface(paper)
 
     -- A colour three sides are drawn in is the page's frame, not a drawing: a
     -- panel reaches two sides of a page and never three.
@@ -406,7 +412,14 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
     -- took off, so the screen reads as the page's own margins; a trimmed black bar
     -- answers black and a framed page with its frame's colour, and a page with
     -- none of the three answers nothing.
-    local chosen = ink_bar or frame or surface
+    -- A frame answers only when it is dark. Three shaded margins of a scan agree
+    -- with each other as readily as a drawn border does, and taking that for the
+    -- page's frame letterboxed a white-margined page in their grey.
+    local dark_frame
+    if frame and frame.l <= AUTOCROP_FRAME_MAX_LUMA then
+        dark_frame = frame
+    end
+    local chosen = ink_bar or dark_frame or surface
     return { left, top, right, bottom, bgs = bgs,
         color = chosen and { r = chosen.r, g = chosen.g, b = chosen.b, l = chosen.l } or nil }
 end

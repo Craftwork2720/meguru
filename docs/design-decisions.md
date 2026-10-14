@@ -154,12 +154,16 @@ reach that far in — and one past a quarter of the page is left alone, being th
 
 **The letterbox is painted in the margin the crop took off**, in one order: a trimmed **black bar**
 first, because the reader who asked for a black margin to be cut asked for the screen to go black with
-it; then a **frame's** colour, a black-bordered page letterboxing in black; then the **palest paper**
-of the ring's pole and the edge lines, so an ordinary page reads as its own margins continuing to the
-screen's edge — which is what makes a cropped page look full-screen; and nothing at all when there is
+it; then a **dark frame's** colour, a black-bordered page letterboxing in black — dark only, since
+three shaded margins of a scan agree with each other as readily as a drawn border does, and a page
+letterboxed in their grey reads as a white margin on a grey ground; then the **palest paper** found in
+the ring (its 95th percentile, not the 85th the crop itself uses) or on the edge lines, so an ordinary
+page reads as its own margins continuing to the screen's edge — which is what makes a cropped page look full-screen; and nothing at all when there is
 none of the three (art to every edge, a colour spread), leaving the reader's own surround in place
 rather than inventing a colour out of the artwork. The bar has to be *dark* to answer: a grey or pale
 band over paper is shading or a frame the page is read *inside*, and letterboxing a white page in it is
 what turned the background grey. Measured on drawn pages: the black-bar pages letterbox in black over
 paper and over bleeding art alike, a saturated red band in its own red, the grey and dark-grey strips
-and the white-margined pages in paper, and a grey frame on three sides in that grey.
+and the white-margined pages in paper, and a mid-grey frame on three sides in that grey. Measured on a
+Suwayomi page of 960x1376 whose own margins are shaded to 249: the colour is the paper's 255 rather
+than the shaded grey, which is what the reader saw as "a very light grey behind a white margin".

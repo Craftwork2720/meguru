@@ -273,7 +273,7 @@ mode shows, since it paints `page_bgcolor` through `drawPageBackground` and neve
 comes through `drawPageSurround` at all.
 
 **The colour itself is the margin the crop took off**, in one order: a trimmed black bar, then a
-frame's colour, then the palest paper found on the page's edge lines or the ring's pole — carried out
+*dark* frame's colour, then the palest paper found on the page's edge lines or the ring's pole — carried out
 on the box table and read per page by `MeguruDocument:cropMarginColor`. The paper is what makes a
 cropped page read as full-screen, the letterbox continuing the page's own margins rather than framing
 a picture, and the black bar is what the reader who asked for a black margin to be cut expects to see
