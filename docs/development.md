@@ -454,22 +454,18 @@ Each step must pass before the next:
     `-d` the open must show a page-number line for that page — a `crop y =` or a refusal — before
     anything is painted; no line at all for it is the fault this checks for.
 
-    **What must not move is every page that used to be cropped**, and here that means the
-    *margin* crop and the strip's own cut alike: turn six pages of a white-margined book and
-    compare against the build from before dark support — the same place, to the pixel, is the
-    property that change is built on. The page-number bound above is the one deliberate
-    exception, and it is measured rather than hoped for: on those six pages the strip must land
-    where it landed, and only a page whose margin holds something wider than a number may lose
-    its crop. **A full-bleed dark
-    page must survive**: a night scene reaching all four edges is content-lit everywhere, so the
-    box comes back whole and nothing is trimmed; if one is ever cut, the crop has read a dark
-    uniform area as a margin and that is the case to report. **A border with content in it must
-    still be refused**: a scan edge made of artwork — one whose ring is *not* uniform, whatever
-    its brightness — keeps its frame and all, as it always did, and with `-d` the `crop skip`
-    line must name both numbers on such a page and must appear **on no page** of the black-framed
-    book. **And a *uniformly* coloured border must be cropped**: a flat coloured frame, or a grey
-    one — uniformity is what makes a border a margin, not its brightness, so a coloured volume
-    comes back trimmed where it used to come back with its frame on.
+    **The crop's own checks are about what it may not touch.** Turn six pages of a white-margined
+    book and the paper margins must be gone to the pixel, the same as before the rule was narrowed
+    to paper; then the four that say what it refuses. **A drawing that reaches the edges must
+    survive**: a night scene or a full-bleed illustration comes back whole, with the reader's own
+    surround and no letterbox colour — if one is ever cut, a pale flat area of it has passed for
+    paper, and with `-d` the `crop skip` line naming no margin on any edge is what a page that was
+    *left alone* prints. **A panel running into an edge must keep its edge**: only the paper around
+    it may go, never the frame, the tones under it or a speech bubble (a caption in the margin is
+    the drawn version of this — the trim has to stop at it). **A bar wider than a quarter of a page must stay**:
+    a black bar down a side is trimmed up to that width, and past it the bar is the drawing and must
+    come back untouched — as must any uniform dark line along the top or bottom edge, whatever its
+    width, and the letterbox must be the paper's colour rather than the bar's.
 
     Then the **easing** (*A panel the window nearly holds is eased, not stepped*, above),
     which is the part of this view a log can confirm and a screenshot cannot. On a page

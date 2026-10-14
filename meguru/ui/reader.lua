@@ -1595,12 +1595,11 @@ local function lumaOf(r, g, b)
 end
 
 -- Paper: light on every channel and near-neutral; a colour is left alone.
+-- Stricter than the crop's own bound on purpose: only paper this pale is worth
+-- darkening in night mode (see Image.isPaperColor).
 local PAPER_MIN_CHANNEL = 200
-local PAPER_MAX_SPREAD = 48
 local function isPaper(r, g, b)
-    local lo = math.min(r, math.min(g, b))
-    local hi = math.max(r, math.max(g, b))
-    return lo >= PAPER_MIN_CHANNEL and hi - lo <= PAPER_MAX_SPREAD
+    return Image.isPaperColor(r, g, b, PAPER_MIN_CHANNEL)
 end
 
 -- Night mode takes paper to black, leaves a colour, then inverts the fill.

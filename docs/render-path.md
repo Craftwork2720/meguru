@@ -272,16 +272,21 @@ the two fields still carry a grey of the same brightness, which is what continuo
 mode shows, since it paints `page_bgcolor` through `drawPageBackground` and never
 comes through `drawPageSurround` at all.
 
-**The colour itself is the ring sample the scan picked as the border**, carried out on
-the box table and read per page by `MeguruDocument:cropMarginColor`. Not the page's
-physical edge, which was tried and is artwork on every page that bleeds to it — the
-surround then changed colour page to page and was wrong on all of them; the ring is
-where the border was *looked for*, and a percentile of it is a margin pixel even when
-art shares the ring. That is not the scan's `bg` either: the scan answers in
-*luminance*, which is what classifies content, and the colour screen needs the channels
-back. `paintRectRGB32` converts for a grayscale target (`ffi.fill` with the value's
-luminance) and honours the target's inverse flag exactly as `paintRect` does, so a
-grayscale device and night mode both behave as they did.
+**The colour itself is the margin the crop took off**, in one order: a trimmed black bar, then a
+frame's colour, then the palest paper found on the page's edge lines or the ring's pole — carried out
+on the box table and read per page by `MeguruDocument:cropMarginColor`. The paper is what makes a
+cropped page read as full-screen, the letterbox continuing the page's own margins rather than framing
+a picture, and the black bar is what the reader who asked for a black margin to be cut expects to see
+around it. A band has to be *dark* to answer at all: a grey one over paper is shading, and
+letterboxing a white page in it is how the background came to be grey. A page with none of the three —
+art to every edge, a colour spread — answers *nil*, which leaves the reader's own surround in place
+rather than inventing a colour out of the artwork. There is no fallback to the
+page's physical edge, which was tried and is artwork on every page that bleeds to it: the surround
+then changed colour page to page and was wrong on all of them. That is not the scan's background
+lumas either: the scan answers in *luminance*, which is what classifies content, and the colour
+screen needs the channels back. `paintRectRGB32` converts for a grayscale target
+(`ffi.fill` with the value's luminance) and honours the target's inverse flag exactly as
+`paintRect` does, so a grayscale device and night mode both behave as they did.
 
 **Per page, and unrounded.** Each page takes its own margin, so a colour insert or a
 cover keeps its own colour rather than inheriting the book's — and the value is not
@@ -306,10 +311,11 @@ A **colour is left alone** — the reader sees the margin they have, in the dark
 the light. Taking the darker of a colour and its inverse was tried and is wrong for
 exactly the case that found it: the inverse of a yellow frame is blue, which is a
 different colour rather than a darker one. "Paper" is light on every channel and
-near-neutral (`isPaper`, and both bounds are a definition with a deliberate lean):
-everything light and neutral is in, cream paper among it, and the cost of that lean is
-only that an off-white *tint* darkens too — the safe direction — while a colour is out
-by one dark channel (a yellow frame's blue is 0) or by a spread no paper has. A dark
+near-neutral (`Image.isPaperColor`, one definition of the rule with the light bound
+left to each caller — the reader inverts at 200, the crop trims at 170): everything
+light and neutral is in, cream paper among it, and the cost of that lean is only that
+an off-white *tint* darkens too — the safe direction — while a colour is out by one
+dark channel (a yellow frame's blue is 0) or by a spread no paper has. A dark
 margin was never touched either way. The test is `drawPage`'s own
 (`nightmode_document == 1` and `Screen.night_mode`).
 

@@ -55,6 +55,16 @@ function Image.einkScreen()
     return screen_eink == true
 end
 
+-- Paper: light on every channel and near-neutral. The bound is the caller's,
+-- because the two callers want different leans: the crop trims at 170, night
+-- mode inverts the letterbox only at 200. The spread is one definition: cream
+-- paper is in, a colour is out by one dark channel or by a spread no paper has.
+function Image.isPaperColor(r, g, b, min_channel)
+    local lo = math.min(r, math.min(g, b))
+    local hi = math.max(r, math.max(g, b))
+    return lo >= min_channel and hi - lo <= 48
+end
+
 -- The reader's own colour row wins and is read live; only the screen's answer
 -- is a cache (see rememberScreen). A failure costs colour, never a crash.
 function Image.colorEnabled()

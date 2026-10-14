@@ -48,12 +48,26 @@ end
 
 -- Auto page crop: ~128px scan then a native fine pass; crop lives in the bbox.
 local AUTOCROP_SCAN_TARGET = 128 -- max dimension of the scanned downscale
--- Border band: >=light is paper, <=dark is black, a uniform ring is a margin.
+-- Paper starts here; below the dark bound a margin is ink, whatever it is for.
 local AUTOCROP_MIN_BG_LUMA = 170
 local AUTOCROP_MAX_DARK_BG_LUMA = 85
 local AUTOCROP_LUMA_DELTA = 26   -- how much a pixel may differ from the border
 -- Never shrink a page below this fraction of its area (pathological scan).
 local AUTOCROP_MIN_KEEP_FRAC = 0.02
+-- Every edge is read for its own colour; three of them agreeing is a margin.
+local AUTOCROP_EDGES = { "top", "bottom", "left", "right" }
+-- A drawing can reach two sides of a page, so three in one colour are a margin.
+local AUTOCROP_MAJORITY_SIDES = 3
+-- Tighter than the content delta on purpose: a scanned margin drifts a little
+-- from side to side, while a grey band and grey art must not pass for one colour.
+local AUTOCROP_SAME_COLOR_DELTA = 12
+-- How deep a strip of ink or colour may run and still be a margin, and how much
+-- of a dimension any trim may take: a pale patch of drawing is paper to every
+-- test there is, and the cap is what stops it eating the page. Scan beds, platen
+-- edges and pages shot on a black desk reach a quarter of the way in; a flat
+-- dark space deeper than that is the drawing, so both bounds sit at the quarter.
+local AUTOCROP_STRIP_MAX_FRAC = 0.25
+local AUTOCROP_MAX_TRIM_FRAC = 0.25
 
 -- Blitbuffer type -> bytes per pixel; an unknown type bails out.
 
@@ -64,6 +78,16 @@ local function cropSkipLog(pageno, ...)
     else
         logger.dbg("Meguru: crop skip:", ...)
     end
+end
+
+-- A pixel is content when it differs from every margin colour the scan found.
+local function differsFromAll(bgs, lum)
+    for i = 1, #bgs do
+        if math.abs(lum - bgs[i]) <= AUTOCROP_LUMA_DELTA then
+            return false
+        end
+    end
+    return true
 end
 
 -- Scan a small buffer for the content box; page_w/h are the PAGE's, not bb's.
@@ -117,9 +141,8 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         return lum
     end
 
-    -- Reference border luma is the 85th-percentile ring sample, not its mean.
-    local samples = {}
-    local function addSample(y, x)
+    -- Sample: luma plus the channels the surround is painted with.
+    local function sampleAt(y, x)
         local off = y * stride + x * bpp
         local l = lumaAt(y, x)
         local r, g, b = l, l, l
@@ -129,39 +152,162 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
                 r, g, b = 255 - r, 255 - g, 255 - b
             end
         end
-        samples[#samples + 1] = { l = l, r = r, g = g, b = b }
+        return { l = l, r = r, g = g, b = b }
     end
+
+    -- The line `depth` in from one edge: its median sample when the whole line
+    -- is one colour, nil when anything is drawn on it. `step` skips pixels: the
+    -- page's own edge lines are read whole, a strip's depth is not so fine.
+    local function lineColor(edge, depth, step)
+        step = step or 1
+        local line = {}
+        local translucent = false
+        local function push(y, x)
+            if bpp == 2 and data:byte(y * stride + x * bpp + 2) < 255 then
+                translucent = true -- BB8A: a transparent margin is not a margin
+            end
+            line[#line + 1] = sampleAt(y, x)
+        end
+        if edge == "top" then
+            for x = 0, w - 1, step do push(depth, x) end
+        elseif edge == "bottom" then
+            for x = 0, w - 1, step do push(h - 1 - depth, x) end
+        elseif edge == "left" then
+            for y = 0, h - 1, step do push(y, depth) end
+        else
+            for y = 0, h - 1, step do push(y, w - 1 - depth) end
+        end
+        if translucent then
+            return nil
+        end
+        table.sort(line, function(a, b) return a.l < b.l end)
+        local m = #line
+        local lo = line[math.max(1, math.floor(m * 0.15))]
+        local hi = line[math.max(1, math.floor(m * 0.85))]
+        if hi.l - lo.l > AUTOCROP_LUMA_DELTA then
+            return nil -- the drawing reaches this line, so it is not a margin
+        end
+        return line[math.max(1, math.floor(m * 0.5))]
+    end
+
+    -- Paper: light and near-neutral, the one surface that is a margin on sight.
+    local function isPaperSample(sample)
+        return Image.isPaperColor(sample.r, sample.g, sample.b, AUTOCROP_MIN_BG_LUMA)
+    end
+
+    -- Whether a strip of one colour ends inside the cap, in from an edge: a
+    -- scan's bar does, a panel that bleeds off the page runs deeper.
+    local function stripIsShallow(edge, sample)
+        local far = (edge == "left" or edge == "right") and w or h
+        local cap = math.max(1, math.floor(far * AUTOCROP_STRIP_MAX_FRAC))
+        for depth = 1, cap do
+            local line = lineColor(edge, depth, 4)
+            if not line or math.abs(line.l - sample.l) > AUTOCROP_LUMA_DELTA then
+                return true
+            end
+        end
+        return false
+    end
+
+    local edge_colors = {}
+    for _, edge in ipairs(AUTOCROP_EDGES) do
+        edge_colors[edge] = lineColor(edge, 0)
+    end
+
+    -- The page's surface is asked of the ring, not of one line: its light pole
+    -- is paper wherever any margin is, while a single line fails a uniformity
+    -- test flat as soon as the drawing touches it -- and on a real page the
+    -- drawing touches, so the margins are read from the whole ring's percentile.
+    local samples = {}
     for x = 0, w - 1 do
-        addSample(0, x)
-        addSample(h - 1, x)
+        samples[#samples + 1] = sampleAt(0, x)
+        samples[#samples + 1] = sampleAt(h - 1, x)
     end
     for y = 1, h - 2 do
-        addSample(y, 0)
-        addSample(y, w - 1)
+        samples[#samples + 1] = sampleAt(y, 0)
+        samples[#samples + 1] = sampleAt(y, w - 1)
     end
     table.sort(samples, function(a, b) return a.l < b.l end)
     local n = #samples
     local light = samples[math.max(1, math.floor(n * 0.85))]
-    local dark = samples[math.max(1, math.floor(n * 0.15))]
-    local light_bg, dark_bg = light.l, dark.l
-
-    -- A ring uniform within one delta is a margin whatever its colour.
-    local border
-    if light_bg - dark_bg <= AUTOCROP_LUMA_DELTA then
-        border = samples[math.max(1, math.floor(n * 0.5))]
-    elseif light_bg >= AUTOCROP_MIN_BG_LUMA then
-        border = light
-    elseif dark_bg > AUTOCROP_MAX_DARK_BG_LUMA then
-        -- Neither light, dark nor uniform: content at the edge, so refuse.
-        cropSkipLog(pageno, "border neither light nor dark enough (bg=",
-            math.floor(light_bg), ", dark=", math.floor(dark_bg), ") — page kept as-is")
-        return nil
-    else
-        -- Dark rule: the 15th percentile is the darkest typical ring sample.
-        border = dark
+    local surface
+    if isPaperSample(light) then
+        surface = light
+    end
+    -- The palest paper an edge line is drawn in is a surface too, and the taller
+    -- of the two is the page's own: it is what the letterbox is painted in.
+    local function noteSurface(sample)
+        if sample and isPaperSample(sample)
+            and (not surface or sample.l > surface.l) then
+            surface = sample
+        end
     end
 
-    local bg = border.l
+    -- A colour three sides are drawn in is the page's frame, not a drawing: a
+    -- panel reaches two sides of a page and never three.
+    local frame
+    for _, edge in ipairs(AUTOCROP_EDGES) do
+        local candidate = edge_colors[edge]
+        if candidate then
+            local agree = 0
+            for _, other in ipairs(AUTOCROP_EDGES) do
+                local line = edge_colors[other]
+                if line and math.abs(line.l - candidate.l) <= AUTOCROP_SAME_COLOR_DELTA then
+                    agree = agree + 1
+                end
+            end
+            if agree >= AUTOCROP_MAJORITY_SIDES then
+                frame = candidate
+                break
+            end
+        end
+    end
+
+    -- Margins: the surface wherever it is, a frame's colour on the edges it is
+    -- drawn on, and a bar down a side that is one colour, clearly not the surface
+    -- and shallow enough to be a scan's bar rather than the drawing. Nothing else
+    -- is a margin, so a page whose drawing reaches every edge keeps all of it.
+    local bgs = {}
+    local ink_bar
+    local function addBackground(sample)
+        if sample and differsFromAll(bgs, sample.l) then
+            bgs[#bgs + 1] = sample.l
+        end
+    end
+    addBackground(surface)
+    for _, edge in ipairs(AUTOCROP_EDGES) do
+        local candidate = edge_colors[edge]
+        if candidate then
+            noteSurface(candidate)
+            local accepted = isPaperSample(candidate)
+            if not accepted and frame
+                and math.abs(frame.l - candidate.l) <= AUTOCROP_SAME_COLOR_DELTA then
+                accepted = true
+            end
+            if not accepted and (edge == "left" or edge == "right")
+                and (not surface
+                    or math.abs(candidate.l - surface.l) > AUTOCROP_LUMA_DELTA)
+                and stripIsShallow(edge, candidate) then
+                accepted = true
+            end
+            if accepted then
+                addBackground(candidate)
+                if not isPaperSample(candidate)
+                    and candidate.l <= AUTOCROP_MAX_DARK_BG_LUMA then
+                    -- The frame the reader sees the page against: a black
+                    -- margin was asked to be letterboxed in black, not in paper.
+                    ink_bar = ink_bar or candidate
+                end
+            end
+        end
+    end
+    if not bgs[1] then
+        -- Every edge is drawn on: nothing here is a margin.
+        cropSkipLog(pageno, "no margin on any edge — page kept as-is")
+        return nil
+    end
+
+    local bg = bgs[1]
     if bg <= AUTOCROP_MAX_DARK_BG_LUMA and bpp == 2 then
         -- BB8A: a transparent frame is not a black margin; only opaque is.
         for x = 0, w - 1 do
@@ -203,7 +349,7 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
             if inverse then
                 lum = 255 - lum
             end
-            if math.abs(lum - bg) > AUTOCROP_LUMA_DELTA then
+            if differsFromAll(bgs, lum) then
                 rcount = rcount + 1
                 col_cnt[x] = (col_cnt[x] or 0) + 1
             end
@@ -252,9 +398,13 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
             "(bg=", math.floor(bg), ", page ", page_w, "x", page_h,
             ", scanned at ", w, "x", h, ") — nothing to trim")
     end
-    -- bg and the border colour ride along for the fine pass and the surround.
-    return { left, top, right, bottom, bg = bg,
-        color = { r = border.r, g = border.g, b = border.b, l = border.l } }
+    -- Bg lumas for the fine pass. The letterbox is painted in the paper the crop
+    -- took off, so the screen reads as the page's own margins; a trimmed black bar
+    -- answers black and a framed page with its frame's colour, and a page with
+    -- none of the three answers nothing.
+    local chosen = ink_bar or frame or surface
+    return { left, top, right, bottom, bgs = bgs,
+        color = chosen and { r = chosen.r, g = chosen.g, b = chosen.b, l = chosen.l } or nil }
 end
 
 -- Forward declaration: refineAutoCrop is defined below but used above.
@@ -300,7 +450,7 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
             return nil
         end
         local left, top, right, bottom = bounds[1], bounds[2], bounds[3], bounds[4]
-        local bg = bounds.bg
+        local bgs = bounds.bgs
         local sc_x = full_w / sw
         local sc_y = full_h / sh
         local x0 = math.max(0, math.floor(left * sc_x))
@@ -312,17 +462,32 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
             return nil
         end
         -- Pin each edge to the exact content pixel (see refineAutoCrop).
-        x0, y0, x1, y1 = refineAutoCrop(native_bb, x0, y0, x1, y1, bg,
+        x0, y0, x1, y1 = refineAutoCrop(native_bb, x0, y0, x1, y1, bgs,
             math.max(8, math.ceil(sc_x * 3)),
             math.max(8, math.ceil(sc_y * 3)))
         if x0 == 0 and y0 == 0 and x1 == full_w and y1 == full_h then
             return nil
         end
+        -- No edge may lose more than its share, whatever the scan was sure of.
+        local cap_x = math.floor(full_w * AUTOCROP_MAX_TRIM_FRAC)
+        local cap_y = math.floor(full_h * AUTOCROP_MAX_TRIM_FRAC)
+        if x0 > cap_x then
+            x0 = cap_x
+        end
+        if y0 > cap_y then
+            y0 = cap_y
+        end
+        if x1 < full_w - cap_x then
+            x1 = full_w - cap_x
+        end
+        if y1 < full_h - cap_y then
+            y1 = full_h - cap_y
+        end
         -- Last line of defence against a pathological scan.
         if (x1 - x0) * (y1 - y0) < AUTOCROP_MIN_KEEP_FRAC * full_w * full_h then
             return nil
         end
-        return { x0 = x0, y0 = y0, x1 = x1, y1 = y1, bg = bg,
+        return { x0 = x0, y0 = y0, x1 = x1, y1 = y1, bgs = bgs,
             color = bounds.color }
     end)
     if not ok then
@@ -335,7 +500,7 @@ end
 -- Panel zoom wraps meguru/panel's recursive-cut detector; base method is nil.
 
 -- Tighten the coarse box to the exact content edge; fall back on any hiccup.
-refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
+refineAutoCrop = function(native_bb, x0, y0, x1, y1, bgs, pad_x, pad_y)
     if not (native_bb and native_bb.getWidth) then
         return x0, y0, x1, y1
     end
@@ -347,7 +512,6 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
         return x0, y0, x1, y1
     end
     local w, h = fw, fh
-    local delta = AUTOCROP_LUMA_DELTA
 
     -- Rasterise only the band each walk reads, not the whole page.
     local function bandLuma(px, py, bw, bh)
@@ -363,7 +527,7 @@ refineAutoCrop = function(native_bb, x0, y0, x1, y1, bg, pad_x, pad_y)
     -- A reader for one band: the walk's own coordinates, offset into it.
     local function contentReader(luma, ox, oy)
         return function(y, x)
-            return math.abs(luma(y - oy, x - ox) - bg) > delta
+            return differsFromAll(bgs, luma(y - oy, x - ox))
         end
     end
     -- ~0.2% of a row's span separates a real edge from isolated JPEG noise.

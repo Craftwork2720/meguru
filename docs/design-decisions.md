@@ -117,21 +117,49 @@ number: a caption line, a sound effect, a boxed title, a vertical column. The wh
 black margin — the case the device checklist walks for the dark side — is 3% of the width and is
 untouched.
 
-**A border is a margin when it is *uniform*, not when it is light or dark.** The crop read a
-border's luminance and accepted it at either end of the scale — paper above 170, a printed or
-rendered black edge below 85 — and refused everything between. That left a *coloured* frame
-uncropped, because a mid-tone frame is neither: the page came back with its frame on, which is the
-complaint that prompted this. What actually separates a margin from artwork is that the ring holds
-nothing but border, so the test is now the span of the ring's own samples, against the same
-26-level delta the content predicate uses; a uniform border is then a margin whatever colour it is,
-and the reference is the middle of that ring. The band survives for borders that are *not* uniform,
-which is exactly where refusing is the direction that cannot cut artwork.
+**The crop reads a border's luma, never its hue.** `lumaAt` is luminance, which is what the
+content predicate and the panel detector are calibrated on, so a frame whose colour differs from the
+artwork in hue alone, at the same luminance, is invisible to the crop — something that is neither
+pale nor dark is never a margin here, whatever its hue says to the eye. Brightness *alone* is not
+the test either: paper above 170 and ink below 85 was the first rule, and it came back with a
+*coloured* frame uncropped, a mid-tone frame being neither. Measurement is what settled that — over
+74 pages of two chapters plus four drawn coloured frames (steel-blue, sepia, teal, warm-grey,
+luminances 93 to 132, all refused at the time), the pages that moved were exactly the ones whose
+rings were uniform, which is how the shape of a line rather than its colour became the question.
 
-The change is additive by construction and was measured as such: over 74 pages of the two chapters
-plus four synthetic coloured frames (steel-blue, sepia, teal and warm-grey, luminances 93 to 132 —
-all refused today), **the pages that move are exactly the pages refused today whose rings are
-uniform** — the four frames and three flat grey divider pages — and **no page the crop already
-cropped moves at all**. A ring whose span is under one delta cannot disagree with either percentile
-about what content is, which is why the branch is safe rather than merely tested. The one thing it
-does not do is see a border by *hue*: `lumaAt` is luminance, so a frame whose colour differs from
-the artwork in hue alone, at the same luminance, is still invisible to the crop.
+**A margin is the page's surface, a frame, or a bar down a side.** The surface is read off the whole
+ring: its light pole — the 85th percentile of the ring's own samples — is paper wherever any margin
+is, while a *single line* fails a uniformity test flat as soon as the drawing touches it, and on a
+real page the drawing touches. Measured on a Kavita page of 1502x2048 whose left 212 pixels are a
+scan's black bar: every line but the bar's own was drawn on, the crop answered "no margin on any
+edge", and the page came back whole — the surface has to be read from the ring, not a line at a time. So the margins are: the surface wherever it is found (paper, light
+and near-neutral, at the ring's pole or on an edge line); a **frame**, a colour three or four sides are
+drawn in, since a drawing reaches two sides of a page and never three; and a **bar down a side** that
+is one colour, clearly not the surface, and shallow — its colour ends within a quarter of the page,
+which is what separates a scan's bar (14% on that page, and the crop took exactly its 212 pixels) from
+a panel that bleeds off the page. Nothing else is a margin at all: a page whose drawing reaches every
+edge keeps all of it, and the bars are looked for on the sides only, because a page's panels run to its
+top and bottom edges.
+
+**No edge may lose more than a quarter of its dimension, whatever the scan was sure of.** A
+pale patch of drawing is paper to every test there is, and the cap is what keeps such a patch from
+eating the page: the trim stops there even when the content test would go deeper, so what is left is
+a pale border rather than a lost drawing. The other half of not being invasive is what the trim may
+never cross, and it is the same rule seen from the inside: ink, tone and colour are never background,
+so the box stops on a panel's frame, on a speech bubble's outline, on a caption — on anything drawn.
+Measured on drawn pages: a caption placed in the left margin keeps its column and the margin behind
+it, a panel running into the bottom corner keeps the panel and loses only the paper around it, a black
+margin a fifth of the page wide is trimmed like paper — scan beds and pages shot on a black desk
+reach that far in — and one past a quarter of the page is left alone, being the drawing then.
+
+**The letterbox is painted in the margin the crop took off**, in one order: a trimmed **black bar**
+first, because the reader who asked for a black margin to be cut asked for the screen to go black with
+it; then a **frame's** colour, a black-bordered page letterboxing in black; then the **palest paper**
+of the ring's pole and the edge lines, so an ordinary page reads as its own margins continuing to the
+screen's edge — which is what makes a cropped page look full-screen; and nothing at all when there is
+none of the three (art to every edge, a colour spread), leaving the reader's own surround in place
+rather than inventing a colour out of the artwork. The bar has to be *dark* to answer: a grey or pale
+band over paper is shading or a frame the page is read *inside*, and letterboxing a white page in it is
+what turned the background grey. Measured on drawn pages: the black-bar pages letterbox in black over
+paper and over bleeding art alike, a saturated red band in its own red, the grey and dark-grey strips
+and the white-margined pages in paper, and a grey frame on three sides in that grey.
