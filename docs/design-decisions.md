@@ -127,19 +127,23 @@ the test either: paper above 170 and ink below 85 was the first rule, and it cam
 luminances 93 to 132, all refused at the time), the pages that moved were exactly the ones whose
 rings were uniform, which is how the shape of a line rather than its colour became the question.
 
-**A margin is the page's surface, a frame, or a bar down a side.** The surface is read off the whole
+**A margin is the page's surface, a frame, or a shallow bar.** The surface is read off the whole
 ring: its light pole — the 85th percentile of the ring's own samples — is paper wherever any margin
 is, while a *single line* fails a uniformity test flat as soon as the drawing touches it, and on a
 real page the drawing touches. Measured on a Kavita page of 1502x2048 whose left 212 pixels are a
 scan's black bar: every line but the bar's own was drawn on, the crop answered "no margin on any
 edge", and the page came back whole — the surface has to be read from the ring, not a line at a time. So the margins are: the surface wherever it is found (paper, light
 and near-neutral, at the ring's pole or on an edge line); a **frame**, a colour three or four sides are
-drawn in, since a drawing reaches two sides of a page and never three; and a **bar down a side** that
-is one colour, clearly not the surface, and shallow — its colour ends within a quarter of the page,
-which is what separates a scan's bar (14% on that page, and the crop took exactly its 212 pixels) from
-a panel that bleeds off the page. Nothing else is a margin at all: a page whose drawing reaches every
-edge keeps all of it, and the bars are looked for on the sides only, because a page's panels run to its
-top and bottom edges.
+drawn in, since a drawing reaches two sides of a page and never three; and a **bar** that is one
+colour, clearly not the surface, and shallow — its colour ends inside its bound, which is what
+separates a scan's bar (14% on that page, and the crop took exactly its 212 pixels) from a panel that
+bleeds off the page. Nothing else is a margin at all: a page whose drawing reaches every edge keeps
+all of it. **The bound is a quarter down a side and a tenth across the top or bottom**: panels run to
+those two edges, and their black is as uniform as a letterbox bar's, so the bound there is the one
+that keeps their black. Measured on drawn pages, a panel running into the bottom corner keeps its
+third of a page of black while a scan's edge of a few pixels and a letterbox bar under a tenth are
+margins; on a Kavita page of 1939x2723 whose last 151 pixels are a black bar, the crop takes exactly
+those.
 
 **No edge may lose more than a quarter of its dimension, whatever the scan was sure of.** A
 pale patch of drawing is paper to every test there is, and the cap is what keeps such a patch from
@@ -152,8 +156,9 @@ it, a panel running into the bottom corner keeps the panel and loses only the pa
 margin a fifth of the page wide is trimmed like paper — scan beds and pages shot on a black desk
 reach that far in — and one past a quarter of the page is left alone, being the drawing then.
 
-**The letterbox is painted in the margin the crop took off**, in one order: a trimmed **black bar**
-first, because the reader who asked for a black margin to be cut asked for the screen to go black with
+**The letterbox is painted in the margin the crop took off**, in one order: a trimmed **black bar
+down a side** first, because the reader who asked for a black margin to be cut asked for the screen to
+go black with
 it; then a **dark frame's** colour, a black-bordered page letterboxing in black — dark only, since
 three shaded margins of a scan agree with each other as readily as a drawn border does, and a page
 letterboxed in their grey reads as a white margin on a grey ground; then the **palest paper** found in
@@ -164,6 +169,11 @@ rather than inventing a colour out of the artwork. The bar has to be *dark* to a
 band over paper is shading or a frame the page is read *inside*, and letterboxing a white page in it is
 what turned the background grey. Measured on drawn pages: the black-bar pages letterbox in black over
 paper and over bleeding art alike, a saturated red band in its own red, the grey and dark-grey strips
-and the white-margined pages in paper, and a mid-grey frame on three sides in that grey. Measured on a
-Suwayomi page of 960x1376 whose own margins are shaded to 249: the colour is the paper's 255 rather
+and the white-margined pages in paper, and a mid-grey frame on three sides in that grey. **A bar taken
+across the top or bottom answers for nothing**: it is the page's own banding rather than the ground
+around it, so the trim is made and the background is left as the sides and the paper had it. Measured
+on Kavita pages: the one whose left 212 pixels are a black bar letterboxes in black, and the ones whose
+black bars are across the page — 158 pixels above the drawing on one, 151 below it on another — in the
+paper's 255. Measured on a Suwayomi
+page of 960x1376 whose own margins are shaded to 249: the colour is the paper's 255 rather
 than the shaded grey, which is what the reader saw as "a very light grey behind a white margin".

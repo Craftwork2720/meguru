@@ -462,10 +462,11 @@ Each step must pass before the next:
     paper, and with `-d` the `crop skip` line naming no margin on any edge is what a page that was
     *left alone* prints. **A panel running into an edge must keep its edge**: only the paper around
     it may go, never the frame, the tones under it or a speech bubble (a caption in the margin is
-    the drawn version of this — the trim has to stop at it). **A bar wider than a quarter of a page must stay**:
-    a black bar down a side is trimmed up to that width, and past it the bar is the drawing and must
-    come back untouched — as must any uniform dark line along the top or bottom edge, whatever its
-    width, and the letterbox must be the paper's colour rather than the bar's.
+    the drawn version of this — the trim has to stop at it). **A bar wider than its bound must stay**: a
+    black bar down a side is trimmed up to a quarter of the page and one across the top or bottom up
+    to a tenth, and past those the bar is the drawing and must come back untouched. The letterbox takes a
+    dark bar's colour **only when the bar is down a side**; a bar across the top or bottom is trimmed
+    but never repaints the background, and the paper answers otherwise.
 
     Then the **easing** (*A panel the window nearly holds is eased, not stepped*, above),
     which is the part of this view a log can confirm and a screenshot cannot. On a page

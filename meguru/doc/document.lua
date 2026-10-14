@@ -65,12 +65,14 @@ local AUTOCROP_MAJORITY_SIDES = 3
 -- Tighter than the content delta on purpose: a scanned margin drifts a little
 -- from side to side, while a grey band and grey art must not pass for one colour.
 local AUTOCROP_SAME_COLOR_DELTA = 12
--- How deep a strip of ink or colour may run and still be a margin, and how much
--- of a dimension any trim may take: a pale patch of drawing is paper to every
--- test there is, and the cap is what stops it eating the page. Scan beds, platen
--- edges and pages shot on a black desk reach a quarter of the way in; a flat
--- dark space deeper than that is the drawing, so both bounds sit at the quarter.
-local AUTOCROP_STRIP_MAX_FRAC = 0.25
+-- How deep a bar of ink or colour may run and still be a margin, and how much of
+-- a dimension any trim may take: a pale patch of drawing is paper to every test
+-- there is, and the cap is what stops it eating the page. A bar down a side --
+-- a scan bed, a platen edge, a page shot on a black desk -- reaches a quarter of
+-- the way in. One *across* the top or bottom gets a tenth: panels run to those
+-- edges, and their black is as uniform as a letterbox bar's.
+local AUTOCROP_SIDE_MAX_FRAC = 0.25
+local AUTOCROP_ACROSS_MAX_FRAC = 0.10
 local AUTOCROP_MAX_TRIM_FRAC = 0.25
 
 -- Blitbuffer type -> bytes per pixel; an unknown type bails out.
@@ -199,11 +201,13 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
         return Image.isPaperColor(sample.r, sample.g, sample.b, AUTOCROP_MIN_BG_LUMA)
     end
 
-    -- Whether a strip of one colour ends inside the cap, in from an edge: a
+    -- Whether a bar of one colour ends inside its own cap, in from an edge: a
     -- scan's bar does, a panel that bleeds off the page runs deeper.
-    local function stripIsShallow(edge, sample)
-        local far = (edge == "left" or edge == "right") and w or h
-        local cap = math.max(1, math.floor(far * AUTOCROP_STRIP_MAX_FRAC))
+    local function barIsShallow(edge, sample)
+        local vertical = (edge == "left" or edge == "right")
+        local far = vertical and w or h
+        local frac = vertical and AUTOCROP_SIDE_MAX_FRAC or AUTOCROP_ACROSS_MAX_FRAC
+        local cap = math.max(1, math.floor(far * frac))
         for depth = 1, cap do
             local line = lineColor(edge, depth, 4)
             if not line or math.abs(line.l - sample.l) > AUTOCROP_LUMA_DELTA then
@@ -274,9 +278,9 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
     end
 
     -- Margins: the surface wherever it is, a frame's colour on the edges it is
-    -- drawn on, and a bar down a side that is one colour, clearly not the surface
-    -- and shallow enough to be a scan's bar rather than the drawing. Nothing else
-    -- is a margin, so a page whose drawing reaches every edge keeps all of it.
+    -- drawn on, and a bar that is one colour, clearly not the surface and shallow
+    -- enough to be a scan's bar or a letterbox rather than the drawing. Nothing
+    -- else is a margin, so a page whose drawing reaches every edge keeps it all.
     local bgs = {}
     local ink_bar
     local function addBackground(sample)
@@ -294,18 +298,21 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
                 and math.abs(frame.l - candidate.l) <= AUTOCROP_SAME_COLOR_DELTA then
                 accepted = true
             end
-            if not accepted and (edge == "left" or edge == "right")
+            if not accepted
                 and (not surface
                     or math.abs(candidate.l - surface.l) > AUTOCROP_LUMA_DELTA)
-                and stripIsShallow(edge, candidate) then
+                and barIsShallow(edge, candidate) then
                 accepted = true
             end
             if accepted then
                 addBackground(candidate)
-                if not isPaperSample(candidate)
+-- The frame the reader sees the page against: a black margin was asked to be
+-- letterboxed in black, not in paper. Sides only, though -- a bar across the
+-- top or bottom is trimmed like one, but the background is the reader's guess
+-- at the page's ground, and a band across the page is the page's own banding.
+                local side = edge == "left" or edge == "right"
+                if side and not isPaperSample(candidate)
                     and candidate.l <= AUTOCROP_FRAME_MAX_LUMA then
-                    -- The frame the reader sees the page against: a black
-                    -- margin was asked to be letterboxed in black, not in paper.
                     ink_bar = ink_bar or candidate
                 end
             end
@@ -499,6 +506,9 @@ local function computeContentBox(native_bb, full_w, full_h, pageno)
         end
         if y1 < full_h - cap_y then
             y1 = full_h - cap_y
+        end
+        if x0 == 0 and y0 == 0 and x1 == full_w and y1 == full_h then
+            return nil
         end
         -- Last line of defence against a pathological scan.
         if (x1 - x0) * (y1 - y0) < AUTOCROP_MIN_KEEP_FRAC * full_w * full_h then
