@@ -51,6 +51,10 @@ local AUTOCROP_SCAN_TARGET = 128 -- max dimension of the scanned downscale
 -- Paper starts here; below the dark bound a margin is ink, whatever it is for.
 local AUTOCROP_MIN_BG_LUMA = 170
 local AUTOCROP_MAX_DARK_BG_LUMA = 85
+-- How dark a bar has to be for the *letterbox* to take its colour: the bound
+-- above is the crop's ink, this one is the frame a reader sees the page
+-- against, and it sits well under a scan's shading, which must leave the paper.
+local AUTOCROP_FRAME_MAX_LUMA = 120
 local AUTOCROP_LUMA_DELTA = 26   -- how much a pixel may differ from the border
 -- Never shrink a page below this fraction of its area (pathological scan).
 local AUTOCROP_MIN_KEEP_FRAC = 0.02
@@ -293,7 +297,7 @@ local function scanContentBounds(bb, pageno, page_w, page_h)
             if accepted then
                 addBackground(candidate)
                 if not isPaperSample(candidate)
-                    and candidate.l <= AUTOCROP_MAX_DARK_BG_LUMA then
+                    and candidate.l <= AUTOCROP_FRAME_MAX_LUMA then
                     -- The frame the reader sees the page against: a black
                     -- margin was asked to be letterboxed in black, not in paper.
                     ink_bar = ink_bar or candidate
