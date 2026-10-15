@@ -995,11 +995,11 @@ function Panel.detect(native_bb, manga)
     if not native_bb then
         return nil, false, "no page buffer"
     end
-    local raster = Image.rasterFor(native_bb)
-    if not raster then
+    -- Sizes from the buffer itself; a raster copy would cost the whole page.
+    if not (native_bb.getWidth and native_bb.getHeight) then
         return nil, false, "unreadable page buffer"
     end
-    local native_w, native_h = raster.w, raster.h
+    local native_w, native_h = native_bb:getWidth(), native_bb:getHeight()
 
     local scan = native_bb
     local sw, sh = native_w, native_h
