@@ -35,6 +35,9 @@ local DEFAULTS = {
     -- Seed for a book's kopt_panel_view; "window" shows the page uncropped.
     panel_view        = "window",
 
+    -- Panel turn: "off" | "on" | "auto" by the panel's shape; unset = stock's.
+    panel_rotate      = UNSET,
+
     -- Window zoom as a multiple of page width; 1.7 is the middle preset.
     panel_zoom_level  = 1.7,
 

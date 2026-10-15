@@ -577,7 +577,7 @@ stock's, byte for byte.
 two-state toggle is what it replaces, and the reason is the second half of the old
 sentence: `switchToImageNum` reassigns `rotated` on every change, so a press was scoped
 to one panel and a reader who wanted the next panel turned had to press again. The row
-walks `off`, `on`, `auto` — `No rotation`, `Every panel`, `Auto` — and its label names the
+walks `off`, `on`, `auto` — `No rotate`, `Rotate`, `Autorotate` — and its label names the
 state the reader is in, the rule the view switch beside it keeps, so the two controls
 cannot describe one state in two vocabularies. The mode it walks is what every later
 `switchToImageNum` reads, so one tap governs the whole view. `auto` is the proportions
@@ -586,23 +586,13 @@ stock's `imageviewer_rotate_auto_for_best_fit` does, and that global is now only
 **seed** — a view opened before any tap starts from the reader's own answer there, so a
 reader who set it sees no change in what opens.
 
-**A tap also says what it did**, in the two-second notice the rest of the plugin uses:
-`Panel rotation: off`, `every panel`, `to fit the screen`. The label carries three words
-and the notice a sentence, and they are the same three states said twice — `No rotation`,
-`Every panel`, `Auto`. What the notice adds is the half a label has no room for: `auto`
-turns a panel only where its shape and the screen's disagree, and `to fit the screen` is
-what says so.
-
-**Nothing about the mode is written down, which is the state this is in rather than the
-state it wants.** No setting and no sidecar, so a long-press that starts a view seeds from
-the reader's stock answer again — but a *rebuild* is not a new view, and three of them
-happen inside one: the page crossing's handoff, the window view's level re-open, and the
-view cycle. All three carry `rotate_mode` in the `opts` the re-open is built from, the way
-`buttons_visible` and the window's level already travel, so the mode lasts as long as the
-reader is in the panel view at all — a crossing that dropped it was the first thing a
-device reported. What is left is that closing and long-pressing again forgets it; what
-that buys is that the row cannot leave a preference behind that nothing in the menus can
-undo, which is the same trade `panel_zoom_level` refuses.
+**The mode is stored plugin-wide, so every view opens in the mode the last tap left.**
+`meguru/panel_rotate`, beside `panel_view` and `panel_zoom_level`, and read by every
+`PanelZoom.open` — the rebuilt ones included, which is what leaves the three rebuilds
+needing nothing of their own: the page crossing's handoff, the window view's level re-open
+and the view cycle all go through that one call. Until the first tap the store is empty and
+the seed stands — the reader's own `imageviewer_rotate_auto_for_best_fit` answer, or `off` —
+so a reader who came here with stock's auto already on sees no change in what opens.
 
 **Where the direction is applied is a correction after the fact, and it is worth knowing
 why that is safe.** Passing an angle would mean copying `_new_image_wg`. It does not have
@@ -997,10 +987,7 @@ the zoom button beside it already has (that one shows the level it is on) and th
 the *Reading* tab's *Panel view* row has, so the button and the setting name the same
 thing. The first version named the destination, which is defensible for a button and was
 not what a reader wanted — three controls saying different things about one state is the
-thing to avoid. The switch announces the view it moved to in the same notice the rotate
-button uses, and it is there for the reason the label cannot cover: the row is hidden
-until it is asked for, so at the moment the view changes there is no label on screen to
-read. The zoom button is
+thing to avoid. The zoom button is
 the level right where a reader can see what it does: tapping it cycles 1.4, 1.7, 1.9 and
 writes the preference, so the next page, the next book and the next start keep it. That is
 why there is no menu row for the level — the choice moved into the viewer, the store did
