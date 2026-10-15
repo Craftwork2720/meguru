@@ -226,8 +226,15 @@ function PanelViewer:meguruWarm()
     local next_page = doc:getNextPage(self.page)
     if next_page and next_page > 0 and not doc.dead_pages[next_page]
         and doc:hasConnection() then
-        pcall(doc.getPageDims, doc, next_page)
-        pcall(doc.getPanelsFromPage, doc, next_page, self.mode)
+        -- The bbox, not just the dims: the crossing's own page turn lays the page
+        -- out, and the crop is what that layout asks for.
+        pcall(doc.getPageBBox, doc, next_page)
+        local ok, panels = pcall(doc.getPanelsFromPage, doc, next_page, self.mode)
+        -- And the first panel's tile, the crossing's one fresh render. Only the
+        -- crop view: a window step's rect comes from Viewport, so the key differs.
+        if ok and panels and panels[1] and not (self.view and self.view.window) then
+            pcall(doc.drawPagePart, doc, next_page, panels[1], 0)
+        end
     end
 end
 
