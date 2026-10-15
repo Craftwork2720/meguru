@@ -7,6 +7,7 @@ local Device = require("device")
 local Event = require("ui/event")
 local Geom = require("ui/geometry")
 local ImageViewer = require("ui/widget/imageviewer")
+local Notification = require("ui/widget/notification")
 local Settings = require("meguru/settings")
 local UIManager = require("ui/uimanager")
 local Viewport = require("meguru/viewport")
@@ -100,14 +101,38 @@ local function seedRotateMode()
     return "off"
 end
 
--- The button names the state a tap reaches, stock's own convention there.
+-- The button names the state the reader is in, the rule the view switch keeps.
 local function rotateLabel(mode)
     local labels = {
-        off = _("Rotate"),
-        on = _("Auto"),
-        auto = _("No rotation"),
+        off = _("No rotation"),
+        on = _("Every panel"),
+        auto = _("Auto"),
     }
     return labels[mode] or labels.off
+end
+
+-- What the button's own label cannot say: the state the reader is now in.
+local function rotateNotice(mode)
+    if mode == "on" then
+        return _("Panel rotation: every panel")
+    elseif mode == "auto" then
+        return _("Panel rotation: to fit the screen")
+    end
+    return _("Panel rotation: off")
+end
+
+-- The row's three words, so the notice and the button cannot drift apart.
+local function viewNotice(kind)
+    if kind == "window" then
+        return _("Panel view: pan & zoom")
+    elseif kind == "zoom" then
+        return _("Panel view: free view")
+    end
+    return _("Panel view: panel cut")
+end
+
+local function showNotice(text)
+    UIManager:show(Notification:new{ text = text, timeout = 2 })
 end
 
 -- Only "auto" asks the shapes; the window and free views are never turned.
@@ -274,6 +299,8 @@ function PanelViewer:meguruCycleRotateMode()
             self.meguru_rotate_button.width)
     end
     self:update()
+    -- After the repaint: a notice shown before it would be painted over.
+    showNotice(rotateNotice(next_mode))
     return true
 end
 
@@ -813,7 +840,10 @@ function PanelViewer:meguruCycleView()
     })
     if not ok then
         logger.warn("Meguru: the next view could not be opened:", err)
+        return
     end
+    -- After the re-open, which shows a viewer: a notice shown first would be under it.
+    showNotice(viewNotice(kind))
 end
 
 -- Rebuild the row: stock builds it in init and cannot remove a button.

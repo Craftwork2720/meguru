@@ -577,13 +577,21 @@ stock's, byte for byte.
 two-state toggle is what it replaces, and the reason is the second half of the old
 sentence: `switchToImageNum` reassigns `rotated` on every change, so a press was scoped
 to one panel and a reader who wanted the next panel turned had to press again. The row
-now names the state a tap *reaches* — `Rotate`, then `Auto`, then `No rotation`, stock's
-own convention for that label — and the mode it walks is what every later
+walks `off`, `on`, `auto` — `No rotation`, `Every panel`, `Auto` — and its label names the
+state the reader is in, the rule the view switch beside it keeps, so the two controls
+cannot describe one state in two vocabularies. The mode it walks is what every later
 `switchToImageNum` reads, so one tap governs the whole view. `auto` is the proportions
 rule: a panel is turned when its shape and the screen's disagree, which is exactly what
 stock's `imageviewer_rotate_auto_for_best_fit` does, and that global is now only the
 **seed** — a view opened before any tap starts from the reader's own answer there, so a
 reader who set it sees no change in what opens.
+
+**A tap also says what it did**, in the two-second notice the rest of the plugin uses:
+`Panel rotation: off`, `every panel`, `to fit the screen`. The label carries three words
+and the notice a sentence, and they are the same three states said twice — `No rotation`,
+`Every panel`, `Auto`. What the notice adds is the half a label has no room for: `auto`
+turns a panel only where its shape and the screen's disagree, and `to fit the screen` is
+what says so.
 
 **Nothing about the mode is written down, which is the state this is in rather than the
 state it wants.** No setting and no sidecar, so a long-press that starts a view seeds from
@@ -989,7 +997,10 @@ the zoom button beside it already has (that one shows the level it is on) and th
 the *Reading* tab's *Panel view* row has, so the button and the setting name the same
 thing. The first version named the destination, which is defensible for a button and was
 not what a reader wanted — three controls saying different things about one state is the
-thing to avoid. The zoom button is
+thing to avoid. The switch announces the view it moved to in the same notice the rotate
+button uses, and it is there for the reason the label cannot cover: the row is hidden
+until it is asked for, so at the moment the view changes there is no label on screen to
+read. The zoom button is
 the level right where a reader can see what it does: tapping it cycles 1.4, 1.7, 1.9 and
 writes the preference, so the next page, the next book and the next start keep it. That is
 why there is no menu row for the level — the choice moved into the viewer, the store did
