@@ -240,7 +240,7 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
     and a strip's answer is "one panel, the whole page" regardless.
   - **The resample happens twice here and once there.** The reference renders small
     through MuPDF, straight from the source; this plugin decodes at the capped native
-    size and *then* scales. On a page over the 4 Mpx budget that is two lossy steps
+    size and *then* scales. On a page over the 10 Mpx budget that is two lossy steps
     against one, in the direction of losing thin light features — which is the
     direction that invents gutters, and `legacy_image_scaling` (a KOReader setting,
     off by default) turns the second step into nearest-neighbour and makes it worse.

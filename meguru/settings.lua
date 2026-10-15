@@ -44,8 +44,8 @@ local DEFAULTS = {
     -- Records the .cbz claim offer, so turning the row off is not undone.
     cbz_default_claimed = false,
 
-    -- Retained-decode budget for one page (4 Mpx); no menu writes it.
-    max_native_pixels = 4 * 1024 * 1024,
+    -- Retained-decode budget for one page (10 Mpx); no menu writes it.
+    max_native_pixels = 10 * 1024 * 1024,
 
     -- Semantic fit, not zoom_mode names: the crop changes the mapping.
     fit               = "full",       -- "full" | "width" | "height"

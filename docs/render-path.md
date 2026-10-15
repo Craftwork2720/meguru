@@ -95,8 +95,8 @@ colour is on.
 
 **What colour costs is memory, and it is the one number this change does not
 touch.** `max_native_pixels` counts **pixels, not bytes** — `cappedDim` has no
-bytes-per-pixel factor — so 4 Mpx is ~4 MB retained as BB8 and ~12 MB as RGB24,
-and with `max_cached_native` at three that is ~36 MB rather than ~12. Kept
+bytes-per-pixel factor — so 10 Mpx is ~10 MB retained as BB8 and ~30 MB as RGB24,
+and with `max_cached_native` at three that is ~90 MB rather than ~30. Kept
 pixel-based deliberately, so sharpness is unchanged and the price is paid only
 where colour exists. Everything else on the render path was already
 format-tolerant and needed no change: `bbBytesPerPixel` knows all four types,
@@ -168,12 +168,22 @@ true only while nobody zooms.
 **For a page being shrunk, what a paint costs is set by the decode budget, not by
 the path.** The retained decode is what `decodeRegion` slices and what every
 analysis reads — the margin scan (`autoContentBox`), the page-number strip, the
-blank check — so `max_native_pixels` (`meguru/settings`) is the per-page cost of a
-large page, paid on every turn whatever the reader does. `db39a93` replaced an
+blank check — so `max_native_pixels` (`meguru/settings`) sets how much of a large
+page is kept, on every turn whatever the reader does. `db39a93` replaced an
 earlier long-edge cap with an area budget, correctly, because a long-edge cap
-punished a tall strip without measure. The default is **4 Mpx**; pages at or under
-it — every page that fits a screen — come back at natural size and are untouched,
-so the direct render above still works from real pixels where it matters.
+punished a tall strip without measure. The default is **10 Mpx**; pages at or under
+it — every single page a 300 dpi scan sends, and spreads up to 2600x3700 — come
+back at natural size and are untouched, so the direct render above still works from
+real pixels where it matters.
+
+**Raising the budget buys pixels for almost no time, and that is measured rather
+than argued.** A 2560x3600 page (8.8 Mpx) on a Kindle PW5 costs **2007 ms** to
+decode capped to 1727x2429 (4.2 Mpx) and **2219 ms** at its natural size: 2.2x the
+pixels for **+10%**. Both points sit on `~1.8 s + ~40 ms per Mpx of output`, so what
+a page costs is set by its source JPEG and the output term is the small one — the
+budget is a memory knob, not a time one. What it spends is RAM: three entries of
+it, so the ceiling is three times the budget in pixels, times the screen's own
+bytes per pixel.
 
 `Image.renderRegion` rederives the coordinate space rather than taking it. Its
 `nx, ny, nw, nh` arrive in the space `self.dims` lives in, which for an oversized
@@ -363,8 +373,8 @@ measure: an 800x20000 manhwa strip and a 4000x5000 scan are capped on the same s
 strip loses 9.8x of its width while the scan loses 2.4x — and width is all a reader sees of a
 strip, which is scrolled rather than shrunk to fit. An area cap reduces both axes by the same
 factor and bounds memory absolutely. Concretely, the strip keeps 410 px of width against 82
-under the long-edge cap, while a 2600x3700 (9.6 Mpx) spread loses 34% per axis; a 1600x2400
-page is 3.8 Mpx against the 4 Mpx default and decodes at its natural size.
+under the long-edge cap, while a 5120x3600 spread loses 25% per axis; a 1600x2400
+page is 3.8 Mpx against the 10 Mpx default and decodes at its natural size.
 
 **`openDocumentFromText`'s `magic` argument is not optional, though it reads as a hint.** Nil
 raises `argument error: missing file type` from libwrap-mupdf — a message that names no call

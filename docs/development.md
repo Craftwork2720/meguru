@@ -339,7 +339,7 @@ Each step must pass before the next:
     its own is told yes, while the same file opened by KOReader's own reader follows the `cbz`
     entry.
 18. **Panel zoom is a crop of the page, not of the screen.** On a book whose pages are
-    bigger than the screen (a Kavita volume; anything at or under 4 Mpx is not capped),
+    bigger than the screen (a Kavita volume; anything at or under 10 Mpx is not capped),
     long-press a panel that covers a good part of the page. In `-d` the `panel zoom on
     page N, region … rendered WxH` line must show an output larger than the screen, and
     the image must stay sharp when pinched in the viewer. A panel *smaller* than the
