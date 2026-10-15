@@ -87,22 +87,47 @@ local function stepImage(doc, page, rect)
     end
 end
 
--- Stock keeps "rotated" on the viewer, so this must precede the render.
-local function panelRotations(panels)
-    local rotates = {}
+-- The rotate button's states, in the order a tap walks them.
+local ROTATE_MODES = { "off", "on", "auto" }
+
+-- No panel, all of them, or only where the shapes disagree.
+local function seedRotateMode()
     local g = rawget(_G, "G_reader_settings")
-    if not (g and type(g.isTrue) == "function") then
-        return rotates
+    if g and type(g.isTrue) == "function"
+        and g:isTrue("imageviewer_rotate_auto_for_best_fit") then
+        return "auto"
     end
-    if not g:isTrue("imageviewer_rotate_auto_for_best_fit") then
-        return rotates
+    return "off"
+end
+
+-- The button names the state a tap reaches, stock's own convention there.
+local function rotateLabel(mode)
+    local labels = {
+        off = _("Rotate"),
+        on = _("Auto"),
+        auto = _("No rotation"),
+    }
+    return labels[mode] or labels.off
+end
+
+-- Only "auto" asks the shapes; the window and free views are never turned.
+local function rotatedFor(viewer, image_num)
+    if viewer.meguru_free or (viewer.view and viewer.view.window) then
+        return false
+    end
+    local mode = viewer.rotate_mode
+    if mode == "on" then
+        return true
+    end
+    if mode ~= "auto" then
+        return false
+    end
+    local step = viewer.steps and viewer.steps[image_num]
+    if not (step and step.w and step.h) then
+        return false
     end
     local canvas = CanvasContext:getSize()
-    local landscape = canvas.w > canvas.h
-    for i, rect in ipairs(panels) do
-        rotates[i] = (landscape ~= (rect.w > rect.h))
-    end
-    return rotates
+    return (canvas.w > canvas.h) ~= (step.w > step.h)
 end
 
 -- Left in the book is a counter-clockwise device, so the panel goes clockwise.
@@ -126,7 +151,10 @@ local PanelViewer = ImageViewer:extend{
     meguru_free = nil,
     -- The book's Rotate wide pages; nil leaves every rotation decision to stock.
     rotate = nil,
-    meguru_rotates = nil,
+    -- "off" | "on" | "auto", cycled by the row's button for the life of the view.
+    rotate_mode = nil,
+    -- Our own button object, so a tap can re-letter it; stock's lookup is sunk.
+    meguru_rotate_button = nil,
     _meguru_warm = nil,
     _meguru_handoff_pending = nil,
 }
@@ -134,6 +162,8 @@ local PanelViewer = ImageViewer:extend{
 -- Bound unconditionally: a D-pad device answers hasDPad(), not hasKeys().
 function PanelViewer:init()
     ImageViewer.init(self)
+    -- The opening step, before any switch: stock's own answer is the seed.
+    self.rotated = rotatedFor(self, 1)
     self.key_events = self.key_events or {}
     self.key_events.MeguruArrowLeft = { { "Left" } }
     self.key_events.MeguruArrowRight = { { "Right" } }
@@ -199,7 +229,7 @@ end
 -- Release the left step and re-arm; the tile LRU then stays at two.
 function PanelViewer:switchToImageNum(image_num)
     local previous = self._images_list_cur
-    self.rotated = self.meguru_rotates[image_num] or false
+    self.rotated = rotatedFor(self, image_num)
     ImageViewer.switchToImageNum(self, image_num)
     if previous and previous ~= image_num then
         self:meguruRelease(previous)
@@ -225,6 +255,26 @@ function PanelViewer:_new_image_wg()
         logger.warn("Meguru: panel rotation angle could not be applied; "
             .. "ImageWidget rendered before _new_image_wg returned")
     end
+end
+
+-- The tap: mode on, stored, and applied to the panel under the finger.
+function PanelViewer:meguruCycleRotateMode()
+    local next_mode = ROTATE_MODES[1]
+    for i, mode in ipairs(ROTATE_MODES) do
+        if mode == self.rotate_mode then
+            next_mode = ROTATE_MODES[i % #ROTATE_MODES + 1]
+            break
+        end
+    end
+    self.rotate_mode = next_mode
+    self.rotated = rotatedFor(self, self._images_list_cur)
+    if self.meguru_rotate_button then
+        -- Width passed as stock does, so the row's geometry is not rebuilt.
+        self.meguru_rotate_button:setText(rotateLabel(next_mode),
+            self.meguru_rotate_button.width)
+    end
+    self:update()
+    return true
 end
 
 -- Bounded by #self.steps: images_list_nb is the chrome switch, not a count.
@@ -402,6 +452,7 @@ function PanelViewer:meguruHandoff(direction)
     local mode = self.mode
     -- Read outside the tick: this viewer is gone before it runs.
     local rotate = self.rotate
+    local rotate_mode = self.rotate_mode
     local view = self.view and {
         window = self.view.window,
         level = self.view.level,
@@ -431,7 +482,9 @@ function PanelViewer:meguruHandoff(direction)
                     level = view.level,
                     at_end = direction == "previous",
                     buttons_visible = show_buttons,
-                } or nil
+                } or {}
+                -- A crossing rebuilds the viewer, so the mode travels with it.
+                opts.rotate_mode = rotate_mode
                 PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
             else
                 logger.dbg("Meguru: panel zoom crossed to page", page,
@@ -665,6 +718,7 @@ function PanelViewer:meguruReopenAtLevel(level)
     local ui, page = self.ui, self.page
     local mode, rotate = self.mode, self.rotate
     local show_buttons = self.buttons_visible
+    local rotate_mode = self.rotate_mode
     if not (view and view.window and cur and panels and ui) then
         return
     end
@@ -677,6 +731,7 @@ function PanelViewer:meguruReopenAtLevel(level)
         -- The window's start corner, which is what the stops are anchored to.
         keep = { x = cur.x, y = cur.y },
         buttons_visible = show_buttons,
+        rotate_mode = rotate_mode,
     })
     if not ok then
         logger.warn("Meguru: the window view could not be re-opened:", err)
@@ -718,6 +773,7 @@ function PanelViewer:meguruCycleView()
     local doc = ui and ui.document
     local mode, rotate = self.mode, self.rotate
     local show_buttons = self.buttons_visible
+    local rotate_mode = self.rotate_mode
     if not (view and cur and ui and doc) then
         return
     end
@@ -753,6 +809,7 @@ function PanelViewer:meguruCycleView()
         buttons_visible = show_buttons,
         tap = kind ~= "crop" and { x = cur.x + cur.w / 2, y = cur.y + cur.h / 2 } or nil,
         keep = kind == "window" and { x = cur.x, y = cur.y } or nil,
+        rotate_mode = rotate_mode,
     })
     if not ok then
         logger.warn("Meguru: the next view could not be opened:", err)
@@ -840,15 +897,14 @@ local function installRow(viewer)
         }
         entries[#entries + 1] = close
     else
-        -- Rotate forwarded; Scale dropped for the same reason as the window row.
-        local rotate_button = viewer.button_table:getButtonById("rotate")
-        if rotate_button then
-            entries[#entries + 1] = {
-                id = "rotate",
-                text = rotate_button.text,
-                callback = rotate_button.callback,
-            }
-        end
+        -- Scale dropped as in the window row; Rotate is ours, three states wide.
+        entries[#entries + 1] = {
+            id = "rotate",
+            text = rotateLabel(viewer.rotate_mode),
+            callback = function()
+                viewer:meguruCycleRotateMode()
+            end,
+        }
         entries[#entries + 1] = close
     end
 
@@ -864,7 +920,10 @@ local function installRow(viewer)
         table_.button_by_id.scale = sink
         table_.button_by_id.rotate = sink
     else
+        -- Ours to letter: stock's two-state text would overwrite the mode's.
+        viewer.meguru_rotate_button = table_.button_by_id.rotate
         table_.button_by_id.scale = sink
+        table_.button_by_id.rotate = sink
     end
     viewer.button_table = table_
     viewer.button_container = CenterContainer:new{
@@ -961,7 +1020,6 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
     end
     -- BlitBuffers are malloc'd outside the Lua heap; a free here would double-free.
     images.image_disposable = false
-    local rotates = (window or free) and {} or panelRotations(panels)
 
     local viewer = PanelViewer:new{
         ui = ui,
@@ -970,9 +1028,12 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         panel_rects = panels,
         mode = mode,
         rotate = rotate,
+        -- A rebuild carries the mode; only the seed is asked for a fresh view.
+        rotate_mode = (opts and opts.rotate_mode) or seedRotateMode(),
+        -- The crop view carries opts too, and `meguruCycleView` reads this field
+        -- for truthiness: nil here is a dead `panel cut` button.
         view = opts,
         meguru_free = free_state,
-        meguru_rotates = rotates,
         image = images,
         -- Not a count: stock tests _images_list_nb > 1 to build the progress bar.
         images_list_nb = 1,
@@ -982,7 +1043,6 @@ function PanelZoom.open(ui, page, panels, index, mode, rotate, opts)
         fullscreen = true,
         -- Hidden until the menu gesture summons it; state travels on re-open.
         buttons_visible = (opts and opts.buttons_visible == true) or false,
-        rotated = rotates[1] or false,
     }
     -- The row is cosmetic: a failure must cost the buttons, never the view.
     local ok, err = pcall(installRow, viewer)

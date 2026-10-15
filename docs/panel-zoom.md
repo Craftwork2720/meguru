@@ -562,7 +562,7 @@ The two rotation questions are **split, and that split is the design**:
 
 | question | answered by | source |
 |---|---|---|
-| *whether* this panel is turned | `panelRotations` + stock's `rotated` | the panel's shape against the screen's |
+| *whether* this panel is turned | the row's Rotate button: `off` / `on` / `auto` | the mode, and only `auto` reads the shapes |
 | *which way* | `panelRotationAngle(self.rotated, self.rotate)` | the book's `Rotate wide pages` |
 
 `rotate` is `"left"`/`"right"`/nil, resolved once per press by `Reader.panelZoomDirection(ui)`
@@ -573,12 +573,28 @@ beside `mode`, including through the handoff, which is the half that is easy to 
 fails only at a page boundary. nil is the row off, and then every rotation decision is
 stock's, byte for byte.
 
-**The Rotate button needed no change at all, and that is the proof the split is right.**
-Stock's callback flips `self.rotated`; the resolver reads it. *Whether* belongs to stock,
-*which way* to us, so the button keeps working, its `Rotate` / `No rotation` label stays
-true, and nothing has to be kept in step. The same property gives "a tapped rotation lasts
-one panel" for free: `switchToImageNum` already reassigns `rotated` from the automatic
-decision on every change, so the press is scoped to the visit with no state to carry.
+**The Rotate button is the plugin's own, and it is a three-state cycle.** Stock's
+two-state toggle is what it replaces, and the reason is the second half of the old
+sentence: `switchToImageNum` reassigns `rotated` on every change, so a press was scoped
+to one panel and a reader who wanted the next panel turned had to press again. The row
+now names the state a tap *reaches* — `Rotate`, then `Auto`, then `No rotation`, stock's
+own convention for that label — and the mode it walks is what every later
+`switchToImageNum` reads, so one tap governs the whole view. `auto` is the proportions
+rule: a panel is turned when its shape and the screen's disagree, which is exactly what
+stock's `imageviewer_rotate_auto_for_best_fit` does, and that global is now only the
+**seed** — a view opened before any tap starts from the reader's own answer there, so a
+reader who set it sees no change in what opens.
+
+**Nothing about the mode is written down, which is the state this is in rather than the
+state it wants.** No setting and no sidecar, so a long-press that starts a view seeds from
+the reader's stock answer again — but a *rebuild* is not a new view, and three of them
+happen inside one: the page crossing's handoff, the window view's level re-open, and the
+view cycle. All three carry `rotate_mode` in the `opts` the re-open is built from, the way
+`buttons_visible` and the window's level already travel, so the mode lasts as long as the
+reader is in the panel view at all — a crossing that dropped it was the first thing a
+device reported. What is left is that closing and long-pressing again forgets it; what
+that buys is that the row cannot leave a preference behind that nothing in the menus can
+undo, which is the same trade `panel_zoom_level` refuses.
 
 **Where the direction is applied is a correction after the fact, and it is worth knowing
 why that is safe.** Passing an angle would mean copying `_new_image_wg`. It does not have
