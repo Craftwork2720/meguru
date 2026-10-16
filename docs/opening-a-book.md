@@ -164,6 +164,38 @@ there is no feed to walk and no connection to need.
 to "land somewhere", and opened the book. Tapping past a question is not a way of
 answering it.
 
+**The reader's own zoom asks about a page before the place is restored, and here that
+question is a decode.** `ReaderZooming` keeps a `current_page` of its own, defaulting to
+1, and learns the real one from a `PageUpdate` — the event `ReaderPaging` fires when *it*
+restores `last_page`. Two asks reach the document before that, and both were measured from
+a stack trace rather than reasoned about: `ReaderKoptListener`'s `SetZoomMode` during
+`ReadSettings`, whose handler the module order puts *ahead* of `ReaderZooming`'s own, and
+the post-paint hint after the open, asking about the page *after* the one on screen. Both
+go through `getZoom`, which asks for that page's size and then for its bbox. Stock answers
+those from the engine's page box; a marker answers with a fetch and a full decode, because
+`getUsedBBoxDimensions` is `getPageBBox`, the crop. A resume to page 137 therefore used to
+decode page 1 as well — the whole first half of an open, spent on a page the reader never
+sees. `installZoomPageHook`, in `ui/reader`, seeds that `current_page` from the sidecar's
+`last_page` in `ReaderZooming:init`: the page the open is going to, from the same value the
+paging module is about to restore, and early enough that the KOPT listener's ask already
+names it. That seed is the one thing it logs — `Meguru: zoom starts at page N`, at `dbg` —
+because the page an open decodes is otherwise only visible as a `page N prepared` line
+several calls away. nil and 1 are left alone — they are the module's own default — and a
+document that is not a marker is never touched, so a stock PDF opens exactly as stock.
+
+**A book opened at page 1 still decodes page 1, and that is not this bug.** Its first ask
+is about the page the reader is about to see, so the decode is the one the paint needs;
+what the hook removes is the *other* page an open used to decode. Measured on a Kindle PW5:
+a resume went from 8.4–9.3 s to **3.9 s**, and a first open stayed where it was.
+
+**And the same window caught a second, smaller one in this plugin.** `install` asks for the
+opening page's crop colour to colour the surround before the first turn, through
+`currentPage(ui)` — which read `ui.paging.current_page`, still **0** at that point, since
+the paging module restores a page later than the plugin is built. A crop of page 0 is
+nothing: the ask was wasted, `self.dims[0]` was filled with a screen-sized fallback, and
+the colour the line exists for was never applied to the page the book opens on. It falls
+back to the same sidecar value now.
+
 ### Planning, writing, and handing over
 
 **The marker is planned, not written, until the question is answered.** `planMarker`

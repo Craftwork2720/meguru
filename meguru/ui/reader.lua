@@ -108,6 +108,40 @@ local function showStatusBar(footer)
     end
 end
 
+-- Once per process, on the class: ReaderZooming keeps a page number of its own,
+-- and the asks that reach the document before ReaderPaging restores one come from
+-- there. Seeded at init because ReadSettings runs its handlers in module order and
+-- the KOPT listener's is ahead of this module's own.
+local zoom_page_hook_installed = false
+
+function Reader.installZoomPageHook()
+    if zoom_page_hook_installed then
+        return
+    end
+    local ok, ReaderZooming = pcall(require, "apps/reader/modules/readerzooming")
+    if not ok or type(ReaderZooming) ~= "table"
+        or type(ReaderZooming.init) ~= "function" then
+        -- Deliberately left false so a later host can retry.
+        return
+    end
+    zoom_page_hook_installed = true
+    local orig = ReaderZooming.init
+    ReaderZooming.init = function(self, ...)
+        orig(self, ...)
+        local ui = self.ui
+        local doc = ui and ui.document
+        local config = ui and ui.doc_settings
+        local page = config and type(config.readSetting) == "function"
+            and config:readSetting("last_page") or nil
+        -- Only a Meguru book, and only a real resume: 1 and nil are its default
+        -- already, and a stock document's page is stock's own business.
+        if doc and doc.provider == "meguru" and page and page > 1 then
+            logger.dbg("Meguru: zoom starts at page", page)
+            self.current_page = page
+        end
+    end
+end
+
 -- Once per process: the hook is on the ReaderFooter class, not an instance.
 local status_bar_hook_installed = false
 
@@ -149,8 +183,15 @@ local function wideRotateTarget(base, left)
 end
 
 -- ReaderUI has no getCurrentPage; paging holds it, absent if reflowed.
+-- The paging module's own page, or the one the open is about to restore: before
+-- ReadSettings its current_page is still 0, and a crop of page 0 is nothing.
 local function currentPage(ui)
-    return ui.paging and ui.paging.current_page
+    local page = ui.paging and ui.paging.current_page
+    if page and page > 0 then
+        return page
+    end
+    local config = ui.doc_settings
+    return config and config:readSetting("last_page") or nil
 end
 
 -- Asked live, so a reader turning the device to the same mode takes it over.

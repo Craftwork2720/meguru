@@ -57,8 +57,9 @@ function Meguru:init()
     -- Before any document opens, and in the parent: see Image.rememberScreen.
     Image.rememberScreen()
 
-    -- Hook lives on ReaderFooter, no instance to hang it on: once per process.
+    -- Both live on their classes, with no instance to hang them on: once per process.
     Reader.installStatusBarHook()
+    Reader.installZoomPageHook()
 
     -- Reader plumbing only where this instance has a book of ours open.
     Reader.install(self)
