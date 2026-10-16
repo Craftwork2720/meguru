@@ -1,4 +1,8 @@
 
+-- The row bookshelf shows for a catalog record: the same book, the same marker
+-- and the same open as the browser's own dialog row, through the registry
+-- bookshelf offers other plugins instead of a wrap on its window.
+
 local InfoMessage = require("ui/widget/infomessage")
 local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
@@ -65,8 +69,10 @@ local function provider(book, ctx)
     }
 end
 
--- The entry as the feed's own chain lists it. Bookshelf paginates a long
--- series, so the page it drew the record from is not always the first.
+-- The entry as the feed's own chain lists it. The entry carries the identity:
+-- Suwayomi keys it on entry.id, and the feed's own title is the series name
+-- where the entry's is bare. Bookshelf paginates a long series, so the page it
+-- drew the record from is not always the first.
 local function walkForEntry(feed_url, stream, conn)
     local walker = Feed.walker(feed_url, {
         username = conn.username,
@@ -117,8 +123,8 @@ local function openConnected(book, stream, server_name, kind)
 
     local entry, retained, reason = walkForEntry(feed_url, stream, conn)
     if not retained then
-        -- Nothing is written: a series named without its own feed would shelf
-        -- the book beside the marker the OPDS browser makes, not instead of it.
+        -- Refused rather than written flat: with the feed in hand, "no series"
+        -- is the driver's answer about the book, and without it, our guess.
         logger.warn("Meguru: could not identify", tostring(book.title), "in the feed",
             Net.redactUrl(feed_url), "-", tostring(reason or "no entry for this stream"))
         UIManager:show(InfoMessage:new{ text = cannotOpen(book.title) })

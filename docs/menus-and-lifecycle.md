@@ -767,14 +767,20 @@ nil whenever a record's links leave the catalog's own origin**, so credentials c
 `Sources` — which is also the only answer that agrees with what every later fetch in the
 flow uses. And **the record carries no feed**, only `book.opds.feed_url`; the tap
 re-reads that feed, following its `rel=next` chain to the page the entry is actually on
-(`Feed.TAP_PAGES`), because `Marker.dirFor` names the marker's folder from the feed's
-*title* — a series named without its feed would shelf the book beside the marker the
-browser makes, not instead of it. For the same reason every failure here refuses with a
-message and writes nothing, and the entry is matched by its resolved stream exactly as
-`rawEntryFor` matches it in the retained feed. The two surfaces therefore agree on one
-marker path **for the feed the record names**; a book reached from an aggregate can
-still derive a second name, which is `registerBook`'s own pre-existing rule and not
-something this row introduces.
+(`Feed.TAP_PAGES`). **The feed is read for the entry, and the entry is the identity**:
+`Suwayomi.parseCatalogPage` takes `item_key` from `entry.id` and Suwayomi's `discover`
+reads it from the same place, so an entry that is reconstructed rather than read yields
+no item at all — and the series is named from the feed's own `<title>` wherever the
+entry's title cannot name it, which on a live Suwayomi server is the normal case: the
+record arrives titled `⭕  Chapter 48`, bare, and the manga's name exists only in the
+feed's title. That is why a feed that cannot be read **refuses with a message and
+writes nothing** rather than falling back to the flat marker `openInFeed` writes when a
+driver answers "no series": with the feed in hand, "no series" is the driver's answer
+about the book; without it, a flat marker would be our guess at one. The entry itself is
+matched by its resolved stream exactly as `rawEntryFor` matches it in the retained feed.
+The two surfaces therefore agree on one marker path **for the feed the record names**; a
+book reached from an aggregate can still derive a second name, which is `registerBook`'s
+own pre-existing rule and not something this row introduces.
 
 **The stock OPDS plugin is still required, and not for its browser**: `Net.parseFeed`
 requires `opdsparser`, which ships inside `opds.koplugin`, so `Bookshelf.install`
