@@ -129,16 +129,10 @@ function Open.serverKindFor(browser)
     return sniffed[name], sniffed[name] and "author" or nil
 end
 
--- The language being browsed: Suwayomi selects translations by ?lang=.
--- It publishes no default, so read it off the URLs actually navigated.
-local function langFromBrowser(browser)
-    local paths = browser and browser.paths
-    if type(paths) ~= "table" then
-        return nil
-    end
-    for i = #paths, 1, -1 do
-        local entry = paths[i]
-        local url = type(entry) == "table" and entry.url or entry
+-- The language a URL was fetched with: Suwayomi picks the translation by it.
+-- Several URLs, because a record's stream and its own feed name the same one.
+local function langFrom(urls)
+    for _, url in ipairs(urls or {}) do
         if type(url) == "string" then
             local lang = url:match("[?&]lang=([%w%-]+)")
             if lang then
@@ -149,18 +143,31 @@ local function langFromBrowser(browser)
     return nil
 end
 
--- The raw Atom entry behind a browsed item, matched by resolved stream.
+-- The language being browsed: Suwayomi selects translations by ?lang=.
+-- It publishes no default, so read it off the URLs actually navigated.
+local function langFromBrowser(browser)
+    local paths = browser and browser.paths
+    if type(paths) ~= "table" then
+        return nil
+    end
+    -- Reversed: the URL navigated last is the one being browsed.
+    local urls = {}
+    for i = #paths, 1, -1 do
+        local entry = paths[i]
+        urls[#urls + 1] = type(entry) == "table" and entry.url or entry
+    end
+    return langFrom(urls)
+end
+
+-- The entry behind a resolved stream, matched by the template it resolves to.
 -- A feed with one entry needs no matching at all.
-local function rawEntryFor(browser, stream)
-    local name = catalogTitle(browser)
-    local record = name and last_feed[name]
-    local feed = record and record.feed
+function Open.entryFor(feed, feed_url, stream)
     if type(feed) ~= "table" or type(feed.entry) ~= "table" then
         return nil
     end
     local wanted = stream and stream.href
     for _, entry in ipairs(feed.entry) do
-        local template = PSE.streamFromEntry(entry, record.url or "")
+        local template = PSE.streamFromEntry(entry, feed_url or "")
         if template and template == wanted then
             return entry
         end
@@ -169,6 +176,13 @@ local function rawEntryFor(browser, stream)
         return feed.entry[1]
     end
     return nil
+end
+
+-- The raw Atom entry behind a browsed item, from the feed this catalog showed.
+local function rawEntryFor(browser, stream)
+    local name = catalogTitle(browser)
+    local record = name and last_feed[name]
+    return Open.entryFor(record and record.feed, record and record.url, stream)
 end
 
 -- The item a sync builds for this stream, via the same parseCatalogPage.
@@ -267,7 +281,8 @@ end
 
 -- Work out the series an opened book belongs to and return it with the item.
 -- Nil when neither can be built; a book with no series still opens and reads.
-local function registerBook(browser, server_name, kind, kind_source, raw_entry, stream, ctx)
+-- retained is the feed the entry came from, in last_feed's own shape.
+local function registerBook(server_name, kind, raw_entry, stream, lang, retained)
     local conn = Sources.connection(server_name)
     if not conn then
         return why("no catalog entry with this title",
@@ -283,9 +298,8 @@ local function registerBook(browser, server_name, kind, kind_source, raw_entry, 
 
     -- ctx.url is the only place a Komga entry's series id exists.
     -- Built fresh so no other reader of the caller's context is surprised.
-    local record = last_feed[server_name]
-    local feed, feed_url = record and record.feed, record and record.url
-    ctx = { lang = ctx and ctx.lang, url = feed_url }
+    local feed, feed_url = retained and retained.feed, retained and retained.url
+    local ctx = { lang = lang, url = feed_url }
 
     -- Before discover: a book with no retained feed then spends no request.
     if type(feed) ~= "table" then
@@ -1174,65 +1188,48 @@ function Open.findStream(item)
     return nil
 end
 
--- Turn a browsed stream into a marker and open it.
--- Takes no destination folder, so every entry point lands in the same place.
-function Open.openAsBook(browser, item, stream)
-    local server_name = catalogTitle(browser)
-    if not server_name then
-        return
-    end
-    local kind, kind_source = Open.serverKindFor(browser)
+-- The one path both entry points end at: an entry, the feed it came from, and
+-- a reader. retained is that feed in last_feed's shape, so the identity the
+-- marker is planned from cannot depend on which window asked for the book.
+function Open.openInFeed(host, server_name, kind, raw_entry, stream, retained, opts)
+    opts = opts or {}
     -- The book's own lang travels in the marker; not remembered per server.
-    local lang = langFromBrowser(browser)
-    -- The browsed feed in ctx.url: a proxied Komga's only series identity.
-    local browsed = last_feed[server_name]
-    local ctx = { lang = lang, url = browsed and browsed.url }
-
-    local raw_entry = rawEntryFor(browser, stream)
-    if raw_entry and not kind then
-        -- No sniff and no recorded kind: ask the drivers.
-        -- The last chance to give this book a series.
-        kind = Base.kindFor(raw_entry, stream.href, ctx)
-        if kind then
-            kind_source = "inferred"
-            logger.info("Meguru: catalog", server_name,
-                "signs itself with no known author; detected", kind, "from the entry")
-        end
-    end
+    -- The caller's answer first: a browser saw every URL that was navigated.
+    local lang = opts.lang or langFrom({ retained and retained.url, stream.href })
 
     local registered
     if raw_entry then
-        registered = registerBook(browser, server_name, kind, kind_source, raw_entry, stream, ctx)
+        registered = registerBook(server_name, kind, raw_entry, stream, lang, retained)
     else
         -- Distinct from registerBook's bails: nothing there was reached.
         -- Naming the retained feed tells a hook from one replaced under it.
-        local record = last_feed[server_name]
-        local retained = record
-            and (#(record.feed.entry or {}) .. " entry(ies) from " .. tostring(record.url))
+        local entries = retained and retained.feed and retained.feed.entry
+        local shown = entries
+            and (#entries .. " entry(ies) from " .. tostring(retained.url))
             or "nothing"
         logger.info("Meguru: not catalogued: no retained entry matches this stream",
-            "(catalog=" .. tostring(server_name) .. ", retained=" .. retained .. ")")
+            "(catalog=" .. tostring(server_name) .. ", retained=" .. shown .. ")")
     end
 
     -- registered.context is already Marker.seriesContext's shape.
     -- kind is the fallback when a book could not be identified.
-    local ctx = registered and registered.context or {}
+    local context = registered and registered.context or {}
     local desc = Marker.new{
-        server_name      = ctx.server_name or server_name,
-        series_remote_id = ctx.series_remote_id,
-        series_name      = ctx.series_name,
-        server_kind      = ctx.server_kind or kind,
+        server_name      = context.server_name or server_name,
+        series_remote_id = context.series_remote_id,
+        series_name      = context.series_name,
+        server_kind      = context.server_kind or kind,
         item_key         = registered and registered.item.item_key or nil,
         -- The server's own title, so both routes name one marker, not two.
         -- An aggregate titles a book differently from its series feed.
         title            = Naming.stripAliasPrefix(
-            (registered and registered.title) or item.title or item.text),
+            (registered and registered.title) or opts.title),
         template         = stream.href,
         count            = tonumber(stream.count) or 0,
         last_read        = tonumber(stream.last_read) or nil,
-        lang             = ctx.lang or lang,
+        lang             = context.lang or lang,
         cover_url        = registered and registered.item.cover_url or nil,
-        series_cover_url = ctx.series_cover_url,
+        series_cover_url = context.series_cover_url,
     }
 
     -- A flat key from the stream URL is safe only here: nothing looks it up.
@@ -1252,8 +1249,11 @@ function Open.openAsBook(browser, item, stream)
     local path = Marker.pathFor(dir, desc)
     local count = tonumber(desc.count)
 
-    local manager = browser._manager
-    local host = (manager and manager.ui) and manager or fallback_host
+    -- A host that needs its own last step says so; the rest open it here.
+    local handover = opts.handover or function(file)
+        return openPrepared(host, file)
+    end
+    local credentials = opts.credentials or {}
 
     -- Resolved before the dialog, only when registerBook declined to answer.
     -- Nil means the dialog offers no server position.
@@ -1268,7 +1268,7 @@ function Open.openAsBook(browser, item, stream)
         registered and registered.item or desc, {
             count = count,
             file = path,
-            -- What registerBook just read off the browser's feed.
+            -- What registerBook just read off the feed it was handed.
             -- Fetched when the server flags chapters read.
             target = resume_target,
             open = function()
@@ -1282,25 +1282,67 @@ function Open.openAsBook(browser, item, stream)
                     })
                     return
                 end
-                Sources.remember(file,
-                    browser.root_catalog_username, browser.root_catalog_password)
+                Sources.remember(file, credentials.username, credentials.password)
 
                 -- Repeated because this path skips commitMarker.
                 -- A cover hung only off commitMarker would be missing here.
                 SeriesCover.save(file, desc)
 
-                -- Prefer the built-in open path: it closes the browser cleanly.
-                if manager and type(manager.openDownloadedFile) == "function"
-                    and manager.opds_browser then
-                    -- Arm the one-shot: the dialog above already asked.
-                    handOff(file, function() manager:openDownloadedFile(file) end)
-                else
-                    openPrepared(host, file)
-                end
+                handover(file)
                 -- No walk follows: a neighbour is fetched when the reader asks.
                 -- The new marker carries what the removed walk needed.
             end,
         })
+end
+
+-- Turn a browsed stream into a marker and open it.
+-- Takes no destination folder, so every entry point lands in the same place.
+function Open.openAsBook(browser, item, stream)
+    local server_name = catalogTitle(browser)
+    if not server_name then
+        return
+    end
+    local kind = Open.serverKindFor(browser)
+    -- The book's own lang travels in the marker; not remembered per server.
+    local lang = langFromBrowser(browser)
+    -- The browsed feed, kept per catalog by the parseFeed hook.
+    local retained = last_feed[server_name]
+    local ctx = { lang = lang, url = retained and retained.url }
+
+    local raw_entry = rawEntryFor(browser, stream)
+    if raw_entry and not kind then
+        -- No sniff and no recorded kind: ask the drivers.
+        -- The last chance to give this book a series.
+        kind = Base.kindFor(raw_entry, stream.href, ctx)
+        if kind then
+            logger.info("Meguru: catalog", server_name,
+                "signs itself with no known author; detected", kind, "from the entry")
+        end
+    end
+
+    -- The browser's own manager closes it and opens what it downloaded;
+    -- without one the fallback host opens the marker as the file manager does.
+    local manager = browser._manager
+    local host = (manager and manager.ui) and manager or fallback_host
+
+    Open.openInFeed(host, server_name, kind, raw_entry, stream, retained, {
+        lang = lang,
+        title = item.title or item.text,
+        credentials = {
+            username = browser.root_catalog_username,
+            password = browser.root_catalog_password,
+        },
+        handover = function(file)
+            -- Prefer the built-in open path: it closes the browser cleanly.
+            if manager and type(manager.openDownloadedFile) == "function"
+                and manager.opds_browser then
+                -- Arm the one-shot: the dialog above already asked.
+                handOff(file, function() manager:openDownloadedFile(file) end)
+            else
+                openPrepared(host, file)
+            end
+        end,
+    })
 end
 
 -- Add the "Meguru this series" row to the browser's own dialog.
