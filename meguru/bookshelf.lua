@@ -42,8 +42,11 @@ local function provider(book, ctx)
     if not stream.href:find("{pageNumber}", 1, true) then
         return nil
     end
-    -- A stream bearing a driver's signature names a server this can read.
-    if not Base.kindFromTemplate(stream.href) then
+    -- A stream bearing a driver's signature names a server this can read, and
+    -- names the driver the tap will use: one answer decides both, so a row
+    -- cannot be offered on one server's stream and opened with another's.
+    local kind = Base.kindFromTemplate(stream.href)
+    if not kind then
         return nil
     end
     -- The catalog's own title: what the marker, and the credentials, key on.
@@ -56,7 +59,7 @@ local function provider(book, ctx)
         {
             text = "\u{25B6} " .. _("Meguru this series"),
             callback = function()
-                Bookshelf.open(book, ctx, stream)
+                Bookshelf.open(book, ctx, stream, kind)
             end,
         },
     }
@@ -94,7 +97,7 @@ end
 
 -- The tap, with a connection: identify the book in its own feed, then hand it
 -- to the one path both windows end at.
-local function openConnected(book, stream, server_name)
+local function openConnected(book, stream, server_name, kind)
     -- Re-resolved at the tap: the catalog can be gone since the shelf was drawn.
     local conn = Sources.connection(server_name)
     if not conn then
@@ -122,15 +125,6 @@ local function openConnected(book, stream, server_name)
         return
     end
 
-    -- The feed signs itself with an author the drivers know, as the browser's
-    -- own catalog does; the stream names the kind when the feed does not.
-    local kind = Base.kindFromAuthor(retained.feed.author)
-        or Base.kindFromTemplate(stream.href)
-    if not kind then
-        -- The same last resort the browser takes once it has an entry in hand.
-        kind = Base.kindFor(entry, stream.href, { url = retained.url })
-    end
-
     Open.openInFeed(open_host, server_name, kind, entry, stream, retained, {
         title = book.title,
         credentials = { username = conn.username, password = conn.password },
@@ -138,14 +132,16 @@ local function openConnected(book, stream, server_name)
 end
 
 -- The tap: the window goes first, then the work waits for a connection.
-function Bookshelf.open(book, ctx, stream)
+-- kind is the provider's, so the driver that opens the book is the one whose
+-- signature offered the row.
+function Bookshelf.open(book, ctx, stream, kind)
     -- Closed before the resume dialog, which opens over where this one was.
     if type(ctx.close) == "function" then
         ctx.close()
     end
     local server_name = type(ctx.server) == "table" and ctx.server.title or nil
     NetworkMgr:runWhenConnected(function()
-        openConnected(book, stream, server_name)
+        openConnected(book, stream, server_name, kind)
     end)
 end
 
@@ -193,7 +189,8 @@ function Bookshelf.install(host)
     end
 
     -- Plugins are sorted by path, so one living under a root that sorts after
-    -- ours has no instance yet; after the plugin loop it does.
+    -- ours has no instance yet; after the plugin loop it does. Once is all
+    -- this may ask: the list is set to nil the moment it has been drained.
     if not retried and type(ui.registerPostInitCallback) == "function" then
         retried = true
         ui:registerPostInitCallback(function()
