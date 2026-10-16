@@ -51,13 +51,15 @@ grid and four bits of tone gone, on every pixel of every page.
 Reading the flag from `Screen.sw_dithering` — `framebuffer.lua`'s `setupDithering`
 answer — would be the more defensible arrangement *there*, and it is what a device that
 dithers in hardware now gets: the forcing is conditional on `Device:canHWDither()`, so on
-such a device the controller does the work at the refresh and `init` takes its answer
-instead. For every other grayscale device the page is still dithered by decision — the
-dithered look is what these pages have always had here. **The condition is the point**:
-stock hides *its* **Dithering** row exactly where the hardware dithers, so forcing this
-flag there would ride on top of the hardware's own dithering with nothing in the reader
-able to undo it — a device that dithers in hardware gets the plugin's `hw_dithering` row
-instead, which is stock's own arrangement of the pair (see `menus-and-lifecycle.md`).
+such a device `init` takes that answer — off — and nothing is dithered at the blit. What
+it gets instead is the dither the **panel** does: `Defaults.seedDither` starts its
+`hw_dithering` row at on wherever that row is offered, so the page carries the same
+dithered look here as on a screen this plugin dithers for, through the controller rather
+than under it, and one tap in the row turns it off. For every other grayscale device the
+page is still dithered by decision — the dithered look is what these pages have always
+had here. **The condition is the point**: forcing the software flag on such a device
+would stack a fixed 16-level quantisation under whatever the controller does at the
+refresh, two where the reader asked for one (see `menus-and-lifecycle.md`).
 The `if self.sw_dithering` branch in
 `drawPage`/`drawPageInverted` must stay: it is the whole switch, and the colour branch
 reaches it as `false`.

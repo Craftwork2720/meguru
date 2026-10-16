@@ -156,11 +156,14 @@ plugin at all: `ReaderKoptListener` writes the row's value into the configurable
   its default is neither on nor off but "whatever this device decided" (`Settings.dither`
   is deliberately unset), which is why the row reads back the value the page is actually
   drawn with rather than a stored one. `hw_dithering` is the row for a device whose own
-  controller dithers — gated `Device:canHWDither()` and `Device:hasEinkScreen()`, stock's
-  own two halves — and it starts where stock starts it, at **off**: the flag is not only a
-  dither, it is also what promotes the refresh to a colour waveform on the colour Kobos
-  (the only devices that set `hasKaleidoWfm`), so turning it on is the reader's call
-  rather than this plugin's. A device
+  controller dithers — gated by `Defaults.panelDithers()`, which is stock's own two
+  halves, `Device:canHWDither()` and `Device:hasEinkScreen()`, because the row's gate and
+  this plugin's default there have to be one predicate. It starts at **on**, which stock
+  does not, and for the reason the software row starts at the device's answer: these pages
+  are dithered for every screen that cannot dither itself, so the screens that can are
+  asked to. The row is then the reader's way out, and it is worth knowing what it does
+  besides dithering: on a colour Kobo the same flag promotes the refresh to a colour
+  waveform (`hasKaleidoWfm` is set for those alone). A device
   that can do both gets the hardware row and not the software one, which is stock's own
   arrangement of the pair. Both are remembered per series, which stock's are not.
 - **Derainbow** is this plugin's own row, on its own `MeguruDerainbowUpdate` event, and it

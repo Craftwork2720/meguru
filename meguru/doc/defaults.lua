@@ -294,6 +294,20 @@ function Defaults.seedDerainbow(ui, configurable, series)
     end
 end
 
+-- The row's gate as well: an e-ink panel whose controller dithers is the one
+-- stock offers the hardware row on, and the one this plugin asks to dither.
+function Defaults.panelDithers()
+    local ok, Device = pcall(require, "device")
+    if not ok or type(Device) ~= "table" then
+        return false
+    end
+    if type(Device.canHWDither) ~= "function"
+        or type(Device.hasEinkScreen) ~= "function" then
+        return false
+    end
+    return Device:canHWDither() and Device:hasEinkScreen() and true or false
+end
+
 -- Both dither rows, one rule: series, then the book, then the preference.
 local function seedDitherRow(ui, configurable, series, name)
     local ds = ui.doc_settings
@@ -313,8 +327,14 @@ local function seedDitherRow(ui, configurable, series, name)
         value = (value == 1 or value == true) and 1 or 0
     end
     if value == nil then
-        -- Nothing chosen: show what the page is drawn with, not a stock 0.
-        configurable[name] = (doc and doc[name]) and 1 or 0
+        -- Nothing chosen: ask a panel that dithers itself, else show what the
+        -- page is drawn with, not a stock 0.
+        local asked = name == "hw_dithering" and Defaults.panelDithers()
+        local on = (doc and doc[name]) and true or asked
+        configurable[name] = on and 1 or 0
+        if on and doc then
+            doc[name] = true
+        end
         return
     end
     -- Row domain is 0/1, the document field boolean; converted here only.
@@ -325,6 +345,7 @@ local function seedDitherRow(ui, configurable, series, name)
 end
 
 -- Three answers each; the software one's device answer is forced in document.lua.
+-- The hardware one is the row's own default where the panel dithers itself.
 function Defaults.seedDither(ui, configurable, series)
     seedDitherRow(ui, configurable, series, "sw_dithering")
     seedDitherRow(ui, configurable, series, "hw_dithering")

@@ -78,7 +78,7 @@ local DEFAULTS = {
     -- Deliberately unset: the device's own dither answer stands until a tap.
     dither            = UNSET,
 
-    -- Unset too: the hardware row starts where stock starts it, at off.
+    -- Unset too: nothing imposed, so the row's default is the panel's answer.
     hw_dither         = UNSET,
 
     -- Off by default: a Fourier pass is worth it only on a colour e-ink panel.
