@@ -67,6 +67,8 @@ local function metaLines(fields)
     add(_("Author"), fields.authors)
     add(_("Language"), fields.language)
     add(_("Server"), fields.server)
+    -- Only where it says more than the server row: the caller decides that.
+    add(_("Catalog"), fields.catalog)
     return lines
 end
 

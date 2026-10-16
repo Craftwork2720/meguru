@@ -1479,6 +1479,14 @@ function Reader.infoFields(ui)
         fields.language = desc.lang
 -- server_kind, not the catalogue title: which server is a fact about the book.
         fields.server   = desc.server_kind and Base.kindLabel(desc.server_kind) or nil
+-- Only when the kind cannot stand in for it: the OPDS entry's own name.
+-- Trimmed and case-folded, so a catalog named after its server draws nothing.
+        local name = type(desc.server_name) == "string"
+            and desc.server_name:match("^%s*(.-)%s*$") or nil
+        if name and name ~= ""
+            and (not fields.server or name:lower() ~= fields.server:lower()) then
+            fields.catalog = name
+        end
     end
 -- Only a catalogued book: the button opens its series on the server.
     local context = seriesContext(ui)
