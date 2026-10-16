@@ -49,13 +49,16 @@ quantises a full 8-bit page to **16 levels on a fixed 8x8 pattern** — a burnt-
 grid and four bits of tone gone, on every pixel of every page.
 
 Reading the flag from `Screen.sw_dithering` — `framebuffer.lua`'s `setupDithering`
-answer — would be the more defensible arrangement *there*, and it is **not** what
-this does: `init` sets `self.sw_dithering = true` on that branch by decision. The
-dithered look is what these pages have always had here. On a device whose
-controller dithers properly, this re-quantises a page the hardware was about to
-dither correctly — and that cost is what the bottom menu's **Dithering** switch is
-for. The `if self.sw_dithering` branch in `drawPage`/`drawPageInverted` must stay:
-it is the whole switch, and the colour branch reaches it as `false`.
+answer — would be the more defensible arrangement *there*, and it is what a device that
+dithers in hardware now gets: the forcing is conditional on `Device:canHWDither()`, so on
+such a device the controller does the work at the refresh and `init` takes its answer
+instead. For every other grayscale device the page is still dithered by decision — the
+dithered look is what these pages have always had here. **The condition is the point**:
+stock hides the **Dithering** row exactly where the hardware dithers, so forcing the flag
+there would ride on top of the hardware's own dithering with nothing in the reader able to
+undo it. The `if self.sw_dithering` branch in
+`drawPage`/`drawPageInverted` must stay: it is the whole switch, and the colour branch
+reaches it as `false`.
 
 **The Dithering row is stock's own, and it is the only row whose default is "what
 this device decided".** It carries stock's name and event (`sw_dithering`,

@@ -150,9 +150,10 @@ plugin at all: `ReaderKoptListener` writes the row's value into the configurable
   the decode itself asks — because a saturation on a grayscale tile is a no-op
   (`adjustSaturation` returns early for the gray types).
 - **Dithering** is stock's `sw_dithering` row unchanged, and it is **offered only where a
-  dither can be honoured** — `Screen.fb_bpp == 8`, the same test `Image.colorEnabled`
-  uses — because `BB_dither_blit_to` dithers an 8-bit destination and is a plain blit for
-  every other one. Its default is neither on nor off but "whatever this device decided"
+  dither can be honoured** — stock's own gate is `Screen.fb_bpp == 8`, the same test
+  `Image.colorEnabled` uses, **and no hardware dithering on the device** — because
+  `BB_dither_blit_to` dithers an 8-bit destination and is a plain blit for every other one,
+  and a second, software dither over a controller's own is worse than either alone. Its default is neither on nor off but "whatever this device decided"
   (`Settings.dither` is deliberately unset), which is why the row reads back the value the
   page is actually drawn with rather than a stored one.
 - **Derainbow** is this plugin's own row, on its own `MeguruDerainbowUpdate` event, and it

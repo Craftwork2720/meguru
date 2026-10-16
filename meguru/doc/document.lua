@@ -829,19 +829,26 @@ function MeguruDocument:init()
 
     -- Pages' sizes are unknown until decoded, so buffers are scaled on request.
     self:updateColorRendering()
-    -- Colour screen: take the screen's dither answer; grayscale forces it on.
+    -- Forced on for grayscale, unless the hardware dithers and stock hides the row.
+    local hw_dither = Device:canHWDither() and true or false
     if Image.colorEnabled() then
         self.sw_dithering = Screen.sw_dithering and true or false
         logger.info(string.format(
             "Meguru: colour page rendering (sw_dithering=%s; eink=%s, fb_bpp=%s, hw_dither=%s)",
             tostring(self.sw_dithering), tostring(Image.einkScreen()),
-            tostring(Screen.fb_bpp), tostring(Device:canHWDither())))
+            tostring(Screen.fb_bpp), tostring(hw_dither)))
+    elseif hw_dither then
+        self.sw_dithering = Screen.sw_dithering and true or false
+        logger.info(string.format(
+            "Meguru: page dithering left to the device (sw_dithering=%s; eink=%s, fb_bpp=%s)",
+            tostring(self.sw_dithering), tostring(Image.einkScreen()),
+            tostring(Screen.fb_bpp)))
     else
         self.sw_dithering = true
         logger.info(string.format(
             "Meguru: tile->screen dithering forced ON (sw_dithering; eink=%s, fb_bpp=%s, hw_dither=%s)",
             tostring(Image.einkScreen()), tostring(Screen.fb_bpp),
-            tostring(Device:canHWDither())))
+            tostring(hw_dither)))
     end
 
     if self.local_cbz then
