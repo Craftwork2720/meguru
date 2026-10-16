@@ -54,9 +54,11 @@ dithers in hardware now gets: the forcing is conditional on `Device:canHWDither(
 such a device the controller does the work at the refresh and `init` takes its answer
 instead. For every other grayscale device the page is still dithered by decision — the
 dithered look is what these pages have always had here. **The condition is the point**:
-stock hides the **Dithering** row exactly where the hardware dithers, so forcing the flag
-there would ride on top of the hardware's own dithering with nothing in the reader able to
-undo it. The `if self.sw_dithering` branch in
+stock hides *its* **Dithering** row exactly where the hardware dithers, so forcing this
+flag there would ride on top of the hardware's own dithering with nothing in the reader
+able to undo it — a device that dithers in hardware gets the plugin's `hw_dithering` row
+instead, which is stock's own arrangement of the pair (see `menus-and-lifecycle.md`).
+The `if self.sw_dithering` branch in
 `drawPage`/`drawPageInverted` must stay: it is the whole switch, and the colour branch
 reaches it as `false`.
 

@@ -11,6 +11,7 @@ local NetworkMgr = require("ui/network/manager")
 local Notification = require("ui/widget/notification")
 local TextBoxWidget = require("ui/widget/textboxwidget")
 local UIManager = require("ui/uimanager")
+local Device = require("device")
 local Screen = require("device").screen
 local logger = require("logger")
 local _ = require("gettext")
@@ -1084,6 +1085,19 @@ local DITHERING_ROW = {
     help_text = _([[Dithers the page into sixteen grey levels as it is written to the screen, which is how a scanned page has been shown here so far. Off writes each pixel flat instead — smoother on a screen whose controller dithers an 8-bit framebuffer itself, banded on one that does not. Remembered for this series; long-press this row to set what new Meguru books start at.]]),
 }
 
+-- The row for a screen whose own controller dithers; stock's names, stock's event.
+local HW_DITHERING_ROW = {
+    name = "hw_dithering",
+    name_text = _("Dithering"),
+    toggle = { C_("Dithering", "off"), C_("Dithering", "on") },
+    values = { 0, 1 },
+    -- Off where KOReader starts it; the row is stock's, so its default is too.
+    default_value = 0,
+    event = "HWDitheringUpdate",
+    args = { false, true },
+    help_text = _([[Hands the page to the panel's controller to dither itself; on a colour Kobo it is also the flag that promotes the refresh to a colour waveform. Off by default, as it is in KOReader; on a screen that offers this row it is the one to turn on for scanned or comic pages. Remembered for this series; long-press this row to set what new Meguru books start at.]]),
+}
+
 -- Own event; derainbowify's switch is on KoptOptions, which this never reads.
 -- Offered only when the libraries load and pages decode in colour.
 local DERAINBOW_ROW = {
@@ -1117,9 +1131,16 @@ local SATURATION_ROW = {
     help_text = _([[Colour intensity of the page: below 1.0 the colours are drained towards grey, above it they are pushed further apart, and 1.0 is the file's own colour. It applies to panels as well. Remembered for this series; long-press this row to set what new Meguru books start at.]]),
 }
 
+-- Stock's gate, both halves: an e-ink panel, and one whose controller dithers.
+local function hwDitheringOffered()
+    return Device ~= nil and type(Device.canHWDither) == "function"
+        and Device:canHWDither() and Device:hasEinkScreen() and true or false
+end
+
 -- fb_bpp == 8: BB_dither_blit_to dithers an 8-bit destination only, read live.
 local function ditheringOffered()
-    return Screen ~= nil and Screen.fb_bpp == 8
+    return Screen ~= nil and Screen.fb_bpp == 8 and Device ~= nil
+        and Device:hasEinkScreen() and not hwDitheringOffered()
 end
 
 -- Pulls stock rows live from KoptOptions; keeps what the engine implements.
@@ -1195,6 +1216,9 @@ local function buildCuratedOptions(ui)
     local tone_options = { CONTRAST_ROW }
     if Image.colorEnabled() then
         tone_options[#tone_options + 1] = SATURATION_ROW
+    end
+    if hwDitheringOffered() then
+        tone_options[#tone_options + 1] = HW_DITHERING_ROW
     end
     if ditheringOffered() then
         tone_options[#tone_options + 1] = DITHERING_ROW

@@ -28,6 +28,7 @@ Defaults.PREFERENCE_FOR = {
     saturation            = "saturation",
     derainbow             = "derainbow",
     sw_dithering          = "dither",
+    hw_dithering          = "hw_dither",
     spread                = "spread",
     spread_offset         = "spread_offset",
     spread_gutter         = "spread_gutter",
@@ -52,7 +53,7 @@ local function panelViewIsView(value)
     return value == "crop" or value == "window" or value == "zoom"
 end
 
--- The 14 rows a series answers as one. Read live, never from the sidecar: a row
+-- The 15 rows a series answers as one. Read live, never from the sidecar: a row
 -- is what the reader sees, whichever writer moved it, and ReaderConfig's save
 -- order never enters into it. Values come back in the store's own domain.
 local SERIES_READERS = {
@@ -95,6 +96,10 @@ local SERIES_READERS = {
     sw_dithering = function(ui)
         local c = configurableOf(ui)
         return c and c.sw_dithering
+    end,
+    hw_dithering = function(ui)
+        local c = configurableOf(ui)
+        return c and c.hw_dithering
     end,
     spread = function(ui)
         local c = configurableOf(ui)
@@ -289,34 +294,40 @@ function Defaults.seedDerainbow(ui, configurable, series)
     end
 end
 
--- Three answers: seeds from the value the page is actually being drawn with.
-function Defaults.seedDither(ui, configurable, series)
+-- Both dither rows, one rule: series, then the book, then the preference.
+local function seedDitherRow(ui, configurable, series, name)
     local ds = ui.doc_settings
     local doc = ui.document
-    local value = seriesValue(series, "sw_dithering")
+    local value = seriesValue(series, name)
     if value == nil then
-        value = ds and ds:readSetting("kopt_sw_dithering")
+        value = ds and ds:readSetting("kopt_" .. name)
     end
     if value == nil then
-        value = Settings.get("dither")
+        value = Settings.get(preferenceOf(name))
     end
     if value ~= nil and ds then
-        ds:saveSetting("kopt_sw_dithering", value)
+        ds:saveSetting("kopt_" .. name, value)
     end
     if value ~= nil then
         -- Normalise by comparison, never "and 1 or 0", which reads 0 as "on".
         value = (value == 1 or value == true) and 1 or 0
     end
     if value == nil then
-        -- Nothing chosen: show the device's own answer, not a stock 0.
-        configurable.sw_dithering = (doc and doc.sw_dithering) and 1 or 0
+        -- Nothing chosen: show what the page is drawn with, not a stock 0.
+        configurable[name] = (doc and doc[name]) and 1 or 0
         return
     end
     -- Row domain is 0/1, the document field boolean; converted here only.
-    configurable.sw_dithering = value
+    configurable[name] = value
     if doc then
-        doc.sw_dithering = value == 1
+        doc[name] = value == 1
     end
+end
+
+-- Three answers each; the software one's device answer is forced in document.lua.
+function Defaults.seedDither(ui, configurable, series)
+    seedDitherRow(ui, configurable, series, "sw_dithering")
+    seedDitherRow(ui, configurable, series, "hw_dithering")
 end
 
 -- Page view, not stock continuous scroll; the live view must be switched too.

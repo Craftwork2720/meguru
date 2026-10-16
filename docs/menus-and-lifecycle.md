@@ -149,13 +149,20 @@ plugin at all: `ReaderKoptListener` writes the row's value into the configurable
   pages are decoded in colour — the one predicate `Image.colorEnabled()`, which is what
   the decode itself asks — because a saturation on a grayscale tile is a no-op
   (`adjustSaturation` returns early for the gray types).
-- **Dithering** is stock's `sw_dithering` row unchanged, and it is **offered only where a
-  dither can be honoured** — stock's own gate is `Screen.fb_bpp == 8`, the same test
-  `Image.colorEnabled` uses, **and no hardware dithering on the device** — because
-  `BB_dither_blit_to` dithers an 8-bit destination and is a plain blit for every other one,
-  and a second, software dither over a controller's own is worse than either alone. Its default is neither on nor off but "whatever this device decided"
-  (`Settings.dither` is deliberately unset), which is why the row reads back the value the
-  page is actually drawn with rather than a stored one.
+- **Dithering** is two rows, and only one of them is ever offered. `sw_dithering` is this
+  plugin's own row under stock's name and event, gated `Screen.fb_bpp == 8` and an e-ink
+  panel, because
+  `BB_dither_blit_to` dithers an 8-bit destination and is a plain blit for every other one;
+  its default is neither on nor off but "whatever this device decided" (`Settings.dither`
+  is deliberately unset), which is why the row reads back the value the page is actually
+  drawn with rather than a stored one. `hw_dithering` is the row for a device whose own
+  controller dithers — gated `Device:canHWDither()` and `Device:hasEinkScreen()`, stock's
+  own two halves — and it starts where stock starts it, at **off**: the flag is not only a
+  dither, it is also what promotes the refresh to a colour waveform on the colour Kobos
+  (the only devices that set `hasKaleidoWfm`), so turning it on is the reader's call
+  rather than this plugin's. A device
+  that can do both gets the hardware row and not the software one, which is stock's own
+  arrangement of the pair. Both are remembered per series, which stock's are not.
 - **Derainbow** is this plugin's own row, on its own `MeguruDerainbowUpdate` event, and it
   is the only row in the whole dialog that can be **absent**: the filter's libraries ship
   inside the plugin (`libs/`), and the row is offered only where `Derainbow.available()` can
