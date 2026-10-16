@@ -489,3 +489,14 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   device (checklist item 29); what it costs is one error in the log and a button that does
   nothing, for a reader who got to that dialog from the reader rather than from the file
   manager.
+
+- **The bookshelf record row reads the record as bookshelf cached it.** A shelf draws its
+  catalog mostly from a sqlite cache (`lib/bookshelf_opds_db.lua`) rather than from a fetch
+  made in the session, and `registerRecordActions` hands the record over as it is held: the row
+  is offered only where that payload still carries `opds.stream` and `opds.feed_url`. A record
+  written by a bookshelf older than the release that began keeping page streams has neither,
+  and a record fetched before a server started publishing streams has no stream. Read off the
+  code rather than measured: what settles it is opening a record window after a restart without
+  browsing the catalog again, on a shelf whose feed was fetched in an earlier session
+  (checklist item 31). A wrong answer costs a row that is absent until the catalog is
+  refreshed, and writes nothing.

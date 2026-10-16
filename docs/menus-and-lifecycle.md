@@ -741,3 +741,44 @@ comic one, because a marker is not an archive and nothing else should claim it.
 `ui/reader.lua`'s, since it is wanted exactly while one of our books is open, and the
 Dispatcher's own registration broadcast reaches every window in the stack — the file
 browser's instance among them, which has no document to judge by.
+
+### `bookshelf.koplugin`'s catalog window takes the same row through its own registry
+
+The third surface that gets a Meguru row, and the only one that arrives through another
+plugin's own hook rather than by wrapping a class. Bookshelf draws OPDS catalogs in its
+own window (`lib/bookshelf_opds_window.lua` and the modules around it), so none of the
+`OPDSBrowser` wraps above is ever reached there; instead
+`ui.bookshelf:registerRecordActions("meguru", provider)` is called from `Meguru:init`,
+gated on `ui.bookshelf.RECORD_ACTIONS_API >= 1` rather than on the plugin's version,
+because the hook and the release land apart. **The registry is per process and keyed by
+id**, so a second registration replaces rather than appends; what is per *instance* is
+the host captured for the handoff, which is why only the file manager's instance
+installs. **The one ordering fact meguru cannot see is that plugins are sorted by
+path**, not by name: a bookshelf found under a root that sorts after meguru's has no
+instance yet when `init` runs, so a refusal arms one retry through
+`ui:registerPostInitCallback`, which the plugin loop has finished by the time it fires.
+
+Three things about what the host hands over are worth not rediscovering.
+**The record's page stream is not in `acquisitions`** — bookshelf takes the
+`rel=opds-pse/stream` link into `book.opds.stream` on its own branch, so
+`Open.findStream`, which reads acquisitions, finds nothing on one of these records and
+`book.opds.stream` is the only place the template survives. **`ctx.server.username` is
+nil whenever a record's links leave the catalog's own origin**, so credentials come from
+`Sources` — which is also the only answer that agrees with what every later fetch in the
+flow uses. And **the record carries no feed**, only `book.opds.feed_url`; the tap
+re-reads that feed, following its `rel=next` chain to the page the entry is actually on
+(`Feed.TAP_PAGES`), because `Marker.dirFor` names the marker's folder from the feed's
+*title* — a series named without its feed would shelf the book beside the marker the
+browser makes, not instead of it. For the same reason every failure here refuses with a
+message and writes nothing, and the entry is matched by its resolved stream exactly as
+`rawEntryFor` matches it in the retained feed. The two surfaces therefore agree on one
+marker path **for the feed the record names**; a book reached from an aggregate can
+still derive a second name, which is `registerBook`'s own pre-existing rule and not
+something this row introduces.
+
+**The stock OPDS plugin is still required, and not for its browser**: `Net.parseFeed`
+requires `opdsparser`, which ships inside `opds.koplugin`, so `Bookshelf.install`
+probes for it and registers nothing when it is absent — a row that could only ever
+produce a fetch failure. Bookshelf's own `Page stream` rows turn on `opdspse` instead,
+so a build can show one and not the other, and the Meguru row is the one that does not
+need the stock *reader*.

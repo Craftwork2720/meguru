@@ -6,6 +6,7 @@ local logger = require("logger")
 local _ = require("gettext")
 
 local Association = require("meguru/association")
+local Bookshelf = require("meguru/bookshelf")
 local Catalog = require("meguru/ui/catalog")
 local Defaults = require("meguru/doc/defaults")
 local Hook = require("meguru/hook")
@@ -48,6 +49,9 @@ function Meguru:init()
     -- File dialogs are the file manager's: the reader's first init has none.
     if not (self.ui and self.ui.document) then
         Catalog.installFileDialogRow(self.ui)
+        -- Bookshelf's catalog window is the file manager's too, and it is the
+        -- ui the marker is handed back to.
+        Bookshelf.install(self)
     end
     self:registerProvider()
 

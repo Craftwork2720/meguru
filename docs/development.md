@@ -877,3 +877,20 @@ Each step must pass before the next:
     | l | ⋮ → Meguru → **Remember settings for this series** off, change a row, close, open volume 2 | volume 2 does **not** get the change, and the log says the series keeps its books apart. The file still holds the old rows. Turn the row back on, change another row: it publishes again |
     | m | the same row in a folder of unrelated `.cbz` | it reads **Remember settings for this folder** there — a local book's series is its folder, and the row says so. Turned off, it stops the leak: each comic keeps its own settings from then on |
     | n | the same rows on a lone `.cbz`, and in a PDF | no row at all |
+
+31. **The bookshelf record window's row, and the marker at the end of it.** Both plugins
+    installed, the series' markers wiped first, and the catalog refreshed so its records
+    carry a page stream.
+
+    | # | do | expected |
+    |---|---|---|
+    | a | shelf → an OPDS catalog → a series → tap a book | a `▶ Meguru this series` row, **below** bookshelf's own download and `Page stream` rows |
+    | b | tap it with the wifi off | the record window closes at once, then the wifi prompt, then the resume dialog, then the book |
+    | c | `crash.log` | one `Meguru: identified …` and **no** `Meguru: not catalogued:` |
+    | d | the marker path it wrote, then the same book from the **stock browser's** row | the same path both times — the feed the record names is what names the series |
+    | e | stop the server, tap the row | one message, and **no** marker and **no** new series folder |
+    | f | rename `settings/opds.lua` away, reopen the window | **no row** on any catalog; put it back and the row returns |
+    | g | a catalog entry with no page stream, and a Gutenberg-style catalog | no row |
+    | h | close the book opened this way | the shelf comes back, with no record window left on top |
+    | i | `opds.koplugin` disabled | no row at all, and one `Meguru: no OPDS feed parser …` at startup |
+    | j | regression: items 13, 22 and 29 | unchanged — the browser's own row, the row above a feed, and Show in OPDS |
