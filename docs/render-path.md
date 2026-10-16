@@ -35,9 +35,9 @@ tell them apart — so this refuses only what it can prove and leaves the rest
 alone, where the cost is bounded by what stock already pays: `is_color_capable`
 gives stock's own tiles RGB32 on the same device.
 
-**Where to check which branch a device took: the `init` log line**, which prints
-`fb_bpp` beside the branch it chose. "Is there colour here" is a question for the
-log, not for the code.
+**Where to check what a device decided: the `init` log line**, which prints
+`colour`, `fb_bpp` and `hw_dither` beside the answer it took. "Is there colour
+here" is a question for the log, not for the code.
 
 **On the grayscale branch a decoded page is 8bpp and the dither is still forced
 on.** `Mupdf.openDocumentFromText` never sets `doc.color`, and `draw_new` allocates
