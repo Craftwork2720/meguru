@@ -762,6 +762,7 @@ Each step must pass before the next:
     | g | a splash page the detector refuses, with the other plugin **disabled** | **stock's** viewer, never the other plugin's sequence, and never two viewers |
     | h | reading the log | none per press, and one per process when this plugin stands aside for a rival |
     | i | a, then the *Reading* tab's *Panel view* row | reads `panels+` first, then `off` / `panel cut` / `pan & zoom` / `free view`; `panels+` opens Panels+, each view opens Meguru's, `off` gives the press to neither plugin, and each answer survives closing and reopening the book and carries to the next volume |
+    | j | a, then hold a lettered panel in Panels+'s viewer | with a bundled OCR model or KOReader's tessdata, one word is selected, a longer hold expands it to the dialogue line, and release opens the dictionary; with no model the hold does nothing and the viewer must not flash |
 
     Then the one that reasoning cannot close: **force the other load order**, by renaming the other
     plugin's directory so it sorts *before* `meguru.koplugin`, and repeat (a) and (b). This plugin is

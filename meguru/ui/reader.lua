@@ -866,6 +866,10 @@ function Reader.applyPanelZoomAnswer(plugin)
     if not (doc and doc.provider == "meguru") then
         return
     end
+    -- Panels+ OCR reads the page through a bitmap seam the document installs.
+    if ui.panelsplus and type(doc._installOcr) == "function" then
+        doc:_installOcr()
+    end
     local hl = ui.highlight
     if hl and hl._meguru_panel_zoom_pinned then
         hl.panel_zoom_enabled = hl._meguru_panel_zoom_answer == true

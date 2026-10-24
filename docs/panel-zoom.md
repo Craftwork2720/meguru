@@ -147,6 +147,20 @@ sequence looks like. Meguru's panel feature — through the ⋮ → Meguru rows 
 file-manager surface — still applies to the *preference* side of the cascade below, which is
 per file and independent of who handles the press.
 
+**Panels+ OCR reads these pages through a bitmap seam on the document.** A reader that has
+Panels+ loaded gives its Meguru document the shapes that plugin asks for —
+`koptinterface.createContext` and `_document.openPage/getPagePix` — and
+`_fillOcrContext` crops the decoded page into the KOPT context as 8-bit grey, scaling by
+the context's zoom. The page is decoded at native
+size first (`_ocrPageBB`), fetching a stream page only when it is not already cached, so
+the hold that asks for OCR has usually paid for the render already. `getTextBoxes(pageno,
+seed)` adds the dialogue boxes used by the phrase hold; it answers only with a seed,
+because stock text selection calls it without one and must keep seeing no text layer.
+`doc_language` defaults to `eng` and `tessocr_data` is KOReader's own directory; Panels+
+swaps in its bundled model for a lookup. Without `ffi/koptcontext` the seam is not
+installed and nothing changes. A full-page context is Panels+'s native panel detector, so
+the same seam can answer that fallback too.
+
 ### The sequence
 
 **A long-press shows the page's panels in reading order, one at a time.**
