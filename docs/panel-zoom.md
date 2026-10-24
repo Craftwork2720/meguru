@@ -118,17 +118,34 @@ stock's own `onPanelZoom`, as the fallback for a press this detector cannot serv
 must land in stock's single-region viewer and never in a second sequence, or which engine ran
 would depend on the page.
 
-**There is no row for who owns the gesture, and that is a decision with a reason: one gesture
-cannot have two owners.** Whoever wants Panels+ to answer says so by not having this engine open
-that book — the two cannot both be the hand for one press, and a switch inside this plugin would
-be a choice about code it does not own, drawn only while the rival is present, which is the shape
-of row this file has already removed twice. The reader who wants Meguru's viewer instead is
-uninstalling the other plugin, which is a change they can make and this one cannot.
+**There is no row for who owns the gesture: one gesture cannot have two owners.** The
+*Panel view* row changes shape instead. While Panels+ sits above this plugin's wrapper, is
+enabled, and opens panels on the hold, the row puts `panels+` first, then `off` and the same
+three views. `panels+` leaves the press to Panels+ and is the owner a book starts with;
+`off` is the file's own `panel_zoom_enabled`, which stops stock's hold before either
+handler; any of the three views takes the press back for this plugin and opens that view.
+The owner is a third key beside the view and the switch: `kopt_panel_owner` per book,
+`panel_owner` in the series store, and `meguru/settings.lua` as the default for a book with
+neither. Disabled, set to another gesture, or loaded before this plugin, Panels+ no longer
+stands above the wrapper, the three views come back, and the owner is not a question.
 
-**For the reader with both installed, that means:** Panels+ answers, and its own settings decide
-how. Meguru's panel feature — through the ⋮ → Meguru rows and the file-manager surface — still
-applies to the *preference* side of the cascade below, which is per file and independent of who
-handles the press.
+**Reading the rival's answer, and making it yield, is the price of that row.**
+`Reader.panelsPlusActive` asks the plugin registered as `panelsplus` whether it is enabled
+and whether it opens on the hold, and checks that our `press` is still below it; nothing
+else about the plugin is read. `meguru` ownership is enforced by writing one field:
+Panels+'s wrapper consults `_panels_plus_plugin` on every press, so clearing it makes the
+wrapper delegate to its saved original — this plugin's `press` — and `panelsplus` ownership
+puts the plugin back. Panels+ also forces `panel_zoom_enabled` back on while reading
+settings, so an `off` would not survive a reopen with nothing else done: `onReaderReady`
+re-asserts the file's answer and applies the owner after every `ReadSettings` handler has
+run.
+
+**For the reader with both installed, that means:** Panels+ answers unless the book, its
+series, or the `panel_owner` default asked for one of Meguru's views, in which case Meguru
+answers; `off` gives the press to neither. Panels+'s own settings still decide what its
+sequence looks like. Meguru's panel feature — through the ⋮ → Meguru rows and the
+file-manager surface — still applies to the *preference* side of the cascade below, which is
+per file and independent of who handles the press.
 
 ### The sequence
 
@@ -785,13 +802,15 @@ stays whole and a rectangle moves over it at one fixed zoom, anchored to the pan
 edges. The value is the book's `kopt_panel_view`, and there are **two controls for it: the
 switch at the front of the viewer's own button row, and the *Reading* tab's *Panel view*
 row** (bottom menu → the *Reading* tab), which is the one a reader can reach without opening the
-viewer — and the only one there is for a reader whose long-press another panel plugin
-answers. `meguru/settings.lua`'s `panel_view` is now only the **seed**: what a book with
+viewer. A reader whose long-press Panels+ answers gets `panels+` first, then `off` and the
+same three views; any view takes the press back for this plugin — that form is described
+above.
+`meguru/settings.lua`'s `panel_view` is now only the **seed**: what a book with
 no value of its own is opened with. The switch names the three views `panel cut`,
-`pan & zoom` and `free view`, and the row uses the same three words plus `off`; this document
-calls them the cropped view, the window view and the free view, and they are the same three — the
-label is what a reader reads and the prose is what the code is called, so neither is a rename of
-the other.
+`pan & zoom` and `free view`, and the row uses the same three words plus `off` whenever
+it offers them; this document calls them the cropped view, the window view and the free
+view, and they are the same three — the label is what a reader reads and the prose is
+what the code is called, so neither is a rename of the other.
 
 **The row is also where "no panel view at all" is chosen**, which is a different question with a
 different answer: KOReader's own per-book `panel_zoom_enabled`, the ⋮ row *Allow panel zoom*. One

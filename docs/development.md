@@ -411,12 +411,16 @@ Each step must pass before the next:
     pressing it changes what the page is cut into, keeps the panel the reader is
     on, and leaves the row open — and it writes the **book's** value, so the *Reading*
     tab's *Panel view* row (bottom menu → the *Reading* tab) must read back the view the switch
-    just left the reader in. **The row is the other half of that pair**, and it is the
-    only control there is for a reader whose long-press another panel plugin answers:
-    each of the three views must open on the next long-press, `off` must give the press
-    back to KOReader, and choosing a view while the press is off must turn it back on —
+    just left the reader in. **The row is the other half of that pair.** With Meguru answering
+    the hold, each of the three views must open on the next long-press, `off` must give the
+    press back to KOReader, and choosing a view while the press is off must turn it back on —
     both readings of the same question living in two keys is the whole reason that row's
-    handler is not an assignment. **A long-press on one of the views must offer to set it
+    handler is not an assignment. **With Panels+ answering it instead**, the row must read
+    `panels+` first, then `off` and the three views; `panels+` must let Panels+ open, each
+    view must open Meguru's corresponding viewer and survive a reopen, `off` must stop the
+    press for both plugins and keep it stopped after the book is closed and reopened, and a
+    long-press must set `panels+` or a view as the default while `off` still declines.
+    **A long-press on `panels+` or one of the views must offer to set it
     as the default** and a book opened afterwards with no view of its own must open in it;
     a long-press on `off` must say that it applies to this book only, and must **not** put
     `off` in the preference. The *cropped* row is the one that carries
@@ -757,12 +761,13 @@ Each step must pass before the next:
     | f | `.cbz` opened through Meguru | the same answers — the scope is the provider, not the extension |
     | g | a splash page the detector refuses, with the other plugin **disabled** | **stock's** viewer, never the other plugin's sequence, and never two viewers |
     | h | reading the log | none per press, and one per process when this plugin stands aside for a rival |
+    | i | a, then the *Reading* tab's *Panel view* row | reads `panels+` first, then `off` / `panel cut` / `pan & zoom` / `free view`; `panels+` opens Panels+, each view opens Meguru's, `off` gives the press to neither plugin, and each answer survives closing and reopening the book and carries to the next volume |
 
     Then the one that reasoning cannot close: **force the other load order**, by renaming the other
     plugin's directory so it sorts *before* `meguru.koplugin`, and repeat (a) and (b). This plugin is
-    then outermost, so **it** answers even with the other plugin enabled — the one arrangement where
-    the order is reversed, and the only row here that cannot be argued from the source. Nothing may
-    hang and two viewers must never open.
+    then outermost, so **it** answers even with the other plugin enabled, and the *Panel view* row
+    is the three views again — the one arrangement where the order is reversed, and the only row
+    here that cannot be argued from the source. Nothing may hang and two viewers must never open.
 
 26. **The position goes back to Komga, and the loop closes.** This needs a live Komga whose
     OPDS catalogue is configured with **the account that does the reading** — the write lands on

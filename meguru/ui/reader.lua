@@ -815,10 +815,70 @@ local function installPanelZoom(ui)
         return meguruPanelZoom(self, arg, ges, native)
     end
     hl.onPanelZoom = press
+    -- Identity only: a rival patching later replaces this field with its own.
+    hl._meguru_panel_zoom_press = press
 
     return true
 end
 
+-- The row's second answer while Panels+ owns the hold: on, with no view of ours.
+local RIVAL_PANEL_ON = "panelsplus"
+
+-- True while Panels+ sits above our wrapper and will answer the long-press.
+function Reader.panelsPlusActive(ui)
+    local hl = ui and ui.highlight
+    local plugin = ui and ui.panelsplus
+    if not (hl and type(plugin) == "table") then
+        return false
+    end
+    -- Our wrapper still outermost: its views are what a reader gets.
+    if hl.onPanelZoom == hl._meguru_panel_zoom_press then
+        return false
+    end
+    local ok_enabled, enabled = pcall(function() return plugin:isEnabled() end)
+    if not ok_enabled or not enabled then
+        return false
+    end
+    local ok_hold, on_hold = pcall(function() return plugin:opensOnHold() end)
+    return not ok_hold or on_hold ~= false
+end
+
+-- Panels+'s wrapper asks this field per press; nil hands the press back to us.
+local function setPanelsPlusYield(ui, yielded)
+    local hl = ui and ui.highlight
+    local plugin = ui and ui.panelsplus
+    if not (hl and plugin) then
+        return
+    end
+    hl._meguru_panels_plus_yield = yielded and true or false
+    if yielded then
+        hl._panels_plus_plugin = nil
+    else
+        hl._panels_plus_plugin = plugin
+    end
+end
+
+-- Panels+ forces panel zoom back on while reading settings; the file wins.
+-- The owner decides whether the press is ours (yield) or Panels+'s.
+function Reader.applyPanelZoomAnswer(plugin)
+    local ui = plugin and plugin.ui
+    local doc = ui and ui.document
+    if not (doc and doc.provider == "meguru") then
+        return
+    end
+    local hl = ui.highlight
+    if hl and hl._meguru_panel_zoom_pinned then
+        hl.panel_zoom_enabled = hl._meguru_panel_zoom_answer == true
+    end
+    local active = Reader.panelsPlusActive(ui)
+    ui._meguru_panels_plus_active = active
+    if not active then
+        return
+    end
+    local configurable = doc.configurable
+    local owner = configurable and configurable.panel_owner
+    setPanelsPlusYield(ui, owner == "meguru")
+end
 
 -- One sentence per reason: the fixes differ, so a generic one would mislead.
 local function pageMessageBody(reason, code, server)
@@ -1295,7 +1355,7 @@ local function buildCuratedOptions(ui)
     }
 
 -- One row for the three views and Off; Off is KOReader's per-book answer.
-    reading_options[#reading_options + 1] = {
+    local panel_row = {
         name = "panel_view",
 -- Named for what it sets, not the gesture; the viewer carries the same words.
         name_text = _("Panel view"),
@@ -1319,6 +1379,38 @@ local function buildCuratedOptions(ui)
         end,
         help_text = _([[What holding on a page does. "panel cut" shows the panels the detector found, one at a time; "pan & zoom" keeps the page whole and moves a window over it; "free view" shows the page alone. "off" leaves the long-press to KOReader, and is remembered for the series like the views are. Long-press this row to make a view the default for new books. This is Meguru's own panel view — a panel plugin that answers the long-press itself is its own.]]),
     }
+-- Panels+ sits above our wrapper: panels+ first, then every view of ours.
+    if Reader.panelsPlusActive(ui) then
+        panel_row = {
+            name = "panel_view",
+            name_text = _("Panel view"),
+            toggle = {
+                C_("Panel view", "panels+"),
+                C_("Panel view", "off"),
+                C_("Panel view", "panel cut"),
+                C_("Panel view", "pan & zoom"),
+                C_("Panel view", "free view"),
+            },
+            values = { RIVAL_PANEL_ON, "off", "crop", "window", "zoom" },
+            args = { RIVAL_PANEL_ON, "off", "crop", "window", "zoom" },
+            default_value = RIVAL_PANEL_ON,
+            event = "MeguruPanelViewUpdate",
+            current_func = function()
+                local hl = ui and ui.highlight
+                -- Stock's gate: it decides whether the press reaches either plugin.
+                if hl and hl.panel_zoom_enabled ~= true then
+                    return "off"
+                end
+                local c = ui and ui.document and ui.document.configurable
+                if c and c.panel_owner == "meguru" then
+                    return Reader.panelViewMode(ui)
+                end
+                return RIVAL_PANEL_ON
+            end,
+            help_text = _([[Panels+ answers the long-press by default; its own settings choose the panel view. "panels+" leaves the press to it, while any of Meguru's three views takes the press back. "off" turns panel zoom off for this book, and keeps it off when the book is reopened.]]),
+        }
+    end
+    reading_options[#reading_options + 1] = panel_row
 
 -- Four tabs plus the Info button; CURATED_PANELS counts only the panels.
     return {
@@ -1350,10 +1442,14 @@ local function redirectDefaults(config)
             return true
         end
         local value = values and values[position]
--- Off is not a view, and a preference can only hold one of the three.
-        if name == "panel_view" and value == "off" then
+        local ui = config.ui
+        local owner_row = name == "panel_view" and Reader.panelsPlusActive(ui)
+-- Off is not a view; panels+ is an owner, stored beside the view preference.
+        if name == "panel_view"
+                and (value == "off"
+                    or (value == RIVAL_PANEL_ON and not owner_row)) then
             UIManager:show(Notification:new{
-                text = _("Off cannot be a default — a default is one of the three views."),
+                text = _("Only a Meguru view can be a default."),
                 timeout = 2,
             })
             return true
@@ -1362,16 +1458,25 @@ local function redirectDefaults(config)
         if name == "opdsbook_manga" then
             value = value == 1
         end
-        local ui = config.ui
         UIManager:show(ConfirmBox:new{
             text = T(_("Set default %1 to %2?"), name_text or "",
                 (labels and labels[position]) or ""),
             ok_text = _("Set as default"),
             ok_callback = function()
-                Settings.set(preference, value)
-                -- Taught to the series too: its own answer would otherwise mask
-                -- the default the reader just set, in every book of it.
-                Defaults.learnSeries(ui, preference, value)
+-- panels+ names an owner, not a view; the view preference stays the fallback.
+                if owner_row and value == RIVAL_PANEL_ON then
+                    Settings.set("panel_owner", "panelsplus")
+                    Defaults.learnSeries(ui, "panel_owner", "panelsplus")
+                else
+                    Settings.set(preference, value)
+                    -- Taught to the series too: its own answer would otherwise mask
+                    -- the default the reader just set, in every book of it.
+                    Defaults.learnSeries(ui, preference, value)
+                    if owner_row then
+                        Settings.set("panel_owner", "meguru")
+                        Defaults.learnSeries(ui, "panel_owner", "meguru")
+                    end
+                end
             end,
         })
         return true
@@ -1997,7 +2102,7 @@ function Reader.install(plugin)
         return true
     end
 
--- panel_view holds only a view, so Off puts the reader's own view back.
+-- panel_view holds the view, panel_zoom_enabled the on/off, panel_owner the owner.
 -- Put panel_zoom_enabled where the stock flip must start, then flip it.
     plugin.onMeguruPanelViewUpdate = function(self, value)
         local ui = self.ui
@@ -2006,17 +2111,28 @@ function Reader.install(plugin)
         if not (configurable and configurable.panel_view ~= nil) then
             return true
         end
+        local rival = value == RIVAL_PANEL_ON
         local view = panelViewIsView(value) and value or nil
-        if not view and value ~= "off" then
+        if not view and value ~= "off" and not rival then
             return true
         end
 
         local hl = ui.highlight
-        local want = view ~= nil
+        local want = view ~= nil or rival
         if hl and (meguruPanelZoomWanted(hl) ~= want
                 or hl.panel_zoom_enabled ~= want) then
             hl.panel_zoom_enabled = not want
             hl:onTogglePanelZoomSetting()
+        end
+
+        local answers = Reader.panelsPlusActive(ui)
+        local function saveOwner(owner)
+            configurable.panel_owner = owner
+            local ds = ui.doc_settings
+            if ds then
+                ds:saveSetting("kopt_panel_owner", owner)
+                ds:flush()
+            end
         end
 
         if view then
@@ -2025,7 +2141,35 @@ function Reader.install(plugin)
                 ui.doc_settings:saveSetting("kopt_panel_view", view)
                 ui.doc_settings:flush()
             end
+            if answers then
+                saveOwner("meguru")
+                setPanelsPlusYield(ui, true)
+            end
+        elseif rival then
+            if answers then
+                saveOwner("panelsplus")
+                setPanelsPlusYield(ui, false)
+            end
+            -- The dialog wrote panels+ into the view key; put a view back.
+            local ds = ui.doc_settings
+            local stored = ds and ds:readSetting("kopt_panel_view")
+            if not panelViewIsView(stored) then
+                stored = Settings.get("panel_view")
+                if not panelViewIsView(stored) then
+                    stored = "window"
+                end
+                if ds then
+                    ds:saveSetting("kopt_panel_view", stored)
+                    ds:flush()
+                end
+            end
+            configurable.panel_view = stored
         else
+            -- Off leaves the owner alone; turning the press back on returns to it.
+            if answers then
+                setPanelsPlusYield(ui, configurable.panel_owner == "meguru")
+            end
+            -- The dialog wrote off into the view key; put a view back.
             local ds = ui.doc_settings
             local stored = ds and ds:readSetting("kopt_panel_view")
             configurable.panel_view = panelViewIsView(stored) and stored
