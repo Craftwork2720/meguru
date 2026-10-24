@@ -704,7 +704,8 @@ installNativePageDimensionsShim()
 local base_get_used_bbox_dimensions = Document.getUsedBBoxDimensions
 
 local MeguruDocument = Document:extend{
-    _document = nil, -- we have no engine instance
+    -- Set in init: the OCR page shim; the book still has no engine instance.
+    _document = nil,
     provider = "meguru",
     -- Provider label for KOReader's "Open with..." picker (both extensions).
     provider_name = "Meguru",
@@ -816,7 +817,7 @@ function MeguruDocument:init()
         end
     end
 
-    -- Stock ConfigDialog surface; koptinterface={} picks the KOpt option set.
+    -- Non-nil koptinterface picks the KOpt option set; its OCR seam is added below.
     self.info = {
         has_pages = true,
         number_of_pages = count,
@@ -2438,6 +2439,171 @@ function MeguruDocument:ensureNativeBB(pageno, data)
     end
     self:cacheNative(pageno, res)
     return res
+end
+
+-- OCR needs the page at native size; a stream may not have decoded it yet.
+function MeguruDocument:_ocrPageBB(pageno)
+    if self:hasNative(pageno) or self.local_cbz then
+        return self:ensureNativeBB(pageno)
+    end
+    local data = self:fetchPage(pageno)
+    if not data then
+        return nil
+    end
+    return self:ensureNativeBB(pageno, data)
+end
+
+-- Crop the page into a KOPT source bitmap: the engine takes pixels, not a document.
+function MeguruDocument:_fillOcrContext(pageno, kc, bb)
+    bb = bb or self:_ocrPageBB(pageno)
+    if not bb then
+        error("Meguru: page " .. tostring(pageno) .. " has no image for OCR")
+    end
+
+    local x0, y0, x1, y1 = kc:getBBox()
+    local zoom = kc:getZoom() or 1
+    local w, h = bb:getWidth(), bb:getHeight()
+    x0 = clamp(math.floor(x0), 0, w - 1)
+    y0 = clamp(math.floor(y0), 0, h - 1)
+    x1 = clamp(math.ceil(x1), x0 + 1, w)
+    y1 = clamp(math.ceil(y1), y0 + 1, h)
+    local cw, ch = x1 - x0, y1 - y0
+    local sw = math.max(1, math.ceil(cw * zoom))
+    local sh = math.max(1, math.ceil(ch * zoom))
+
+    -- KOPT wants 8-bit grey; blitFrom converts from the page's own format.
+    local crop = Blitbuffer.new(cw, ch, Blitbuffer.TYPE_BB8)
+    local ok, err = pcall(function()
+        crop:blitFrom(bb, 0, 0, x0, y0, cw, ch)
+    end)
+    if not ok then
+        crop:free()
+        error(err)
+    end
+
+    local scaled = crop
+    if sw ~= cw or sh ~= ch then
+        local ok_scale, res = pcall(RenderImage.scaleBlitBuffer, RenderImage,
+            crop, sw, sh, true)
+        if not ok_scale or not res then
+            crop:free()
+            error(res or "Meguru: cannot scale the OCR crop")
+        end
+        scaled = res
+    end
+
+    local ok_fill, fill_err = pcall(function()
+        local k2 = require("ffi/koptcontext").k2pdfopt
+        local bmp = kc.src
+        bmp.width, bmp.height, bmp.bpp, bmp.type = scaled.w, scaled.h, 8, 0
+        assert(k2.bmp_alloc(bmp) ~= 0, "OCR bitmap allocation failed")
+        for i = 0, 255 do
+            bmp.red[i], bmp.green[i], bmp.blue[i] = i, i, i
+        end
+        local stride = k2.bmp_bytewidth(bmp)
+        for y = 0, scaled.h - 1 do
+            ffi.copy(bmp.data + y * stride, scaled.data + y * scaled.stride, scaled.w)
+        end
+        kc.page_width, kc.page_height = scaled.w, scaled.h
+    end)
+    scaled:free()
+    if not ok_fill then
+        error(fill_err)
+    end
+end
+
+-- The bitmap seam Panels+ OCR (and KOPT contexts) ask the document for.
+function MeguruDocument:_installOcr()
+    if self._document then
+        return
+    end
+    local ok, Kopt = pcall(require, "ffi/koptcontext")
+    if not ok or type(Kopt) ~= "table" or type(Kopt.new) ~= "function" then
+        return
+    end
+    local doc = self
+    local tess
+    local ok_ds, DataStorage = pcall(require, "datastorage")
+    if ok_ds and DataStorage then
+        tess = not os.getenv("TESSDATA_PREFIX")
+            and (DataStorage:getDataDir() .. "/data/tessdata") or nil
+    end
+    self.koptinterface = {
+        tessocr_data = tess,
+        createContext = function(_, _, pageno, bbox)
+            local kc = Kopt.new()
+            if bbox and bbox.x0 and bbox.y0 and bbox.x1 and bbox.y1 then
+                kc:setBBox(bbox.x0, bbox.y0, bbox.x1, bbox.y1)
+            else
+                local dims = doc:getPageDims(pageno)
+                kc:setBBox(0, 0, dims.w, dims.h)
+            end
+            return kc
+        end,
+    }
+    self._document = {
+        openPage = function(_, pageno)
+            return {
+                getSize = function()
+                    local dims = doc:getPageDims(pageno)
+                    return dims.w, dims.h
+                end,
+                getPagePix = function(_, kc)
+                    doc:_fillOcrContext(pageno, kc)
+                end,
+                close = function() end,
+            }
+        end,
+        close = function() end,
+    }
+    if self.configurable and self.configurable.doc_language == nil then
+        self.configurable.doc_language = "eng"
+    end
+end
+
+-- Panels+ asks with the held word; stock selection asks without it and stays nil.
+function MeguruDocument:getTextBoxes(pageno, seed)
+    if not (seed and seed.x and seed.y and seed.w and seed.h) then
+        return nil
+    end
+    local bb = self:_ocrPageBB(pageno)
+    if not bb then
+        return nil
+    end
+    local w, h = bb:getWidth(), bb:getHeight()
+    local margin = math.max(seed.h * 12, 120)
+    local x0 = clamp(math.floor(seed.x - margin), 0, w - 1)
+    local y0 = clamp(math.floor(seed.y - margin), 0, h - 1)
+    local x1 = clamp(math.ceil(seed.x + seed.w + margin), x0 + 1, w)
+    local y1 = clamp(math.ceil(seed.y + seed.h + margin), y0 + 1, h)
+
+    local ok_kopt, Kopt = pcall(require, "ffi/koptcontext")
+    if not ok_kopt or type(Kopt) ~= "table" or type(Kopt.new) ~= "function" then
+        return nil
+    end
+    local kc = Kopt.new()
+    kc:setBBox(x0, y0, x1, y1)
+    kc:setZoom(1)
+    local ok, boxes = pcall(function()
+        self:_fillOcrContext(pageno, kc, bb)
+        return kc:getNativeWordBoxes("src", 0, 0,
+            kc.page_width, kc.page_height)
+    end)
+    pcall(kc.free, kc)
+    if not ok or type(boxes) ~= "table" then
+        return nil
+    end
+
+    -- Native word boxes take the crop's origin; Panels+ wants page coordinates.
+    for _, line in ipairs(boxes) do
+        line.x0, line.y0 = line.x0 + x0, line.y0 + y0
+        line.x1, line.y1 = line.x1 + x0, line.y1 + y0
+        for _, word in ipairs(line) do
+            word.x0, word.y0 = word.x0 + x0, word.y0 + y0
+            word.x1, word.y1 = word.x1 + x0, word.y1 + y0
+        end
+    end
+    return boxes
 end
 
 -- Open a MuPDF doc for the region; a streamed page opens from the byte LRU.

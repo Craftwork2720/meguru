@@ -88,6 +88,10 @@ end
 -- Seed per-book defaults here: stock defaults are wrong for a fixed layout.
 function Meguru:onReadSettings(_config)
     local document = self.ui and self.ui.document
+    -- Seeded here: the panel defaults need to know whether Panels+ owns the press.
+    if self.ui then
+        self.ui._meguru_panels_plus_active = Reader.panelsPlusActive(self.ui)
+    end
     local ok, err = pcall(Defaults.apply, self.ui, document)
     if not ok then
         -- A stock-default book still reads, just wrong: never cost the open.
@@ -98,6 +102,11 @@ function Meguru:onReadSettings(_config)
     if not ok_series then
         logger.warn("Meguru: could not read the series' settings:", err_series)
     end
+end
+
+-- Panels+ re-asserts the live field at ReadSettings; apply the file's answer and owner.
+function Meguru:onReaderReady()
+    Reader.applyPanelZoomAnswer(self)
 end
 
 -- Same class on both surfaces; presence of a document picks the menu.

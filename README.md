@@ -51,7 +51,7 @@ Works the same for local `.cbz` files and `.meguru` streams.
 
 In Panel Cut and Pan & Zoom, a middle tap opens a button row: the first button is the view, the second is the zoom (1.4×/1.7×/1.9×, or 1.5×/2×/2.5× in Free View). Each view remembers its own zoom.
 
-Panel zoom is on for books Meguru opens. To turn it off for a book, use KOReader's own ⋮ → *Panel zoom (manga/comic)* row.
+Panel zoom is on for books Meguru opens. To turn it off for a book, use KOReader's own ⋮ → *Panel zoom (manga/comic)* row. When Panels+ is installed and answers the long-press, Meguru's *Panel view* row puts **panels+** first, followed by **off** and the three views: **panels+** leaves the press to Panels+, any view takes it back for Meguru, and **off** turns panel zoom off for the book. Panels+'s OCR and text selection work in Meguru books when an OCR model is installed.
 
 ### Opening .cbz files
 

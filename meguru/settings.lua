@@ -35,6 +35,9 @@ local DEFAULTS = {
     -- Seed for a book's kopt_panel_view; "window" shows the page uncropped.
     panel_view        = "window",
 
+    -- Who answers the long-press while Panels+ is the rival: "panelsplus" | "meguru".
+    panel_owner       = "panelsplus",
+
     -- Panel turn: "off" | "on" | "auto" by the panel's shape; unset = stock's.
     panel_rotate      = UNSET,
 

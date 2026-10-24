@@ -196,8 +196,18 @@ that preference as on every other row — with one value it refuses: `off` is no
 *preference* could hold it, and `redirectDefaults` answers for that case with a notification
 instead of writing a word nothing reads. **The series store is a different slot and does hold
 it**: the fourth answer travels like the three views, so turning the panel view off in one
-chapter turns it off in the next, and the only place "set as default" is still declined is the
-one that could never have worked.
+chapter turns it off in the next, and the only place "set as default" declines an answer is
+the preference, which can only hold a view.
+
+**With Panels+ answering the long-press, the row puts `panels+` first, then `off` and the
+same three views.** `panels+` leaves the press to Panels+ and is the owner a book starts
+with; any view takes the press back for this plugin; `off` is the same per-book
+`panel_zoom_enabled`. The owner is a third key beside the view and the switch —
+`kopt_panel_owner` per book, `panel_owner` in the series store and `meguru/settings.lua`
+as the default — and `current_func` reads all three. Long-press on `panels+` or a view
+sets that answer as the default; on `off` it still declines. Panels+ forces the live field
+on while reading settings, so the file's `off` and the owner are applied in `onReaderReady`;
+see [panel-zoom](panel-zoom.md).
 
 **One row is also offered to KOReader's gesture editor**, where a reader binds a tap, a swipe or a key to it instead: *Meguru: toggle pair offset (two-page view)*, registered as `meguru_pair_offset` and listed under **Fixed layout documents**, beside *Toggle page flipping* and *Toggle panel zoom* — prefixed because that list is shared with stock's own actions, so nothing in it would otherwise say whose it is. **It exists only while one of our books is open**, because that list is per process and not per book: `ui/reader.lua` registers it in `Reader.install` and removes it from `onCloseDocument` and `onClose`, so a Meguru book offers it and no other surface does. Left registered everywhere, it was offered to the file browser and to every fixed-layout document as well — the section is a list rather than a gate, and a gesture bound in the file browser is a gesture a reader watches do nothing. A binding already made is unaffected: it lives in the profile, and the action it names is back the next time a book of ours is open. The action fires `MeguruPairOffsetToggle`, and the handler for it is installed per reader like every other handler in `ui/reader.lua`.
 
@@ -249,7 +259,8 @@ Invariants when touching these rows:
   is not rotated by this plugin's own wide-page turn: KOReader etches the live screen
   rotation into that row at every save (`readerview.lua:1222`), and a turn the plugin
   asked for is not the reader's answer. And `panel_view` brings KOReader's per-file
-  `panel_zoom_enabled` with it, which is why its `off` is stored rather than resolved.
+  `panel_zoom_enabled` with it, which is why its `off` is stored rather than resolved,
+  plus `panel_owner` while Panels+ is the rival.
 
 - **A row's `values` stay in the row's own domain.** `trim_page` is `{3,1}`
   (none/auto), `rotate_wide_pages` is `0/1/2`, the toggles are `0/1`, `fit` is a

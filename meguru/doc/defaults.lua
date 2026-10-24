@@ -53,7 +53,7 @@ local function panelViewIsView(value)
     return value == "crop" or value == "window" or value == "zoom"
 end
 
--- The 15 rows a series answers as one. Read live, never from the sidecar: a row
+-- The 16 rows a series answers as one. Read live, never from the sidecar: a row
 -- is what the reader sees, whichever writer moved it, and ReaderConfig's save
 -- order never enters into it. Values come back in the store's own domain.
 local SERIES_READERS = {
@@ -117,7 +117,7 @@ local SERIES_READERS = {
         end
         return doc:_spreadAnchor() ~= 0 and 1 or 0
     end,
-    -- Two keys as one answer: the file's own switch says off, else the view.
+    -- The file's own switch says off, else the view it is showing.
     panel_view = function(ui)
         local hl = ui and ui.highlight
         if hl and hl.panel_zoom_enabled == false then
@@ -125,6 +125,14 @@ local SERIES_READERS = {
         end
         local c = configurableOf(ui)
         return c and c.panel_view
+    end,
+    -- Only a question while Panels+ is the rival; the plugin decides that.
+    panel_owner = function(ui)
+        if not (ui and ui._meguru_panels_plus_active) then
+            return nil
+        end
+        local c = configurableOf(ui)
+        return c and c.panel_owner
     end,
     -- A zoom mode the reader reached some other way (page, free) is no fit.
     opdsbook_fit = function(ui)
@@ -206,9 +214,27 @@ function Defaults.seedGeometry(ui, configurable, series)
     end
 end
 
--- Two keys as one row: the view, and KOReader's per-file on/off for the gesture.
+-- Three keys as one row: the view, KOReader's per-file on/off, and the owner.
 function Defaults.seedPanelView(ui, configurable, series)
     local ds = ui.doc_settings
+    local active = ui._meguru_panels_plus_active == true
+    -- Only while Panels+ is the rival; the view is its own fallback either way.
+    if active then
+        local owner = seriesValue(series, "panel_owner")
+        if owner ~= "panelsplus" and owner ~= "meguru" then
+            owner = ds and ds:readSetting("kopt_panel_owner")
+        end
+        if owner ~= "panelsplus" and owner ~= "meguru" then
+            owner = Settings.get("panel_owner")
+        end
+        if owner ~= "panelsplus" and owner ~= "meguru" then
+            owner = "panelsplus"
+        end
+        configurable.panel_owner = owner
+    else
+        configurable.panel_owner = nil
+    end
+
     local value = seriesValue(series, "panel_view")
     if value == nil then
         value = seedRowValue(ds, "panel_view", nil)
