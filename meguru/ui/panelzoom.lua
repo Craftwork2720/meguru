@@ -135,12 +135,18 @@ local function rotatedFor(viewer, image_num)
     return (canvas.w > canvas.h) ~= (step.w > step.h)
 end
 
--- Left in the book is a counter-clockwise device, so the panel goes clockwise.
+-- The panel takes the quarter opposite the device turn the row names.
 local function panelRotationAngle(turned, rotate)
     if not (turned and rotate) then
         return nil
     end
-    return rotate == "left" and 270 or 90
+    local canvas = CanvasContext:getSize()
+    -- A landscape screen has taken that quarter; the panel takes the other.
+    local clockwise = rotate == "left"
+    if canvas.w > canvas.h then
+        clockwise = not clockwise
+    end
+    return clockwise and 270 or 90
 end
 
 local PanelViewer = ImageViewer:extend{

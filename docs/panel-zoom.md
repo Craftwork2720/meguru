@@ -589,12 +589,21 @@ turned panels the wrong way — which is the cheapest possible lesson in why a m
 read off upstream's prose is not an observation. The fix was the two constants in
 `panelRotationAngle` and nothing else, which is the shape this was designed to fail in.
 
+**And a landscape screen swaps the two quarters, which the device said before the
+rationale did.** The crossing above was measured with the screen standing up. On a
+screen that is itself lying down — a pair, or a wide page whose screen the plugin
+already turned — it is a *portrait* panel that gets turned, and the standing mapping
+sent it the wrong way round: a reader saw those panels upside down, where the same book
+on a portrait screen was right. So `panelRotationAngle` swaps the quarters whenever
+`CanvasContext:getSize()` is wider than tall. The row names the turn the reader makes,
+and a screen that is already turned has already spent that quarter.
+
 The two rotation questions are **split, and that split is the design**:
 
 | question | answered by | source |
 |---|---|---|
 | *whether* this panel is turned | the row's Rotate button: `off` / `on` / `auto` | the mode, and only `auto` reads the shapes |
-| *which way* | `panelRotationAngle(self.rotated, self.rotate)` | the book's `Rotate wide pages` |
+| *which way* | `panelRotationAngle(self.rotated, self.rotate)` | the book's `Rotate wide pages`, swapped on a landscape screen |
 
 `rotate` is `"left"`/`"right"`/nil, resolved once per press by `Reader.panelZoomDirection(ui)`
 in `ui/reader.lua` — reading `configurable.rotate_wide_pages`, **never**

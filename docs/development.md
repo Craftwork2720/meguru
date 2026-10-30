@@ -634,9 +634,10 @@ Each step must pass before the next:
        turns, a new viewer opens on the next page's first panel, turned the book's way.
        This is the half that is easy to miss, and it fails **only** at a page boundary.
     5. **The turned screen.** On the wide page itself — screen already rotated by the
-       setting — long-press a panel that needs turning, under both `left` and `right`. No
-       panel angle can be simultaneously readable and device-space-consistent on a turned
-       screen; judge whether it reads naturally.
+       setting — long-press a **portrait** panel under both `left` and `right`. It is
+       turned, and the top of the artwork must land on the edge **opposite** the one the
+       same setting gives a wide panel on a portrait screen. The unswapped quarter is
+       what a reader saw as upside down here, on a wide page and in the two-page view.
     6. **The button, regression.** Pinch in, press Rotate, toggle *Scale*, press Rotate
        again: every `update()` rebuilds the `ImageWidget`, so the angle must survive all
        of them — and `-d` must show **no** `panel rotation angle could not be applied`
