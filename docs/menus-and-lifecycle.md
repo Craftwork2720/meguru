@@ -501,6 +501,13 @@ that was never unwrapped" are the same nil. `Net.feedFrom` is the one unwrap, us
 both `Net.parseFeed` and `ui/open.lua`; the built-in browser compensates with
 `local feed = catalog.feed or catalog`.
 
+**A newer parser keeps every `<author>` as an array.** Since KOReader's 2026-10-26
+OPDS change (#16303), `createFlatXTable` accumulates `author` like `entry` and `link`,
+so the single feed-level `<author>` arrives as `{ { name = ..., uri = ... } }`. Reading
+`.name` off the author table then finds nothing and every server looks unknown — no
+kind, so no top-of-feed row, and a book opened from a feed stays flat. `Base.kindFromAuthor`
+walks one pair and an array of them alike.
+
 **`OPDSBrowser:parseFeed` parses more than browsable feeds.**
 `genItemTableFromCatalog` parses the catalog's OpenSearch descriptor through that same
 method, on the same navigation, immediately *after* the real feed. So a feed-retention

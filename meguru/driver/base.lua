@@ -44,18 +44,32 @@ function Base.kindLabel(kind)
     return kind:sub(1, 1):upper() .. kind:sub(2)
 end
 
+-- One name/uri pair, or an array of them: newer parsers keep every <author>.
+local function collectAuthor(value, parts)
+    if type(value) == "string" then
+        parts[#parts + 1] = value
+    elseif type(value) == "table" then
+        if type(value.name) == "string" then
+            parts[#parts + 1] = value.name
+        end
+        if type(value.uri) == "string" then
+            parts[#parts + 1] = value.uri
+        end
+        for _, nested in ipairs(value) do
+            collectAuthor(nested, parts)
+        end
+    end
+end
+
 -- A feed names its software in <author>, the only clue to what lies behind it.
+-- A newer OPDS parser keeps every author in an array, feed-level one included.
 function Base.kindFromAuthor(author)
-    local name, uri = "", ""
-    if type(author) == "string" then
-        name = author
-    elseif type(author) == "table" then
-        name = type(author.name) == "string" and author.name or ""
-        uri = type(author.uri) == "string" and author.uri or ""
-    else
+    if type(author) ~= "string" and type(author) ~= "table" then
         return nil
     end
-    local blob = (name .. " " .. uri):lower()
+    local parts = {}
+    collectAuthor(author, parts)
+    local blob = table.concat(parts, " "):lower()
     -- Sorted kinds: overlapping needles would otherwise resolve by pairs order.
     for _, kind in ipairs(Base.kinds()) do
         for _, needle in ipairs(registry[kind].authorSignatures or {}) do
