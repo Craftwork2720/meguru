@@ -16,6 +16,16 @@ function Sources.remember(marker_path, username, password)
     end
 end
 
+-- The OPDS browser's live list: it holds an add or an edit before the flush.
+-- Without it, a catalog added and browsed in one session names no server.
+local session_servers
+
+function Sources.rememberServers(servers)
+    if type(servers) == "table" then
+        session_servers = servers
+    end
+end
+
 function Sources.settingsFile()
     return DataStorage:getSettingsDir() .. "/opds.lua"
 end
@@ -40,6 +50,12 @@ end
 function Sources.find(title)
     if type(title) ~= "string" or title == "" then
         return nil
+    end
+    -- Session first: a catalog edited there is ahead of the file until exit.
+    for _, entry in ipairs(session_servers or {}) do
+        if type(entry) == "table" and entry.title == title then
+            return entry
+        end
     end
     for _, entry in ipairs(Sources.list()) do
         if type(entry) == "table" and entry.title == title then

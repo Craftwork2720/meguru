@@ -2,6 +2,7 @@
 local logger = require("logger")
 
 local Open = require("meguru/ui/open")
+local Sources = require("meguru/sources")
 
 local Hook = {}
 
@@ -168,7 +169,10 @@ function Hook.install()
         if type(orig_init) == "function" then
             OPDSBrowser.init = function(browser, ...)
                 installBrowserWraps(OPDSBrowser)
-                return orig_init(browser, ...)
+                local result = orig_init(browser, ...)
+                -- The browser's list is ahead of settings/opds.lua until exit.
+                Sources.rememberServers(browser.servers)
+                return result
             end
         end
     end

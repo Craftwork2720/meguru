@@ -588,6 +588,12 @@ reaches by hand — the row above the feed works inside it, and so does `ctx.url
 The browser opened from the *reader* is the one case stock never has; what that costs is in
 `known-issues.md`.
 
+**The catalog list Meguru reads is the browser's own, not the file.** `settings/opds.lua`
+is written only when KOReader exits, so a catalog added and browsed in one session is not
+there yet. `OPDSBrowser:init` hands the browser's live list to `Sources.rememberServers`,
+and `Sources.find` consults it before the file; without that, a book opened from a
+just-added catalog names no server, and its marker stays flat — no series folder.
+
 ### Another plugin may replace the wraps, so they are installed twice
 
 The mechanics are about load order, and none of it is specific to zen-os.
