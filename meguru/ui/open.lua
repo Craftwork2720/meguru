@@ -1345,28 +1345,28 @@ function Open.openAsBook(browser, item, stream)
     })
 end
 
--- Add the "Meguru this series" row to the browser's own dialog.
--- Silently no-op unless the shape and stream are there; it is not ours.
-function Open.injectBookRow(browser, item)
-    local dialog = browser and browser.download_dialog
-    if not dialog or type(dialog.buttons) ~= "table" then
-        return
-    end
+-- Inserted first, above everything: this row is why the dialog opened.
+-- It assumes nothing about the rows already present, only that ours is top.
+-- close is the window's own way out, which differs with its shape.
+local function insertBookRow(browser, item, buttons, close)
     local stream = Open.findStream(item)
     if not stream then
-        return
+        return false
     end
 
-    local buttons = dialog.buttons
-    -- Inserted first, above everything: this row is why the dialog opened.
-    -- It assumes nothing about the rows already present.
-    table.insert(buttons, 1, {}) -- separator, under our row
+    -- One separator is enough: the rows may already open with an empty one.
+    if #buttons > 0
+        and not (type(buttons[1]) == "table" and #buttons[1] == 0) then
+        table.insert(buttons, 1, {}) -- separator, under our row
+    end
     table.insert(buttons, 1, {
         {
             text = "\u{25B6} " .. _("Meguru this series"),
             font_bold = true,
             callback = function()
-                UIManager:close(dialog)
+                if close then
+                    close()
+                end
                 -- Needs a connection for the first pages, not a destination.
                 -- The manager prompts for one instead of failing.
                 NetworkMgr:runWhenConnected(function()
@@ -1375,9 +1375,33 @@ function Open.injectBookRow(browser, item)
             end,
         },
     })
+    logger.dbg("Meguru: added \"Meguru this series\" button for", item.text)
+    return true
+end
+
+-- Add the row to the ButtonDialog shape, where the browser holds the window.
+-- Silently no-op unless the shape and stream are there; it is not ours.
+function Open.injectBookRow(browser, item)
+    local dialog = browser and browser.download_dialog
+    if not dialog or type(dialog.buttons) ~= "table" then
+        return
+    end
+    if not insertBookRow(browser, item, dialog.buttons, function()
+        UIManager:close(dialog)
+    end) then
+        return
+    end
     dialog:reinit()
     UIManager:setDirty("all", "ui")
-    logger.dbg("Meguru: added \"Meguru this series\" button for", item.text)
+end
+
+-- Add the row to the TextViewer shape, whose rows are built before it exists.
+-- close_parent_dialog is the window's own close, handed in with the rows.
+function Open.injectDownloadButtons(browser, item, buttons, close_parent_dialog)
+    if type(buttons) ~= "table" then
+        return
+    end
+    insertBookRow(browser, item, buttons, close_parent_dialog)
 end
 
 return Open

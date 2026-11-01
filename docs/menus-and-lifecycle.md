@@ -646,10 +646,13 @@ name the plugin that did it**: detecting one by its private fields would tie thi
 to a foreign implementation we do not control, and the useful fact is that our hooks were
 replaced, not by whom.
 
-**Nothing else had to change, and that is the check that this is the right seam.**
-`Open.injectBookRow` works against zen-os's dialog unchanged — it sets
-`self.download_dialog` (`opds.lua:1738`) with a `.buttons` array and has
-`ButtonDialog:reinit()`. **The row goes in at index 1**, above everything the
+**The dialog comes in two shapes, and each has its own seam.** Stock KOReader
+builds a `TextViewer` and asks `OPDSBrowser:getDownloadButtons` for its rows before
+the window exists; `Open.injectDownloadButtons` puts the row into that table and
+closes the window through the same `close_parent_dialog` the builder is given.
+zen-os keeps a `ButtonDialog` on `self.download_dialog` (`opds.lua:1738`) with a
+`.buttons` array and `ButtonDialog:reinit()`, which is still
+`Open.injectBookRow`'s shape. **The row goes in at index 1**, above everything the
 dialog offers, with a separator under it.
 
 That position is the point, not a preference: the row used to be inserted just

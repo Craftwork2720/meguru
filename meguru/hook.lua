@@ -11,6 +11,7 @@ local installed = false
 -- The wrapper installed for each method, so it can be recognised later.
 -- A nil entry means that method was absent and never wrapped.
 local m_showDownloads
+local m_getDownloadButtons
 local m_parseFeed
 local m_genItemTableFromURL
 local m_onMenuSelect
@@ -18,7 +19,7 @@ local m_onMenuSelect
 local browser_wrapped = false
 local init_wrapped = false
 local repatched_logged = false
-local warned_showDownloads = false
+local warned_downloads = false
 
 -- Per method, not per set: re-wrapping an untouched one stacks two wrappers.
 -- The row above a series feed would then appear twice.
@@ -33,30 +34,63 @@ local function installBrowserWraps(OPDSBrowser)
     local repatched = browser_wrapped
     local changed = false
 
-    -- showDownloads first, alone: without it there is nothing to extend at all.
+    -- The single-book dialog appears in two shapes, and each has its own
+    -- seam: showDownloads builds a ButtonDialog stored on the browser,
+    -- getDownloadButtons returns rows a TextViewer will own. Either seam
+    -- alone is enough to put the row in.
     if not stillOurs(OPDSBrowser.showDownloads, m_showDownloads) then
         local orig_showDownloads = OPDSBrowser.showDownloads
-        if type(orig_showDownloads) ~= "function" then
-            -- Warned once, not per browser: the shape is constant.
-            if not warned_showDownloads then
-                warned_showDownloads = true
-                logger.warn("Meguru: unexpected OPDSBrowser:showDownloads, integration disabled")
+        if type(orig_showDownloads) == "function" then
+            m_showDownloads = function(browser, item, ...)
+                -- Official dialog first, then extend it, pcall-guarded.
+                orig_showDownloads(browser, item, ...)
+                local ok_inject, err = pcall(Open.injectBookRow, browser, item)
+                if not ok_inject then
+                    logger.warn("Meguru: could not inject book button:", err)
+                end
             end
-            return false
-        end
+            OPDSBrowser.showDownloads = m_showDownloads
+            changed = true
 
-        m_showDownloads = function(browser, item, ...)
-            -- Official dialog first, then extend it, pcall-guarded.
-            orig_showDownloads(browser, item, ...)
-            local ok_inject, err = pcall(Open.injectBookRow, browser, item)
-            if not ok_inject then
-                logger.warn("Meguru: could not inject book button:", err)
+            logger.dbg("Meguru: hooked OPDSBrowser:showDownloads")
+        else
+            m_showDownloads = nil
+        end
+    end
+
+    -- The TextViewer shape builds its rows before the window exists, so the
+    -- returned table is the last moment they can be changed.
+    if not stillOurs(OPDSBrowser.getDownloadButtons, m_getDownloadButtons) then
+        local orig_getDownloadButtons = OPDSBrowser.getDownloadButtons
+        if type(orig_getDownloadButtons) == "function" then
+            m_getDownloadButtons = function(browser, item, close_parent_dialog, ...)
+                local buttons = orig_getDownloadButtons(browser, item,
+                    close_parent_dialog, ...)
+                local ok_inject, err = pcall(Open.injectDownloadButtons,
+                    browser, item, buttons, close_parent_dialog)
+                if not ok_inject then
+                    logger.warn("Meguru: could not inject book button:", err)
+                end
+                return buttons
             end
-        end
-        OPDSBrowser.showDownloads = m_showDownloads
-        changed = true
+            OPDSBrowser.getDownloadButtons = m_getDownloadButtons
+            changed = true
 
-        logger.dbg("Meguru: hooked OPDSBrowser:showDownloads")
+            logger.dbg("Meguru: hooked OPDSBrowser:getDownloadButtons")
+        else
+            m_getDownloadButtons = nil
+        end
+    end
+
+    -- Neither seam: this is not the browser we know, so nothing else is safe.
+    if not stillOurs(OPDSBrowser.showDownloads, m_showDownloads)
+        and not stillOurs(OPDSBrowser.getDownloadButtons, m_getDownloadButtons) then
+        -- Warned once, not per browser: the shape is constant.
+        if not warned_downloads then
+            warned_downloads = true
+            logger.warn("Meguru: unexpected OPDSBrowser download dialog, integration disabled")
+        end
+        return false
     end
 
     -- parseFeed must be wrapped: OPDSBrowser drops each entry's id and links.

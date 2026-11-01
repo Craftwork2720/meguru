@@ -652,7 +652,7 @@ Each step must pass before the next:
     - a series feed carries **exactly one** **“▶ Meguru this series”** row at the top —
       two is the per-method guard having failed, and it will not announce itself any
       other way;
-    - tapping a volume opens *its* dialog with our row above the last one, and its own
+    - tapping a volume opens *its* dialog with our row at the top, and its own
       “Page stream” / “Stream from page” buttons **still there**;
     - our row opens the resume dialog and the book;
     - `-d` shows `OPDSBrowser re-patched since load; OPDS hooks re-installed`
