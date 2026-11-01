@@ -88,7 +88,38 @@ local function libPaths()
            Paths.lib(string.format(MOIRE_LIB, suffix))
 end
 
--- Load, don't look: an APK-hosted Android plugin has the files but cannot load.
+-- Shared storage is noexec on Android; the app's files dir is loadable.
+local function loadablePath(path)
+    if not deviceSays("isAndroid") then
+        return path
+    end
+    local ok_android, android = pcall(require, "android")
+    if not ok_android or type(android) ~= "table"
+            or type(android.dir) ~= "string" then
+        return path
+    end
+    local dir = FS.ensureDir(android.dir .. "/plugins/meguru.koplugin/libs")
+    if not dir then
+        return path
+    end
+    local source = util.readFromFile(path, "rb")
+    if source == nil then
+        return path
+    end
+    local target = dir .. "/" .. path:match("[^/]+$")
+    -- Bytes, not a timestamp: a new build must replace the staged copy.
+    if source ~= util.readFromFile(target, "rb") then
+        local err = ffiutil.copyFile(path, target)
+        if err then
+            logger.warn("Meguru: could not stage derainbow library:",
+                tostring(err))
+            return path
+        end
+    end
+    return target
+end
+
+-- Load, don't look: files present is not the same as files loadable.
 local function probe()
     if not deviceSays("hasColorScreen") then
         return false
@@ -100,6 +131,8 @@ local function probe()
     if not (FS.exists(color_path) and FS.exists(moire_path)) then
         return false
     end
+    color_path = loadablePath(color_path)
+    moire_path = loadablePath(moire_path)
 
     local ok_color, color = pcall(ffi.load, color_path)
     local ok_moire, moire = pcall(ffi.load, moire_path)

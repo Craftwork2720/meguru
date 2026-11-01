@@ -99,6 +99,14 @@ version they are and under what licence. `<platform>` is `amd64`, `kobo`, `pocke
 `kindlehf`, `kindle` or `android-arm`/`android-arm64` — the suffixes are the other
 project's filename convention and nothing about them can be inferred from anywhere else.
 
+**On Android, a library on shared storage cannot be loaded from.** That mount is noexec,
+so the linker refuses a `dlopen` from it however correct the library is. Before loading,
+`meguru/derainbow` copies the pair into `<android.dir>/plugins/meguru.koplugin/libs` — the
+app's own `files` directory, which is executable — and loads the copy. A copy is rewritten
+only when its bytes differ from the source, so an unchanged install costs two reads and no
+write, and a new release replaces exactly the files it changed. `derainbowify.koplugin` and
+`imageprocessing.koplugin` stage their own libraries the same way.
+
 **`derainbowify.koplugin` is neither needed nor consulted.** An earlier version looked for
 it in the data directory and answered "unavailable" when it was absent, which made the row
 depend on a second install for no reason a reader could see. Vendoring the pair removes
@@ -113,13 +121,13 @@ is a human re-copying the files and re-testing, which is what `libs/README.md` s
 
 **`available()` loads rather than looks.** Since the files are ours they are present on
 every supported platform, so a plain existence check would be right everywhere except the
-one place it matters: an Android install whose plugin directory sits inside the APK ships
-these files and cannot `ffi.load` them. A row that appears and then does nothing is worse
-than a row that is not there, so the load itself is the test. It is memoised, so it costs
-one `dlopen` per session whichever caller reaches it first — the menu deciding whether to
-offer the row, or the render path on the first page that wants filtering. The other three
-conditions are a colour panel (`Device:hasColorScreen()`), a platform the builds cover,
-and both files being on disk.
+one place it matters: on Android a file can be present and readable and still refused by
+the linker, and a staging failure leaves exactly that state. A row that appears and then
+does nothing is worse than a row that is not there, so the load itself is the test. It is
+memoised, so it costs one `dlopen` per session whichever caller reaches it first — the menu
+deciding whether to offer the row, or the render path on the first page that wants
+filtering. The other three conditions are a colour panel (`Device:hasColorScreen()`), a
+platform the builds cover, and both files being on disk.
 
 `init_moire_resources` is the one thing still deferred: it allocates, and a reader who
 never turns the row on should not pay for it. The `ffi.cdef` is wrapped in `pcall` on
@@ -141,7 +149,7 @@ and the two are not the same question.
 | Kobo Clara/Libra Colour (`Kobo_monza`, `Kobo_spaColour`) | yes | `kobo` | yes | **the case it exists for** |
 | Kindle Colorsoft, Scribe Colorsoft | yes | `kindlehf`/`kindle` | yes | **unknown** — a different panel technology, and KOReader has no CFA handling for it |
 | PocketBook colour models | yes | `pocketbook` | yes | unknown |
-| Android, colour | yes | `android-arm*` | only where the plugin dir is loadable | unknown |
+| Android, colour | yes | `android-arm*` | yes, from the staged copy | unknown |
 | reMarkable Paper Pro | yes | **none** | no | — |
 | desktop / emulator | yes | `amd64` | yes | **the only one measured** |
 | every monochrome reader | no | — | no | — |

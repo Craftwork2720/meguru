@@ -423,15 +423,15 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   There is no version check anywhere on this path, and adding one would only compare our
   files against a number we wrote ourselves.
 
-- **A library inside the APK is the one install where the files are present and unusable.**
-  On Android, a KOReader whose plugin directory sits inside the package cannot `ffi.load`
-  anything from it. Meguru ships the android builds, so `FS.exists` says yes and only the
-  load itself can tell the truth — which is why `available()` loads rather than looks
-  (`docs/derainbow.md`), and why the row is *absent* there rather than present and inert.
-  Nothing stages the files out of the package; the other plugin does that for its own copy
-  and Meguru does not borrow it. What would settle it is a colour Android device with the
-  plugin installed as an APK; what it costs is a missing row on a platform where the filter
-  has never been confirmed to work at all.
+- **Android loading is staged, and has never been run on an Android device.** Shared
+  storage is mounted noexec, so a library under `/sdcard/koreader/plugins` is present,
+  readable and still refused by the linker. Meguru copies the pair into the app's private
+  files dir before loading it, the way `derainbowify.koplugin` and
+  `imageprocessing.koplugin` do for their own libraries (`docs/derainbow.md`); the report
+  that it works on a colour Android device comes from the other plugin's users, not from
+  this copy. What would settle it is that device opening a Meguru book: the row appears,
+  and the first filtered tile logs `Meguru: derainbow filter running`. What it costs is a
+  row that stays absent on Android although the files and the panel are right.
 
 - **Whether the rainbow actually goes away has never been seen.** Every link in the chain has
   now been run — the row is offered, the value is written and stamped, `renderPage` calls the
