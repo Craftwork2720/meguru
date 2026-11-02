@@ -92,6 +92,22 @@ task files to the repo.
   Use a `- [ ]` checklist for multi-step work.
 - Labels: `bug`, `enhancement`, `idea`. Don't invent new ones.
 
+## Versions
+
+The version lives in two files, and both are load-bearing:
+
+- `_meta.lua`'s `version` must equal the tag (minus the `v`); the release workflow
+  fails otherwise, and the updater compares releases against it. A hyphen makes
+  the tag a prerelease that `/releases/latest` skips, which is what dev builds use.
+- `manifest.json`'s `packages[].version` is what ZenPM compares against the
+  installed `_meta.lua`. Its asset URL is `/releases/latest`, so it must name the
+  newest **stable** release. During dev work it stays at the last stable version;
+  a dev version there makes ZenPM download the stable zip and record it as the
+  dev version.
+
+Bump `_meta.lua` before tagging. Bump `manifest.json` after the stable release is
+published, to the same version. A stable release must end with the two equal.
+
 ## Commits
 
 - Conventional Commits, subject line only: `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`, `test:`.
