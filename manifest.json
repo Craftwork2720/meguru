@@ -1,0 +1,30 @@
+{
+    "schema_version": "1",
+    "repo": {
+        "id": "meguru",
+        "name": "Meguru Repository",
+        "url": "https://github.com/Craftwork2720/meguru",
+        "icon_url": "https://raw.githubusercontent.com/Craftwork2720/meguru/main/docs/meguru-logo.png"
+    },
+    "packages": [
+        {
+            "id": "meguru",
+            "name": "Meguru",
+            "version": "1.7.1",
+            "description": "Manga and comic reader for local CBZ files and OPDS streaming from Kavita, Suwayomi, and Komga, with auto-crop, two-page view, panel zoom, and Derainbow filtering.",
+            "author": "Craftwork2720",
+            "platforms": ["koreader"],
+            "category": "reading",
+            "source": "https://github.com/Craftwork2720/meguru",
+            "source_asset": "meguru.koplugin.zip",
+            "plugin_module": "meguru",
+            "readme_url": "https://raw.githubusercontent.com/Craftwork2720/meguru/main/README.md",
+            "assets": [
+                {
+                    "asset": "meguru.koplugin.zip",
+                    "url": "https://github.com/Craftwork2720/meguru/releases/latest/download/meguru.koplugin.zip"
+                }
+            ]
+        }
+    ]
+}
