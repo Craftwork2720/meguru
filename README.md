@@ -43,15 +43,15 @@ Works the same for local `.cbz` files and `.meguru` streams.
 > [!TIP]
 > Tap a setting to apply it to the current book. Long-press it to make it the default for every new book.
 
-**Panel reading** has three views, switched with the first button of the viewer's own row:
+**Panel reading** (long-press a page) has three views:
 
-- **Panel Cut**: each panel is cut out and shown by itself
+- **Panel Cut**: each panel is shown by itself
 - **Pan & Zoom**: the whole page stays, and a window moves over it panel by panel
-- **Free View**: pinch and drag the page, with no panels and no page turning
+- **Free View**: pinch and drag the page freely
 
-In Panel Cut and Pan & Zoom, a middle tap opens a button row: the first button is the view, the second is the zoom (1.4×/1.7×/1.9×, or 1.5×/2×/2.5× in Free View). Each view remembers its own zoom.
+Tap the middle of the screen to switch views or change the zoom. With **Auto-rotate** on, the screen also rotates to fit each panel's proportions, in the direction set by **Rotate wide pages**.
 
-Panel zoom is on for books Meguru opens. To turn it off for a book, use KOReader's own ⋮ → *Panel zoom (manga/comic)* row. When Panels+ is installed and answers the long-press, Meguru's *Panel view* row puts **panels+** first, followed by **off** and the three views: **panels+** leaves the press to Panels+, any view takes it back for Meguru, and **off** turns panel zoom off for the book. Panels+'s OCR and text selection work in Meguru books when an OCR model is installed.
+**Panels+:** Meguru works with [Panels+](https://github.com/KristanLaimon/PanelsPlus), which adds OCR and text selection (needs an OCR model installed). OCR is available only through Panels+.
 
 ### Opening .cbz files
 
