@@ -2934,6 +2934,23 @@ function MeguruDocument:analyseAhead(pageno)
     pcall(self.getPageBBox, self, pageno)
 end
 
+-- Paper under a shorter page; without it the previous frame shows through.
+function MeguruDocument:_pairBackground(pageno)
+    local c = self.configurable
+    local color
+    if c and c.trim_page == 1 and type(self.cropMarginColor) == "function" then
+        color = self:cropMarginColor(pageno)
+    end
+    local r, g, b = 255, 255, 255
+    if color then
+        r, g, b = color.r or r, color.g or g, color.b or b
+    end
+    if c and c.nightmode_document == 1 and Screen.night_mode then
+        r, g, b = 255 - r, 255 - g, 255 - b
+    end
+    return Blitbuffer.ColorRGB32(r, g, b, 0xFF)
+end
+
 -- Pair drawn as two pages: split rect at the seam, one drawOnePage per half.
 function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
     local pair = rect and self:spreadUnitFor(pageno) or nil
@@ -2956,6 +2973,10 @@ function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gam
         if width <= 0 then
             return
         end
+        local target_x = x + (from - x0)
+        -- The half's column is paper even when its page has scrolled out of view.
+        target:paintRectRGB32(target_x, y, width, rect.h,
+            self:_pairBackground(page))
         -- Clip to this page's own height: the pair's box is the taller page's.
         local bottom = math.min(rect.y + rect.h, box.h * half_zoom)
         local height = bottom - rect.y
@@ -2968,7 +2989,7 @@ function MeguruDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gam
             w = width,
             h = height,
         }
-        self:drawOnePage(target, x + (from - x0), y, src, page, half_zoom, rotation, gamma, saturation)
+        self:drawOnePage(target, target_x, y, src, page, half_zoom, rotation, gamma, saturation)
     end
 
     half(left.page, left.box, left_zoom, 0, x0, math.min(x1, seam))
