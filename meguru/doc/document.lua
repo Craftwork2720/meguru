@@ -715,7 +715,7 @@ local MeguruDocument = Document:extend{
     local_cbz = false,
     mupdf_doc = nil,
 
-    -- Pages warmed after a repaint, including the one hintPage is handed.
+    -- Pages warmed after a repaint; a pair raises the lead to three.
     prefetch_count = 1,
     -- Maximum number of decoded/scaled tiles kept in RAM per document.
     max_cached_tiles = 8,
@@ -1600,7 +1600,7 @@ function MeguruDocument:pageIsWide(pageno)
     return geom.w > geom.h
 end
 
--- Warm the page the pairing needs, keeping the fetch out of the layout pass.
+-- Warm both pages of the pair, keeping the fetch out of the layout pass.
 function MeguruDocument:prepareSpread(pageno)
     if not self:spreadActive() then
         return false
@@ -1612,15 +1612,16 @@ function MeguruDocument:prepareSpread(pageno)
     if not self.local_cbz and not self:hasConnection() then
         return false
     end
-    local warmed = false
-    local candidates = { pageno + 1 }
-    if self:spreadOffsetHere(pageno) then
-        -- The offset pairs backwards, but only in its own run.
-        candidates[#candidates + 1] = pageno - 1
+    local unit = Spread.unitFor(pageno, count, self.wide_list, self:_spreadAnchor())
+    local candidates
+    if unit and unit.b then
+        candidates = { unit.a, unit.b }
+    else
+        candidates = { pageno }
     end
+    local warmed = false
     for _, target in ipairs(candidates) do
-        if target >= 1 and target <= count and not self.dims[target]
-            and not self.dead_pages[target] then
+        if not self.dims[target] and not self.dead_pages[target] then
             -- pcall: a throw here must cost a pair, not the page turn.
             pcall(self.getPageDims, self, target)
             pcall(self.analyseAhead, self, target)
@@ -2893,10 +2894,11 @@ end
 
 -- ReaderView calls this via nextTick (post-paint) and unschedules it on close.
 function MeguruDocument:hintPage(pageno, zoom, rotation, gamma, saturation)
-    -- Counted from pageno; pairs want one more of lead so the partner is ready.
+    -- Counted from pageno: the partner and the next two pages.
+    local spread = self:spreadActive()
     local lead = self.prefetch_count
-    if self:spreadActive() and lead < 2 then
-        lead = 2
+    if spread and lead < 3 then
+        lead = 3
     end
     for i = 0, lead - 1 do
         local target = pageno + i
@@ -2904,6 +2906,11 @@ function MeguruDocument:hintPage(pageno, zoom, rotation, gamma, saturation)
             -- No prefetch for a local cbz; the analysis still applies.
             if not self.local_cbz then
                 self:prefetchPage(target)
+            end
+            -- A pair's geometry waits for both pages, not only their bytes.
+            if spread and not self.dims[target] and not self.dead_pages[target]
+                and (self.local_cbz or self:hasConnection()) then
+                pcall(self.getPageDims, self, target)
             end
             self:analyseAhead(target)
         end

@@ -55,7 +55,7 @@ function PSE.pageURL(template, zero_based_index, screen_w, screen_h)
     return ret
 end
 
--- 3 pages of lead still counts as the same place (prefetch adds one).
+-- 3 pages of lead still counts as the same place (prefetch adds up to three).
 -- Never subtract the lead: a position from another reader has none.
 local SERVER_PAGE_TOLERANCE = 3
 

@@ -111,8 +111,9 @@ it came to open chapter 78 for a reader whose series starts at chapter 1.
 
 **A recorded page is used exactly as recorded; a *small* lead is simply ignored.**
 Servers that track progress count pages *fetched*, and the reader fetches one page
-beyond the one on screen (`MeguruDocument.prefetch_count`), so a book read here is
-recorded a page ahead. That lead is **never subtracted**: a position recorded by
+beyond the one on screen (`MeguruDocument.prefetch_count`), or three in the
+two-page view, so a book read here is recorded up to three pages ahead. That lead
+is **never subtracted**: a position recorded by
 *another* reader has no such lead, and subtracting would have reopened a book left at
 page 60 at page 57. It is instead *tolerated* — `PSE.samePlace(recorded, local)` is
 true when the recording is not meaningfully ahead, and there the server's button is
