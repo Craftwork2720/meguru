@@ -112,10 +112,27 @@ local function bottomMenuSwipe(pos, direction)
     return activationMenu() ~= "tap" and direction == "north" and inBottomMenuZone(pos)
 end
 
+-- Cropped panels have no output size of their own. A whole-page one would
+-- otherwise be rendered at the native cap; every path must use the same number,
+-- or the warm's tile and the release's key stop matching the view's.
+local function stepSize(rect)
+    local tw, th = rect.out_w, rect.out_h
+    if tw and th then
+        return tw, th
+    end
+    local w, h = rect.w, rect.h
+    if w and h and w > 0 and h > 0 then
+        local area = Screen:getWidth() * Screen:getHeight() * 2
+        local scale = math.min(1, math.sqrt(area / (w * h)))
+        return math.max(1, math.floor(w * scale + 0.5)),
+               math.max(1, math.floor(h * scale + 0.5))
+    end
+end
+
 -- Clamps to the picture area: a function-image tile draws 1:1 under the row.
 local function stepImage(doc, page, rect)
     return function(_, max_w, max_h)
-        local tw, th = rect.out_w, rect.out_h
+        local tw, th = stepSize(rect)
         if tw and th and max_w and max_h then
             local shrink = math.min(max_w / tw, max_h / th, 1)
             tw = math.max(1, math.floor(tw * shrink + 0.5))
@@ -241,7 +258,8 @@ function PanelViewer:meguruRelease(index)
     if not (doc and rect and type(doc.releasePanelTile) == "function") then
         return false
     end
-    return doc:releasePanelTile(self.page, rect, rect.out_w, rect.out_h)
+    local tw, th = stepSize(rect)
+    return doc:releasePanelTile(self.page, rect, tw, th)
 end
 
 function PanelViewer:meguruArmWarm()
@@ -262,12 +280,20 @@ function PanelViewer:meguruWarm()
     if not (doc and self.steps) then
         return
     end
+    -- Warming is optional: under low RAM free old pages instead of adding more.
+    if type(doc.underMemoryPressure) == "function" and doc:underMemoryPressure() then
+        if type(doc.dropPreviousCaches) == "function" then
+            doc:dropPreviousCaches(self.page)
+        end
+        return
+    end
     local cur = self._images_list_cur
     if cur < #self.steps then
         if not doc.dead_pages[self.page] then
             local next_step = self.steps[cur + 1]
+            local tw, th = stepSize(next_step)
             local ok, err = pcall(doc.drawPagePart, doc, self.page, next_step, 0,
-                next_step.out_w, next_step.out_h)
+                tw, th)
             if not ok then
                 logger.dbg("Meguru: panel prewarm failed:", err)
             end
@@ -285,7 +311,8 @@ function PanelViewer:meguruWarm()
         -- And the first panel's tile, the crossing's one fresh render. Only the
         -- crop view: a window step's rect comes from Viewport, so the key differs.
         if ok and panels and panels[1] and not (self.view and self.view.window) then
-            pcall(doc.drawPagePart, doc, next_page, panels[1], 0)
+            local tw, th = stepSize(panels[1])
+            pcall(doc.drawPagePart, doc, next_page, panels[1], 0, tw, th)
         end
     end
 end

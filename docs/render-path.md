@@ -105,7 +105,38 @@ touch.** `max_native_pixels` counts **pixels, not bytes** — `cappedDim` has no
 bytes-per-pixel factor — so 10 Mpx is ~10 MB retained as BB8 and ~30 MB as RGB24,
 and with `max_cached_native` at three that is ~90 MB rather than ~30. Kept
 pixel-based deliberately, so sharpness is unchanged and the price is paid only
-where colour exists. Everything else on the render path was already
+where colour exists.
+
+**Under memory pressure the caches keep only the page on screen.** The redline is
+`util.calcFreeMem()` — 85% of `MemAvailable` — below 20% of RAM or below 48 MB. Before
+a native decode or a tile render, `memoryPressure(keep)` frees the native pages, tiles,
+raw page bytes and panel lists of every other page, keeping both pages of a pair when a
+spread is up, so the transient that follows starts with the room they held. Prefetch,
+`analyseAhead` and the panel warm are optional and stop below the line; a warm that
+finds pressure drops the old pages instead. The drop is logged once per book, not per
+item. Every native or region render is also capped at a quarter of the free RAM (four
+bytes per pixel), not only at `max_native_pixels`; a cropped panel tile is capped
+further, at twice the screen's pixel area, so a page accepted as one whole panel cannot
+allocate a page-sized tile.
+
+**A single local page can still be too large for any cache discipline.** MuPDF
+decimates JPEG while decoding, but other formats decode at source size before scaling:
+a 12000×12000 PNG peaked at ~850 MB even when rendered to 1000×1000. MuPDF reports a
+CBZ page at 72/96 of its pixels, so the guard scales the reported area by 16/9 before
+comparing it with `min(40 Mpx, free/8)`: an actual pixel costs ~6 bytes at peak there,
+and 8 leaves a margin. A page over the line is refused before that render, marked in
+`large_pages`, and painted with a "too large" sentence rather than the damaged-file
+one. The archive is listed once at open; an all-JPEG archive skips the guard, because
+there the decoder is what keeps the source out of memory.
+
+**Local pages paint from the retained decode.** Every local CBZ page paint and panel
+crop goes through `decodeRegion`: it crops and scales the capped native buffer instead
+of asking MuPDF to decode the source again. That is one full decode per page rather than
+one per paint, and it is why a 16-Mpx PNG page can be shown on a device that could not
+hold its source twice. Streamed pages keep the direct path; their bytes, not the
+archive, are the source.
+
+Everything else on the render path was already
 format-tolerant and needed no change: `bbBytesPerPixel` knows all four types,
 **`rasterFor` collapses RGB to its Rec.601 luminance** — and the first version of
 this paragraph said it collapsed it to *the mean of three channels*, claiming the
@@ -580,7 +611,8 @@ would not decode — and each says so in the place the page would be.
   failing holds the spread. A transient failure holds the turn: offline says so in a
   notification, while no answer or a 5xx is retried (failures cleared, page
   repainted) without advancing. A permanent failure — a 4xx other than 408 or 429,
-  or a page that would not decode — asks with a confirm box whether to skip; Skip
+  a page that would not decode, or one too large to render safely — asks with a
+  confirm box whether to skip; Skip
   marks that unit passed for the session and performs the turn. Landings (TOC,
   search, bookmarks) are explicit destinations and are not blocked, and a connection
   returning clears every failure and repaints, so the page loads without pressing
@@ -593,6 +625,14 @@ would not decode — and each says so in the place the page would be.
   about a 404, and waiting does nothing about Wi-Fi that is off. It is *in the page*
   rather than over it, which is what a browser does and what needs no dismissing;
   only a permanent failure asks before the page is left.
+
+**A dead page carries a blank native, so no renderer has to answer nil.** When a page
+is refused or fails to decode, `ensureNativeBB` caches a 1024 px white buffer and marks
+the page; `getPageDims` keeps the source or screen size for layout. `drawPagePart`,
+`renderPage` and OCR then crop or scan that buffer by the ordinary path, while
+`drawOnePage` checks the flag and paints the reason instead. A live render that fails
+outright still returns nil; only a dead page needed the placeholder, and it no longer
+reaches that branch.
 
 **There was a drawing here — Meguru-chan lying across a big "404" — and it was
 removed deliberately.** The reason is the one thing a picture cannot carry, and the

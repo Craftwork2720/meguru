@@ -936,6 +936,8 @@ local function pageMessageBody(reason, code, server)
         return T(_("%1 isn't responding.\nMake sure the server is running, then try again."), server)
     elseif reason == "decode" then
         return _("This page can't be rendered.\nThe file may be damaged.")
+    elseif reason == "large" then
+        return _("This page is too large to render.\nThere isn't enough memory to show it.")
     end
     return _("Something went wrong loading this page.\nTry again in a moment.")
 end
@@ -1012,13 +1014,16 @@ local function installPageErrorPage(plugin)
             if failed then
                 return failed
             end
+            if doc.large_pages and doc.large_pages[pageno] then
+                return { reason = "large" }
+            end
             if doc.dead_pages and doc.dead_pages[pageno] then
                 return { reason = "decode" }
             end
         end
 
         local function isPermanent(failure)
-            if failure.reason == "decode" then
+            if failure.reason == "decode" or failure.reason == "large" then
                 return true
             end
             if failure.reason ~= "http" then

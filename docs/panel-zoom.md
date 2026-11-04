@@ -506,10 +506,11 @@ opens at best fit instead of inheriting the previous panel's pinch.
 
 **A panel is toned like the page it came from, and this file has nothing to do with
 it.** Contrast and saturation are applied by MuPDF while rendering
-(`docs/render-path.md`), and the
-one render every panel goes through — `drawPagePart` → `renderRegionDirect` →
-`Image.renderRegion` — is a render, so the panel arrives already carrying the
-reader's settings, colour included. That is also why the tone is read off the *document's*
+(`docs/render-path.md`). A panel takes one of two routes, and both carry that tone:
+`drawPagePart` → `decodeRegion` crops and scales the retained decode (toned when it
+was decoded), while `drawPagePart` → `renderRegionDirect` → `Image.renderRegion`
+renders the source with the same settings. The first is used for local CBZ pages; the
+second for ordinary streamed pages. That is also why the tone is read off the *document's*
 `configurable` rather than off `ReaderView.state.gamma`/`state.saturation`: this viewer
 never passes
 through the reader view, so values only the reader knew would leave every panel at
@@ -677,7 +678,8 @@ delay. A reader swiping quickly therefore keeps one panel warmed ahead, and the 
 a render after every step rather than only after a pause. The guard is
 `UIManager:isWidgetShown(self)`: a viewer that has been closed or handed off is off the
 stack, so an armed warm is a no-op. Both branches are gated on `dead_pages` and the page
-branch on `hasConnection()`. The native cache holds three (`max_cached_native`), so
+branch on `hasConnection()`; under memory pressure neither runs, and the document drops
+the old pages' caches instead. The native cache holds three (`max_cached_native`), so
 warming N+1 while N is live and N-1 may still be can evict N-1's decode — the existing
 trade, not a new one. **Do not add panel detection to `analyseAhead`**: that runs inside
 every page turn, and a scan per turn is exactly the cost this warm keeps out of the

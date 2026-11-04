@@ -703,6 +703,31 @@ installNativePageDimensionsShim()
 -- Captured before the class replaces it; the one-page answer stays reachable.
 local base_get_used_bbox_dimensions = Document.getUsedBBoxDimensions
 
+-- KOReader's own redline: below this share of RAM optional work stops and
+-- decodes for pages off screen are dropped.
+local MEMORY_PRESSURE_FRACTION = 0.20
+local MEMORY_PRESSURE_MIN = 48 * 1024 * 1024
+
+-- A non-JPEG local image decodes at source size before MuPDF scales it. MuPDF
+-- reports CBZ pages at 72/96 of the image's pixels; the peak was ~6 bytes per
+-- actual pixel, so 8 leaves a margin.
+local LOCAL_PAGE_MAX_PIXELS = 40 * 1024 * 1024
+local LOCAL_PAGE_SOURCE_SCALE = 16 / 9
+local LOCAL_PAGE_BYTES_PER_PIXEL = 8
+
+local function localPageTooLarge(self, fw, fh)
+    -- MuPDF decimates JPEG in the decoder; the full source is never held.
+    if self.local_all_jpeg then
+        return false
+    end
+    local free = util.calcFreeMem()
+    local budget = LOCAL_PAGE_MAX_PIXELS
+    if free then
+        budget = math.min(budget, free / LOCAL_PAGE_BYTES_PER_PIXEL)
+    end
+    return fw * fh * LOCAL_PAGE_SOURCE_SCALE > budget
+end
+
 local MeguruDocument = Document:extend{
     -- Set in init: the OCR page shim; the book still has no engine instance.
     _document = nil,
@@ -713,6 +738,7 @@ local MeguruDocument = Document:extend{
 
     -- .cbz through this engine: one MuPDF handle, no HTTP seams.
     local_cbz = false,
+    local_all_jpeg = false,
     mupdf_doc = nil,
 
     -- Pages warmed after a repaint; a pair raises the lead to three.
@@ -763,6 +789,35 @@ function MeguruDocument:_openLocalArchive()
     return doc
 end
 
+-- True only when every file entry is a JPEG (ComicInfo.xml aside): then the
+-- source-size guard below can be skipped for the whole archive.
+function MeguruDocument:_localArchiveAllJpeg()
+    local ok, Archiver = pcall(require, "ffi/archiver")
+    if not ok or type(Archiver) ~= "table" or not Archiver.Reader then
+        return false
+    end
+    local reader = Archiver.Reader:new()
+    if not reader:open(self.file) then
+        return false
+    end
+    local seen, all_jpeg = false, true
+    pcall(function()
+        for entry in reader:iterate() do
+            if entry.mode == "file" then
+                local path = entry.path:lower()
+                local ext = path:match("%.([a-z0-9]+)$")
+                if ext == "jpg" or ext == "jpeg" then
+                    seen = true
+                elseif path ~= "comicinfo.xml" then
+                    seen, all_jpeg = true, false
+                end
+            end
+        end
+    end)
+    reader:close()
+    return seen and all_jpeg
+end
+
 function MeguruDocument:init()
     self.tiles = {}
     self.native = {}
@@ -775,6 +830,8 @@ function MeguruDocument:init()
     self.panels = {}
     -- Failed/refused decodes, so a doomed decode is not retried on every paint.
     self.dead_pages = {}
+    -- Refused for size, not damage: the page message says which.
+    self.large_pages = {}
 
     -- Failed fetches and why; retried only by clearFetchFailures.
     self.fetch_failed = {}
@@ -792,6 +849,7 @@ function MeguruDocument:init()
             error("Meguru: cannot open local CBZ as a Meguru book: "
                 .. tostring(self.file))
         end
+        self.local_all_jpeg = self:_localArchiveAllJpeg()
     else
         desc = Marker.load(self.file)
         if not desc then
@@ -1042,6 +1100,95 @@ local function evictOldest(self, cache, cap)
     end
 end
 
+-- nil on platforms without /proc/meminfo; then nothing is assumed.
+function MeguruDocument:underMemoryPressure()
+    local free, total = util.calcFreeMem()
+    if not free or not total or total <= 0 then
+        return false
+    end
+    return free < math.max(total * MEMORY_PRESSURE_FRACTION, MEMORY_PRESSURE_MIN)
+end
+
+local function pageOfKey(key)
+    return tonumber(string.match(key, "^(%d+)|"))
+end
+
+-- Keep only the page(s) on screen; everything else can be decoded again.
+function MeguruDocument:dropPreviousCaches(keep)
+    if not keep then
+        return false
+    end
+    local keep_pages = { [keep] = true }
+    local unit = self:spreadUnitFor(keep)
+    if unit then
+        keep_pages[unit.a] = true
+        if unit.b then
+            keep_pages[unit.b] = true
+        end
+    end
+    local dropped = 0
+    for pageno, item in pairs(self.native) do
+        if not keep_pages[pageno] then
+            self.native[pageno] = nil
+            self.stamps[pageno] = nil
+            if item and item.bb and item.bb_free ~= true then
+                item.bb:free()
+                item.bb_free = true
+                dropped = dropped + 1
+            end
+        end
+    end
+    for key, item in pairs(self.tiles) do
+        if not keep_pages[pageOfKey(key)] then
+            self.tiles[key] = nil
+            self.stamps[key] = nil
+            if item and item.bb and item.bb_free ~= true then
+                item.bb:free()
+                item.bb_free = true
+                dropped = dropped + 1
+            end
+        end
+    end
+    for i = #self.page_bytes, 1, -1 do
+        if not keep_pages[self.page_bytes[i].pageno] then
+            table.remove(self.page_bytes, i)
+            dropped = dropped + 1
+        end
+    end
+    for i = #self.panels, 1, -1 do
+        if not keep_pages[pageOfKey(self.panels[i].key or "")] then
+            table.remove(self.panels, i)
+        end
+    end
+    if dropped > 0 then
+        pcall(collectgarbage, "collect")
+        if not self._meguru_mem_logged then
+            self._meguru_mem_logged = true
+            local free, total = util.calcFreeMem()
+            logger.info(string.format(
+                "Meguru: low memory (%d/%d MiB free), dropped %d cached item(s) before page %d",
+                math.floor((free or 0) / 1048576),
+                math.floor((total or 0) / 1048576), dropped, keep))
+        end
+    end
+    return dropped > 0
+end
+
+-- Low RAM: evict other pages first, then the caller decides whether to work.
+function MeguruDocument:memoryPressure(keep)
+    if not self:underMemoryPressure() then
+        return false
+    end
+    self:dropPreviousCaches(keep)
+    return true
+end
+
+-- Local pages paint from the retained decode: a CBZ image re-decodes its full
+-- source for every region. A dead page does too, through its placeholder.
+function MeguruDocument:preferNativeRender(pageno)
+    return self.local_cbz or self.dead_pages[pageno]
+end
+
 -- Cached tile for key, if still the tile that key means; tone is a stamp.
 local function tileAtTone(self, key)
     local tile = self.tiles[key]
@@ -1059,6 +1206,10 @@ local function tileAtTone(self, key)
 end
 
 function MeguruDocument:cacheTile(key, tile)
+    local page = tonumber(key:match("^(%d+)|"))
+    if page then
+        self:memoryPressure(page)
+    end
     if self.tiles[key] then
         self.tiles[key].bb_free = true
         self.tiles[key].bb:free()
@@ -1207,6 +1358,10 @@ end
 
 function MeguruDocument:prefetchPage(pageno)
     if pageno < 1 or pageno > self.info.number_of_pages then
+        return
+    end
+    -- Optional work: never grow the byte cache at the cost of the page on screen.
+    if self:underMemoryPressure() then
         return
     end
     local ok, data = pcall(self.fetchPage, self, pageno)
@@ -2337,12 +2492,24 @@ function MeguruDocument:getPageDims(pageno)
     if cached then
         return cached
     end
+    if self.dead_pages[pageno] then
+        local fallback = self.dims[pageno]
+            or { w = Screen:getWidth(), h = Screen:getHeight() }
+        self.dims[pageno] = fallback
+        return fallback
+    end
     -- What a page turn waits for: fetch then decode; size is the capped native.
     if self.local_cbz then
         -- One capped archive render feeds geometry, tiles and the box scan.
         local t_start, t0 = nowMs(), nowMs()
         local native_bb = self:ensureNativeBB(pageno)
         local decode_ms = nowMs() - t0
+        if self.dead_pages[pageno] then
+            local fallback = self.dims[pageno]
+                or { w = Screen:getWidth(), h = Screen:getHeight() }
+            self.dims[pageno] = fallback
+            return fallback
+        end
         if not native_bb then
             local fallback = { w = Screen:getWidth(), h = Screen:getHeight() }
             self.dims[pageno] = fallback
@@ -2369,11 +2536,13 @@ function MeguruDocument:getPageDims(pageno)
         return fallback
     end
     t0 = nowMs()
+    self:memoryPressure(pageno)
     -- MuPDF applies the tone while rendering, so the decode carries it.
     local res = Image.decode(data, self:contrast(), self:saturation())
     local decode_ms = nowMs() - t0
     if res == nil or res == Image.DECODE_TOO_LARGE then
         if res == Image.DECODE_TOO_LARGE then
+            self.large_pages[pageno] = true
             logger.warn(string.format(
                 "Meguru: page %d is a very large lossless image that MuPDF would have to decode at full size (above the %d-Mpx safety limit); skipping it",
                 pageno, Image.MAX_LOSSLESS_NATIVE_PIXELS / 1024 / 1024))
@@ -2407,28 +2576,54 @@ local function round(v)
     return math.floor(v + 0.5)
 end
 
+-- A dead page still needs a buffer: every render path paints this instead.
+function MeguruDocument:_placeholderNative(pageno)
+    local item = self.native[pageno]
+    if item and item.bb_free ~= true then
+        bump(self, pageno)
+        return item.bb
+    end
+    local bb = Blitbuffer.new(1024, 1024, Blitbuffer.TYPE_BB8)
+    bb:paintRect(0, 0, 1024, 1024, Blitbuffer.COLOR_WHITE)
+    self:cacheNative(pageno, bb)
+    return bb
+end
+
 -- Ensure a working-resolution BlitBuffer, decoding data if not in the LRU.
 function MeguruDocument:ensureNativeBB(pageno, data)
     if self.dead_pages[pageno] then
-        return nil -- decode already failed once (or was refused as too large)
+        return self:_placeholderNative(pageno)
     end
+    self:memoryPressure(pageno)
     local item = self.native[pageno]
     if item and item.bb_free ~= true then
         bump(self, pageno)
         return item.bb
     end
     self.native[pageno] = nil
-    local res
+    local res, refused_large
     if self.local_cbz then
         -- No raw bytes: render from the archive; huge PNGs keep MuPDF's decode.
-        res = Image.renderMupdfPage(self.mupdf_doc, pageno, nil,
-            self:contrast(), self:saturation())
+        res = Image.renderMupdfPage(self.mupdf_doc, pageno, function(fw, fh)
+            if localPageTooLarge(self, fw, fh) then
+                refused_large = true
+                self.dims[pageno] = { w = fw, h = fh }
+                return true
+            end
+            return false
+        end, self:contrast(), self:saturation())
     else
         res = Image.decode(data, self:contrast(), self:saturation())
     end
     if res == nil or res == Image.DECODE_TOO_LARGE then
         -- Remember it: the same bytes fail identically; no retry per paint.
-        if res == Image.DECODE_TOO_LARGE then
+        if refused_large then
+            self.large_pages[pageno] = true
+            logger.warn(string.format(
+                "Meguru: page %d is too large to render safely on this device; skipping it",
+                pageno))
+        elseif res == Image.DECODE_TOO_LARGE then
+            self.large_pages[pageno] = true
             logger.warn(string.format(
                 "Meguru: page %d skipped: its lossless source is above the %d-Mpx decode safety limit",
                 pageno, Image.MAX_LOSSLESS_NATIVE_PIXELS / 1024 / 1024))
@@ -2436,7 +2631,7 @@ function MeguruDocument:ensureNativeBB(pageno, data)
             logger.warn("Meguru: decode failed for page", pageno)
         end
         self.dead_pages[pageno] = true
-        return nil
+        return self:_placeholderNative(pageno)
     end
     self:cacheNative(pageno, res)
     return res
@@ -2638,6 +2833,10 @@ function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th, plane
     if self.dead_pages[pageno] then
         return nil, "page is dead"
     end
+    if self:preferNativeRender(pageno) then
+        return nil, "native path"
+    end
+    self:memoryPressure(pageno)
     local doc, owned, doc_pageno, reason = self:_regionSource(pageno)
     if not doc then
         return nil, reason
@@ -2680,8 +2879,20 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation, tw, th)
         return cached.bb, rotate
     end
 
-    local bb = self:renderRegionDirect(pageno, rect.x, rect.y, rect.w, rect.h,
-        tw, th, native_rect.planes)
+    local bb
+    if tw and th and self:preferNativeRender(pageno) then
+        bb = self:decodeRegion(pageno, rect.x, rect.y, rect.w, rect.h, tw, th)
+        if bb and native_rect.planes then
+            local ok_mask, err = pcall(Image.maskToQuad, bb, native_rect.planes,
+                rect.x, rect.y, rect.w, rect.h, bb:getWidth(), bb:getHeight())
+            if not ok_mask then
+                logger.warn("Meguru: panel crop mask failed:", tostring(err))
+            end
+        end
+    else
+        bb = self:renderRegionDirect(pageno, rect.x, rect.y, rect.w, rect.h,
+            tw, th, native_rect.planes)
+    end
     if not bb then
         -- No bytes to render: fall back to stock (softer, but still works).
         local ok, image, fallback_rotate = pcall(Document.drawPagePart,
@@ -2927,6 +3138,9 @@ function MeguruDocument:analyseAhead(pageno)
     if self.dead_pages[pageno] then
         return
     end
+    if self:underMemoryPressure() then
+        return
+    end
     if not self:hasConnection() then
         return
     end
@@ -2998,6 +3212,10 @@ end
 
 -- Like drawPage; nil renderPage paints a neutral tile; night inverts target.
 function MeguruDocument:drawOnePage(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
+    if self.large_pages[pageno] or self.dead_pages[pageno] then
+        self:paintMissingPage(target, rect, x, y, pageno)
+        return
+    end
     local tile = self:renderPage(pageno, rect, zoom, rotation, gamma, saturation)
     if not tile then
         self:paintMissingPage(target, rect, x, y, pageno)
@@ -3020,6 +3238,10 @@ end
 
 -- Not pair-split on purpose: nothing calls it; night mode inverts via drawPage.
 function MeguruDocument:drawPageInverted(target, x, y, rect, pageno, zoom, rotation, gamma, saturation)
+    if self.large_pages[pageno] or self.dead_pages[pageno] then
+        self:paintMissingPage(target, rect, x, y, pageno)
+        return
+    end
     local tile = self:renderPage(pageno, rect, zoom, rotation, gamma, saturation)
     if not tile then
         self:paintMissingPage(target, rect, x, y, pageno)
@@ -3047,7 +3269,9 @@ function MeguruDocument:paintMissingPage(target, rect, x, y, pageno)
     if self.missing_painter then
         -- A dead decode never reached fetch_failed, so it gets its own reason.
         local failure = pageno and self.fetch_failed[pageno]
-        if not failure and pageno and self.dead_pages[pageno] then
+        if not failure and pageno and self.large_pages[pageno] then
+            failure = { reason = "large" }
+        elseif not failure and pageno and self.dead_pages[pageno] then
             failure = { reason = "decode" }
         end
         self.missing_painter(target, rect, x, y, failure)

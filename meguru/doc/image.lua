@@ -2,6 +2,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 local DrawContext = require("ffi/drawcontext")
 local RenderImage = require("ui/renderimage")
 local logger = require("logger")
+local util = require("util")
 
 local Settings = require("meguru/settings")
 
@@ -98,6 +99,19 @@ local function cappedDim(w, h, budget)
            math.max(1, math.floor(h * s + 0.5))
 end
 
+-- One render may take a quarter of the free RAM at four bytes per pixel.
+local function renderBudget()
+    local budget = Settings.get("max_native_pixels")
+    local free = util.calcFreeMem()
+    if free then
+        local by_memory = math.max(1, math.floor(free / 16))
+        if by_memory < budget then
+            budget = by_memory
+        end
+    end
+    return budget
+end
+
 -- Distinct from nil so callers refuse it rather than retry a fatal decode.
 local DECODE_TOO_LARGE = {}
 
@@ -138,7 +152,7 @@ end
 
 -- Only the streamed path can refuse by size: it alone has the bytes to sniff.
 local function renderMuPDFPage(doc, pageno, refuse_oversize, gamma, saturation)
-    local budget = Settings.get("max_native_pixels")
+    local budget = renderBudget()
     local ok_page, page = pcall(doc.openPage, doc, pageno)
     local bb
     if ok_page and page then
@@ -212,7 +226,7 @@ local function decodeNativeRenderImage(data)
     if not ok or not bb then
         return nil
     end
-    local budget = Settings.get("max_native_pixels")
+    local budget = renderBudget()
     local w, h = bb:getWidth(), bb:getHeight()
     local cw, ch = cappedDim(w, h, budget)
     if cw == w and ch == h then
@@ -336,7 +350,7 @@ function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes, gamma, 
     if ok_size and pw and ph and pw > 0 and ph > 0 then
         local fw = math.max(1, math.floor(pw + 0.5))
         local fh = math.max(1, math.floor(ph + 0.5))
-        local budget = Settings.get("max_native_pixels")
+        local budget = renderBudget()
         local space_w = cappedDim(fw, fh, budget)
         if space_w and space_w > 0 then
             local f = fw / space_w -- caller's space -> the MuPDF page's own
@@ -344,8 +358,9 @@ function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes, gamma, 
             if not (out_w and out_h) then
                 out_w = math.max(1, math.floor(nw * f + 0.5))
                 out_h = math.max(1, math.floor(nh * f + 0.5))
-                out_w, out_h = cappedDim(out_w, out_h, budget)
             end
+            -- Explicit sizes are capped too: a panel step must fit the budget.
+            out_w, out_h = cappedDim(out_w, out_h, budget)
             local zoom = out_w / (nw * f)
             if zoom > 0 then
                 local dc = DrawContext.new()
@@ -439,6 +454,7 @@ Image.DECODE_TOO_LARGE = DECODE_TOO_LARGE
 -- Exported so document.lua's log line can quote the limit.
 Image.MAX_LOSSLESS_NATIVE_PIXELS = MAX_LOSSLESS_NATIVE_PIXELS
 Image.bytesPerPixel = bbBytesPerPixel
+Image.maskToQuad = maskToQuad
 -- document.lua needs the sniffed type; the sniffer lives here once.
 Image.magicFor = documentMagic
 Image.renderMupdfPage = renderMuPDFPage
