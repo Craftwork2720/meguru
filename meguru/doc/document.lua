@@ -709,11 +709,11 @@ local MEMORY_PRESSURE_FRACTION = 0.20
 local MEMORY_PRESSURE_MIN = 48 * 1024 * 1024
 
 -- A non-JPEG local image decodes at source size before MuPDF scales it. MuPDF
--- reports CBZ pages at 72/96 of the image's pixels; the peak was ~6 bytes per
--- actual pixel, so 8 leaves a margin.
+-- reports CBZ pages at 72/96 of the image's pixels; the peak was ~5-6 bytes per
+-- actual pixel, and six is the budget.
 local LOCAL_PAGE_MAX_PIXELS = 40 * 1024 * 1024
 local LOCAL_PAGE_SOURCE_SCALE = 16 / 9
-local LOCAL_PAGE_BYTES_PER_PIXEL = 8
+local LOCAL_PAGE_BYTES_PER_PIXEL = 6
 
 local function localPageTooLarge(self, fw, fh)
     -- MuPDF decimates JPEG in the decoder; the full source is never held.

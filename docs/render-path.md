@@ -123,8 +123,8 @@ allocate a page-sized tile.
 decimates JPEG while decoding, but other formats decode at source size before scaling:
 a 12000×12000 PNG peaked at ~850 MB even when rendered to 1000×1000. MuPDF reports a
 CBZ page at 72/96 of its pixels, so the guard scales the reported area by 16/9 before
-comparing it with `min(40 Mpx, free/8)`: an actual pixel costs ~6 bytes at peak there,
-and 8 leaves a margin. A page over the line is refused before that render, marked in
+comparing it with `min(40 Mpx, free/6)`: an actual pixel costs ~5-6 bytes at peak
+there, and six is the budget. A page over the line is refused before that render, marked in
 `large_pages`, and painted with a "too large" sentence rather than the damaged-file
 one. The archive is listed once at open; an all-JPEG archive skips the guard, because
 there the decoder is what keeps the source out of memory.
