@@ -142,6 +142,11 @@ local function stepImage(doc, page, rect)
     end
 end
 
+-- A panel whose tile failed has no _bb; stock pinch/spread indexes it.
+local function imageReady(viewer)
+    return viewer._image_wg and viewer._image_wg._bb
+end
+
 -- The rotate button's states, in the order a tap walks them.
 local ROTATE_MODES = { "off", "on", "auto" }
 
@@ -522,6 +527,9 @@ function PanelViewer:onSwipe(arg, ges)
         end
         return true
     end
+    if not imageReady(self) then
+        return true
+    end
     return ImageViewer.onSwipe(self, arg, ges)
 end
 
@@ -759,12 +767,18 @@ function PanelViewer:onPinch(arg, ges)
     if self.meguru_free then
         return self:meguruFreeZoom(ges, true)
     end
+    if not imageReady(self) then
+        return true
+    end
     return ImageViewer.onPinch(self, arg, ges)
 end
 
 function PanelViewer:onSpread(arg, ges)
     if self.meguru_free then
         return self:meguruFreeZoom(ges, false)
+    end
+    if not imageReady(self) then
+        return true
     end
     return ImageViewer.onSpread(self, arg, ges)
 end
