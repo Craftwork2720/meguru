@@ -394,6 +394,31 @@ local function installWideRotate(state, ui)
     end
 end
 
+-- Long enough to swallow the taps queued behind a slow page fetch.
+local TURN_GUARD_MS = 200
+
+-- Weak, so a closed reader's paging table is not kept alive by the global patch.
+local guard_owner = setmetatable({}, { __mode = "v" })
+
+-- Stamped after the repaint, panel refresh included: taps that waited for the
+-- page are dispatched as soon as it returns, however long the fetch took.
+local function installTurnGuard()
+    if UIManager._meguru_turn_guard_patched then
+        return
+    end
+    UIManager._meguru_turn_guard_patched = true
+    local orig_repaint = UIManager._repaint
+    UIManager._repaint = function(um, ...)
+        local ret = orig_repaint(um, ...)
+        local pg = guard_owner.paging
+        if pg and pg._meguru_turn_pending then
+            pg._meguru_turn_pending = nil
+            pg._meguru_turn_guard_until = nowMs() + TURN_GUARD_MS
+        end
+        return ret
+    end
+end
+
 -- Passes the target through spreadSnap so one gesture turns a whole spread.
 local function installSpread(ui)
     local paging, view = ui and ui.paging, ui and ui.view
@@ -404,6 +429,8 @@ local function installSpread(ui)
         return true
     end
     ui._meguru_spread_installed = true
+    installTurnGuard()
+    guard_owner.paging = paging
 
     if not paging._meguru_spread_patched then
         paging._meguru_spread_patched = true
@@ -431,11 +458,18 @@ local function installSpread(ui)
         local orig_goto = paging._gotoPage
         paging._gotoPage = function(pg, number, orig_mode)
             local doc = ui.document
+            local was_turn = paging._meguru_spread_turn
+            paging._meguru_spread_turn = nil
+            -- Not pair-only: a blind turn skips a single page just the same.
+            if was_turn and not view.page_scroll
+                and not pg.page_flipping_mode and not pg.bookmark_flipping_mode
+                and ((view.state and view.state.drawn == false)
+                    or (paging._meguru_turn_guard_until
+                        and nowMs() < paging._meguru_turn_guard_until)) then
+                return true
+            end
             if number ~= nil and doc and type(doc.spreadSnap) == "function" then
-                -- Consumed here, so nothing later can read a stale mark.
-                local turn = paging._meguru_spread_turn
-                paging._meguru_spread_turn = nil
-                local target, finished = doc:spreadSnap(number, pg.current_page, turn)
+                local target, finished = doc:spreadSnap(number, pg.current_page, was_turn)
                 if finished then
                     -- The last unit is a pair: nothing else announces the end.
                     ui:handleEvent(Event:new("EndOfBook"))
@@ -449,7 +483,14 @@ local function installSpread(ui)
                     end
                 end
             end
-            return orig_goto(pg, number, orig_mode)
+            local before = pg.current_page
+            local ret = orig_goto(pg, number, orig_mode)
+            -- The guard is stamped by the repaint that shows this page.
+            if was_turn and pg.current_page ~= before and not view.page_scroll
+                and not pg.page_flipping_mode and not pg.bookmark_flipping_mode then
+                paging._meguru_turn_pending = true
+            end
+            return ret
         end
     end
 
