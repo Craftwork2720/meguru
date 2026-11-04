@@ -509,9 +509,8 @@ it.** Contrast and saturation are applied by MuPDF while rendering
 (`docs/render-path.md`). A panel takes one of two routes, and both carry that tone:
 `drawPagePart` → `decodeRegion` crops and scales the retained decode (toned when it
 was decoded), while `drawPagePart` → `renderRegionDirect` → `Image.renderRegion`
-renders the source with the same settings. The first is used whenever the document
-still holds the page's decode (always for a local CBZ); the second when it has been
-evicted. That is also why the tone is read off the *document's*
+renders the source with the same settings. The first is used for local CBZ pages; the
+second for ordinary streamed pages. That is also why the tone is read off the *document's*
 `configurable` rather than off `ReaderView.state.gamma`/`state.saturation`: this viewer
 never passes
 through the reader view, so values only the reader knew would leave every panel at
