@@ -832,6 +832,8 @@ function MeguruDocument:init()
     self.dead_pages = {}
     -- Refused for size, not damage: the page message says which.
     self.large_pages = {}
+    -- Panel requests for a dead page: one toast per page per few seconds.
+    self._unavailable_notified = {}
 
     -- Failed fetches and why; retried only by clearFetchFailures.
     self.fetch_failed = {}
@@ -2856,10 +2858,27 @@ function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th, plane
     return bb
 end
 
+-- A panel request for a dead page is a tap with nothing to show; say so.
+function MeguruDocument:notifyUnavailable(pageno)
+    if not self.notify_unavailable then
+        return
+    end
+    local now = nowMs()
+    local last = self._unavailable_notified[pageno]
+    if last and now - last < 3000 then
+        return
+    end
+    self._unavailable_notified[pageno] = now
+    self.notify_unavailable(self.large_pages[pageno] and "large" or "decode")
+end
+
 -- Panel zoom hands the region at its own size; the tile goes through the LRU.
 function MeguruDocument:drawPagePart(pageno, native_rect, rotation, tw, th)
     -- Panel zoom never passes through renderPage, so refresh the tone here.
     self:syncTone()
+    if self.dead_pages[pageno] then
+        self:notifyUnavailable(pageno)
+    end
     if not native_rect then
         return nil, false
     end
@@ -2985,6 +3004,9 @@ end
 function MeguruDocument:renderPage(pageno, rect, zoom, rotation, gamma, saturation, hinting)
     -- Refresh the tone before reading a cached tile (invalidated by stamp).
     self:syncTone()
+    if self.dead_pages[pageno] then
+        self:notifyUnavailable(pageno)
+    end
     -- gamma/saturation ignored (tone from configurable); rotation is never set.
 
     local safe_zoom = (zoom and zoom > 0) and zoom or 1

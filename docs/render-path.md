@@ -630,9 +630,10 @@ would not decode — and each says so in the place the page would be.
 is refused or fails to decode, `ensureNativeBB` caches a 1024 px white buffer and marks
 the page; `getPageDims` keeps the source or screen size for layout. `drawPagePart`,
 `renderPage` and OCR then crop or scan that buffer by the ordinary path, while
-`drawOnePage` checks the flag and paints the reason instead. A live render that fails
-outright still returns nil; only a dead page needed the placeholder, and it no longer
-reaches that branch.
+`drawOnePage` checks the flag and paints the reason itself. A panel request for such a
+page also raises a Notification naming the reason, because the panel itself is blank. A
+live render that fails outright still returns nil; only a dead page needed the
+placeholder, and it no longer reaches that branch.
 
 **There was a drawing here — Meguru-chan lying across a big "404" — and it was
 removed deliberately.** The reason is the one thing a picture cannot carry, and the

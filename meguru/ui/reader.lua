@@ -990,6 +990,14 @@ local function installPageErrorPage(plugin)
             y + math.floor((box_h - size.h) / 2))
     end
 
+    -- A panel on a dead page is blank; the toast is where the reason can fit.
+    doc.notify_unavailable = function(reason)
+        local text = reason == "large"
+            and _("This page is too large to render.")
+            or _("This page can't be rendered.")
+        UIManager:show(Notification:new{ text = text, timeout = 2 })
+    end
+
     local paging, view = ui and ui.paging, ui and ui.view
     if paging and view and type(paging._gotoPage) == "function"
         and not paging._meguru_failure_barrier_patched then
