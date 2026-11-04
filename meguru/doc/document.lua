@@ -1963,7 +1963,7 @@ local function meguruMarginIsDark(bb, w, h, mid)
     return samples[math.max(1, math.floor(#samples * 0.5))] < mid
 end
 
--- Bottom-strip page-number analysis, ported with three documented deviations.
+-- Bottom-strip page-number analysis, ported with four documented deviations.
 local function meguruAnalyzeStrip(bb, y_start_override)
     local w, h = bb:getWidth(), bb:getHeight()
     if not w or not h or w < 20 or h < 40 then
@@ -1990,6 +1990,8 @@ local function meguruAnalyzeStrip(bb, y_start_override)
     local ink = {}
     local span = {}
     local cols = math.ceil(w / x_step)
+    -- A row this sparse across its span is dust, not an edge.
+    local min_span_ink_ratio = 0.05
     local function scanRow(y)
         local count = 0
         local xmin, xmax = w, -1
@@ -2000,8 +2002,14 @@ local function meguruAnalyzeStrip(bb, y_start_override)
                 if x > xmax then xmax = x end
             end
         end
-        ink[y] = count / cols
-        span[y] = (xmax >= xmin) and (xmax - xmin + 1) or 0
+        local ink_frac = count / cols
+        local row_span = (xmax >= xmin) and (xmax - xmin + 1) or 0
+        -- One speck far from the rest can stretch a row to a panel's width.
+        if row_span > 0 and ink_frac * w / row_span < min_span_ink_ratio then
+            row_span = 0
+        end
+        ink[y] = ink_frac
+        span[y] = row_span
     end
     local function inkAt(y)
         if ink[y] == nil then

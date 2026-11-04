@@ -75,6 +75,16 @@ test a band falls on, which is what the reference already grants a band it *can*
 over the same corpus as the deviations above: **no page that cropped before moved**, and the two
 false positives the width bound exists for are refused by it either way.
 
+**A row's span is bounded by ink, not by dust.** The width tests take each row's span from its
+first to its last dark pixel, so one speck at the far edge of a digit row measured that row at
+71% of the page: on Vinland Saga v01 page 54 the number band itself read as artwork, the panel
+branch fired, and the printed "55" stayed on the page. A row whose ink covers less than 5% of
+its own span now contributes no span, leaving the band's other rows — and the panel edge above
+them — to set the cut. Over the book's 464 pages the rule changes five verdicts: pages 54, 151,
+298 and 433 cut above their printed numbers, and the landscape spread on page 3 moves from a
+dust band's bottom edge to the artwork edge the panel branch is defined to return; both of its
+cuts remove pale water only. **It is the fourth documented deviation.**
+
 **The analysis is done on bands, and the page-number strip is no longer magnified sideways.** Two
 of the ported pass's costs were its shape rather than its rules. `refineAutoCrop` rasterised the
 *whole* page into a Lua string — 3.8 MB for a 1600x2400 scan, per page turn — to serve four walks
