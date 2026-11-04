@@ -658,7 +658,8 @@ any save in that window persists it.
 
 **Pre-warming is two machines, and neither is new.** The *panel* half reuses the tile
 LRU: `drawPagePart` already stores what it renders under `page|panel|region`, so
-rendering the next panel a moment after showing this one makes the swipe a cache hit.
+rendering the next panel at the end of the repaint that shows this one makes the swipe a
+cache hit.
 The *page* half warms the next page's decode, its **crop**, its **panel detection** and
 the **first panel's tile** — in that order, and the order is load-bearing. `getPageBBox`
 is the decoder (through `autoContentBox`) and the thing that fills both `self.dims` and
@@ -670,16 +671,17 @@ memos filled. The last two are the half a crossing pays *in front of the reader*
 turn under the new viewer lays the new page out, which asks for its crop, and the new
 viewer's first tile is a render from the source rather than a slice. Only the crop view
 gets the tile — a window step's rectangle comes from `Viewport`, so the key would not
-match and the render would be wasted. One scheduled action re-arms on every panel change, and
-the delay is the point — a reader swiping quickly re-arms and unschedules faster than
-it, so the warm never does work they did not ask for. The guard is
-`UIManager:isWidgetShown(self)`, which is the whole bookkeeping: a viewer that has been
-closed or handed off is off the stack, so its queued warm is a no-op. Both branches are
-gated on `dead_pages` and the page branch on `hasConnection()`. The native cache holds
-three (`max_cached_native`), so warming N+1 while N is live and N-1 may still be can
-evict N-1's decode — the existing trade, not a new one. **Do not add panel
-detection to `analyseAhead`**: that runs inside every page turn, and a scan per turn
-is exactly the cost this delay exists to keep out of the gesture.
+match and the render would be wasted. One action is armed on every panel change and runs
+after that panel's repaint returns — never before it is on screen, and with no fixed
+delay. A reader swiping quickly therefore keeps one panel warmed ahead, and the price is
+a render after every step rather than only after a pause. The guard is
+`UIManager:isWidgetShown(self)`: a viewer that has been closed or handed off is off the
+stack, so an armed warm is a no-op. Both branches are gated on `dead_pages` and the page
+branch on `hasConnection()`. The native cache holds three (`max_cached_native`), so
+warming N+1 while N is live and N-1 may still be can evict N-1's decode — the existing
+trade, not a new one. **Do not add panel detection to `analyseAhead`**: that runs inside
+every page turn, and a scan per turn is exactly the cost this warm keeps out of the
+gesture.
 
 **The panel cache is four entries, in RAM, keyed on the page *and the direction*.**
 Detection walks a few hundred thousand cells, so the answer is worth keeping — but only

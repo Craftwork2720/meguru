@@ -17,9 +17,6 @@ local Screen = Device.screen
 
 local PanelZoom = {}
 
--- Delay so a fast swipe re-arms and unschedules before the warm runs.
-local WARM_DELAY = 0.4
-
 -- Matches the page-turn guard: the panel was visible before the next step.
 local STEP_GUARD_MS = 100
 
@@ -45,6 +42,16 @@ local function installStepGuard()
         if viewer and viewer._meguru_step_pending then
             viewer._meguru_step_pending = nil
             viewer._meguru_step_guard_until = nowMs() + STEP_GUARD_MS
+        end
+        if viewer and viewer._meguru_warm_pending then
+            viewer._meguru_warm_pending = nil
+            local seq = viewer._meguru_warm_seq
+            -- Deferred: the input queued behind this repaint must be dispatched first.
+            UIManager:nextTick(function()
+                if viewer._meguru_warm_seq == seq then
+                    viewer:meguruWarm()
+                end
+            end)
         end
         return ret
     end
@@ -197,7 +204,8 @@ local PanelViewer = ImageViewer:extend{
     rotate_mode = nil,
     -- Our own button object, so a tap can re-letter it; stock's lookup is sunk.
     meguru_rotate_button = nil,
-    _meguru_warm = nil,
+    _meguru_warm_pending = nil,
+    _meguru_warm_seq = nil,
     _meguru_handoff_pending = nil,
 }
 
@@ -240,19 +248,13 @@ function PanelViewer:meguruArmWarm()
     if self.meguru_free then
         return
     end
-    if self._meguru_warm then
-        UIManager:unschedule(self._meguru_warm)
-        self._meguru_warm = nil
-    end
-    local action = function()
-        self:meguruWarm()
-    end
-    self._meguru_warm = action
-    UIManager:scheduleIn(WARM_DELAY, action)
+    -- Armed for this step; a newer step makes an older queued warm a no-op.
+    self._meguru_warm_seq = (self._meguru_warm_seq or 0) + 1
+    self._meguru_warm_pending = true
 end
 
 function PanelViewer:meguruWarm()
-    self._meguru_warm = nil
+    self._meguru_warm_pending = nil
     if not UIManager:isWidgetShown(self) then
         return
     end
@@ -561,10 +563,7 @@ function PanelViewer:meguruHandoff(direction)
 end
 
 function PanelViewer:onCloseWidget()
-    if self._meguru_warm then
-        UIManager:unschedule(self._meguru_warm)
-        self._meguru_warm = nil
-    end
+    self._meguru_warm_pending = nil
     if self.meguru_free then
         Settings.set("free_zoom_scale", self.meguru_free.scale)
     end
