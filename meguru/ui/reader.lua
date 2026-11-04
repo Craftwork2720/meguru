@@ -1082,41 +1082,6 @@ local function installPageErrorPage(plugin)
             end
         end
 
-        local function promptSkip(failures, number, orig_mode)
-            paging._meguru_failure_prompt = true
-            local first = failures[1]
-            for _, item in ipairs(failures) do
-                if isPermanent(item.failure) then
-                    first = item
-                    break
-                end
-            end
-            local server = tostring((doc.desc and doc.desc.server_name) or _("The server"))
-            local what = #failures > 1 and _("Can't load these pages") or _("Can't load this page")
-            local text = what .. "\n\n"
-                .. pageMessageBody(first.failure.reason, first.failure.code, server)
-                .. "\n\n" .. _("Skip it and continue?")
-            UIManager:show(ConfirmBox:new{
-                text = text,
-                ok_text = #failures > 1 and _("Skip pages") or _("Skip page"),
-                cancel_text = _("Stay"),
-                ok_callback = function()
-                    paging._meguru_failure_prompt = nil
-                    for _, item in ipairs(failures) do
-                        paging._meguru_skipped[item.page] = true
-                    end
-                    UIManager:nextTick(function()
-                        paging._meguru_spread_turn = true
-                        paging._meguru_turn_guard_until = nil
-                        paging:_gotoPage(number, orig_mode)
-                    end)
-                end,
-                cancel_callback = function()
-                    paging._meguru_failure_prompt = nil
-                end,
-            })
-        end
-
         local orig_goto = paging._gotoPage
         paging._gotoPage = function(pg, number, orig_mode)
             local turn = paging._meguru_spread_turn
@@ -1133,14 +1098,16 @@ local function installPageErrorPage(plugin)
                 return orig_goto(pg, number, orig_mode)
             end
             paging._meguru_spread_turn = nil
-            if paging._meguru_failure_prompt then
-                return true
-            end
             if anyPermanent(failures) then
-                promptSkip(failures, number, orig_mode)
-            else
-                retryFailed()
+                -- The page cannot heal; the forward turn is the skip.
+                for _, item in ipairs(failures) do
+                    paging._meguru_skipped[item.page] = true
+                end
+                paging._meguru_turn_guard_until = nil
+                paging._meguru_spread_turn = true
+                return orig_goto(pg, number, orig_mode)
             end
+            retryFailed()
             return true
         end
 

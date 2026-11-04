@@ -611,9 +611,9 @@ would not decode — and each says so in the place the page would be.
   failing holds the spread. A transient failure holds the turn: offline says so in a
   notification, while no answer or a 5xx is retried (failures cleared, page
   repainted) without advancing. A permanent failure — a 4xx other than 408 or 429,
-  a page that would not decode, or one too large to render safely — asks with a
-  confirm box whether to skip; Skip
-  marks that unit passed for the session and performs the turn. Landings (TOC,
+  a page that would not decode, or one too large to render safely — is passed by the
+  next forward turn: that turn marks the unit skipped and performs the turn, with no
+  dialog. The page keeps its sentence; a backward turn still works. Landings (TOC,
   search, bookmarks) are explicit destinations and are not blocked, and a connection
   returning clears every failure and repaints, so the page loads without pressing
   anything.
@@ -624,7 +624,7 @@ would not decode — and each says so in the place the page would be.
   One sentence per reason, because the fixes differ: connecting Wi-Fi does nothing
   about a 404, and waiting does nothing about Wi-Fi that is off. It is *in the page*
   rather than over it, which is what a browser does and what needs no dismissing;
-  only a permanent failure asks before the page is left.
+  a permanent failure is left only by a forward turn, and that turn is the skip.
 
 **A dead page carries a blank native, so no renderer has to answer nil.** When a page
 is refused or fails to decode, `ensureNativeBB` caches a 1024 px white buffer and marks
