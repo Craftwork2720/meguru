@@ -734,7 +734,7 @@ new page under the viewer, so a boundary crossing is one extra e-ink pass.
 
 **A step is not replayed before the panel it landed on is shown.** Taps, swipes and
 arrows all pass through `meguruStepBlocked`, which drops a second gesture until the
-repaint that shows the panel has returned — refresh included — and 200 ms have passed.
+repaint that shows the panel has returned — refresh included — and 100 ms have passed.
 A viewer born from a page crossing starts guarded for the same reason: the old viewer
 cannot carry a timestamp across the close, and the crossing is exactly where the page
 fetch and first render happen. The initial switch that lands on the pressed panel is

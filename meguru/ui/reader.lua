@@ -395,7 +395,7 @@ local function installWideRotate(state, ui)
 end
 
 -- Long enough to swallow the taps queued behind a slow page fetch.
-local TURN_GUARD_MS = 200
+local TURN_GUARD_MS = 100
 
 -- Weak, so a closed reader's paging table is not kept alive by the global patch.
 local guard_owner = setmetatable({}, { __mode = "v" })

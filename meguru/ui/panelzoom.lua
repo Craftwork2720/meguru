@@ -21,7 +21,7 @@ local PanelZoom = {}
 local WARM_DELAY = 0.4
 
 -- Matches the page-turn guard: the panel was visible before the next step.
-local STEP_GUARD_MS = 200
+local STEP_GUARD_MS = 100
 
 -- Weak, so a closed viewer is not kept alive by the global repaint patch.
 local guard_owner = setmetatable({}, { __mode = "v" })
