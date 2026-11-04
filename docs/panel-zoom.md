@@ -732,6 +732,14 @@ still on the stack would float above a different book; then `GotoPage` (exact, u
 panel lookup is gated on `hasConnection()`. The cost, accepted: the reader paints the
 new page under the viewer, so a boundary crossing is one extra e-ink pass.
 
+**A step is not replayed before the panel it landed on is shown.** Taps, swipes and
+arrows all pass through `meguruStepBlocked`, which drops a second gesture until the
+repaint that shows the panel has returned — refresh included — and 200 ms have passed.
+A viewer born from a page crossing starts guarded for the same reason: the old viewer
+cannot carry a timestamp across the close, and the crossing is exactly where the page
+fetch and first render happen. The initial switch that lands on the pressed panel is
+not guarded, and the free view has no steps to guard.
+
 **Logging follows the frequency rule.** `Meguru: page N panel zoom: K panels, whole
 page (<reason>) (mode) in X ms` — the milliseconds are the measurement of the scan, the
 cut and the acceptance tests, and the only place their cost can be seen; the bracketed

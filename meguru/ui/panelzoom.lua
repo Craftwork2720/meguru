@@ -5,6 +5,7 @@ local CanvasContext = require("document/canvascontext")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local Event = require("ui/event")
+local ffiutil = require("ffi/util")
 local Geom = require("ui/geometry")
 local ImageViewer = require("ui/widget/imageviewer")
 local Settings = require("meguru/settings")
@@ -18,6 +19,36 @@ local PanelZoom = {}
 
 -- Delay so a fast swipe re-arms and unschedules before the warm runs.
 local WARM_DELAY = 0.4
+
+-- Matches the page-turn guard: the panel was visible before the next step.
+local STEP_GUARD_MS = 200
+
+-- Weak, so a closed viewer is not kept alive by the global repaint patch.
+local guard_owner = setmetatable({}, { __mode = "v" })
+
+local function nowMs()
+    local sec, usec = ffiutil.gettime()
+    return sec * 1000 + usec / 1000
+end
+
+-- Stamped after the repaint, refresh included, so a tap queued behind the render
+-- is measured from the moment the panel is actually on screen.
+local function installStepGuard()
+    if UIManager._meguru_panel_guard_patched then
+        return
+    end
+    UIManager._meguru_panel_guard_patched = true
+    local orig_repaint = UIManager._repaint
+    UIManager._repaint = function(um, ...)
+        local ret = orig_repaint(um, ...)
+        local viewer = guard_owner.viewer
+        if viewer and viewer._meguru_step_pending then
+            viewer._meguru_step_pending = nil
+            viewer._meguru_step_guard_until = nowMs() + STEP_GUARD_MS
+        end
+        return ret
+    end
+end
 
 -- The book's direction, not BD.mirroredUILayout (the UI language) stock uses.
 local function nextIsRight(mode)
@@ -173,6 +204,10 @@ local PanelViewer = ImageViewer:extend{
 -- Bound unconditionally: a D-pad device answers hasDPad(), not hasKeys().
 function PanelViewer:init()
     ImageViewer.init(self)
+    installStepGuard()
+    guard_owner.viewer = self
+    -- The first repaint stamps it: a tap queued behind the render is lost.
+    self._meguru_step_pending = true
     -- The opening step, before any switch: stock's own answer is the seed.
     self.rotated = rotatedFor(self, 1)
     self.key_events = self.key_events or {}
@@ -180,6 +215,15 @@ function PanelViewer:init()
     self.key_events.MeguruArrowRight = { { "Right" } }
     self.key_events.MeguruArrowUp = { { "Up" } }
     self.key_events.MeguruArrowDown = { { "Down" } }
+end
+
+-- True while the panel on screen has not been visible long enough to step past.
+function PanelViewer:meguruStepBlocked()
+    if self._meguru_step_pending then
+        return true
+    end
+    local until_ms = self._meguru_step_guard_until
+    return until_ms ~= nil and nowMs() < until_ms
 end
 
 -- The size travels too: a window tile is filed under its rectangle and its size.
@@ -298,10 +342,11 @@ end
 
 -- Bounded by #self.steps: images_list_nb is the chrome switch, not a count.
 function PanelViewer:onShowNextImage()
-    if self.meguru_free then
+    if self.meguru_free or self:meguruStepBlocked() then
         return true
     end
     if self._images_list_cur < #self.steps then
+        self._meguru_step_pending = true
         self:switchToImageNum(self._images_list_cur + 1)
         return true
     end
@@ -309,10 +354,11 @@ function PanelViewer:onShowNextImage()
 end
 
 function PanelViewer:onShowPrevImage()
-    if self.meguru_free then
+    if self.meguru_free or self:meguruStepBlocked() then
         return true
     end
     if self._images_list_cur > 1 then
+        self._meguru_step_pending = true
         self:switchToImageNum(self._images_list_cur - 1)
         return true
     end
