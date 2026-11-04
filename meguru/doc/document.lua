@@ -1185,10 +1185,10 @@ function MeguruDocument:memoryPressure(keep)
     return true
 end
 
--- Local pages paint from the retained decode: a CBZ image re-decodes its full
--- source for every region. A dead page does too, through its placeholder.
+-- Paint from the retained decode whenever there is one; a stream's source
+-- render is only the fallback after its native has left the LRU.
 function MeguruDocument:preferNativeRender(pageno)
-    return self.local_cbz or self.dead_pages[pageno]
+    return self.local_cbz or self.dead_pages[pageno] or self:hasNative(pageno)
 end
 
 -- Cached tile for key, if still the tile that key means; tone is a stamp.

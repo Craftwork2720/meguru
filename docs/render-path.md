@@ -129,12 +129,12 @@ and 8 leaves a margin. A page over the line is refused before that render, marke
 one. The archive is listed once at open; an all-JPEG archive skips the guard, because
 there the decoder is what keeps the source out of memory.
 
-**Local pages paint from the retained decode.** Every local CBZ page paint and panel
-crop goes through `decodeRegion`: it crops and scales the capped native buffer instead
-of asking MuPDF to decode the source again. That is one full decode per page rather than
-one per paint, and it is why a 16-Mpx PNG page can be shown on a device that could not
-hold its source twice. Streamed pages keep the direct path; their bytes, not the
-archive, are the source.
+**A page paints from the retained decode whenever there is one.** `preferNativeRender`
+asks `hasNative`: every local CBZ page goes through `decodeRegion`, and a streamed page
+does too while its native is in the LRU. The direct render from the page's bytes is
+only the fallback once that native has been evicted. That is one full decode per
+displayed page rather than one per paint, and it is why a 16-Mpx PNG page can be shown
+on a device that could not hold its source twice.
 
 Everything else on the render path was already
 format-tolerant and needed no change: `bbBytesPerPixel` knows all four types,
