@@ -934,6 +934,8 @@ local function pageMessageBody(reason, code, server)
             server, tostring(code))
     elseif reason == "network" then
         return T(_("%1 isn't responding.\nMake sure the server is running, then try again."), server)
+    elseif reason == "decode" then
+        return _("This page can't be rendered.\nThe file may be damaged.")
     end
     return _("Something went wrong loading this page.\nTry again in a moment.")
 end
@@ -959,7 +961,7 @@ local function pageMessageWidget(state, key, text, width)
     return widget
 end
 
--- A page turn is the retry: no button, no dialog, just the reason in the page.
+-- A forward turn stops at a failed page; a permanent failure offers a skip.
 local function installPageErrorPage(plugin)
     local ui = plugin.ui
     local doc = ui and ui.document
@@ -986,7 +988,162 @@ local function installPageErrorPage(plugin)
             y + math.floor((box_h - size.h) / 2))
     end
 
-    -- A page turn is the retry; onPageUpdate returns nothing, so it reaches us.
+    local paging, view = ui and ui.paging, ui and ui.view
+    if paging and view and type(paging._gotoPage) == "function"
+        and not paging._meguru_failure_barrier_patched then
+        paging._meguru_failure_barrier_patched = true
+        paging._meguru_skipped = paging._meguru_skipped or {}
+
+        local function unitPages(pageno)
+            if type(doc.spreadUnitFor) == "function" then
+                local unit = doc:spreadUnitFor(pageno)
+                if unit then
+                    if unit.b then
+                        return { unit.a, unit.b }
+                    end
+                    return { unit.a }
+                end
+            end
+            return { pageno }
+        end
+
+        local function failureAt(pageno)
+            local failed = doc.fetch_failed and doc.fetch_failed[pageno]
+            if failed then
+                return failed
+            end
+            if doc.dead_pages and doc.dead_pages[pageno] then
+                return { reason = "decode" }
+            end
+        end
+
+        local function isPermanent(failure)
+            if failure.reason == "decode" then
+                return true
+            end
+            if failure.reason ~= "http" then
+                return false
+            end
+            local code = tonumber(failure.code)
+            return code and code >= 400 and code < 500
+                and code ~= 408 and code ~= 429
+        end
+
+        local function failedPages(pageno)
+            local out = {}
+            for _, page in ipairs(unitPages(pageno)) do
+                local failure = failureAt(page)
+                if failure and not paging._meguru_skipped[page] then
+                    out[#out + 1] = { page = page, failure = failure }
+                end
+            end
+            return out
+        end
+
+        local function anyPermanent(failures)
+            for _, item in ipairs(failures) do
+                if isPermanent(item.failure) then
+                    return true
+                end
+            end
+            return false
+        end
+
+        local function retryFailed()
+            local connected = type(doc.hasConnection) == "function"
+                and doc:hasConnection()
+            if not connected then
+                UIManager:show(Notification:new{
+                    text = _("You're offline — connect to Wi-Fi to continue."),
+                    timeout = 2,
+                })
+                return
+            end
+            if type(doc.clearFetchFailures) == "function" then
+                doc:clearFetchFailures()
+            end
+            -- Hold the next tap until the repaint has tried the page again.
+            paging._meguru_failure_retry = true
+            if view.dialog then
+                UIManager:setDirty(view.dialog, "partial")
+            end
+        end
+
+        local function promptSkip(failures, number, orig_mode)
+            paging._meguru_failure_prompt = true
+            local first = failures[1]
+            for _, item in ipairs(failures) do
+                if isPermanent(item.failure) then
+                    first = item
+                    break
+                end
+            end
+            local server = tostring((doc.desc and doc.desc.server_name) or _("The server"))
+            local what = #failures > 1 and _("Can't load these pages") or _("Can't load this page")
+            local text = what .. "\n\n"
+                .. pageMessageBody(first.failure.reason, first.failure.code, server)
+                .. "\n\n" .. _("Skip it and continue?")
+            UIManager:show(ConfirmBox:new{
+                text = text,
+                ok_text = #failures > 1 and _("Skip pages") or _("Skip page"),
+                cancel_text = _("Stay"),
+                ok_callback = function()
+                    paging._meguru_failure_prompt = nil
+                    for _, item in ipairs(failures) do
+                        paging._meguru_skipped[item.page] = true
+                    end
+                    UIManager:nextTick(function()
+                        paging._meguru_spread_turn = true
+                        paging._meguru_turn_guard_until = nil
+                        paging:_gotoPage(number, orig_mode)
+                    end)
+                end,
+                cancel_callback = function()
+                    paging._meguru_failure_prompt = nil
+                end,
+            })
+        end
+
+        local orig_goto = paging._gotoPage
+        paging._gotoPage = function(pg, number, orig_mode)
+            local turn = paging._meguru_spread_turn
+            if not (turn and type(number) == "number"
+                and number > (pg.current_page or 0) and not view.page_scroll) then
+                return orig_goto(pg, number, orig_mode)
+            end
+            if paging._meguru_failure_retry then
+                paging._meguru_spread_turn = nil
+                return true
+            end
+            local failures = failedPages(pg.current_page)
+            if #failures == 0 then
+                return orig_goto(pg, number, orig_mode)
+            end
+            paging._meguru_spread_turn = nil
+            if paging._meguru_failure_prompt then
+                return true
+            end
+            if anyPermanent(failures) then
+                promptSkip(failures, number, orig_mode)
+            else
+                retryFailed()
+            end
+            return true
+        end
+
+        if not view._meguru_failure_paint_patched
+            and type(view.paintTo) == "function" then
+            view._meguru_failure_paint_patched = true
+            local orig_paint_to = view.paintTo
+            view.paintTo = function(vw, ...)
+                local ret = orig_paint_to(vw, ...)
+                paging._meguru_failure_retry = nil
+                return ret
+            end
+        end
+    end
+
+    -- A turn that goes through clears failures; onPageUpdate returns nothing.
     plugin.onPageUpdate = function(self)
         local d = self.ui and self.ui.document
         if d and type(d.clearFetchFailures) == "function" then

@@ -109,7 +109,7 @@ The shape to look for on the device is a page cropped short — a chapter's last
 
 **The page number on screen, in the sidecar and in the progress report is the unit's first page.** `current_page` therefore never holds the second page of a pair, `meguru/progress` needed no change at all, and a resume lands on a pair rather than beside it.
 
-**A turn is not replayed once the page it landed on is shown — on a single page as on a pair.** A tap that arrives while the page is still being fetched, or in the short guard after the repaint that lands it — stamped once the panel refresh completes, so a queued tap is measured from when the page is visible — is dropped rather than queued; otherwise the reader would see a page only as the next one was already turning. The guard is skipped in page-flipping and continuous modes, where the gesture is the input.
+**A turn is not replayed once the page it landed on is shown — on a single page as on a pair.** A tap that arrives while the page is still being fetched, or in the short guard after the repaint that lands it — stamped once the panel refresh completes, so a queued tap is measured from when the page is visible — is dropped rather than queued; otherwise the reader would see a page only as the next one was already turning. The guard is skipped in page-flipping and continuous modes, where the gesture is the input. A failed page holds the spread too: a forward turn stops on the pair until it loads or is skipped.
 
 At the end of the book the counter never passes the last page while the last unit is a pair, so nothing would announce the end; the wrapper says `EndOfBook` itself when a forward step has no unit to land on.
 

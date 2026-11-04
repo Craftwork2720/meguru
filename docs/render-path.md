@@ -571,19 +571,28 @@ would not decode — and each says so in the place the page would be.
   `ReaderView:drawSinglePage` reaches `document:drawPage` on *every* repaint, so a
   page that failed once paid a socket timeout — and logged a line — on every menu
   opening, zoom step and crop toggle, against a server that had already said no.
-  `clearFetchFailures` is the whole of the retry story, and exactly two things call
-  it: a page turn (`plugin.onPageUpdate`, which is the reader asking for a page
-  again) and the connection coming back (`plugin.onNetworkConnected`, which also
-  repaints if anything had failed — the event fires once at startup too, hence the
-  return value). A **page turn is the retry**; there is no button, and no dialog.
+  `clearFetchFailures` is the whole of the retry story: a turn that goes through
+  (`plugin.onPageUpdate`), the barrier below when it retries a page it refused, and
+  the connection coming back (`plugin.onNetworkConnected`, which also repaints if
+  anything had failed — the event fires once at startup too, hence the return value).
+- **A forward page turn stops at the failed unit; a backward turn still works.** The
+  unit is the page in single-page view and both pages of a pair, so either half
+  failing holds the spread. A transient failure holds the turn: offline says so in a
+  notification, while no answer or a 5xx is retried (failures cleared, page
+  repainted) without advancing. A permanent failure — a 4xx other than 408 or 429,
+  or a page that would not decode — asks with a confirm box whether to skip; Skip
+  marks that unit passed for the session and performs the turn. Landings (TOC,
+  search, bookmarks) are explicit destinations and are not blocked, and a connection
+  returning clears every failure and repaints, so the page loads without pressing
+  anything.
 - **The page is replaced by a sentence that names the reason.** The document paints
-  the box and passes the `fetch_failed` entry to `self.missing_painter`, installed by
+  the box and passes the failure to `self.missing_painter`, installed by
   `ui/reader.lua` — the wording, the font and the layout live there, so a document
   with no reader in front of it (the mosaic's cover path) still gets its plain box.
   One sentence per reason, because the fixes differ: connecting Wi-Fi does nothing
   about a 404, and waiting does nothing about Wi-Fi that is off. It is *in the page*
-  rather than over it, which is what a browser does and what needs no dismissing —
-  the reader can carry on turning pages.
+  rather than over it, which is what a browser does and what needs no dismissing;
+  only a permanent failure asks before the page is left.
 
 **There was a drawing here — Meguru-chan lying across a big "404" — and it was
 removed deliberately.** The reason is the one thing a picture cannot carry, and the

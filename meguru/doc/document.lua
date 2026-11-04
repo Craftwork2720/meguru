@@ -3045,7 +3045,12 @@ function MeguruDocument:paintMissingPage(target, rect, x, y, pageno)
     local h = rect.h or 1
     target:paintRect(x, y, w, h, Blitbuffer.COLOR_WHITE)
     if self.missing_painter then
-        self.missing_painter(target, rect, x, y, pageno and self.fetch_failed[pageno])
+        -- A dead decode never reached fetch_failed, so it gets its own reason.
+        local failure = pageno and self.fetch_failed[pageno]
+        if not failure and pageno and self.dead_pages[pageno] then
+            failure = { reason = "decode" }
+        end
+        self.missing_painter(target, rect, x, y, failure)
     end
 end
 
