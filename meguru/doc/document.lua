@@ -2114,7 +2114,21 @@ function MeguruDocument:autoContentBox(pageno)
         return nil
     end
     local bb = item.bb
-    local box = computeContentBox(bb, bb:getWidth(), bb:getHeight(), pageno)
+    local bw, bh = bb:getWidth(), bb:getHeight()
+    local box = computeContentBox(bb, bw, bh, pageno)
+    -- The scan is in the buffer's space; the page's own may be another size.
+    local dims = self.dims[pageno]
+    if box and dims and dims.w and dims.h
+            and (dims.w ~= bw or dims.h ~= bh) then
+        local sx, sy = dims.w / bw, dims.h / bh
+        box = {
+            x0 = math.max(0, math.floor(box.x0 * sx)),
+            y0 = math.max(0, math.floor(box.y0 * sy)),
+            x1 = math.min(dims.w, math.ceil(box.x1 * sx)),
+            y1 = math.min(dims.h, math.ceil(box.y1 * sy)),
+            color = box.color,
+        }
+    end
     -- Cache false for "nothing trimmed", so a full-bleed page is scanned once.
     self.crops[pageno] = box or false
     return box
@@ -2615,6 +2629,24 @@ local function cachePanels(doc, key, panels, accepted, reason)
     end
 end
 
+-- Panels are found on one buffer but drawn against the page's own size.
+local function rescalePanels(panels, sx, sy)
+    for i = 1, #panels do
+        local panel = panels[i]
+        panel.x, panel.y = panel.x * sx, panel.y * sy
+        panel.w, panel.h = panel.w * sx, panel.h * sy
+        if panel.planes then
+            -- A plane is converted by its coefficients, as panel.lua does.
+            for j = 1, #panel.planes do
+                local plane = panel.planes[j]
+                plane.B = plane.B * sx / sy
+                plane.C = plane.C * sx
+            end
+        end
+    end
+    return panels
+end
+
 -- All panels on a page in reading order; never nil for a readable page.
 function MeguruDocument:getPanelsFromPage(pageno, manga)
     -- Panels come from the rendered page, so a tone change drops them.
@@ -2628,8 +2660,18 @@ function MeguruDocument:getPanelsFromPage(pageno, manga)
     if not native_bb then
         return nil, false, "page could not be decoded"
     end
+    local nw, nh = native_bb:getWidth(), native_bb:getHeight()
+    local dims = self.dims[pageno]
+    if not dims then
+        -- The detected buffer is the only space this page has been seen in.
+        dims = { w = nw, h = nh }
+        self.dims[pageno] = dims
+    end
     local panels, accepted, reason = Panel.detect(native_bb, manga)
     if panels then
+        if dims.w ~= nw or dims.h ~= nh then
+            rescalePanels(panels, dims.w / nw, dims.h / nh)
+        end
         cachePanels(self, key, panels, accepted, reason)
     end
     return panels, accepted, reason
@@ -3043,9 +3085,20 @@ function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th, plane
     if not doc then
         return nil, reason
     end
+    -- The region is in the page's own space; a re-decoded native may differ.
+    local dims = self.dims[pageno]
+    local src_w
+    if dims and dims.w and dims.w > 0 then
+        src_w = dims.w
+    else
+        local item = self.native[pageno]
+        if item and item.bb and item.bb_free ~= true then
+            src_w = item.bb:getWidth()
+        end
+    end
     -- The tone: every panel tile comes through here, so panels follow it.
     local ok, bb = pcall(Image.renderRegion, doc, doc_pageno, cx, cy, cw, ch, tw, th, planes,
-        self:contrast(), self:saturation())
+        self:contrast(), self:saturation(), src_w)
     if owned then
         pcall(doc.close, doc)
     end
@@ -3173,10 +3226,16 @@ function MeguruDocument:decodeRegion(pageno, cx, cy, cw, ch, tw, th, data)
         return nil
     end
     local fw, fh = native_bb:getWidth(), native_bb:getHeight()
-    local nx0 = clamp(round(cx), 0, fw)
-    local ny0 = clamp(round(cy), 0, fh)
-    local nx1 = clamp(round(cx + cw), nx0 + 1, fw)
-    local ny1 = clamp(round(cy + ch), ny0 + 1, fh)
+    -- The region is in page space; a re-decode may have changed the buffer.
+    local sx, sy = 1, 1
+    if dims and dims.w and dims.h and dims.w > 0 and dims.h > 0
+            and (dims.w ~= fw or dims.h ~= fh) then
+        sx, sy = fw / dims.w, fh / dims.h
+    end
+    local nx0 = clamp(round(cx * sx), 0, fw)
+    local ny0 = clamp(round(cy * sy), 0, fh)
+    local nx1 = clamp(round((cx + cw) * sx), nx0 + 1, fw)
+    local ny1 = clamp(round((cy + ch) * sy), ny0 + 1, fh)
     local rw = nx1 - nx0
     local rh = ny1 - ny0
     -- Non-1:1 whole page scales on the cache; the 1:1 case copies.

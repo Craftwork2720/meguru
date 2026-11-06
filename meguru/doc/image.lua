@@ -340,7 +340,9 @@ local function maskToQuad(bb, planes, nx, ny, nw, nh, tw, th)
     flush(th)
 end
 
-function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes, gamma, saturation)
+-- `src_w` is the caller's full-page width: regions are in that space.
+function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes, gamma, saturation,
+                            src_w)
     if not Mupdf or not doc then
         return nil
     end
@@ -360,17 +362,24 @@ function Image.renderRegion(doc, pageno, nx, ny, nw, nh, tw, th, planes, gamma, 
     if ok_size and pw and ph and pw > 0 and ph > 0 then
         local fw = math.max(1, math.floor(pw + 0.5))
         local fh = math.max(1, math.floor(ph + 0.5))
-        local budget = renderBudget()
-        local space_w = cappedDim(fw, fh, budget)
+        local budget
+        -- The caller's space, not this budget: crops must not follow free RAM.
+        local space_w
+        if src_w and src_w > 0 then
+            space_w = src_w
+        else
+            budget = renderBudget()
+            space_w = cappedDim(fw, fh, budget)
+        end
         if space_w and space_w > 0 then
             local f = fw / space_w -- caller's space -> the MuPDF page's own
             local out_w, out_h = tw, th
             if not (out_w and out_h) then
                 out_w = math.max(1, math.floor(nw * f + 0.5))
                 out_h = math.max(1, math.floor(nh * f + 0.5))
+                budget = budget or renderBudget()
+                out_w, out_h = cappedDim(out_w, out_h, budget)
             end
-            -- Explicit sizes are capped too: a panel step must fit the budget.
-            out_w, out_h = cappedDim(out_w, out_h, budget)
             local zoom = out_w / (nw * f)
             if zoom > 0 then
                 local dc = DrawContext.new()

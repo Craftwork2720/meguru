@@ -114,10 +114,14 @@ raw page bytes and panel lists of every other page, keeping both pages of a pair
 spread is up, so the transient that follows starts with the room they held. Prefetch,
 `analyseAhead` and the panel warm are optional and stop below the line; a warm that
 finds pressure drops the old pages instead. The drop is logged once per book, not per
-item. Every native or region render is also capped at a quarter of the free RAM (four
-bytes per pixel), not only at `max_native_pixels`; a cropped panel tile is capped
-further, at twice the screen's pixel area, so a page accepted as one whole panel cannot
-allocate a page-sized tile.
+item. Every native decode is also capped at a quarter of the free RAM (four bytes
+per pixel), not only at `max_native_pixels`, while a cropped panel tile is asked for
+at no more than twice the screen's pixel area, so a page accepted as one whole panel
+cannot allocate a page-sized tile. **The render path's coordinates are the capped
+decode's, wherever the buffer went next**: a region render takes that size as its
+source space instead of measuring a fresh budget, `decodeRegion` maps that space onto a
+re-decoded buffer, and detected panels are rescaled into it before they are cached. A
+budget that moved between the decode and the crop therefore cannot move the rectangle.
 
 **A single local page can still be too large for any cache discipline.** MuPDF
 decimates JPEG while decoding, but other formats decode at source size before scaling:
