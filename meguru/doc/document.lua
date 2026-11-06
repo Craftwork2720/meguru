@@ -1461,7 +1461,9 @@ function MeguruDocument:_localCoverPageImage()
         return nil
     end
     -- Must be Image.renderMupdfPage; a bare renderMuPDFPage is nil.
-    local ok, bb = pcall(Image.renderMupdfPage, self.mupdf_doc, 1, nil)
+    -- Screen-sized: MuPDF decimates in the decoder, and no cover is shown larger.
+    local ok, bb = pcall(Image.renderMupdfPage, self.mupdf_doc, 1, nil, nil, nil,
+        Screen:getWidth(), Screen:getHeight())
     if not ok or not bb or bb == Image.DECODE_TOO_LARGE then
         logger.warn("Meguru: could not render local cbz cover")
         return nil

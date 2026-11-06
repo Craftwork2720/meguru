@@ -151,7 +151,8 @@ local function documentMagic(data)
 end
 
 -- Only the streamed path can refuse by size: it alone has the bytes to sniff.
-local function renderMuPDFPage(doc, pageno, refuse_oversize, gamma, saturation)
+local function renderMuPDFPage(doc, pageno, refuse_oversize, gamma, saturation,
+                               fit_w, fit_h)
     local budget = renderBudget()
     local ok_page, page = pcall(doc.openPage, doc, pageno)
     local bb
@@ -165,7 +166,16 @@ local function renderMuPDFPage(doc, pageno, refuse_oversize, gamma, saturation)
                 page:close()
                 return DECODE_TOO_LARGE
             end
-            local cw, ch = cappedDim(fw, fh, budget)
+            local cw, ch
+            if fit_w and fit_h and fit_w > 0 and fit_h > 0 then
+                -- Bound the draw itself: scaling afterwards holds the full render.
+                local s = math.min(1, fit_w / fw, fit_h / fh)
+                cw = math.max(1, math.floor(fw * s + 0.5))
+                ch = math.max(1, math.floor(fh * s + 0.5))
+                cw, ch = cappedDim(cw, ch, budget)
+            else
+                cw, ch = cappedDim(fw, fh, budget)
+            end
             if cw < 1 then cw = 1 end
             if ch < 1 then ch = 1 end
             local dc = DrawContext.new()

@@ -41,6 +41,15 @@ an encrypted entry, an unknown compression method or a directory that will not
 parse makes `Zip.open`/`read` answer nil, and the libarchive path runs exactly as
 it did before: the index sits in front of that reader, it does not replace it.
 
+**The cover is drawn at screen size from the first draw.**
+`_localCoverPageImage` passes the screen's box to the renderer, as stock's
+`KoptInterface:getCoverPageImage` computes a zoom to the canvas, instead of
+rendering at the 10 Mpx budget and scaling afterwards. MuPDF decimates an
+oversized JPEG in the decoder, so what is saved is the full render: on a
+2560x3600 cover the budget-sized draw measured 630–1000 ms and a 37 MB buffer,
+the screen-fitted one 320–430 ms and 7.7 MB, and no cover is ever shown larger
+than the screen.
+
 **The read has an off switch**, the `Settings` row `Read metadata from ComicInfo.xml`,
 checked in `_localComicProps` ahead of that cache: an off library never opens an
 archive for metadata, and the file name is the title again.
