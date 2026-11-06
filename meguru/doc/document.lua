@@ -31,6 +31,7 @@ local SeriesState = require("meguru/seriesstate")
 local Settings = require("meguru/settings")
 local Sources = require("meguru/sources")
 local Spread = require("meguru/spread")
+local Zip = require("meguru/zip")
 local util = require("util")
 local ffiutil = require("ffi/util")
 
@@ -740,6 +741,7 @@ local MeguruDocument = Document:extend{
     local_cbz = false,
     local_all_jpeg = false,
     mupdf_doc = nil,
+    zip_reader = nil,
 
     -- Pages warmed after a repaint; a pair raises the lead to three.
     prefetch_count = 1,
@@ -792,6 +794,23 @@ end
 -- True only when every file entry is a JPEG (ComicInfo.xml aside): then the
 -- source-size guard below can be skipped for the whole archive.
 function MeguruDocument:_localArchiveAllJpeg()
+    local zip = self.zip_reader
+    if zip then
+        local seen, all_jpeg = false, true
+        for _, entry in ipairs(zip.entries) do
+            local name = entry.name:lower()
+            -- A directory ends in "/"; the archive walk skips those by mode.
+            if name:sub(-1) ~= "/" then
+                local ext = name:match("%.([a-z0-9]+)$")
+                if ext == "jpg" or ext == "jpeg" then
+                    seen = true
+                elseif name ~= "comicinfo.xml" then
+                    seen, all_jpeg = true, false
+                end
+            end
+        end
+        return seen and all_jpeg
+    end
     local ok, Archiver = pcall(require, "ffi/archiver")
     if not ok or type(Archiver) ~= "table" or not Archiver.Reader then
         return false
@@ -851,6 +870,7 @@ function MeguruDocument:init()
             error("Meguru: cannot open local CBZ as a Meguru book: "
                 .. tostring(self.file))
         end
+        self.zip_reader = Zip.open(self.file)
         self.local_all_jpeg = self:_localArchiveAllJpeg()
     else
         desc = Marker.load(self.file)
@@ -972,9 +992,12 @@ function MeguruDocument:close()
         if refcount == 0 then
             self:clearCaches()
             -- Release the persistent MuPDF document; nil it (idempotent close).
-            if self.local_cbz and self.mupdf_doc then
-                pcall(self.mupdf_doc.close, self.mupdf_doc)
-                self.mupdf_doc = nil
+            if self.local_cbz then
+                if self.mupdf_doc then
+                    pcall(self.mupdf_doc.close, self.mupdf_doc)
+                    self.mupdf_doc = nil
+                end
+                self.zip_reader = nil
             end
             self.is_open = false
             return true
@@ -1400,7 +1423,7 @@ function MeguruDocument:_localComicProps()
         return { title = self:_localTitle() }
     end
     if self._comic_info == nil then
-        self._comic_info = ComicInfo.read(self.file) or false
+        self._comic_info = ComicInfo.read(self.file, self.zip_reader) or false
     end
     local props = {}
     for key, value in pairs(self._comic_info or {}) do

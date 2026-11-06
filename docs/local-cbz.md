@@ -30,6 +30,17 @@ folds only because the descriptor it projects has no series *field* for the titl
 to sit beside. And **the entry is read once per document** (`self._comic_info`,
 with `false` for "read, none there"), because it opens the archive.
 
+**The archive is indexed once; it is not walked twice.** `meguru/zip` reads the
+end-of-central-directory record and the central directory in two reads, then
+jumps to an entry by its local-header offset. The reason is measured: libarchive's
+`next_header` seeks to every local header, 98–260 ms across the 185–464 entry
+sample archives, against ~5 ms for the directory — and a document paid a whole
+walk twice, once for `ComicInfo` and once for the all-JPEG guard. Stored entries
+are read directly and deflated ones through zlib's raw inflate. A ZIP64 record,
+an encrypted entry, an unknown compression method or a directory that will not
+parse makes `Zip.open`/`read` answer nil, and the libarchive path runs exactly as
+it did before: the index sits in front of that reader, it does not replace it.
+
 **The read has an off switch**, the `Settings` row `Read metadata from ComicInfo.xml`,
 checked in `_localComicProps` ahead of that cache: an off library never opens an
 archive for metadata, and the file name is the title again.
