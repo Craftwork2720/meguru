@@ -31,7 +31,6 @@ local SeriesState = require("meguru/seriesstate")
 local Settings = require("meguru/settings")
 local Sources = require("meguru/sources")
 local Spread = require("meguru/spread")
-local Zip = require("meguru/zip")
 local util = require("util")
 local ffiutil = require("ffi/util")
 
@@ -729,67 +728,6 @@ local function localPageTooLarge(self, fw, fh)
     return fw * fh * LOCAL_PAGE_SOURCE_SCALE > budget
 end
 
--- MuPDF's own cbz_ext_list, mirrored: only these entries become pages.
-local PAGE_EXTENSIONS = {
-    ".bmp", ".gif", ".hdp", ".j2k", ".jb2", ".jbig2", ".jp2", ".jpeg",
-    ".jpg", ".jpx", ".jxr", ".pam", ".pbm", ".pgm", ".pkm", ".png",
-    ".pnm", ".ppm", ".tif", ".tiff", ".wdp", ".webp",
-}
-local PAGE_EXTENSION_SET = {}
-for _, ext in ipairs(PAGE_EXTENSIONS) do
-    PAGE_EXTENSION_SET[ext] = true
-end
-
-local function pageExtension(name)
-    local dot = name:match(".*()%.")
-    if not dot then
-        return nil
-    end
-    local ext = name:sub(dot):lower()
-    return PAGE_EXTENSION_SET[ext] and ext or nil
-end
-
-local function foldByte(byte)
-    if byte and byte >= 97 and byte <= 122 then
-        return byte - 32
-    end
-    return byte or 0
-end
-
--- cbz_strnatcmp from MuPDF: the index must order page 1 as MuPDF does.
-local function natCmp(a, b)
-    local i, j = 1, 1
-    while i <= #a or j <= #b do
-        local ca, cb = a:byte(i), b:byte(j)
-        if ca and cb and ca >= 48 and ca <= 57 and cb >= 48 and cb <= 57 then
-            local x, y = 0, 0
-            while ca and ca >= 48 and ca <= 57 do
-                x = x * 10 + ca - 48
-                i = i + 1
-                ca = a:byte(i)
-            end
-            while cb and cb >= 48 and cb <= 57 do
-                y = y * 10 + cb - 48
-                j = j + 1
-                cb = b:byte(j)
-            end
-            if x ~= y then
-                return x < y and -1 or 1
-            end
-        else
-            local x, y = foldByte(ca), foldByte(cb)
-            if x ~= y then
-                return x < y and -1 or 1
-            end
-            i, j = i + 1, j + 1
-        end
-    end
-    return 0
-end
-
--- The first image a 64-book sample holds is 6 MB; above this MuPDF renders.
-local MAX_COVER_BYTES = 8 * 1024 * 1024
-
 local MeguruDocument = Document:extend{
     -- Set in init: the OCR page shim; the book still has no engine instance.
     _document = nil,
@@ -802,11 +740,6 @@ local MeguruDocument = Document:extend{
     local_cbz = false,
     local_all_jpeg = false,
     mupdf_doc = nil,
-    zip_reader = nil,
-    -- MuPDF opens on the first page; props and artwork come from the index.
-    _mupdf_pending = false,
-    _archive_pages = nil,
-    _index_pages_trusted = false,
 
     -- Pages warmed after a repaint; a pair raises the lead to three.
     prefetch_count = 1,
@@ -856,69 +789,9 @@ function MeguruDocument:_openLocalArchive()
     return doc
 end
 
--- Image entries in MuPDF's order, or nil when the index cannot answer.
-function MeguruDocument:_zipPages()
-    local zip = self.zip_reader
-    if not zip then
-        return nil
-    end
-    local pages = {}
-    for _, entry in ipairs(zip.entries) do
-        if pageExtension(entry.name) then
-            pages[#pages + 1] = entry.name
-        end
-    end
-    table.sort(pages, function(a, b) return natCmp(a, b) < 0 end)
-    return pages
-end
-
--- MuPDF opens on the first real page: the cover browser pays no openDocument.
-function MeguruDocument:_mupdf()
-    if self.mupdf_doc then
-        return self.mupdf_doc
-    end
-    if not self._mupdf_pending then
-        return nil
-    end
-    self._mupdf_pending = false
-    local doc = self:_openLocalArchive()
-    if not doc then
-        logger.warn("Meguru: cannot open", self.file, "as a local CBZ")
-        return nil
-    end
-    self.mupdf_doc = doc
-    -- The index mirrors MuPDF's page list; only MuPDF can confirm it.
-    local ok_pages, n = pcall(doc.getPages, doc)
-    local count = ok_pages and tonumber(n) or nil
-    if count and count ~= self.info.number_of_pages then
-        logger.info("Meguru: local CBZ page count", count, "from MuPDF,",
-            self.info.number_of_pages, "from the index")
-        self.info.number_of_pages = count
-        self._index_pages_trusted = false
-    end
-    return doc
-end
-
 -- True only when every file entry is a JPEG (ComicInfo.xml aside): then the
 -- source-size guard below can be skipped for the whole archive.
 function MeguruDocument:_localArchiveAllJpeg()
-    local zip = self.zip_reader
-    if zip then
-        local seen, all_jpeg = false, true
-        for _, entry in ipairs(zip.entries) do
-            local name = entry.name:lower()
-            -- A directory ends in "/"; the archive walk skips those by mode.
-            if name:sub(-1) ~= "/" then
-                local ext = name:match("%.([a-z0-9]+)$")
-                if ext == "jpg" or ext == "jpeg" then
-                    seen = true
-                elseif name ~= "comicinfo.xml" then
-                    seen, all_jpeg = true, false
-                end
-            end
-        end
-        return seen and all_jpeg
-    end
     local ok, Archiver = pcall(require, "ffi/archiver")
     if not ok or type(Archiver) ~= "table" or not Archiver.Reader then
         return false
@@ -959,6 +832,8 @@ function MeguruDocument:init()
     self.dead_pages = {}
     -- Refused for size, not damage: the page message says which.
     self.large_pages = {}
+    -- Refused only for want of RAM now; cleared when a retry is asked for.
+    self.retryable_pages = {}
     -- Panel requests for a dead page: one toast per page per few seconds.
     self._unavailable_notified = {}
 
@@ -972,20 +847,11 @@ function MeguruDocument:init()
     if util.getFileNameSuffix(self.file):lower() == "cbz" then
         desc = nil
         self.local_cbz = true
-        self.zip_reader = Zip.open(self.file)
-        self._archive_pages = self:_zipPages()
-        if self._archive_pages and #self._archive_pages > 0 then
-            -- Props and artwork come from the index; a page opens MuPDF.
-            self._mupdf_pending = true
-            self._index_pages_trusted = true
-        else
-            self._archive_pages = nil
-            self.mupdf_doc = self:_openLocalArchive()
-            if not self.mupdf_doc then
-                -- Nothing opened, nothing to leak; DocumentRegistry catches it.
-                error("Meguru: cannot open local CBZ as a Meguru book: "
-                    .. tostring(self.file))
-            end
+        self.mupdf_doc = self:_openLocalArchive()
+        if not self.mupdf_doc then
+            -- Nothing opened, nothing to leak; DocumentRegistry catches it.
+            error("Meguru: cannot open local CBZ as a Meguru book: "
+                .. tostring(self.file))
         end
         self.local_all_jpeg = self:_localArchiveAllJpeg()
     else
@@ -1000,13 +866,9 @@ function MeguruDocument:init()
 
     local count
     if self.local_cbz then
-        if self._archive_pages then
-            count = #self._archive_pages
-        else
-            -- The same 1-based numbers stock uses; a 0-page archive clamps to 1.
-            local ok_pages, n = pcall(self.mupdf_doc.getPages, self.mupdf_doc)
-            count = ok_pages and tonumber(n) or 1
-        end
+        -- The same 1-based numbers stock uses; a 0-page archive clamps to 1.
+        local ok_pages, n = pcall(self.mupdf_doc.getPages, self.mupdf_doc)
+        count = ok_pages and tonumber(n) or 1
         if not count or count < 1 then
             count = 1
         end
@@ -1117,9 +979,6 @@ function MeguruDocument:close()
                     pcall(self.mupdf_doc.close, self.mupdf_doc)
                     self.mupdf_doc = nil
                 end
-                self.zip_reader = nil
-                self._archive_pages = nil
-                self._mupdf_pending = false
             end
             self.is_open = false
             return true
@@ -1330,10 +1189,62 @@ function MeguruDocument:memoryPressure(keep)
     return true
 end
 
--- Local pages paint from the retained decode: a CBZ image re-decodes its full
--- source for every region. A dead page does too, through its placeholder.
-function MeguruDocument:preferNativeRender(pageno)
-    return self.local_cbz or self.dead_pages[pageno]
+-- A page refused for want of RAM is not damaged; clear the verdict to retry.
+function MeguruDocument:clearRetryablePages()
+    local pages = {}
+    for pageno in pairs(self.retryable_pages) do
+        pages[#pages + 1] = pageno
+    end
+    if #pages == 0 then
+        return false
+    end
+    local cleared = {}
+    for _, pageno in ipairs(pages) do
+        cleared[pageno] = true
+        self.dead_pages[pageno] = nil
+        self.large_pages[pageno] = nil
+        self.native[pageno] = nil
+        self.stamps[pageno] = nil
+        self.retryable_pages[pageno] = nil
+        self.crops[pageno] = nil
+        self._unavailable_notified[pageno] = nil
+        if self._meguru_pagenum_cache then
+            self._meguru_pagenum_cache[pageno] = nil
+        end
+        if self._meguru_pagenum_blank_cache then
+            self._meguru_pagenum_blank_cache[pageno] = nil
+        end
+    end
+    for key, item in pairs(self.tiles) do
+        local page = pageOfKey(key)
+        if page and cleared[page] then
+            self.tiles[key] = nil
+            self.stamps[key] = nil
+            if item and item.bb and item.bb_free ~= true then
+                item.bb:free()
+                item.bb_free = true
+            end
+        end
+    end
+    for i = #self.panels, 1, -1 do
+        local page = pageOfKey(self.panels[i].key or "")
+        if page and cleared[page] then
+            table.remove(self.panels, i)
+        end
+    end
+    return true
+end
+
+-- A local archive's region render is safe only for JPEG: MuPDF decimates it in
+-- the decoder. Other formats would decode the full source for every region.
+function MeguruDocument:regionRenderAllowed(pageno)
+    if self.dead_pages[pageno] then
+        return false
+    end
+    if not self.local_cbz then
+        return true
+    end
+    return self.local_all_jpeg
 end
 
 -- Cached tile for key, if still the tile that key means; tone is a stamp.
@@ -1545,7 +1456,7 @@ function MeguruDocument:_localComicProps()
         return { title = self:_localTitle() }
     end
     if self._comic_info == nil then
-        self._comic_info = ComicInfo.read(self.file, self.zip_reader) or false
+        self._comic_info = ComicInfo.read(self.file) or false
     end
     local props = {}
     for key, value in pairs(self._comic_info or {}) do
@@ -1597,49 +1508,14 @@ local function fitScreen(bb)
     return bb
 end
 
--- Page 1's own bytes: no MuPDF open, which is what the cover browser pays.
-function MeguruDocument:_localZipCover()
-    local pages = self._archive_pages
-    if not pages or not self._index_pages_trusted or #pages == 0 then
-        return nil
-    end
-    -- Equal keys leave MuPDF's qsort free to pick either as page 1.
-    if #pages > 1 and natCmp(pages[1], pages[2]) == 0 then
-        return nil
-    end
-    local zip = self.zip_reader
-    local entry = zip and zip:entry(pages[1])
-    if not entry or (entry.usize and entry.usize > MAX_COVER_BYTES) then
-        return nil
-    end
-    local data = zip:read(pages[1], MAX_COVER_BYTES)
-    if not data then
-        return nil
-    end
-    local sw, sh = Screen:getWidth(), Screen:getHeight()
-    local bb = Image.decode(data, nil, nil, sw, sh)
-    if not bb or bb == Image.DECODE_TOO_LARGE then
-        return nil
-    end
-    return fitScreen(bb)
-end
-
 -- Cover BlitBuffer, nothing cached; falls back to page 1 so never cover-less.
 function MeguruDocument:_localCoverPageImage()
     if self.dead_pages[1] then
         return nil
     end
-    local from_zip = self:_localZipCover()
-    if from_zip then
-        return from_zip
-    end
-    local doc = self:_mupdf()
-    if not doc then
-        return nil
-    end
     -- Must be Image.renderMupdfPage; a bare renderMuPDFPage is nil.
     -- Screen-sized: MuPDF decimates in the decoder, and no cover is shown larger.
-    local ok, bb = pcall(Image.renderMupdfPage, doc, 1, nil, nil, nil,
+    local ok, bb = pcall(Image.renderMupdfPage, self.mupdf_doc, 1, nil, nil, nil,
         Screen:getWidth(), Screen:getHeight())
     if not ok or not bb or bb == Image.DECODE_TOO_LARGE then
         logger.warn("Meguru: could not render local cbz cover")
@@ -2845,17 +2721,14 @@ function MeguruDocument:ensureNativeBB(pageno, data)
     local res, refused_large
     if self.local_cbz then
         -- No raw bytes: render from the archive; huge PNGs keep MuPDF's decode.
-        local doc = self:_mupdf()
-        if doc then
-            res = Image.renderMupdfPage(doc, pageno, function(fw, fh)
-                if localPageTooLarge(self, fw, fh) then
-                    refused_large = true
-                    self.dims[pageno] = { w = fw, h = fh }
-                    return true
-                end
-                return false
-            end, self:contrast(), self:saturation())
-        end
+        res = Image.renderMupdfPage(self.mupdf_doc, pageno, function(fw, fh)
+            if localPageTooLarge(self, fw, fh) then
+                refused_large = true
+                self.dims[pageno] = { w = fw, h = fh }
+                return true
+            end
+            return false
+        end, self:contrast(), self:saturation())
     else
         res = Image.decode(data, self:contrast(), self:saturation())
     end
@@ -2863,6 +2736,7 @@ function MeguruDocument:ensureNativeBB(pageno, data)
         -- Remember it: the same bytes fail identically; no retry per paint.
         if refused_large then
             self.large_pages[pageno] = true
+            self.retryable_pages[pageno] = true
             logger.warn(string.format(
                 "Meguru: page %d is too large to render safely on this device; skipping it",
                 pageno))
@@ -3049,7 +2923,7 @@ end
 -- Open a MuPDF doc for the region; a streamed page opens from the byte LRU.
 function MeguruDocument:_regionSource(pageno)
     if self.local_cbz then
-        return self:_mupdf(), false, pageno
+        return self.mupdf_doc, false, pageno
     end
     local data = self:readCachedPage(pageno)
     if not data then
@@ -3077,7 +2951,7 @@ function MeguruDocument:renderRegionDirect(pageno, cx, cy, cw, ch, tw, th, plane
     if self.dead_pages[pageno] then
         return nil, "page is dead"
     end
-    if self:preferNativeRender(pageno) then
+    if not self:regionRenderAllowed(pageno) then
         return nil, "native path"
     end
     self:memoryPressure(pageno)
@@ -3151,8 +3025,21 @@ function MeguruDocument:drawPagePart(pageno, native_rect, rotation, tw, th)
         return cached.bb, rotate
     end
 
+    -- A local page crops the retained decode; only JPEG magnification asks
+    -- for a source render, where the decode alone would be visibly soft.
+    local use_native
+    if self.dead_pages[pageno] then
+        use_native = true
+    elseif not self.local_cbz then
+        use_native = false
+    elseif not (tw and th) then
+        use_native = true
+    else
+        local sharp = self:regionRenderAllowed(pageno)
+        use_native = not (sharp and (tw > rect.w or th > rect.h))
+    end
     local bb
-    if tw and th and self:preferNativeRender(pageno) then
+    if use_native then
         bb = self:decodeRegion(pageno, rect.x, rect.y, rect.w, rect.h, tw, th)
         if bb and native_rect.planes then
             local ok_mask, err = pcall(Image.maskToQuad, bb, native_rect.planes,

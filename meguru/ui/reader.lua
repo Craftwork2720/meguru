@@ -26,6 +26,7 @@ local Icons = require("meguru/icons")
 local Defaults = require("meguru/doc/defaults")
 local Image = require("meguru/doc/image")
 local Catalog = require("meguru/ui/catalog")
+local GestureTime = require("meguru/gesturetime")
 local Info = require("meguru/ui/info")
 local Local = require("meguru/local")
 local Open = require("meguru/ui/open")
@@ -394,28 +395,58 @@ local function installWideRotate(state, ui)
     end
 end
 
--- Long enough to swallow the taps queued behind a slow page fetch.
-local TURN_GUARD_MS = 100
-
--- Weak, so a closed reader's paging table is not kept alive by the global patch.
-local guard_owner = setmetatable({}, { __mode = "v" })
-
--- Stamped after the repaint, panel refresh included: taps that waited for the
--- page are dispatched as soon as it returns, however long the fetch took.
-local function installTurnGuard()
-    if UIManager._meguru_turn_guard_patched then
-        return
+-- A gesture made before the page it leaves was painted is queued, not new.
+local function turnIsQueued(paging, view, was_turn)
+    if not was_turn or view.page_scroll
+        or paging.page_flipping_mode or paging.bookmark_flipping_mode then
+        return false
     end
-    UIManager._meguru_turn_guard_patched = true
-    local orig_repaint = UIManager._repaint
-    UIManager._repaint = function(um, ...)
-        local ret = orig_repaint(um, ...)
-        local pg = guard_owner.paging
-        if pg and pg._meguru_turn_pending then
-            pg._meguru_turn_pending = nil
-            pg._meguru_turn_guard_until = nowMs() + TURN_GUARD_MS
+    if view.state and view.state.drawn == false then
+        return true
+    end
+    local gesture_time = paging._meguru_gesture_time
+    return GestureTime.predates(gesture_time, paging._meguru_painted_at,
+        GestureTime.clockId(), paging._meguru_paint_clock)
+end
+
+-- Gestures carry their input time; keys have none and must clear it.
+local function installTurnTiming(ui, paging, view)
+    if not ui._meguru_turn_timing_patched then
+        ui._meguru_turn_timing_patched = true
+        local orig_handle = ui.handleEvent
+        ui.handleEvent = function(u, event, ...)
+            local handler = type(event) == "table" and event.handler
+            if handler == "onGesture" then
+                local ges = event.args and event.args[1]
+                if ges and ges.time then
+                    paging._meguru_gesture_time = ges.time
+                end
+            end
+            local ret = orig_handle(u, event, ...)
+            -- Only the gesture that caused this dispatch may gate a turn.
+            if handler == "onGesture" then
+                paging._meguru_gesture_time = nil
+            end
+            return ret
         end
-        return ret
+    end
+    if not view._meguru_paint_stamp_patched then
+        view._meguru_paint_stamp_patched = true
+        local orig_paint = view.paintTo
+        view.paintTo = function(vw, ...)
+            local ret = orig_paint(vw, ...)
+            -- Stamped after the refresh: a tap made during it predates the screen.
+            if not vw._meguru_paint_stamp_queued then
+                vw._meguru_paint_stamp_queued = true
+                UIManager:nextTick(function()
+                    vw._meguru_paint_stamp_queued = false
+                    local clock = GestureTime.clockId()
+                    paging._meguru_paint_clock = clock
+                    paging._meguru_painted_at = GestureTime.now(clock)
+                end)
+            end
+            return ret
+        end
     end
 end
 
@@ -429,8 +460,7 @@ local function installSpread(ui)
         return true
     end
     ui._meguru_spread_installed = true
-    installTurnGuard()
-    guard_owner.paging = paging
+    installTurnTiming(ui, paging, view)
 
     if not paging._meguru_spread_patched then
         paging._meguru_spread_patched = true
@@ -461,11 +491,7 @@ local function installSpread(ui)
             local was_turn = paging._meguru_spread_turn
             paging._meguru_spread_turn = nil
             -- Not pair-only: a blind turn skips a single page just the same.
-            if was_turn and not view.page_scroll
-                and not pg.page_flipping_mode and not pg.bookmark_flipping_mode
-                and ((view.state and view.state.drawn == false)
-                    or (paging._meguru_turn_guard_until
-                        and nowMs() < paging._meguru_turn_guard_until)) then
+            if turnIsQueued(pg, view, was_turn) then
                 return true
             end
             if number ~= nil and doc and type(doc.spreadSnap) == "function" then
@@ -483,14 +509,7 @@ local function installSpread(ui)
                     end
                 end
             end
-            local before = pg.current_page
-            local ret = orig_goto(pg, number, orig_mode)
-            -- The guard is stamped by the repaint that shows this page.
-            if was_turn and pg.current_page ~= before and not view.page_scroll
-                and not pg.page_flipping_mode and not pg.bookmark_flipping_mode then
-                paging._meguru_turn_pending = true
-            end
-            return ret
+            return orig_goto(pg, number, orig_mode)
         end
     end
 
@@ -1003,6 +1022,7 @@ local function installPageErrorPage(plugin)
         and not paging._meguru_failure_barrier_patched then
         paging._meguru_failure_barrier_patched = true
         paging._meguru_skipped = paging._meguru_skipped or {}
+        paging._meguru_retried = paging._meguru_retried or {}
 
         local function unitPages(pageno)
             if type(doc.spreadUnitFor) == "function" then
@@ -1022,15 +1042,22 @@ local function installPageErrorPage(plugin)
             if failed then
                 return failed
             end
+            -- A page refused for want of RAM is a temporary refusal.
+            local retryable = doc.retryable_pages
+                and doc.retryable_pages[pageno] or nil
             if doc.large_pages and doc.large_pages[pageno] then
-                return { reason = "large" }
+                return { reason = "large", retryable = retryable }
             end
             if doc.dead_pages and doc.dead_pages[pageno] then
-                return { reason = "decode" }
+                return { reason = "decode", retryable = retryable }
             end
         end
 
         local function isPermanent(failure)
+            if failure.retryable then
+                -- Retried once already: the next forward turn is the skip.
+                return failure.retried == true
+            end
             if failure.reason == "decode" or failure.reason == "large" then
                 return true
             end
@@ -1047,7 +1074,12 @@ local function installPageErrorPage(plugin)
             for _, page in ipairs(unitPages(pageno)) do
                 local failure = failureAt(page)
                 if failure and not paging._meguru_skipped[page] then
+                    if paging._meguru_retried[page] then
+                        failure.retried = true
+                    end
                     out[#out + 1] = { page = page, failure = failure }
+                elseif not failure then
+                    paging._meguru_retried[page] = nil
                 end
             end
             return out
@@ -1062,7 +1094,7 @@ local function installPageErrorPage(plugin)
             return false
         end
 
-        local function retryFailed()
+        local function retryFailed(failures)
             local connected = type(doc.hasConnection) == "function"
                 and doc:hasConnection()
             if not connected then
@@ -1072,9 +1104,20 @@ local function installPageErrorPage(plugin)
                 })
                 return
             end
+            if type(doc.clearRetryablePages) == "function" then
+                doc:clearRetryablePages()
+            end
             if type(doc.clearFetchFailures) == "function" then
                 doc:clearFetchFailures()
             end
+            -- One automatic retry; a failure that survives it may be skipped.
+            for _, item in ipairs(failures or {}) do
+                paging._meguru_retried[item.page] = true
+            end
+            UIManager:show(Notification:new{
+                text = _("Retrying page…"),
+                timeout = 2,
+            })
             -- Hold the next tap until the repaint has tried the page again.
             paging._meguru_failure_retry = true
             if view.dialog then
@@ -1100,14 +1143,22 @@ local function installPageErrorPage(plugin)
             paging._meguru_spread_turn = nil
             if anyPermanent(failures) then
                 -- The page cannot heal; the forward turn is the skip.
+                local numbers = {}
                 for _, item in ipairs(failures) do
                     paging._meguru_skipped[item.page] = true
+                    numbers[#numbers + 1] = tostring(item.page)
                 end
-                paging._meguru_turn_guard_until = nil
+                local list = table.concat(numbers, ", ")
+                UIManager:show(Notification:new{
+                    text = #failures > 1
+                        and T(_("Skipped pages %1 — they can't be loaded."), list)
+                        or T(_("Skipped page %1 — it can't be loaded."), list),
+                    timeout = 3,
+                })
                 paging._meguru_spread_turn = true
                 return orig_goto(pg, number, orig_mode)
             end
-            retryFailed()
+            retryFailed(failures)
             return true
         end
 

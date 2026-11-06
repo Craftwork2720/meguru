@@ -14,10 +14,11 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
   quarter, silently, because the budget below is an *area* cap and reports the same
   capped numbers either way. The `MuPDF page render WxH -> WxH` line cannot show it
   either: both of its sizes come from the same space. What keeps this from being visible
-  today is that `renderRegionDirect` re-renders a magnified region from the source. It
-  wants its own pass on a device: the fix is either teaching the decode the density (PNG
-  `pHYs`, JPEG JFIF) or moving the plugin's whole coordinate space to pixels, and every
-  geometry path shares that space.
+  on streamed pages and local JPEG archives is that `renderRegionDirect` re-renders a
+  magnified region from the source; a local non-JPEG page paints from the capped decode
+  and does show the shortfall. It wants its own pass on a device: the fix is either
+  teaching the decode the density (PNG `pHYs`, JPEG JFIF) or moving the plugin's whole
+  coordinate space to pixels, and every geometry path shares that space.
 - **The panel rotation direction is applied *after* `ImageWidget:new`, not passed to
   it.** `PanelViewer:_new_image_wg` relies on `ImageWidget` not having rendered yet —
   it defines no `init`, and `_render` is entered only from `getSize`/`paintTo`. That is

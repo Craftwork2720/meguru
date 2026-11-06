@@ -206,7 +206,7 @@ local function renderMuPDFPage(doc, pageno, refuse_oversize, gamma, saturation,
 end
 
 -- MuPDF decimates an oversized JPEG while decoding; nothing full-res is held.
-local function decodeNativeMupdf(data, gamma, saturation, fit_w, fit_h)
+local function decodeNativeMupdf(data, gamma, saturation)
     if not Mupdf then
         return nil
     end
@@ -225,7 +225,7 @@ local function decodeNativeMupdf(data, gamma, saturation, fit_w, fit_h)
     -- The JPEG sniff runs only on the streamed bytes; a huge JPEG is exempt.
     local res = renderMuPDFPage(doc, 1, function(fw, fh)
         return not isJpegBytes(data) and fw * fh > MAX_LOSSLESS_NATIVE_PIXELS
-    end, gamma, saturation, fit_w, fit_h)
+    end, gamma, saturation)
     doc:close()
     return res
 end
@@ -260,9 +260,9 @@ local function decodeNativeRenderImage(data)
 end
 
 -- DECODE_TOO_LARGE skips the fallback, which would only repeat the same decode.
-local function decodeNative(data, gamma, saturation, fit_w, fit_h)
+local function decodeNative(data, gamma, saturation)
     if Mupdf then
-        local res = decodeNativeMupdf(data, gamma, saturation, fit_w, fit_h)
+        local res = decodeNativeMupdf(data, gamma, saturation)
         if res == DECODE_TOO_LARGE then
             return DECODE_TOO_LARGE
         end

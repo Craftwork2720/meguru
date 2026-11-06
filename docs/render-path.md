@@ -130,15 +130,19 @@ CBZ page at 72/96 of its pixels, so the guard scales the reported area by 16/9 b
 comparing it with `min(40 Mpx, free/6)`: an actual pixel costs ~5-6 bytes at peak
 there, and six is the budget. A page over the line is refused before that render, marked in
 `large_pages`, and painted with a "too large" sentence rather than the damaged-file
-one. The archive is listed once at open; an all-JPEG archive skips the guard, because
-there the decoder is what keeps the source out of memory.
+one. The archive is scanned once for that check at open; an all-JPEG archive skips the
+guard, because there the decoder is what keeps the source out of memory.
 
-**Local pages paint from the retained decode.** Every local CBZ page paint and panel
-crop goes through `decodeRegion`: it crops and scales the capped native buffer instead
-of asking MuPDF to decode the source again. That is one full decode per page rather than
-one per paint, and it is why a 16-Mpx PNG page can be shown on a device that could not
-hold its source twice. Streamed pages keep the direct path; their bytes, not the
-archive, are the source.
+**Local pages paint from the retained decode, except a magnified JPEG.** Every local
+CBZ page paint and panel crop goes through `decodeRegion`: it crops and scales the
+capped native buffer instead of asking MuPDF to decode the source again. That is one
+full decode per page rather than one per paint, and it is why a 16-Mpx PNG page can be
+shown on a device that could not hold its source twice. A JPEG archive's magnified
+page or panel is the exception: MuPDF decimates JPEG in the decoder, so a region
+render never holds the full source, and `regionRenderAllowed` lets it take that path —
+which is what keeps a panel sharp at 1.9×. Other formats stay on the decode, because a
+region render would decode the whole source for every tile. Streamed pages keep the
+direct path; their bytes, not the archive, are the source.
 
 Everything else on the render path was already
 format-tolerant and needed no change: `bbBytesPerPixel` knows all four types,
@@ -612,15 +616,18 @@ would not decode — and each says so in the place the page would be.
   anything had failed — the event fires once at startup too, hence the return value).
 - **A forward page turn stops at the failed unit; a backward turn still works.** The
   unit is the page in single-page view and both pages of a pair, so either half
-  failing holds the spread. A transient failure holds the turn: offline says so in a
-  notification, while no answer or a 5xx is retried (failures cleared, page
-  repainted) without advancing. A permanent failure — a 4xx other than 408 or 429,
-  a page that would not decode, or one too large to render safely — is passed by the
-  next forward turn: that turn marks the unit skipped and performs the turn, with no
-  dialog. The page keeps its sentence; a backward turn still works. Landings (TOC,
-  search, bookmarks) are explicit destinations and are not blocked, and a connection
-  returning clears every failure and repaints, so the page loads without pressing
-  anything.
+  failing holds the spread. A transient failure — offline, no answer, a 5xx, or a
+  page refused only for want of RAM (`retryable_pages`) — holds the turn and is
+  retried: the flags are cleared, the page repainted, and a "Retrying page…"
+  notification says so (offline names the reason instead). A page refused for RAM is
+  retried once; if it fails again, the *following* forward turn skips it like a
+  permanent failure. A permanent failure — a 4xx other than 408 or 429, a page that
+  would not decode, or a lossless source above the safety limit — is passed by the
+  next forward turn: that turn marks the unit skipped, names the pages in a
+  notification, and performs the turn, with no dialog. The page keeps its sentence; a
+  backward turn still works. Landings (TOC, search, bookmarks) are explicit
+  destinations and are not blocked, and a connection returning clears every failure
+  and repaints, so the page loads without pressing anything.
 - **The page is replaced by a sentence that names the reason.** The document paints
   the box and passes the failure to `self.missing_painter`, installed by
   `ui/reader.lua` — the wording, the font and the layout live there, so a document

@@ -56,9 +56,13 @@ local function elements(xml)
     return found
 end
 
--- One archive walk, ending when the entry is found.
--- Lazy require: its body loads libarchive; lacking it degrades only this.
-local function readArchive(file)
+-- Nil is ordinary (no entry, or unreadable): metadata must never cost a book.
+-- Every caller falls back to the file name.
+function ComicInfo.read(file)
+    if type(file) ~= "string" or file == "" then
+        return nil
+    end
+    -- Lazy: its body loads libarchive; lacking it degrades only this feature.
     local ok_archiver, Archiver = pcall(require, "ffi/archiver")
     if not ok_archiver or type(Archiver) ~= "table" or not Archiver.Reader then
         if not archive_support_reported then
@@ -66,13 +70,13 @@ local function readArchive(file)
             logger.info("Meguru: cannot read .cbz metadata - this build of"
                 .. " KOReader has no archive support")
         end
-        return false, nil
+        return nil
     end
     local reader = Archiver.Reader:new()
     if not reader:open(file) then
         logger.info("Meguru: cannot open", file, "to read its metadata ("
             .. tostring(reader.err or "no reason given") .. ")")
-        return false, nil
+        return nil
     end
 
     -- `entry.size` is cdata int64, so compare it directly.
@@ -91,39 +95,6 @@ local function readArchive(file)
         end
     end)
     reader:close()
-    return found, xml
-end
-
--- Nil is ordinary (no entry, or unreadable): metadata must never cost a book.
--- Every caller falls back to the file name.
--- `zip` is meguru/zip's index; nil keeps the archive walk.
-function ComicInfo.read(file, zip)
-    if type(file) ~= "string" or file == "" then
-        return nil
-    end
-
-    local found, xml
-    if zip then
-        local entry = zip:entry(ENTRY)
-        if not entry then
-            -- The directory is the archive's own index; a miss is the
-            -- ordinary absent case, and walking the file cannot change it.
-            return nil
-        end
-        found = true
-        xml = zip:read(ENTRY, MAX_BYTES)
-        if not xml and (not entry.usize or entry.usize <= MAX_BYTES) then
-            -- The index knows the entry but not how to unpack it; libarchive
-            -- is still the reader of last resort.
-            local walked_found, walked = readArchive(file)
-            if not walked_found then
-                return nil
-            end
-            xml = walked
-        end
-    else
-        found, xml = readArchive(file)
-    end
 
     if not found then
         -- The ordinary case, deliberately silent.

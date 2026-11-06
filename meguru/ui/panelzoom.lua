@@ -5,57 +5,20 @@ local CanvasContext = require("document/canvascontext")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local Event = require("ui/event")
-local ffiutil = require("ffi/util")
 local Geom = require("ui/geometry")
 local ImageViewer = require("ui/widget/imageviewer")
 local Settings = require("meguru/settings")
 local UIManager = require("ui/uimanager")
 local Viewport = require("meguru/viewport")
+local GestureTime = require("meguru/gesturetime")
 local logger = require("logger")
 
 local Screen = Device.screen
 
 local PanelZoom = {}
 
--- Matches the page-turn guard: the panel was visible before the next step.
-local STEP_GUARD_MS = 100
-
--- Weak, so a closed viewer is not kept alive by the global repaint patch.
-local guard_owner = setmetatable({}, { __mode = "v" })
-
-local function nowMs()
-    local sec, usec = ffiutil.gettime()
-    return sec * 1000 + usec / 1000
-end
-
--- Stamped after the repaint, refresh included, so a tap queued behind the render
--- is measured from the moment the panel is actually on screen.
-local function installStepGuard()
-    if UIManager._meguru_panel_guard_patched then
-        return
-    end
-    UIManager._meguru_panel_guard_patched = true
-    local orig_repaint = UIManager._repaint
-    UIManager._repaint = function(um, ...)
-        local ret = orig_repaint(um, ...)
-        local viewer = guard_owner.viewer
-        if viewer and viewer._meguru_step_pending then
-            viewer._meguru_step_pending = nil
-            viewer._meguru_step_guard_until = nowMs() + STEP_GUARD_MS
-        end
-        if viewer and viewer._meguru_warm_pending then
-            viewer._meguru_warm_pending = nil
-            local seq = viewer._meguru_warm_seq
-            -- Deferred: the input queued behind this repaint must be dispatched first.
-            UIManager:nextTick(function()
-                if viewer._meguru_warm_seq == seq then
-                    viewer:meguruWarm()
-                end
-            end)
-        end
-        return ret
-    end
-end
+-- Delay so a fast swipe re-arms and unschedules before the warm runs.
+local WARM_DELAY = 0.4
 
 -- The book's direction, not BD.mirroredUILayout (the UI language) stock uses.
 local function nextIsRight(mode)
@@ -226,18 +189,31 @@ local PanelViewer = ImageViewer:extend{
     rotate_mode = nil,
     -- Our own button object, so a tap can re-letter it; stock's lookup is sunk.
     meguru_rotate_button = nil,
-    _meguru_warm_pending = nil,
-    _meguru_warm_seq = nil,
+    _meguru_warm = nil,
     _meguru_handoff_pending = nil,
 }
 
 -- Bound unconditionally: a D-pad device answers hasDPad(), not hasKeys().
 function PanelViewer:init()
     ImageViewer.init(self)
-    installStepGuard()
-    guard_owner.viewer = self
-    -- The first repaint stamps it: a tap queued behind the render is lost.
-    self._meguru_step_pending = true
+    -- A gesture that predates the paint of the panel it would step past is queued.
+    self._meguru_step_ready = false
+    local orig_paint = self.paintTo
+    self.paintTo = function(vw, ...)
+        local ret = orig_paint(vw, ...)
+        -- Ready after the refresh: a swipe made during it predates the screen.
+        if not vw._meguru_paint_stamp_queued then
+            vw._meguru_paint_stamp_queued = true
+            UIManager:nextTick(function()
+                vw._meguru_paint_stamp_queued = false
+                local clock = GestureTime.clockId()
+                vw._meguru_paint_clock = clock
+                vw._meguru_painted_at = GestureTime.now(clock)
+                vw._meguru_step_ready = true
+            end)
+        end
+        return ret
+    end
     -- The opening step, before any switch: stock's own answer is the seed.
     self.rotated = rotatedFor(self, 1)
     self.key_events = self.key_events or {}
@@ -247,13 +223,35 @@ function PanelViewer:init()
     self.key_events.MeguruArrowDown = { { "Down" } }
 end
 
--- True while the panel on screen has not been visible long enough to step past.
+-- True when the step's gesture was made before the panel on screen was painted.
 function PanelViewer:meguruStepBlocked()
-    if self._meguru_step_pending then
+    local gesture_time = self._meguru_gesture_time
+    self._meguru_gesture_time = nil
+    if not self._meguru_step_ready then
         return true
     end
-    local until_ms = self._meguru_step_guard_until
-    return until_ms ~= nil and nowMs() < until_ms
+    return GestureTime.predates(gesture_time, self._meguru_painted_at,
+        GestureTime.clockId(), self._meguru_paint_clock)
+end
+
+-- What ImageViewer:_new_image_wg asks stepImage for, so key and tile agree.
+function PanelViewer:meguruTileSize(rect)
+    local tw, th = stepSize(rect)
+    if not (tw and th) then
+        return
+    end
+    local max_w = self.width
+    local max_h = self.img_container_h
+    if self.buttons_visible or self.with_title_bar then
+        max_w = max_w - self.image_padding * 2
+        max_h = max_h - self.image_padding * 2
+    end
+    if not (max_w and max_h) then
+        return tw, th
+    end
+    local shrink = math.min(max_w / tw, max_h / th, 1)
+    return math.max(1, math.floor(tw * shrink + 0.5)),
+           math.max(1, math.floor(th * shrink + 0.5))
 end
 
 -- The size travels too: a window tile is filed under its rectangle and its size.
@@ -263,7 +261,7 @@ function PanelViewer:meguruRelease(index)
     if not (doc and rect and type(doc.releasePanelTile) == "function") then
         return false
     end
-    local tw, th = stepSize(rect)
+    local tw, th = self:meguruTileSize(rect)
     return doc:releasePanelTile(self.page, rect, tw, th)
 end
 
@@ -271,13 +269,18 @@ function PanelViewer:meguruArmWarm()
     if self.meguru_free then
         return
     end
-    -- Armed for this step; a newer step makes an older queued warm a no-op.
-    self._meguru_warm_seq = (self._meguru_warm_seq or 0) + 1
-    self._meguru_warm_pending = true
+    if self._meguru_warm then
+        UIManager:unschedule(self._meguru_warm)
+    end
+    local action = function()
+        self:meguruWarm()
+    end
+    self._meguru_warm = action
+    UIManager:scheduleIn(WARM_DELAY, action)
 end
 
 function PanelViewer:meguruWarm()
-    self._meguru_warm_pending = nil
+    self._meguru_warm = nil
     if not UIManager:isWidgetShown(self) then
         return
     end
@@ -296,7 +299,7 @@ function PanelViewer:meguruWarm()
     if cur < #self.steps then
         if not doc.dead_pages[self.page] then
             local next_step = self.steps[cur + 1]
-            local tw, th = stepSize(next_step)
+            local tw, th = self:meguruTileSize(next_step)
             local ok, err = pcall(doc.drawPagePart, doc, self.page, next_step, 0,
                 tw, th)
             if not ok then
@@ -316,7 +319,7 @@ function PanelViewer:meguruWarm()
         -- And the first panel's tile, the crossing's one fresh render. Only the
         -- crop view: a window step's rect comes from Viewport, so the key differs.
         if ok and panels and panels[1] and not (self.view and self.view.window) then
-            local tw, th = stepSize(panels[1])
+            local tw, th = self:meguruTileSize(panels[1])
             pcall(doc.drawPagePart, doc, next_page, panels[1], 0, tw, th)
         end
     end
@@ -380,7 +383,6 @@ function PanelViewer:onShowNextImage()
         return true
     end
     if self._images_list_cur < #self.steps then
-        self._meguru_step_pending = true
         self:switchToImageNum(self._images_list_cur + 1)
         return true
     end
@@ -392,7 +394,6 @@ function PanelViewer:onShowPrevImage()
         return true
     end
     if self._images_list_cur > 1 then
-        self._meguru_step_pending = true
         self:switchToImageNum(self._images_list_cur - 1)
         return true
     end
@@ -518,6 +519,9 @@ function PanelViewer:onSwipe(arg, ges)
         end
         return true
     end
+    if ges and ges.time then
+        self._meguru_gesture_time = ges.time
+    end
     if self.scale_factor == 0 and (direction == "west" or direction == "east") then
         local forward = (self.mode == "manga") and "east" or "west"
         if direction == forward then
@@ -525,12 +529,16 @@ function PanelViewer:onSwipe(arg, ges)
         else
             self:onShowPrevImage()
         end
+        self._meguru_gesture_time = nil
         return true
     end
     if not imageReady(self) then
+        self._meguru_gesture_time = nil
         return true
     end
-    return ImageViewer.onSwipe(self, arg, ges)
+    local ret = ImageViewer.onSwipe(self, arg, ges)
+    self._meguru_gesture_time = nil
+    return ret
 end
 
 -- Panels, then close, then GotoPage, then open: that order is load-bearing.
@@ -598,7 +606,10 @@ function PanelViewer:meguruHandoff(direction)
 end
 
 function PanelViewer:onCloseWidget()
-    self._meguru_warm_pending = nil
+    if self._meguru_warm then
+        UIManager:unschedule(self._meguru_warm)
+        self._meguru_warm = nil
+    end
     if self.meguru_free then
         Settings.set("free_zoom_scale", self.meguru_free.scale)
     end
