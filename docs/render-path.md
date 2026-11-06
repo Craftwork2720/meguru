@@ -130,8 +130,8 @@ CBZ page at 72/96 of its pixels, so the guard scales the reported area by 16/9 b
 comparing it with `min(40 Mpx, free/6)`: an actual pixel costs ~5-6 bytes at peak
 there, and six is the budget. A page over the line is refused before that render, marked in
 `large_pages`, and painted with a "too large" sentence rather than the damaged-file
-one. The archive is scanned once for that check at open; an all-JPEG archive skips the
-guard, because there the decoder is what keeps the source out of memory.
+one. The archive is listed once at open; an all-JPEG archive skips the guard, because
+there the decoder is what keeps the source out of memory.
 
 **Local pages paint from the retained decode, except a magnified JPEG.** Every local
 CBZ page paint and panel crop goes through `decodeRegion`: it crops and scales the

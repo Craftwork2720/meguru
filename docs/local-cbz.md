@@ -30,6 +30,30 @@ folds only because the descriptor it projects has no series *field* for the titl
 to sit beside. And **the entry is read once per document** (`self._comic_info`,
 with `false` for "read, none there"), because it opens the archive.
 
+**The archive is indexed once; it is not walked twice.** `meguru/zip` reads the
+end-of-central-directory record and the central directory in two reads, then
+jumps to an entry by its local-header offset. The reason is measured: libarchive's
+`next_header` seeks to every local header, 98–260 ms across the 185–464 entry
+sample archives, against ~5 ms for the directory — and a document paid a whole
+walk twice, once for `ComicInfo` and once for the all-JPEG guard. Stored entries
+are read directly and deflated ones through zlib's raw inflate. A ZIP64 record,
+an encrypted entry, an unknown compression method or a directory that will not
+parse makes `Zip.open`/`read` answer nil, and the libarchive path runs exactly as
+it did before: the index sits in front of that reader, it does not replace it.
+
+**MuPDF is not opened until a page is read.** `init` takes the page list from
+the index: the extension list and the comparator mirror MuPDF's own
+`cbz_ext_list` and `cbz_strnatcmp`, verified 64/64 against `getPages()` and
+against a synthetic archive whose page colours fix the order. The cover is page
+1's own entry, decoded by `Image.decode`, so the cover browser — which opens a
+document only for the count, props and artwork — never pays
+`MuPDF.openDocument`. MuPDF opens on the first real page, and the count it
+reports then replaces the index's; a difference also disables the index cover,
+which falls back to rendering page 1 through MuPDF. An archive the index cannot
+parse keeps the eager path unchanged. Measured on an 835 MB, 464-entry book:
+open + props + cover ~250–350 ms, against ~1.5 s for `openDocument` and the
+budget render; the first page still pays ~1.7–2.0 s when it is read.
+
 **The cover is drawn at screen size from the first draw.**
 `_localCoverPageImage` passes the screen's box to the renderer, as stock's
 `KoptInterface:getCoverPageImage` computes a zoom to the canvas, instead of
