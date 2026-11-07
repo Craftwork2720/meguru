@@ -774,9 +774,42 @@ function PanelViewer:meguruFreeZoom(ges, closer)
     return self:meguruFreeWindow(target, cx, cy)
 end
 
+-- The window's pinch changes its level, as the row's +/- do: the level is what
+-- both the label and the store keep. The crop view's own zoom stays with stock.
+function PanelViewer:meguruWindowZoom(ges, closer)
+    local view = self.view
+    local level = view and view.level
+    if not (view and view.window and level and ges and ges.distance) then
+        return false
+    end
+    local screen = CanvasContext:getSize()
+    local dim
+    if ges.direction == "vertical" then
+        dim = screen.h
+    elseif ges.direction == "horizontal" then
+        dim = screen.w
+    else
+        dim = math.sqrt(screen.w ^ 2 + screen.h ^ 2)
+    end
+    local amount = (ges.distance or 0) / dim
+    local target = level * (closer and (1 - amount) or (1 + amount))
+    target = math.floor(target * 10 + 0.5) / 10
+    target = math.max(WINDOW_MIN_LEVEL, math.min(WINDOW_MAX_LEVEL, target))
+    if target == level then
+        return true
+    end
+    logger.dbg("Meguru: window zoom", string.format("%.1f×", target),
+        "on page", self.page)
+    self:meguruReopenAtLevel(target)
+    return true
+end
+
 function PanelViewer:onPinch(arg, ges)
     if self.meguru_free then
         return self:meguruFreeZoom(ges, true)
+    end
+    if self:meguruWindowZoom(ges, true) then
+        return true
     end
     if not imageReady(self) then
         return true
@@ -787,6 +820,9 @@ end
 function PanelViewer:onSpread(arg, ges)
     if self.meguru_free then
         return self:meguruFreeZoom(ges, false)
+    end
+    if self:meguruWindowZoom(ges, false) then
+        return true
     end
     if not imageReady(self) then
         return true

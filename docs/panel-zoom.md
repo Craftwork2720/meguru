@@ -501,8 +501,10 @@ the mode rather than reading it, because a document has no view.
 reaches are never rendered, and each render goes through `drawPagePart`, whose LRU
 decides whether it is fresh work. `image_disposable = false` everywhere: those buffers
 belong to the document's tile LRU, and `cacheTile` is what frees them.
-`images_keep_pan_and_zoom = false` is what makes the navigation *classic*: a panel
-opens at best fit instead of inheriting the previous panel's pinch.
+`images_keep_pan_and_zoom = false` is what makes the navigation *classic*: a crop
+panel opens at best fit instead of inheriting the previous panel's pinch. The window
+view overrides the pinch itself — it is a level change, not a stock bitmap zoom — so
+its zoom is the one the row and the store keep; see below.
 
 **A panel is toned like the page it came from, and this file has nothing to do with
 it.** Contrast and saturation are applied by MuPDF while rendering
@@ -1254,10 +1256,19 @@ half seen — is kept by the walk itself: every stop of the panel is pushed, in 
 screen-sized and best fit still `scale_factor == 0`, `onSwipe`'s gate, `onTap`'s thirds,
 the hardware keys and the close contract all behave exactly as they do for a panel. The
 buffers are the document's tiles (`image_disposable = false`, released on the step just
-left), so the pre-warm is the same one call the viewer is about to make, and
-`images_keep_pan_and_zoom = false` gives "a pinch lasts one step" for free. The rotation
+left), so the pre-warm is the same one call the viewer is about to make.
+`images_keep_pan_and_zoom = false` still resets a *crop* panel's own pinch on every
+step; the window view does not leave its pinch to stock. The rotation
 machinery is not used at all — a window is the screen's shape, so there is no wide-versus-
 tall decision to make, and a panel too wide for it is walked in x instead.
+
+**A window pinch is a level change, not a bitmap zoom.** `meguruWindowZoom` turns the
+gesture's distance into the same level the row's +/− walk — rounded to a tenth and
+clamped to 1.0–1.9 — and reopens at it through `meguruReopenAtLevel`, so the label
+moves, `panel_zoom_level` is written immediately, and the next long-press opens where
+the reader left it. The free view keeps its own scale instead (`free_zoom_scale`,
+written once at close), and the crop view keeps stock's bitmap zoom, which lasts one
+step.
 
 ### The third view: the page, with nothing in the way
 
