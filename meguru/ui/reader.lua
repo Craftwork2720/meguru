@@ -1104,6 +1104,10 @@ local function installPageErrorPage(plugin)
                 })
                 return
             end
+            -- An explicit retry may probe a server the cooldown silenced.
+            if type(doc.clearServerDown) == "function" then
+                doc:clearServerDown()
+            end
             if type(doc.clearRetryablePages) == "function" then
                 doc:clearRetryablePages()
             end
@@ -1187,6 +1191,9 @@ local function installPageErrorPage(plugin)
         local d = self.ui and self.ui.document
         if not (d and type(d.clearFetchFailures) == "function") then
             return
+        end
+        if type(d.clearServerDown) == "function" then
+            d:clearServerDown()
         end
         if d:clearFetchFailures() then
             UIManager:nextTick(function()

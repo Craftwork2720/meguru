@@ -15,6 +15,10 @@ local Net = {}
 Net.FEED_BLOCK_TIMEOUT = 10
 Net.FEED_TOTAL_TIMEOUT = 30
 
+-- A page turn waits on this, so an unreachable server must lose to the thumb.
+Net.PAGE_BLOCK_TIMEOUT = 8
+Net.PAGE_TOTAL_TIMEOUT = 20
+
 Net.FEED_ACCEPT = "application/atom+xml;profile=opds-catalog, application/xml;q=0.9, */*;q=0.5"
 Net.IMAGE_ACCEPT = "image/*;q=1, */*;q=0.5"
 
@@ -45,7 +49,7 @@ Net.PROGRESS_TOTAL_TIMEOUT = 4
 
 local TIMEOUTS = {
     feed = { Net.FEED_BLOCK_TIMEOUT, Net.FEED_TOTAL_TIMEOUT },
-    page = { socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT },
+    page = { Net.PAGE_BLOCK_TIMEOUT, Net.PAGE_TOTAL_TIMEOUT },
     large = { socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT },
     resume = { Net.RESUME_BLOCK_TIMEOUT, Net.RESUME_TOTAL_TIMEOUT },
     -- Only getToFile's total is enforced, being the one with a real sink.

@@ -716,6 +716,10 @@ local LOCAL_PAGE_MAX_PIXELS = 40 * 1024 * 1024
 local LOCAL_PAGE_SOURCE_SCALE = 16 / 9
 local LOCAL_PAGE_BYTES_PER_PIXEL = 6
 
+-- A server that did not answer is left alone this long; optional work would
+-- otherwise pay the same timeout once for every page warmed ahead.
+local SERVER_COOLDOWN_MS = 20 * 1000
+
 local function localPageTooLarge(self, fw, fh)
     -- MuPDF decimates JPEG in the decoder; the full source is never held.
     if self.local_all_jpeg then
@@ -966,6 +970,8 @@ function MeguruDocument:init()
 
     -- Failed fetches and why; retried only by clearFetchFailures.
     self.fetch_failed = {}
+    -- A transport failure silences optional fetches; an explicit retry clears it.
+    self._server_down_until = nil
 
     self.mod_time = FS.mtime(self.file)
 
@@ -1510,6 +1516,20 @@ function MeguruDocument:clearFetchFailures()
     return had
 end
 
+-- Optional work asks this before touching a server that just failed.
+function MeguruDocument:serverCoolingDown()
+    return self._server_down_until ~= nil and nowMs() < self._server_down_until
+end
+
+function MeguruDocument:noteServerDown()
+    self._server_down_until = nowMs() + SERVER_COOLDOWN_MS
+end
+
+-- An explicit retry, or a network coming back, may probe at once.
+function MeguruDocument:clearServerDown()
+    self._server_down_until = nil
+end
+
 -- Ensure raw bytes for a page; a failure is remembered and not retried here.
 function MeguruDocument:fetchPage(pageno)
     -- Pages are 1-based; pageno-1 is the server's zero-based index (0 invalid).
@@ -1521,6 +1541,11 @@ function MeguruDocument:fetchPage(pageno)
         return data
     end
     if self.fetch_failed[pageno] then
+        return nil
+    end
+    if self:serverCoolingDown() then
+        self.fetch_failed[pageno] = { reason = "network" }
+        logger.dbg("Meguru: page", pageno, "not fetched: server cooling down")
         return nil
     end
     local url = self.desc.template
@@ -1548,17 +1573,24 @@ function MeguruDocument:fetchPage(pageno)
             reason, detail = "network", "(error: " .. tostring(bytes) .. ")"
         end
         self.fetch_failed[pageno] = { reason = reason, code = code }
+        if reason == "network" then
+            self:noteServerDown()
+        end
         logger.warn("Meguru: failed to fetch page", pageno, detail)
         return nil
     end
     -- Cleared only after success, so a failed fetch writes nothing.
     self.fetch_failed[pageno] = nil
+    self:clearServerDown()
     self:cachePage(pageno, bytes)
     return bytes
 end
 
 function MeguruDocument:prefetchPage(pageno)
     if pageno < 1 or pageno > self.info.number_of_pages then
+        return
+    end
+    if self:serverCoolingDown() then
         return
     end
     -- Optional work: never grow the byte cache at the cost of the page on screen.
@@ -2010,6 +2042,10 @@ function MeguruDocument:prepareSpread(pageno)
         return false
     end
     if not self.local_cbz and not self:hasConnection() then
+        return false
+    end
+    -- A server that just failed must not be paid for again before the turn.
+    if self:serverCoolingDown() then
         return false
     end
     local unit = Spread.unitFor(pageno, count, self.wide_list, self:_spreadAnchor())
@@ -3454,6 +3490,9 @@ end
 
 -- ReaderView calls this via nextTick (post-paint) and unschedules it on close.
 function MeguruDocument:hintPage(pageno, zoom, rotation, gamma, saturation)
+    if self:serverCoolingDown() then
+        return true
+    end
     -- Counted from pageno: the partner and the next two pages.
     local spread = self:spreadActive()
     local lead = self.prefetch_count
@@ -3485,6 +3524,9 @@ function MeguruDocument:analyseAhead(pageno)
         return
     end
     if self.dead_pages[pageno] then
+        return
+    end
+    if self:serverCoolingDown() then
         return
     end
     if self:underMemoryPressure() then

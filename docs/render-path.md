@@ -637,6 +637,16 @@ would not decode — and each says so in the place the page would be.
   rather than over it, which is what a browser does and what needs no dismissing;
   a permanent failure is left only by a forward turn, and that turn is the skip.
 
+**A server that did not answer is left alone for 20 s.** LuaSocket is synchronous,
+so an unreachable Kavita or Suwayomi costs one page timeout inside the turn — Meguru
+asks for 8 s of silence and 20 s total, not stock's 15/60 — and without a cooldown the
+post-paint hint, the spread warm and the crop analysis would each pay it again for
+every page warmed ahead. `fetchPage` remembers a transport failure in
+`_server_down_until` and answers immediately while it lasts, marking the page's
+failure `network`; `prefetchPage`, `analyseAhead`, `hintPage` and `prepareSpread`
+also stand down. An explicit retry (the failure barrier's `clearServerDown`) and a
+network reconnect clear it.
+
 **A dead page carries a blank native, so no renderer has to answer nil.** When a page
 is refused or fails to decode, `ensureNativeBB` caches a 1024 px white buffer and marks
 the page; `getPageDims` keeps the source or screen size for layout. `drawPagePart`,
