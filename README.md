@@ -7,7 +7,10 @@
 
 <br>
 
-<p align="center"> <a href="https://github.com/Craftwork2720/meguru/releases/latest/download/meguru.koplugin.zip"><img src="https://img.shields.io/badge/Download-meguru.koplugin.zip-735DA8?style=for-the-badge&logo=github&logoColor=white&labelColor=1f2328" alt="Download meguru.koplugin.zip"></a> </p>
+<p align="center">
+  <a href="https://github.com/Craftwork2720/meguru/releases/latest/download/meguru.koplugin.zip"><img src="https://img.shields.io/badge/Download-meguru.koplugin.zip-735DA8?style=for-the-badge&logo=github&logoColor=white&labelColor=1f2328" alt="Download meguru.koplugin.zip"></a>
+  <a href="https://ko-fi.com/Y8Y01JS8SV"><img src="https://img.shields.io/badge/Support-Ko--fi-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white&labelColor=1f2328" alt="Support on Ko-fi"></a>
+</p>
 
 <br>
 
@@ -111,8 +114,14 @@ The first button always opens the stream you tapped. Tapping outside the dialog 
 - A stream needs a reachable server. If a page can't load, the reason is shown on the page and it fills in when you're back online.
 - Creating a stream also saves a `.cover.jpg` in its folder (can be turned off in Settings → OPDS → Covers for folders).
 - **Check for updates** in ⋮ → Tools → Meguru → Settings. It never installs without asking.
-- A stream can't be exported as a real `.cbz`.
-- If you uninstall the plugin, existing `.meguru` files stop opening.
+
+<br>
+
+<p align="center">
+  Enjoying Meguru? A coffee helps me keep it going ☕
+  <br><br>
+  <a href="https://ko-fi.com/Y8Y01JS8SV" target="_blank"><img height="36" src="https://storage.ko-fi.com/cdn/kofi6.png?v=6" alt="Buy Me a Coffee at ko-fi.com"></a>
+</p>
 
 ## License
 
