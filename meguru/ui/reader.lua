@@ -434,16 +434,14 @@ local function installTurnTiming(ui, paging, view)
         view._meguru_paint_stamp_patched = true
         local orig_paint = view.paintTo
         view.paintTo = function(vw, ...)
+            local was_drawn = vw.state and vw.state.drawn
             local ret = orig_paint(vw, ...)
-            -- Stamped after the refresh: a tap made during it predates the screen.
-            if not vw._meguru_paint_stamp_queued then
-                vw._meguru_paint_stamp_queued = true
-                UIManager:nextTick(function()
-                    vw._meguru_paint_stamp_queued = false
-                    local clock = GestureTime.clockId()
-                    paging._meguru_paint_clock = clock
-                    paging._meguru_painted_at = GestureTime.now(clock)
-                end)
+            -- Only a page's own paint counts: a repaint of it must not stale
+            -- a tap made while looking at it.
+            if not was_drawn and vw.state and vw.state.drawn then
+                local clock = GestureTime.clockId()
+                paging._meguru_paint_clock = clock
+                paging._meguru_painted_at = GestureTime.now(clock)
             end
             return ret
         end
