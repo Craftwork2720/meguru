@@ -506,6 +506,14 @@ panel opens at best fit instead of inheriting the previous panel's pinch. The wi
 view overrides the pinch itself — it is a level change, not a stock bitmap zoom — so
 its zoom is the one the row and the store keep; see below.
 
+**A vertical swipe on a screen edge is inert, not a zoom.** Stock `ImageViewer` uses
+that zone to zoom, for devices without multitouch; the panel views consume a vertical
+swipe that starts in the outer eighth of the screen and do nothing with it. The reader's
+own gesture cannot run from here: a fullscreen viewer is the topmost window, and
+`UIManager:sendEvent` stops there, so the frontlight handler never sees the Dispatcher's
+events. The free view is left alone for one-finger swipes: there the same vertical path
+pans the page.
+
 **A panel is toned like the page it came from, and this file has nothing to do with
 it.** Contrast and saturation are applied by MuPDF while rendering
 (`docs/render-path.md`). A panel takes one of two routes, and both carry that tone:

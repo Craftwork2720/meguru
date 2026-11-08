@@ -75,6 +75,15 @@ local function bottomMenuSwipe(pos, direction)
     return activationMenu() ~= "tap" and direction == "north" and inBottomMenuZone(pos)
 end
 
+-- Stock zooms a vertical swipe on the screen sides; these views only consume it.
+local function sideVerticalSwipe(direction, pos)
+    if not (pos and (direction == "north" or direction == "south")) then
+        return false
+    end
+    local x = pos.x / Screen:getWidth()
+    return x < 1 / 8 or x > 7 / 8
+end
+
 -- Cropped panels have no output size of their own. A whole-page one would
 -- otherwise be rendered at the native cap; every path must use the same number,
 -- or the warm's tile and the release's key stop matching the view's.
@@ -517,6 +526,10 @@ function PanelViewer:onSwipe(arg, ges)
         elseif direction == "south" then
             return self:panBy(0, -distance)
         end
+        return true
+    end
+    -- Stock's zoom zone on the sides; the swipe is inert here, not a zoom.
+    if sideVerticalSwipe(direction, ges.pos) then
         return true
     end
     if ges and ges.time then
