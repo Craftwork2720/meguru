@@ -361,6 +361,10 @@ function Feed.planForMarker(desc, opts)
     if type(desc) ~= "table" then
         return nil, "no marker"
     end
+    -- No series id: nothing to walk, and a driver would build "/series/nil".
+    if type(desc.series_remote_id) ~= "string" or desc.series_remote_id == "" then
+        return nil, "no series"
+    end
     local kind = desc.server_kind
     if not kind then
         kind = Base.kindFromTemplate(desc.template)

@@ -1844,10 +1844,12 @@ end
 
 -- One refusal wording for both directions, so the two cannot drift.
 local function showNoNeighbor(which, name)
+    -- A marker with no series name must not leave the message without a subject.
+    local label = type(name) == "string" and name ~= "" and name or _("This book")
     UIManager:show(InfoMessage:new{
         text = which == "next"
-            and T(_("%1 has no next chapter."), tostring(name or ""))
-            or T(_("%1 has no previous chapter."), tostring(name or "")),
+            and T(_("%1 has no next chapter."), label)
+            or T(_("%1 has no previous chapter."), label),
     })
 end
 

@@ -254,8 +254,9 @@ local function seriesOf(ui)
     if not (doc and type(doc.seriesContext) == "function") then
         return nil
     end
+    -- A catalogue name is not a series: a flat marker has only that.
     local context = doc:seriesContext()
-    if not (context and context.server_name) then
+    if not (context and context.server_name and context.series_remote_id) then
         return nil
     end
     return context
