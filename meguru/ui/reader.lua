@@ -401,7 +401,7 @@ local function turnIsQueued(paging, view, was_turn)
         or paging.page_flipping_mode or paging.bookmark_flipping_mode then
         return false
     end
-    if view.state and view.state.drawn == false then
+    if paging._meguru_page_pending then
         return true
     end
     local gesture_time = paging._meguru_gesture_time
@@ -421,6 +421,8 @@ local function installTurnTiming(ui, paging, view)
                 if ges and ges.time then
                     paging._meguru_gesture_time = ges.time
                 end
+            elseif handler == "onPageUpdate" then
+                paging._meguru_page_pending = true
             end
             local ret = orig_handle(u, event, ...)
             -- Only the gesture that caused this dispatch may gate a turn.
@@ -434,11 +436,10 @@ local function installTurnTiming(ui, paging, view)
         view._meguru_paint_stamp_patched = true
         local orig_paint = view.paintTo
         view.paintTo = function(vw, ...)
-            local was_drawn = vw.state and vw.state.drawn
             local ret = orig_paint(vw, ...)
-            -- Only a page's own paint counts: a repaint of it must not stale
-            -- a tap made while looking at it.
-            if not was_drawn and vw.state and vw.state.drawn then
+            -- The paint after PageUpdate is the page's mark; earlier taps queue.
+            if paging._meguru_page_pending then
+                paging._meguru_page_pending = nil
                 local clock = GestureTime.clockId()
                 paging._meguru_paint_clock = clock
                 paging._meguru_painted_at = GestureTime.now(clock)
