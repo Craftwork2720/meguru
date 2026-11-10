@@ -184,6 +184,47 @@ local function wideRotateTarget(base, left)
     return left and (base + 3) % 4 or (base + 1) % 4
 end
 
+-- The device did not turn for a wide page, so its keys must not turn either.
+-- Input's rotation map entries a software rotation hid, and their mode.
+local saved_rotation_keys, saved_rotation_mode
+
+local function restoreRotationKeys()
+    if not saved_rotation_keys then
+        return
+    end
+    local input = Device.input
+    local map = input and input.rotation_map
+        and input.rotation_map[saved_rotation_mode]
+    if map then
+        for key, value in pairs(saved_rotation_keys) do
+            map[key] = value
+        end
+        logger.dbg("Meguru: wide page, keys rotated back")
+    end
+    saved_rotation_keys, saved_rotation_mode = nil, nil
+end
+
+-- Whatever the map would move for this mode, not a fixed key list.
+local function hideRotationKeys(mode)
+    restoreRotationKeys()
+    local input = Device.input
+    local map = input and input.rotation_map and input.rotation_map[mode]
+    if not map then
+        return
+    end
+    local saved = {}
+    for key, value in pairs(map) do
+        saved[key] = value
+    end
+    if next(saved) then
+        for key in pairs(saved) do
+            map[key] = nil
+        end
+        saved_rotation_keys, saved_rotation_mode = saved, mode
+        logger.dbg("Meguru: wide page, keys stay unrotated in mode", mode)
+    end
+end
+
 -- ReaderUI has no getCurrentPage; paging holds it, absent if reflowed.
 -- The paging module's own page, or the one the open is about to restore: before
 -- ReadSettings its current_page is still 0, and a crop of page 0 is nothing.
@@ -235,12 +276,21 @@ local function syncSpread(ui)
 end
 
 -- A parity change is real geometry; same parity is re-orientation in place.
-local function rotateTo(ui, mode)
+-- software is ours: the screen turns but the device does not, so its keys stay.
+local function rotateTo(ui, mode, software)
     local cur = Screen:getRotationMode()
     if mode == cur then
+        restoreRotationKeys()
+        if software then
+            hideRotationKeys(mode)
+        end
         return
     end
+    restoreRotationKeys()
     Screen:setRotationMode(mode)
+    if software then
+        hideRotationKeys(mode)
+    end
     UIManager:setDirty(nil, "full")
     if (mode % 2) ~= (cur % 2) and ui then
         local new_size = Screen:getSize()
@@ -261,6 +311,8 @@ local function restoreWideRotate(state, ui)
     state.base, state.active = nil, nil
     if base ~= nil and Screen:getRotationMode() == active then
         rotateTo(ui, base)
+    else
+        restoreRotationKeys()
     end
 end
 
@@ -308,11 +360,12 @@ local function updatePageRotation(state, ui, page)
             if expected ~= cur then
                 state.active = expected
                 session_wide_rotate.base, session_wide_rotate.active = state.base, expected
-                rotateTo(ui, expected)
+                rotateTo(ui, expected, true)
             end
         else
             state.base, state.active = nil, nil
             session_wide_rotate.base, session_wide_rotate.active = nil, nil
+            restoreRotationKeys()
         end
         return
     end
@@ -324,7 +377,7 @@ local function updatePageRotation(state, ui, page)
     state.active = target
     session_wide_rotate.base, session_wide_rotate.active = state.base, target
     if target ~= cur then
-        rotateTo(ui, target)
+        rotateTo(ui, target, true)
     end
 end
 
@@ -352,6 +405,7 @@ local function reconcileWideRotation(state, ui)
     end
     if keep then
         state.base, state.active = base, active
+        hideRotationKeys(active)
     else
         pcall(rotateTo, ui, base)
     end
