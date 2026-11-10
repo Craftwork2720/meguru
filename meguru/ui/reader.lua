@@ -1390,10 +1390,11 @@ end
 local ROTATE_WIDE_ROW = {
     name = "rotate_wide_pages",
     name_text = _("Rotate wide pages"),
+    -- Stock cannot mix an icon row with a text item; the turns keep the arrows.
     toggle = {
         C_("Rotate wide pages", "off"),
-        C_("Rotate wide pages", "left 90°"),
-        C_("Rotate wide pages", "right 90°"),
+        C_("Rotate wide pages", "⤸ 90°"),
+        C_("Rotate wide pages", "⤹ 90°"),
     },
     values = { ROTATE_OFF, ROTATE_LEFT, ROTATE_RIGHT },
     default_value = ROTATE_OFF,
