@@ -791,9 +791,6 @@ local function natCmp(a, b)
     return 0
 end
 
--- The first image a 64-book sample holds is 6 MB; above this MuPDF renders.
-local MAX_COVER_BYTES = 8 * 1024 * 1024
-
 local MeguruDocument = Document:extend{
     -- Set in init: the OCR page shim; the book still has no engine instance.
     _document = nil,
@@ -1683,41 +1680,10 @@ local function fitScreen(bb)
     return bb
 end
 
--- Page 1's own bytes: no MuPDF open, which is what the cover browser pays.
-function MeguruDocument:_localZipCover()
-    local pages = self._archive_pages
-    if not pages or not self._index_pages_trusted or #pages == 0 then
-        return nil
-    end
-    -- Equal keys leave MuPDF's qsort free to pick either as page 1.
-    if #pages > 1 and natCmp(pages[1], pages[2]) == 0 then
-        return nil
-    end
-    local zip = self.zip_reader
-    local entry = zip and zip:entry(pages[1])
-    if not entry or (entry.usize and entry.usize > MAX_COVER_BYTES) then
-        return nil
-    end
-    local data = zip:read(pages[1], MAX_COVER_BYTES)
-    if not data then
-        return nil
-    end
-    local sw, sh = Screen:getWidth(), Screen:getHeight()
-    local bb = Image.decode(data, nil, nil, sw, sh)
-    if not bb or bb == Image.DECODE_TOO_LARGE then
-        return nil
-    end
-    return fitScreen(bb)
-end
-
--- Cover BlitBuffer, nothing cached; falls back to page 1 so never cover-less.
+-- Cover BlitBuffer, nothing cached; MuPDF page 1, not the index's entry.
 function MeguruDocument:_localCoverPageImage()
     if self.dead_pages[1] then
         return nil
-    end
-    local from_zip = self:_localZipCover()
-    if from_zip then
-        return from_zip
     end
     local doc = self:_mupdf()
     if not doc then
