@@ -2073,7 +2073,9 @@ function MeguruDocument:getNativePageDimensions(pageno)
     local pair = self:spreadUnitFor(pageno)
     if pair and pair.b then
         local geom = self:_pairFullGeom(pair)
-        return Geom:new{ w = geom.w, h = geom.h }
+        -- Crop boxes are whole pixels; a fractional ceiling would refuse one
+        -- that fits by less than a pixel, and the reader would letterbox it.
+        return Geom:new{ w = math.ceil(geom.w), h = math.ceil(geom.h) }
     end
     local dims = self:getPageDims(pageno)
     return Geom:new{ w = dims.w, h = dims.h }

@@ -499,6 +499,29 @@ local function installTurnTiming(ui, paging, view)
                 paging._meguru_paint_clock = clock
                 paging._meguru_painted_at = GestureTime.now(clock)
             end
+            -- A pair that loaded during the paint was not in the zoom the
+            -- reader fitted, so ask for a zoom that knows both pages.
+            local doc = ui.document
+            local have = view.state and view.state.zoom
+            if doc and have and not paging._meguru_rezoom_repair
+                and type(doc.spreadUnitFor) == "function"
+                and type(doc._spreadFitByWidth) == "function"
+                and not doc:_spreadFitByWidth()
+                and ui.zooming and type(ui.zooming.getZoom) == "function" then
+                local unit = doc:spreadUnitFor(paging.current_page)
+                if unit and unit.b then
+                    local ok, want = pcall(ui.zooming.getZoom, ui.zooming, paging.current_page)
+                    if ok and want and math.abs(want - have) > 0.001 then
+                        paging._meguru_rezoom_repair = true
+                        UIManager:nextTick(function()
+                            paging._meguru_rezoom_repair = nil
+                            if ui.document == doc and type(ui.handleEvent) == "function" then
+                                ui:handleEvent(Event:new("ReZoom"))
+                            end
+                        end)
+                    end
+                end
+            end
             return ret
         end
     end
