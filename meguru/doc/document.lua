@@ -1805,7 +1805,9 @@ function MeguruDocument:spreadActive()
     if self.spread_rotated_by_plugin then
         return false
     end
-    return (Screen:getRotationMode() % 2) == 1
+    -- The screen's shape, not the mode's parity: a tablet whose natural
+    -- orientation is landscape sits at mode 0 in landscape.
+    return Screen:getWidth() > Screen:getHeight()
 end
 
 -- Offset anchor page, or 0 for off; compared because 0 and "0" are truthy.

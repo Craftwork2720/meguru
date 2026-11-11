@@ -353,8 +353,9 @@ local function updatePageRotation(state, ui, page)
 
     local cur = Screen:getRotationMode()
     local left = wideRotateIsLeft(value)
-    if cur % 2 == 1 then
-        -- Already turned: reconcile against what this page expects instead.
+    -- Already turned: a natural-landscape tablet sits at mode 0 in landscape.
+    if Screen:getWidth() > Screen:getHeight() then
+        -- Reconcile against what this page expects instead.
         if state.active == cur then
             local expected = wideRotateTarget(state.base, left)
             if expected ~= cur then
