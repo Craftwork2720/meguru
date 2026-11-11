@@ -464,6 +464,64 @@ local function turnIsQueued(paging, view, was_turn)
         GestureTime.clockId(), paging._meguru_paint_clock)
 end
 
+-- Clears the paint mark and repairs a zoom the pair missed.
+local function stampPaint(view)
+    local ui = view.ui
+    local paging = ui and ui.paging
+    if not (paging and view._meguru_paint_stamp_patched) then
+        return
+    end
+    -- The paint after PageUpdate is the page's mark; earlier taps queue.
+    if paging._meguru_page_pending then
+        paging._meguru_page_pending = nil
+        local clock = GestureTime.clockId()
+        paging._meguru_paint_clock = clock
+        paging._meguru_painted_at = GestureTime.now(clock)
+    end
+    -- A pair that loaded during the paint was not in the zoom the
+    -- reader fitted, so ask for a zoom that knows both pages.
+    local doc = ui.document
+    local have = view.state and view.state.zoom
+    if doc and have and not paging._meguru_rezoom_repair
+        and type(doc.spreadUnitFor) == "function"
+        and type(doc._spreadFitByWidth) == "function"
+        and not doc:_spreadFitByWidth()
+        and ui.zooming and type(ui.zooming.getZoom) == "function" then
+        local unit = doc:spreadUnitFor(paging.current_page)
+        if unit and unit.b then
+            local ok, want = pcall(ui.zooming.getZoom, ui.zooming, paging.current_page)
+            if ok and want and math.abs(want - have) > 0.001 then
+                paging._meguru_rezoom_repair = true
+                UIManager:nextTick(function()
+                    paging._meguru_rezoom_repair = nil
+                    if ui.document == doc and type(ui.handleEvent) == "function" then
+                        ui:handleEvent(Event:new("ReZoom"))
+                    end
+                end)
+            end
+        end
+    end
+end
+
+-- The class slot survives replaced paintTo; install it before our wrappers.
+local function installPaintStamp(view)
+    if not (view and type(view.paintTo) == "function") then
+        return
+    end
+    view._meguru_paint_stamp_patched = true
+    local ReaderView = require("apps/reader/modules/readerview")
+    if not ReaderView._meguru_paint_stamp_patched
+        and type(ReaderView.paintTo) == "function" then
+        ReaderView._meguru_paint_stamp_patched = true
+        local orig_paint = ReaderView.paintTo
+        function ReaderView:paintTo(...)
+            local ret = orig_paint(self, ...)
+            stampPaint(self)
+            return ret
+        end
+    end
+end
+
 -- Gestures carry their input time; keys have none and must clear it.
 local function installTurnTiming(ui, paging, view)
     if not ui._meguru_turn_timing_patched then
@@ -487,44 +545,7 @@ local function installTurnTiming(ui, paging, view)
             return ret
         end
     end
-    if not view._meguru_paint_stamp_patched then
-        view._meguru_paint_stamp_patched = true
-        local orig_paint = view.paintTo
-        view.paintTo = function(vw, ...)
-            local ret = orig_paint(vw, ...)
-            -- The paint after PageUpdate is the page's mark; earlier taps queue.
-            if paging._meguru_page_pending then
-                paging._meguru_page_pending = nil
-                local clock = GestureTime.clockId()
-                paging._meguru_paint_clock = clock
-                paging._meguru_painted_at = GestureTime.now(clock)
-            end
-            -- A pair that loaded during the paint was not in the zoom the
-            -- reader fitted, so ask for a zoom that knows both pages.
-            local doc = ui.document
-            local have = view.state and view.state.zoom
-            if doc and have and not paging._meguru_rezoom_repair
-                and type(doc.spreadUnitFor) == "function"
-                and type(doc._spreadFitByWidth) == "function"
-                and not doc:_spreadFitByWidth()
-                and ui.zooming and type(ui.zooming.getZoom) == "function" then
-                local unit = doc:spreadUnitFor(paging.current_page)
-                if unit and unit.b then
-                    local ok, want = pcall(ui.zooming.getZoom, ui.zooming, paging.current_page)
-                    if ok and want and math.abs(want - have) > 0.001 then
-                        paging._meguru_rezoom_repair = true
-                        UIManager:nextTick(function()
-                            paging._meguru_rezoom_repair = nil
-                            if ui.document == doc and type(ui.handleEvent) == "function" then
-                                ui:handleEvent(Event:new("ReZoom"))
-                            end
-                        end)
-                    end
-                end
-            end
-            return ret
-        end
-    end
+    installPaintStamp(view)
 end
 
 -- Passes the target through spreadSnap so one gesture turns a whole spread.
@@ -2212,6 +2233,8 @@ function Reader.install(plugin)
             page = ui.view.page_bgcolor,
         }
     end
+    -- First: the wrappers below capture whatever view.paintTo holds.
+    installPaintStamp(ui.view)
     installCropMarginColor(plugin, ui)
     installCropMarginPaint(plugin, ui)
 
