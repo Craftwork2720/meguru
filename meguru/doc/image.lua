@@ -150,9 +150,176 @@ local function documentMagic(data)
     return nil
 end
 
+local function u16be(s, i)
+    local a, b = s:byte(i, i + 1)
+    return a * 256 + b
+end
+
+local function u16le(s, i)
+    local a, b = s:byte(i, i + 1)
+    return a + b * 256
+end
+
+local function u32be(s, i)
+    local a, b, c, d = s:byte(i, i + 3)
+    return a * 16777216 + b * 65536 + c * 256 + d
+end
+
+local function i32le(s, i)
+    local a, b, c, d = s:byte(i, i + 3)
+    local v = a + b * 256 + c * 65536 + d * 16777216
+    if v >= 2147483648 then
+        v = v - 4294967296
+    end
+    return v
+end
+
+-- JPEG: skip segments to the frame header, which carries the pixel size.
+local function jpegPixelSize(data)
+    local i = 3
+    while i + 1 <= #data do
+        if data:byte(i) ~= 0xFF then
+            return nil
+        end
+        local marker = data:byte(i + 1)
+        if marker == 0xFF then
+            i = i + 1
+        elseif marker == 0x01 or (marker >= 0xD0 and marker <= 0xD9) then
+            i = i + 2
+        elseif marker == 0xDA then
+            return nil
+        else
+            if i + 3 > #data then
+                return nil
+            end
+            local len = u16be(data, i + 2)
+            if marker >= 0xC0 and marker <= 0xCF
+                and marker ~= 0xC4 and marker ~= 0xC8 and marker ~= 0xCC then
+                if i + 8 > #data then
+                    return nil
+                end
+                local h = u16be(data, i + 5)
+                local w = u16be(data, i + 7)
+                if w > 0 and h > 0 then
+                    return { w = w, h = h }
+                end
+                return nil
+            end
+            if len < 2 then
+                return nil
+            end
+            i = i + 2 + len
+        end
+    end
+    return nil
+end
+
+local function pngPixelSize(data)
+    if #data < 24 or data:sub(13, 16) ~= "IHDR" then
+        return nil
+    end
+    local w, h = u32be(data, 17), u32be(data, 21)
+    if w > 0 and h > 0 then
+        return { w = w, h = h }
+    end
+    return nil
+end
+
+local function gifPixelSize(data)
+    if #data < 10 then
+        return nil
+    end
+    local w, h = u16le(data, 7), u16le(data, 9)
+    if w > 0 and h > 0 then
+        return { w = w, h = h }
+    end
+    return nil
+end
+
+local function bmpPixelSize(data)
+    if #data < 26 then
+        return nil
+    end
+    local dib = u32be(data, 15)
+    local w, h
+    if dib == 12 then
+        w, h = u16le(data, 19), u16le(data, 21)
+    else
+        w, h = i32le(data, 19), math.abs(i32le(data, 23))
+    end
+    if w and h and w > 0 and h > 0 then
+        return { w = w, h = h }
+    end
+    return nil
+end
+
+-- WebP: the canvas is not stored the same way in all three chunk types.
+local function webpPixelSize(data)
+    if #data < 16 or data:sub(1, 4) ~= "RIFF" or data:sub(9, 12) ~= "WEBP" then
+        return nil
+    end
+    local tag = data:sub(13, 16)
+    if tag == "VP8X" and #data >= 30 then
+        local w = 1 + data:byte(25) + data:byte(26) * 256 + data:byte(27) * 65536
+        local h = 1 + data:byte(28) + data:byte(29) * 256 + data:byte(30) * 65536
+        return { w = w, h = h }
+    elseif tag == "VP8L" and #data >= 26 and data:byte(21) == 0x2F then
+        local b1, b2, b3, b4 = data:byte(22, 25)
+        local bits = b1 + b2 * 256 + b3 * 65536 + b4 * 16777216
+        local w = bits % 16384 + 1
+        local h = math.floor(bits / 16384) % 16384 + 1
+        return { w = w, h = h }
+    elseif tag == "VP8 " and #data >= 30 and data:sub(24, 26) == "\157\001\042" then
+        local w = u16le(data, 27) % 16384
+        local h = u16le(data, 29) % 16384
+        if w > 0 and h > 0 then
+            return { w = w, h = h }
+        end
+    end
+    return nil
+end
+
+-- The pixels an image holds, from its own header. MuPDF sizes an image page
+-- by its stated density, which can be a fraction of what the file contains.
+function Image.pixelSize(data)
+    if type(data) ~= "string" or #data < 10 then
+        return nil
+    end
+    if data:sub(1, 3) == JPEG_MAGIC then
+        return jpegPixelSize(data)
+    elseif data:sub(1, 8) == PNG_MAGIC then
+        return pngPixelSize(data)
+    elseif data:sub(1, 4) == "GIF8" then
+        return gifPixelSize(data)
+    elseif data:sub(1, 2) == "BM" then
+        return bmpPixelSize(data)
+    elseif data:sub(1, 4) == "RIFF" and data:sub(9, 12) == "WEBP" then
+        return webpPixelSize(data)
+    end
+    return nil
+end
+
+-- A page's render may grow to the pixels its image really holds, never below
+-- the density-derived size and never past the decode budget.
+local function renderSize(fw, fh, source, budget)
+    local cw, ch = cappedDim(fw, fh, budget)
+    if not (source and source.w and source.h
+        and source.w > 0 and source.h > 0) then
+        return cw, ch
+    end
+    local ratio = math.sqrt((source.w * source.h) / (fw * fh))
+    if ratio <= 1 then
+        return cw, ch
+    end
+    -- Area, so an EXIF turn moves neither dimension nor scale.
+    cw = math.max(1, math.floor(fw * ratio + 0.5))
+    ch = math.max(1, math.floor(fh * ratio + 0.5))
+    return cappedDim(cw, ch, budget)
+end
+
 -- Only the streamed path can refuse by size: it alone has the bytes to sniff.
 local function renderMuPDFPage(doc, pageno, refuse_oversize, gamma, saturation,
-                               fit_w, fit_h)
+                               fit_w, fit_h, source)
     local budget = renderBudget()
     local ok_page, page = pcall(doc.openPage, doc, pageno)
     local bb
@@ -174,7 +341,7 @@ local function renderMuPDFPage(doc, pageno, refuse_oversize, gamma, saturation,
                 ch = math.max(1, math.floor(fh * s + 0.5))
                 cw, ch = cappedDim(cw, ch, budget)
             else
-                cw, ch = cappedDim(fw, fh, budget)
+                cw, ch = renderSize(fw, fh, source, budget)
             end
             if cw < 1 then cw = 1 end
             if ch < 1 then ch = 1 end
@@ -222,10 +389,13 @@ local function decodeNativeMupdf(data, gamma, saturation, fit_w, fit_h)
     if doc.setColorRendering then
         doc:setColorRendering(Image.colorEnabled())
     end
+    local source = Image.pixelSize(data)
     -- The JPEG sniff runs only on the streamed bytes; a huge JPEG is exempt.
     local res = renderMuPDFPage(doc, 1, function(fw, fh)
-        return not isJpegBytes(data) and fw * fh > MAX_LOSSLESS_NATIVE_PIXELS
-    end, gamma, saturation, fit_w, fit_h)
+        local pixels = source and source.w and source.h
+            and source.w * source.h or fw * fh
+        return not isJpegBytes(data) and pixels > MAX_LOSSLESS_NATIVE_PIXELS
+    end, gamma, saturation, fit_w, fit_h, source)
     doc:close()
     return res
 end

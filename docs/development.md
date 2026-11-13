@@ -222,8 +222,11 @@ Each step must pass before the next:
    via direct|scale` per rendered tile: on a manga page that fits the screen the render
    line shows the page uncapped and the paint line says `direct`; on an oversized scan
    the render line shows the reduced size — that pair is the whole check that the budget
-   is doing what `meguru/settings` says. Then turn back one page and force a repaint
-   (open/close ⋮, toggle a crop setting): **no fetch**, because the page's decoded buffer
+   is doing what `meguru/settings` says. On a page whose file states a density, the
+   render line's first size is MuPDF's density-derived page and the second the file's
+   own pixels — equal sizes mean the header was not read. Then turn back one page and
+   force a repaint (open/close ⋮, toggle a crop setting): **no fetch**, because the
+   page's decoded buffer
    is still live. Turn back past the four-entry store and a fetch *is* expected — that is
    the trade this makes, not a regression. Then close the book and reopen it: the page it
    reopens on is fetched, because the store died with the document.

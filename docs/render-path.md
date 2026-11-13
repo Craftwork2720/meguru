@@ -125,13 +125,14 @@ budget that moved between the decode and the crop therefore cannot move the rect
 
 **A single local page can still be too large for any cache discipline.** MuPDF
 decimates JPEG while decoding, but other formats decode at source size before scaling:
-a 12000×12000 PNG peaked at ~850 MB even when rendered to 1000×1000. MuPDF reports a
-CBZ page at 72/96 of its pixels, so the guard scales the reported area by 16/9 before
-comparing it with `min(40 Mpx, free/6)`: an actual pixel costs ~5-6 bytes at peak
-there, and six is the budget. A page over the line is refused before that render, marked in
+a 12000×12000 PNG peaked at ~850 MB even when rendered to 1000×1000. The guard
+compares the header's pixel area when `Image.pixelSize` knows it, and otherwise
+scales MuPDF's reported area by 16/9 (a density-less scan is reported at 72/96);
+the line is `min(40 Mpx, free/6)`, because an actual pixel costs ~5-6 bytes at peak
+and six is the budget. A page over the line is refused before that render, marked in
 `large_pages`, and painted with a "too large" sentence rather than the damaged-file
-one. The archive is listed once at open; an all-JPEG archive skips the guard, because
-there the decoder is what keeps the source out of memory.
+one. A JPEG page skips the guard, because there the decoder is what keeps the source
+out of memory; the archive is listed once at open, so the extension is known.
 
 **Local pages paint from the retained decode, except a magnified JPEG.** Every local
 CBZ page paint and panel crop goes through `decodeRegion`: it crops and scales the
@@ -211,16 +212,27 @@ still that of a shrunk page. Nothing in the predicate is a statement about the
 page, and reading it as one is how "large pages use the old engine" comes to be
 true only while nobody zooms.
 
+**An image page is decoded at its pixels, not at the density the file states.**
+MuPDF sizes an image page as `pixels x 72 / density`, assuming 96 when the file
+says nothing, so a density-less scan used to stop at 75% of its pixels and a
+300 dpi one at 24%. `Image.pixelSize` reads the header — JPEG, PNG, GIF, BMP,
+WebP — and `renderMuPDFPage` grows the render to that pixel area, keeping the
+page's aspect and the decode budget below; the exact pixels also drive the
+lossless-page guard. Local CBZ entries are read through the zip index's
+`readPrefix`, streamed pages from their bytes, and a format without a parser
+keeps the density-derived size. Stock's own viewer never meets the shortfall,
+because its zoom asks MuPDF for screen pixels on every paint; this decode is one
+retained buffer, so it asks for the page's pixels up front instead.
+
 **For a page being shrunk, what a paint costs is set by the decode budget, not by
 the path.** The retained decode is what `decodeRegion` slices and what every
 analysis reads — the margin scan (`autoContentBox`), the page-number strip, the
 blank check — so `max_native_pixels` (`meguru/settings`) sets how much of a large
 page is kept, on every turn whatever the reader does. `db39a93` replaced an
 earlier long-edge cap with an area budget, correctly, because a long-edge cap
-punished a tall strip without measure. The default is **10 Mpx**; pages at or under
-it — every single page a 300 dpi scan sends, and spreads up to 2600x3700 — come
-back at natural size and are untouched, so the direct render above still works from
-real pixels where it matters.
+punished a tall strip without measure. The default is **10 Mpx**; a page whose own
+pixels are at or under it comes back at natural size and is untouched, so the
+direct render above still works from real pixels where it matters.
 
 **Raising the budget buys pixels for almost no time, and that is measured rather
 than argued.** A 2560x3600 page (8.8 Mpx) on a Kindle PW5 costs **2007 ms** to

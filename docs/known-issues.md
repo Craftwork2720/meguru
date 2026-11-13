@@ -6,19 +6,11 @@ Part of the design record; [CLAUDE.md](../CLAUDE.md) is the map.
 
 ## Known open items
 
-- **A page is decoded at its file's stated density, not at its pixels.**
-  `renderMuPDFPage` sizes the render from `page:getSize()`, which is `fz_bound_page` —
-  points at 72 dpi — and for an *image document* MuPDF computes that box as `pixels x 72
-  / density`, assuming **96** when the file says nothing. So a density-less 1600x2400
-  scan is decoded at 1200x1800 — 25% below its pixels — and a scan carrying 300 dpi at a
-  quarter, silently, because the budget below is an *area* cap and reports the same
-  capped numbers either way. The `MuPDF page render WxH -> WxH` line cannot show it
-  either: both of its sizes come from the same space. What keeps this from being visible
-  on streamed pages and local JPEG archives is that `renderRegionDirect` re-renders a
-  magnified region from the source; a local non-JPEG page paints from the capped decode
-  and does show the shortfall. It wants its own pass on a device: the fix is either
-  teaching the decode the density (PNG `pHYs`, JPEG JFIF) or moving the plugin's whole
-  coordinate space to pixels, and every geometry path shares that space.
+- **An image whose header has no parser is still decoded at its stated density.**
+  `Image.pixelSize` reads JPEG, PNG, GIF, BMP and WebP; for TIFF, JP2 and the lesser
+  formats MuPDF's density-derived page size still stands, so a 300 dpi file there can
+  render at a quarter of its pixels. The fix is another header reader, not a decode;
+  what it costs is trusting one more format's offsets.
 - **The panel rotation direction is applied *after* `ImageWidget:new`, not passed to
   it.** `PanelViewer:_new_image_wg` relies on `ImageWidget` not having rendered yet —
   it defines no `init`, and `_render` is entered only from `getSize`/`paintTo`. That is

@@ -720,9 +720,9 @@ local LOCAL_PAGE_BYTES_PER_PIXEL = 6
 -- otherwise pay the same timeout once for every page warmed ahead.
 local SERVER_COOLDOWN_MS = 20 * 1000
 
-local function localPageTooLarge(self, fw, fh)
+local function localPageTooLarge(self, fw, fh, source, is_jpeg)
     -- MuPDF decimates JPEG in the decoder; the full source is never held.
-    if self.local_all_jpeg then
+    if self.local_all_jpeg or is_jpeg then
         return false
     end
     local free = util.calcFreeMem()
@@ -730,7 +730,14 @@ local function localPageTooLarge(self, fw, fh)
     if free then
         budget = math.min(budget, free / LOCAL_PAGE_BYTES_PER_PIXEL)
     end
-    return fw * fh * LOCAL_PAGE_SOURCE_SCALE > budget
+    -- The header's pixels are exact; the fallback assumes a density-less scan.
+    local pixels
+    if source and source.w and source.h and source.w > 0 and source.h > 0 then
+        pixels = source.w * source.h
+    else
+        pixels = fw * fh * LOCAL_PAGE_SOURCE_SCALE
+    end
+    return pixels > budget
 end
 
 -- MuPDF's own cbz_ext_list, mirrored: only these entries become pages.
@@ -871,6 +878,22 @@ function MeguruDocument:_zipPages()
     end
     table.sort(pages, function(a, b) return natCmp(a, b) < 0 end)
     return pages
+end
+
+-- The page's own pixel size from its header; nil when the index or the format
+-- cannot answer, and then MuPDF's density-derived size stands.
+function MeguruDocument:_localPixelSize(pageno)
+    self.page_pixels = self.page_pixels or {}
+    local cached = self.page_pixels[pageno]
+    if cached ~= nil then
+        return cached or nil
+    end
+    local name = self._archive_pages and self._archive_pages[pageno]
+    local prefix = name and self.zip_reader
+        and self.zip_reader:readPrefix(name, 256 * 1024)
+    local size = prefix and Image.pixelSize(prefix) or nil
+    self.page_pixels[pageno] = size or false
+    return size
 end
 
 -- MuPDF opens on the first real page: the cover browser pays no openDocument.
@@ -2907,14 +2930,18 @@ function MeguruDocument:ensureNativeBB(pageno, data)
         -- No raw bytes: render from the archive; huge PNGs keep MuPDF's decode.
         local doc = self:_mupdf()
         if doc then
+            local source = self:_localPixelSize(pageno)
+            local name = self._archive_pages and self._archive_pages[pageno]
+            local ext = name and name:lower():match("%.([a-z0-9]+)$")
+            local is_jpeg = ext == "jpg" or ext == "jpeg"
             res = Image.renderMupdfPage(doc, pageno, function(fw, fh)
-                if localPageTooLarge(self, fw, fh) then
+                if localPageTooLarge(self, fw, fh, source, is_jpeg) then
                     refused_large = true
                     self.dims[pageno] = { w = fw, h = fh }
                     return true
                 end
                 return false
-            end, self:contrast(), self:saturation())
+            end, self:contrast(), self:saturation(), nil, nil, source)
         end
     else
         res = Image.decode(data, self:contrast(), self:saturation())
