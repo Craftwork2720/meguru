@@ -1458,6 +1458,14 @@ function MeguruDocument:cacheTile(key, tile)
     evictOldest(self, self.tiles, self.max_cached_tiles)
 end
 
+-- Under pressure only the pair on screen is worth keeping; a third re-decodes.
+local function nativeCacheLimit(self)
+    if self:underMemoryPressure() then
+        return 2
+    end
+    return self.max_cached_native
+end
+
 function MeguruDocument:cacheNative(pageno, bb)
     if self.native[pageno] then
         local old = self.native[pageno]
@@ -1468,7 +1476,7 @@ function MeguruDocument:cacheNative(pageno, bb)
     end
     self.native[pageno] = { bb = bb, bb_free = false }
     bump(self, pageno)
-    evictOldest(self, self.native, self.max_cached_native)
+    evictOldest(self, self.native, nativeCacheLimit(self))
 end
 
 -- True when the page's decoded native is already in the LRU.

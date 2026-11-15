@@ -114,8 +114,10 @@ raw page bytes and panel lists of every other page, keeping both pages of a pair
 spread is up, so the transient that follows starts with the room they held. Prefetch,
 `analyseAhead` and the panel warm are optional and stop below the line; a warm that
 finds pressure drops the old pages instead. The drop is logged once per book, not per
-item. Every native decode is also capped at a quarter of the free RAM (four bytes
-per pixel), not only at `max_native_pixels`, while a cropped panel tile is asked for
+item, and under it the native LRU keeps only the pair rather than its usual three.
+Every native decode is also capped at a sixteenth of the free RAM, counted in
+bytes — four per colour pixel and one per grayscale — not only at
+`max_native_pixels`, while a cropped panel tile is asked for
 at no more than twice the screen's pixel area, so a page accepted as one whole panel
 cannot allocate a page-sized tile. **The render path's coordinates are the capped
 decode's, wherever the buffer went next**: a region render takes that size as its

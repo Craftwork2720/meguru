@@ -99,12 +99,14 @@ local function cappedDim(w, h, budget)
            math.max(1, math.floor(h * s + 0.5))
 end
 
--- One render may take a quarter of the free RAM at four bytes per pixel.
+-- One render may take a sixteenth of the free RAM, counted in bytes: four per
+-- colour pixel and one per grayscale, so colour gets a quarter of the pixels.
 local function renderBudget()
     local budget = Settings.get("max_native_pixels")
     local free = util.calcFreeMem()
     if free then
-        local by_memory = math.max(1, math.floor(free / 16))
+        local bytes = Image.colorEnabled() and 4 or 1
+        local by_memory = math.max(1, math.floor(free / (16 * bytes)))
         if by_memory < budget then
             budget = by_memory
         end
