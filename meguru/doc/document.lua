@@ -889,9 +889,16 @@ function MeguruDocument:_localPixelSize(pageno)
         return cached or nil
     end
     local name = self._archive_pages and self._archive_pages[pageno]
-    local prefix = name and self.zip_reader
-        and self.zip_reader:readPrefix(name, 256 * 1024)
-    local size = prefix and Image.pixelSize(prefix) or nil
+    local ok, size = pcall(function()
+        local prefix = name and self.zip_reader
+            and self.zip_reader:readPrefix(name, 256 * 1024)
+        return prefix and Image.pixelSize(prefix) or nil
+    end)
+    if not ok then
+        -- A header is an optimisation; it must never keep a book from opening.
+        logger.warn("Meguru: could not read a page header:", size)
+        size = nil
+    end
     self.page_pixels[pageno] = size or false
     return size
 end

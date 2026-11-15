@@ -209,66 +209,60 @@ function Reader:readPrefix(name, max_bytes)
     if not ok or not file then
         return nil
     end
-    local data_off
-    local ok_header = pcall(function()
+    -- A header is optional: a malformed entry must leave its page to MuPDF.
+    local ok_read, result = pcall(function()
         local header = readAt(file, entry.offset, 30)
         if not header or header:sub(1, 4) ~= LOCAL_SIG then
-            return false
+            return nil
         end
-        data_off = entry.offset + 30 + u16(header, 27) + u16(header, 29)
-        return true
+        local data_off = entry.offset + 30 + u16(header, 27) + u16(header, 29)
+        if entry.method == 0 then
+            local len = math.min(max_bytes, entry.usize or 0)
+            return len > 0 and readAt(file, data_off, len) or ""
+        end
+        if entry.method ~= 8 then
+            return nil
+        end
+        local lib = loadZlib()
+        if not lib then
+            return nil
+        end
+        local strm = ffi.new("meguru_z_stream[1]")
+        if lib.inflateInit2_(strm, -15, lib.zlibVersion(),
+            ffi.sizeof("meguru_z_stream")) ~= 0 then
+            return nil
+        end
+        local buf = ffi.new("unsigned char[?]", max_bytes)
+        strm[0].next_out = buf
+        strm[0].avail_out = max_bytes
+        local remaining = entry.csize or 0
+        local pos = data_off
+        while remaining > 0 and strm[0].avail_out > 0 do
+            local chunk = readAt(file, pos, math.min(64 * 1024, remaining))
+            if not chunk or #chunk == 0 then
+                break
+            end
+            pos = pos + #chunk
+            remaining = remaining - #chunk
+            strm[0].next_in = ffi.cast("const unsigned char *", chunk)
+            strm[0].avail_in = #chunk
+            local res = lib.inflate(strm, 0) -- Z_NO_FLUSH
+            if res ~= 0 then
+                break
+            end
+        end
+        local out_len = tonumber(strm[0].total_out) or 0
+        lib.inflateEnd(strm)
+        if out_len < 1 then
+            return nil
+        end
+        return ffi.string(buf, out_len)
     end)
-    if not ok_header then
-        file:close()
-        return nil
-    end
-    if entry.method == 0 then
-        local len = math.min(max_bytes, entry.usize or 0)
-        local data = len > 0 and readAt(file, data_off, len) or ""
-        file:close()
-        return data
-    end
-    if entry.method ~= 8 then
-        file:close()
-        return nil
-    end
-    local lib = loadZlib()
-    if not lib then
-        file:close()
-        return nil
-    end
-    local strm = ffi.new("meguru_z_stream[1]")
-    if lib.inflateInit2_(strm, -15, lib.zlibVersion(),
-        ffi.sizeof("meguru_z_stream")) ~= 0 then
-        file:close()
-        return nil
-    end
-    local buf = ffi.new("unsigned char[?]", max_bytes)
-    strm[0].next_out = buf
-    strm[0].avail_out = max_bytes
-    local remaining = entry.csize or 0
-    local pos = data_off
-    while remaining > 0 and strm[0].avail_out > 0 do
-        local chunk = readAt(file, pos, math.min(64 * 1024, remaining))
-        if not chunk or #chunk == 0 then
-            break
-        end
-        pos = pos + #chunk
-        remaining = remaining - #chunk
-        strm[0].next_in = ffi.cast("const unsigned char *", chunk)
-        strm[0].avail_in = #chunk
-        local res = lib.inflate(strm, 0) -- Z_NO_FLUSH
-        if res ~= 0 then
-            break
-        end
-    end
-    local out_len = tonumber(strm[0].total_out) or 0
-    lib.inflateEnd(strm)
     file:close()
-    if out_len < 1 then
+    if not ok_read then
         return nil
     end
-    return ffi.string(buf, out_len)
+    return result
 end
 
 -- Nil whenever this reader cannot answer for the whole file; every caller

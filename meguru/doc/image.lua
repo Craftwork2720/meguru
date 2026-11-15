@@ -285,18 +285,24 @@ function Image.pixelSize(data)
     if type(data) ~= "string" or #data < 10 then
         return nil
     end
+    local parse
     if data:sub(1, 3) == JPEG_MAGIC then
-        return jpegPixelSize(data)
+        parse = jpegPixelSize
     elseif data:sub(1, 8) == PNG_MAGIC then
-        return pngPixelSize(data)
+        parse = pngPixelSize
     elseif data:sub(1, 4) == "GIF8" then
-        return gifPixelSize(data)
+        parse = gifPixelSize
     elseif data:sub(1, 2) == "BM" then
-        return bmpPixelSize(data)
+        parse = bmpPixelSize
     elseif data:sub(1, 4) == "RIFF" and data:sub(9, 12) == "WEBP" then
-        return webpPixelSize(data)
+        parse = webpPixelSize
     end
-    return nil
+    if not parse then
+        return nil
+    end
+    -- A malformed header costs the density fallback, never the page.
+    local ok, size = pcall(parse, data)
+    return ok and size or nil
 end
 
 -- A page's render may grow to the pixels its image really holds, never below
