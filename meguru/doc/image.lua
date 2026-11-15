@@ -353,22 +353,37 @@ local function renderMuPDFPage(doc, pageno, refuse_oversize, gamma, saturation,
             end
             if cw < 1 then cw = 1 end
             if ch < 1 then ch = 1 end
-            local dc = DrawContext.new()
-            dc:setZoom(cw / fw)
-            if gamma and gamma ~= 1.0 then
-                dc:setGamma(gamma)
+            local function draw(w, h)
+                local dc = DrawContext.new()
+                dc:setZoom(w / fw)
+                if gamma and gamma ~= 1.0 then
+                    dc:setGamma(gamma)
+                end
+                if saturation and saturation ~= 1.0 then
+                    dc:setSaturation(saturation)
+                end
+                local ok_draw, rendered = pcall(page.draw_new, page,
+                    dc, w, h, 0, 0)
+                if ok_draw and rendered then
+                    return rendered
+                end
+                logger.dbg("Meguru: MuPDF page render failed:",
+                    tostring(rendered))
+                return nil
             end
-            if saturation and saturation ~= 1.0 then
-                dc:setSaturation(saturation)
+            bb = draw(cw, ch)
+            if not bb and source and (cw > fw or ch > fh) then
+                -- A failed source-sized render falls back to the density size.
+                cw, ch = cappedDim(fw, fh, budget)
+                logger.dbg(string.format(
+                    "Meguru: page render retry at %dx%d after failure",
+                    cw, ch))
+                bb = draw(cw, ch)
             end
-            local ok_draw, rendered = pcall(page.draw_new, page, dc, cw, ch, 0, 0)
-            if ok_draw and rendered then
-                bb = rendered
+            if bb then
                 logger.dbg(string.format(
                     "Meguru: MuPDF page render %dx%d -> %dx%d (budget %d px)",
                     fw, fh, cw, ch, budget))
-            else
-                logger.dbg("Meguru: MuPDF page render failed:", tostring(rendered))
             end
         else
             logger.dbg("Meguru: MuPDF page size lookup failed")
