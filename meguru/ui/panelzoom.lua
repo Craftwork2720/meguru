@@ -471,6 +471,12 @@ function PanelViewer:onGotoViewRel(diff)
     return true
 end
 
+-- The panel view action toggles: an open view is the topmost window, so it gets the event.
+function PanelViewer:onMeguruPanelView()
+    self:onClose()
+    return true
+end
+
 function PanelViewer:onShow()
     self:meguruArmWarm()
     return ImageViewer.onShow(self)

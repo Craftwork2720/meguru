@@ -52,6 +52,8 @@ Works the same for local `.cbz` files and `.meguru` streams.
 - **Pan & Zoom**: the whole page stays, and a window moves over it panel by panel
 - **Free View**: pinch and drag the page freely
 
+The panel view can also be started from a gesture, a profile or a remote button: pick **Meguru: toggle panel view** in KOReader's action list while a Meguru book is open. It starts at the page's first panel, and the same action closes the view again.
+
 Tap the middle of the screen to switch views or change the zoom. With **Auto-rotate** on, the screen also rotates to fit each panel's proportions, in the direction set by **Rotate wide pages**.
 
 **Panels+:** Meguru works with [Panels+](https://github.com/KristanLaimon/PanelsPlus), which adds OCR and text selection (needs an OCR model installed). OCR is available only through Panels+.
