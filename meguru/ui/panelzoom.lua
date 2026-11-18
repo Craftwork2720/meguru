@@ -75,7 +75,7 @@ local function bottomMenuSwipe(pos, direction)
     return activationMenu() ~= "tap" and direction == "north" and inBottomMenuZone(pos)
 end
 
--- Stock zooms a vertical swipe on the screen sides; these views only consume it.
+-- Stock zooms a vertical swipe on the screen sides; these views consume it.
 local function sideVerticalSwipe(direction, pos)
     if not (pos and (direction == "north" or direction == "south")) then
         return false
@@ -83,6 +83,28 @@ local function sideVerticalSwipe(direction, pos)
     local x = pos.x / Screen:getWidth()
     return x < 1 / 8 or x > 7 / 8
 end
+
+-- Zone handlers filter by direction themselves, so every matching one is asked.
+local function runEdgeSwipeZones(ui, ges)
+    local zones = ui and ui._ordered_touch_zones
+    if not zones then
+        return
+    end
+    for _, zone in ipairs(zones) do
+        local id = zone.def and zone.def.id
+        if type(id) == "string"
+            and (id:find("^one_finger_swipe_left_edge_")
+                or id:find("^one_finger_swipe_right_edge_"))
+            and zone.gs_range:match(ges) then
+            zone.handler(ges)
+        end
+    end
+end
+
+-- Lifecycle events would tear the reader down from under the viewer.
+local NEVER_FORWARD = {
+    onClose = true, onCloseWidget = true, onFlushSettings = true, onShow = true,
+}
 
 -- Cropped panels have no output size of their own. A whole-page one would
 -- otherwise be rendered at the native cap; every path must use the same number,
@@ -463,6 +485,25 @@ function PanelViewer:meguruOnButtons(pos)
     return height > 0 and pos.y >= Screen:getHeight() - height
 end
 
+-- The reader is below this viewer, so what an edge swipe's action emits stops here.
+function PanelViewer:handleEvent(event)
+    local consumed = ImageViewer.handleEvent(self, event)
+    if consumed or not self._meguru_edge_swipe or NEVER_FORWARD[event.handler] then
+        return consumed
+    end
+    return self.ui and self.ui:handleEvent(event)
+end
+
+function PanelViewer:meguruEdgeSwipe(ges)
+    self._meguru_edge_swipe = true
+    local ok, err = pcall(runEdgeSwipeZones, self.ui, ges)
+    self._meguru_edge_swipe = nil
+    if not ok then
+        logger.warn("Meguru: edge swipe action failed:", err)
+    end
+    return true
+end
+
 function PanelViewer:onTap(arg, ges)
     if self.meguru_free then
         -- Strip first, so it summons the row rather than closing the view.
@@ -507,6 +548,9 @@ function PanelViewer:onSwipe(arg, ges)
     -- Tested at the gesture's start (ges.pos), before the pan and the chain.
     if bottomMenuSwipe(ges.pos, direction) then
         return self:meguruShowButtons()
+    end
+    if Settings.get("panel_edge_swipe") and sideVerticalSwipe(direction, ges.pos) then
+        return self:meguruEdgeSwipe(ges)
     end
     if self.meguru_free then
         -- Read the finger's own path: compound names (northwest) express no axis.

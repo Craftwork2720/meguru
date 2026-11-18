@@ -205,6 +205,16 @@ local function fullRefreshRow()
     }
 end
 
+local function panelEdgeSwipeRow()
+    return {
+        text = _("Edge swipe gestures in panel views"),
+        help_text = _("Lets a swipe up or down along the left or right edge of the screen run the reader's own edge-swipe gesture while a panel view is open. By default that is brightness on the left and warmth on the right, but it follows whatever is set in Gestures. Off by default, because the edges sit close to the swipe down that closes a panel view and can be hit by accident."),
+        keep_menu_open = true,
+        checked_func = function() return Settings.get("panel_edge_swipe") end,
+        callback = function() Settings.toggle("panel_edge_swipe") end,
+    }
+end
+
 local function settingsRow(rows)
     return {
         text = _("Settings"),
@@ -237,6 +247,7 @@ end
 function Menu.addFileManagerItems(plugin, menu_items)
     local settings = { opdsRow({}) }
     settings[#settings + 1] = fullRefreshRow()
+    settings[#settings + 1] = panelEdgeSwipeRow()
     settings[#settings + 1] = comicInfoRow()
     settings[#settings + 1] = defaultReaderRow()
     settings[#settings + 1] = updateRow()
@@ -323,6 +334,7 @@ function Menu.addReaderItems(plugin, menu_items)
         settings[#settings + 1] = share
     end
     settings[#settings + 1] = fullRefreshRow()
+    settings[#settings + 1] = panelEdgeSwipeRow()
 
     settings[#settings + 1] = {
         text = _("Hide status bar"),

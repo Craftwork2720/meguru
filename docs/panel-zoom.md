@@ -506,13 +506,24 @@ panel opens at best fit instead of inheriting the previous panel's pinch. The wi
 view overrides the pinch itself — it is a level change, not a stock bitmap zoom — so
 its zoom is the one the row and the store keep; see below.
 
-**A vertical swipe on a screen edge is inert, not a zoom.** Stock `ImageViewer` uses
-that zone to zoom, for devices without multitouch; the panel views consume a vertical
-swipe that starts in the outer eighth of the screen and do nothing with it. The reader's
-own gesture cannot run from here: a fullscreen viewer is the topmost window, and
-`UIManager:sendEvent` stops there, so the frontlight handler never sees the Dispatcher's
-events. The free view is left alone for one-finger swipes: there the same vertical path
-pans the page.
+**A vertical swipe on a screen edge is inert, not a zoom, unless the reader opts in.**
+Stock `ImageViewer` uses that zone to zoom, for devices without multitouch. The panel views
+consume a vertical swipe that starts in the outer eighth of the screen and do nothing with it,
+because the swipe down that closes a view is easy to start near an edge and would otherwise
+change the light by accident. The free view is left alone for one-finger swipes: there the same
+vertical path pans the page.
+
+**The opt-in, `panel_edge_swipe` (off by default), hands that swipe to the reader's own gesture.**
+A fullscreen viewer is the topmost window and `UIManager:sendEvent` stops there, so the
+Gestures plugin's zones on `ReaderUI` (`one_finger_swipe_left_edge_*`,
+`one_finger_swipe_right_edge_*`) cannot run on their own, and neither can the Dispatcher events
+they emit. With the setting on, the viewer runs those zones itself, and while their handlers run
+`PanelViewer:handleEvent` passes whatever the viewer does not consume to `ReaderUI`, except the
+lifecycle events (`onClose`, `onCloseWidget`, `onFlushSettings`, `onShow`). The flag is set only
+for that synchronous call, so nothing else is forwarded. A rebinding in the Gestures plugin is
+honoured; with that plugin off there are no such zones and the swipe stays inert. The free view
+takes the edge strips too when this is on, so a quick vertical swipe there no longer pans the
+page; a drag still does.
 
 **A panel is toned like the page it came from, and this file has nothing to do with
 it.** Contrast and saturation are applied by MuPDF while rendering
