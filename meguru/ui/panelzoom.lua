@@ -461,6 +461,16 @@ function PanelViewer:onMeguruArrowDown()
     return true
 end
 
+-- Remotes and gestures send this through sendEvent, which stops at this viewer.
+function PanelViewer:onGotoViewRel(diff)
+    if type(diff) == "number" and diff > 0 then
+        self:onShowNextImage()
+    elseif type(diff) == "number" and diff < 0 then
+        self:onShowPrevImage()
+    end
+    return true
+end
+
 function PanelViewer:onShow()
     self:meguruArmWarm()
     return ImageViewer.onShow(self)

@@ -591,6 +591,14 @@ An unconsumed key falls through to the reader underneath, where `Left`/`Right` t
 under the viewer and `Up`/`Down` move the reading position behind it. A viewer the reader
 cannot see past must not be transparent to the keys it ignores.
 
+**A Bluetooth remote's page-turn buttons arrive as `GotoViewRel`, not as keys.** The Kobo
+plugin binds a button to the Dispatcher's next/previous page and sends the event with
+`UIManager:sendEvent`, which delivers to the topmost window only; the viewer is that window and
+stock `ImageViewer` has no handler for it, so the press was dropped. `onGotoViewRel` maps a
+positive step to the next panel and a negative one to the previous, in reading order, so the
+book's direction is already in it and the arrow rule above does not apply. The free view has no
+steps and ignores it, like the other step methods.
+
 **A panel is turned the book's way.** With `Rotate wide pages: left` the *page* goes
 left, and a panel wider than the screen used to be able to go right: the page is
 turned by `Screen:setRotationMode` in the setting's direction, while a panel is turned
