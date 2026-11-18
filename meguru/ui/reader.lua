@@ -810,7 +810,7 @@ local function meguruPanelZoomWanted(hl)
 end
 
 -- Shared by both wrappers; fallback is stock's handler, never a rival's.
-local function meguruPanelZoom(self, arg, ges, fallback)
+local function meguruPanelZoom(self, arg, ges, fallback, from_start)
     local ui = self.ui
     local doc = ui and ui.document
     if not (doc and doc.provider == "meguru"
@@ -878,7 +878,7 @@ local function meguruPanelZoom(self, arg, ges, fallback)
         accepted and "" or (", whole page (" .. tostring(reason) .. ")"),
         mode, nowMs() - t_start))
 
-    local start = Panel.indexAt(panels, pos.x, pos.y) or 1
+    local start = from_start and 1 or Panel.indexAt(panels, pos.x, pos.y) or 1
     -- A refused page is shown cropped; window would cut it into two steps.
     local opts = {
         window = Reader.panelViewMode(ui) == "window" and accepted == true,
@@ -895,6 +895,21 @@ local function meguruPanelZoom(self, arg, ges, fallback)
         fallback(self, arg, ges)
     end
     return true
+end
+
+-- No finger on an action: the page under the screen's centre, from its first panel.
+local function openPanelViewFromAction(plugin)
+    local ui = plugin and plugin.ui
+    local hl = ui and ui.highlight
+    local doc = ui and ui.document
+    if not (hl and doc and doc.provider == "meguru") then
+        return
+    end
+    local ges = { pos = { x = Screen:getWidth() / 2, y = Screen:getHeight() / 2 } }
+    local ok, err = pcall(meguruPanelZoom, hl, nil, ges, function() end, true)
+    if not ok then
+        logger.warn("Meguru: panel view action failed:", err)
+    end
 end
 
 -- Tells yes only at stock's per-extension level; the per-file row is stock's.
@@ -2218,6 +2233,21 @@ local function unregisterPairOffsetAction()
     Dispatcher:removeAction(PAIR_OFFSET_ACTION)
 end
 
+local PANEL_VIEW_ACTION = "meguru_panel_view"
+
+local function registerPanelViewAction()
+    Dispatcher:registerAction(PANEL_VIEW_ACTION, {
+        category = "none",
+        event = "MeguruPanelView",
+        title = _("Meguru: toggle panel view"),
+        reader = true,
+    })
+end
+
+local function unregisterPanelViewAction()
+    Dispatcher:removeAction(PANEL_VIEW_ACTION)
+end
+
 -- Grafts everything reader-side; a no-op for any non-Meguru document.
 function Reader.install(plugin)
     local ui = plugin and plugin.ui
@@ -2240,6 +2270,7 @@ function Reader.install(plugin)
 
 -- Offered to the gesture editor for as long as this book is the one open.
     registerPairOffsetAction()
+    registerPanelViewAction()
 
     local rotate_state = {}
     plugin._meguru_rotate_state = rotate_state
@@ -2376,6 +2407,11 @@ function Reader.install(plugin)
         end
         local on = not doc:spreadOffsetHere(page)
         setSpreadOffset(ui, on and page or 0, spreadOffsetNotice(on))
+        return true
+    end
+
+    plugin.onMeguruPanelView = function(self)
+        openPanelViewFromAction(self)
         return true
     end
 
@@ -2532,6 +2568,7 @@ end
 -- Rotation restored first, so the screen is right before a socket wait.
     plugin.onCloseDocument = function(self)
         unregisterPairOffsetAction()
+        unregisterPanelViewAction()
         if self._meguru_wide_rotate_installed then
             restoreWideRotate(self._meguru_rotate_state, self.ui)
             self._meguru_wide_rotate_installed = false
@@ -2542,6 +2579,7 @@ end
 
     plugin.onClose = function(self)
         unregisterPairOffsetAction()
+        unregisterPanelViewAction()
         if self._meguru_wide_rotate_installed then
             restoreWideRotate(self._meguru_rotate_state, self.ui)
             self._meguru_wide_rotate_installed = false

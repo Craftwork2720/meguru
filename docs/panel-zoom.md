@@ -161,6 +161,14 @@ swaps in its bundled model for a lookup. Without `ffi/koptcontext` the seam is n
 installed and nothing changes. A full-page context is Panels+'s native panel detector, so
 the same seam can answer that fallback too.
 
+**The panel view is also an action, `meguru_panel_view`, offered in the gesture, profile and
+other action lists while a Meguru book is open, and it toggles.** A long-press names a panel
+with the finger; an action has none, so it opens the page under the screen's centre from its
+**first panel in reading order**, in whichever of the three views the book is set to. While a
+view is up it is the topmost window and the one that receives the event, so there the same action
+closes it. The action is registered where the pair-offset action is, and removed when the book
+closes, so a stored choice of it is simply skipped by the Dispatcher in any other book.
+
 ### The sequence
 
 **A long-press shows the page's panels in reading order, one at a time.**
