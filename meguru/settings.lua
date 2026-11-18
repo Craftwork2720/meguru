@@ -26,6 +26,10 @@ local DEFAULTS = {
     auto_next_item    = true,
     manga_order       = true,
 
+    -- Opt-in: edge swipes in the panel views reach the reader's gestures, which
+    -- the swipe down that closes a view can trigger by accident.
+    panel_edge_swipe  = false,
+
     -- Flashes each page turn in a Meguru book; KOReader's rate governs the rest.
     refresh_each_page = false,
 
