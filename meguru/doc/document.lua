@@ -2747,6 +2747,8 @@ end
 
 -- All panels on a page in reading order; never nil for a readable page.
 function MeguruDocument:getPanelsFromPage(pageno, manga)
+    -- Callers pass the mode string, and "comic" is as truthy as "manga".
+    manga = manga == true or manga == "manga"
     -- Panels come from the rendered page, so a tone change drops them.
     self:syncTone()
     local key = panelCacheKey(pageno, manga)
