@@ -33,6 +33,9 @@ local DEFAULTS = {
     -- Flashes each page turn in a Meguru book; KOReader's rate governs the rest.
     refresh_each_page = false,
 
+    -- Keeps Meguru books out of KOReader's reading statistics.
+    exclude_statistics = false,
+
     -- Local .cbz: title and fields from the archive's own ComicInfo.xml.
     comic_info        = true,
 

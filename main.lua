@@ -17,6 +17,7 @@ local Menu = require("meguru/ui/menu")
 local Open = require("meguru/ui/open")
 local Paths = require("meguru/paths")
 local Reader = require("meguru/ui/reader")
+local Settings = require("meguru/settings")
 local Updater = require("meguru/updater")
 
 -- addProvider only appends; this module can be required twice, so guard it.
@@ -88,6 +89,11 @@ end
 -- Seed per-book defaults here: stock defaults are wrong for a fixed layout.
 function Meguru:onReadSettings(_config)
     local document = self.ui and self.ui.document
+    -- Statistics skips a document flagged as a picture; this is the opt-out.
+    if document and document.provider == "meguru"
+        and Settings.get("exclude_statistics") then
+        document.is_pic = true
+    end
     -- Seeded here: the panel defaults need to know whether Panels+ owns the press.
     if self.ui then
         self.ui._meguru_panels_plus_active = Reader.panelsPlusActive(self.ui)
