@@ -216,13 +216,22 @@ local function panelEdgeSwipeRow()
 end
 
 -- Statistics skips any document flagged as a picture; the whole opt-out.
-local function excludeStatisticsRow()
+local function excludeStatisticsRow(plugin)
     return {
         text = _("Exclude from reading statistics"),
         help_text = _("Books opened in Meguru are left out of KOReader's reading statistics: no reading time, page turns or sessions are counted for them. Other books are unaffected. Takes effect the next time a book is opened."),
         keep_menu_open = true,
         checked_func = function() return Settings.get("exclude_statistics") end,
-        callback = function() Settings.toggle("exclude_statistics") end,
+        callback = function()
+            Settings.toggle("exclude_statistics")
+            -- Statistics reads the flag once, when the book opens; say so.
+            if plugin and plugin.ui and plugin.ui.document then
+                UIManager:show(Notification:new{
+                    text = _("Takes effect on next book open"),
+                    timeout = 3,
+                })
+            end
+        end,
     }
 end
 
@@ -259,7 +268,7 @@ function Menu.addFileManagerItems(plugin, menu_items)
     local settings = { opdsRow({}) }
     settings[#settings + 1] = fullRefreshRow()
     settings[#settings + 1] = panelEdgeSwipeRow()
-    settings[#settings + 1] = excludeStatisticsRow()
+    settings[#settings + 1] = excludeStatisticsRow(plugin)
     settings[#settings + 1] = comicInfoRow()
     settings[#settings + 1] = defaultReaderRow()
     settings[#settings + 1] = updateRow()
@@ -347,7 +356,7 @@ function Menu.addReaderItems(plugin, menu_items)
     end
     settings[#settings + 1] = fullRefreshRow()
     settings[#settings + 1] = panelEdgeSwipeRow()
-    settings[#settings + 1] = excludeStatisticsRow()
+    settings[#settings + 1] = excludeStatisticsRow(plugin)
 
     settings[#settings + 1] = {
         text = _("Hide status bar"),
