@@ -670,6 +670,17 @@ page also raises a Notification naming the reason, because the panel itself is b
 live render that fails outright still returns nil; only a dead page needed the
 placeholder, and it no longer reaches that branch.
 
+**The size left behind by a failed fetch is a stand-in, and a retry must not paint
+through it.** `getPageDims` has to answer *something* for the view to lay out, so a
+page it could not fetch or decode is given the screen's size — remembered as
+provisional, never as a measurement. The retry drops that answer
+(`clearFetchFailures`, `clearRetryablePages`, and a successful `fetchPage`), and the
+handlers that clear it decode the real size and set the zoom **before** the repaint
+that follows: painting the real page into a screen-shaped fit is what stretches it
+along both axes. A repair that lands during a paint instead is caught by the paint
+stamp, the pair's own refit applied to one page, and the analyses computed in the
+stand-in's space are dropped with it.
+
 **There was a drawing here — Meguru-chan lying across a big "404" — and it was
 removed deliberately.** The reason is the one thing a picture cannot carry, and the
 picture's own claim was wrong: a 404 is the internet's shorthand for "broken page",

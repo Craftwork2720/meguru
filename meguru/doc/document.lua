@@ -983,6 +983,10 @@ function MeguruDocument:init()
     self.stamp = 0
     self.page_bytes = {}
     self.dims = {}
+    -- Whether dims[p] is a screen stand-in, not the page's own size.
+    self.provisional_dims = {}
+    -- Pages whose real size replaced a stand-in and await a refit.
+    self.dims_repaired = {}
     self.wide_list = {}
     self.crops = {}
     self.panels = {}
@@ -1382,6 +1386,10 @@ function MeguruDocument:clearRetryablePages()
         self.native[pageno] = nil
         self.stamps[pageno] = nil
         self.retryable_pages[pageno] = nil
+        -- The retry decodes; a stand-in size would stop it at the cache.
+        if self.provisional_dims[pageno] then
+            self.dims[pageno] = nil
+        end
         self.crops[pageno] = nil
         self._unavailable_notified[pageno] = nil
         if self._meguru_pagenum_cache then
@@ -1547,8 +1555,33 @@ end
 -- Forget fetch failures on a page turn or the connection returning.
 function MeguruDocument:clearFetchFailures()
     local had = next(self.fetch_failed) ~= nil
+    -- Drop a stand-in size, keep the flag: the real one still owes a refit.
+    for pageno in pairs(self.fetch_failed) do
+        if self.provisional_dims[pageno] then
+            self.dims[pageno] = nil
+        end
+    end
     self.fetch_failed = {}
     return had
+end
+
+-- One-shot: a real size replaced the stand-in the view was fitted to.
+function MeguruDocument:takeDimsRepair(pageno)
+    if not (pageno and self.dims_repaired[pageno]) then
+        return false
+    end
+    self.dims_repaired[pageno] = nil
+    return true
+end
+
+-- Decode a stand-in page now; true when its size became real.
+function MeguruDocument:settleDims(pageno)
+    if not pageno or not self.provisional_dims[pageno]
+        or self.dims[pageno] then
+        return false
+    end
+    self:getPageDims(pageno)
+    return self.provisional_dims[pageno] == nil
 end
 
 -- Optional work asks this before touching a server that just failed.
@@ -1617,6 +1650,10 @@ function MeguruDocument:fetchPage(pageno)
     -- Cleared only after success, so a failed fetch writes nothing.
     self.fetch_failed[pageno] = nil
     self:clearServerDown()
+    -- The bytes a stand-in waited for: let the real size be asked for again.
+    if self.provisional_dims[pageno] then
+        self.dims[pageno] = nil
+    end
     self:cachePage(pageno, bytes)
     return bytes
 end
@@ -2745,6 +2782,34 @@ local function rescalePanels(panels, sx, sy)
     return panels
 end
 
+-- The screen stands in for a page whose own size is not known yet.
+local function setFallbackDims(self, pageno, dims)
+    self.dims[pageno] = dims
+    self.provisional_dims[pageno] = true
+end
+
+-- The real size replaces a stand-in; the view may still be fitted to it.
+local function setRealDims(self, pageno, dims)
+    self.dims[pageno] = dims
+    if self.provisional_dims[pageno] then
+        self.provisional_dims[pageno] = nil
+        self.dims_repaired[pageno] = true
+        -- Analyses made in the stand-in's space describe a different page.
+        self.crops[pageno] = nil
+        if self._meguru_pagenum_cache then
+            self._meguru_pagenum_cache[pageno] = nil
+        end
+        if self._meguru_pagenum_blank_cache then
+            self._meguru_pagenum_blank_cache[pageno] = nil
+        end
+        for i = #self.panels, 1, -1 do
+            if pageOfKey(self.panels[i].key or "") == pageno then
+                table.remove(self.panels, i)
+            end
+        end
+    end
+end
+
 -- All panels on a page in reading order; never nil for a readable page.
 function MeguruDocument:getPanelsFromPage(pageno, manga)
     -- Callers pass the mode string, and "comic" is as truthy as "manga".
@@ -2765,7 +2830,11 @@ function MeguruDocument:getPanelsFromPage(pageno, manga)
     if not dims then
         -- The detected buffer is the only space this page has been seen in.
         dims = { w = nw, h = nh }
-        self.dims[pageno] = dims
+        if self.dead_pages[pageno] then
+            setFallbackDims(self, pageno, dims)
+        else
+            setRealDims(self, pageno, dims)
+        end
     end
     local panels, accepted, reason = Panel.detect(native_bb, manga)
     if panels then
@@ -2836,7 +2905,7 @@ function MeguruDocument:getPageDims(pageno)
     if self.dead_pages[pageno] then
         local fallback = self.dims[pageno]
             or { w = Screen:getWidth(), h = Screen:getHeight() }
-        self.dims[pageno] = fallback
+        setFallbackDims(self, pageno, fallback)
         return fallback
     end
     -- What a page turn waits for: fetch then decode; size is the capped native.
@@ -2848,19 +2917,19 @@ function MeguruDocument:getPageDims(pageno)
         if self.dead_pages[pageno] then
             local fallback = self.dims[pageno]
                 or { w = Screen:getWidth(), h = Screen:getHeight() }
-            self.dims[pageno] = fallback
+            setFallbackDims(self, pageno, fallback)
             return fallback
         end
         if not native_bb then
             local fallback = { w = Screen:getWidth(), h = Screen:getHeight() }
-            self.dims[pageno] = fallback
+            setFallbackDims(self, pageno, fallback)
             return fallback
         end
         local dims = {
             w = math.max(1, native_bb:getWidth()),
             h = math.max(1, native_bb:getHeight()),
         }
-        self.dims[pageno] = dims
+        setRealDims(self, pageno, dims)
         self:_noteWide(pageno, dims)
         -- Logged before the GC below, so the parts sum to the whole.
         self:_logPrepared(pageno, dims, t_start, nil, decode_ms)
@@ -2873,7 +2942,7 @@ function MeguruDocument:getPageDims(pageno)
     local fetch_ms = nowMs() - t0
     local fallback = { w = Screen:getWidth(), h = Screen:getHeight() }
     if not data then
-        self.dims[pageno] = fallback
+        setFallbackDims(self, pageno, fallback)
         return fallback
     end
     t0 = nowMs()
@@ -2891,7 +2960,7 @@ function MeguruDocument:getPageDims(pageno)
             logger.warn("Meguru: cannot decode page", pageno)
         end
         self.dead_pages[pageno] = true
-        self.dims[pageno] = fallback
+        setFallbackDims(self, pageno, fallback)
         return fallback
     end
     local bb = res
@@ -2899,7 +2968,7 @@ function MeguruDocument:getPageDims(pageno)
         w = math.max(1, bb:getWidth()),
         h = math.max(1, bb:getHeight()),
     }
-    self.dims[pageno] = dims
+    setRealDims(self, pageno, dims)
     -- Only really-decoded paths note wide; failure branches cache screen size.
     self:_noteWide(pageno, dims)
 
@@ -2954,7 +3023,7 @@ function MeguruDocument:ensureNativeBB(pageno, data)
             res = Image.renderMupdfPage(doc, pageno, function(fw, fh)
                 if localPageTooLarge(self, fw, fh, source, is_jpeg) then
                     refused_large = true
-                    self.dims[pageno] = { w = fw, h = fh }
+                    setRealDims(self, pageno, { w = fw, h = fh })
                     return true
                 end
                 return false

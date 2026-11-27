@@ -464,7 +464,20 @@ local function turnIsQueued(paging, view, was_turn)
         GestureTime.clockId(), paging._meguru_paint_clock)
 end
 
--- Clears the paint mark and repairs a zoom the pair missed.
+-- The page or pair the view is drawing; the pairing rule lives in the document.
+local function shownPages(doc, page)
+    if type(doc.spreadUnitFor) == "function" then
+        local unit = doc:spreadUnitFor(page)
+        if unit and unit.b then
+            return { unit.a, unit.b }
+        elseif unit then
+            return { unit.a }
+        end
+    end
+    return { page }
+end
+
+-- Clears the paint mark and repairs a zoom the layout missed.
 local function stampPaint(view)
     local ui = view.ui
     local paging = ui and ui.paging
@@ -501,6 +514,62 @@ local function stampPaint(view)
             end
         end
     end
+    -- Clears the repair flag; one that landed during the paint is refitted.
+    local current = tonumber(paging.current_page)
+    if doc and current and current > 0 and have
+        and not paging._meguru_dims_rezoom
+        and not paging._meguru_rezoom_repair
+        and type(doc.takeDimsRepair) == "function"
+        and ui.zooming and type(ui.zooming.getZoom) == "function" then
+        local repaired = false
+        for _, page in ipairs(shownPages(doc, current)) do
+            if doc:takeDimsRepair(page) then
+                repaired = true
+            end
+        end
+        if repaired then
+            local ok, want = pcall(ui.zooming.getZoom, ui.zooming, current)
+            if ok and want and math.abs(want - have) > 0.001 then
+                paging._meguru_dims_rezoom = true
+                UIManager:nextTick(function()
+                    paging._meguru_dims_rezoom = nil
+                    if ui.document == doc and type(ui.handleEvent) == "function" then
+                        ui:handleEvent(Event:new("ReZoom"))
+                    end
+                end)
+            end
+        end
+    end
+end
+
+-- Decode a retried page and refit, colour included, before the paint.
+local function repairShownDims(ui, page)
+    local paging = ui and ui.paging
+    local view = ui and ui.view
+    local doc = ui and ui.document
+    if not (paging and view and doc and type(doc.settleDims) == "function"
+        and not view.page_scroll
+        and not paging.page_flipping_mode and not paging.bookmark_flipping_mode
+        and ui.zooming and type(ui.zooming.setZoom) == "function"
+        and type(ui.handleEvent) == "function") then
+        return false
+    end
+    page = page or paging.current_page
+    if not page or page < 1 then
+        return false
+    end
+    local repaired = false
+    for _, p in ipairs(shownPages(doc, page)) do
+        local ok, did = pcall(doc.settleDims, doc, p)
+        if ok and did then
+            repaired = true
+        end
+    end
+    if repaired and ui.zooming.current_page == page then
+        -- ReZoom, not setZoom: its wrapper re-asks the crop margin colour.
+        pcall(ui.handleEvent, ui, Event:new("ReZoom"))
+    end
+    return repaired
 end
 
 -- The class slot survives replaced paintTo; install it before our wrappers.
@@ -1227,6 +1296,8 @@ local function installPageErrorPage(plugin)
             if type(doc.clearFetchFailures) == "function" then
                 doc:clearFetchFailures()
             end
+            -- Decode and refit now, so the repaint below has real dimensions.
+            repairShownDims(ui, paging.current_page)
             -- One automatic retry; a failure that survives it may be skipped.
             for _, item in ipairs(failures or {}) do
                 paging._meguru_retried[item.page] = true
@@ -1311,6 +1382,8 @@ local function installPageErrorPage(plugin)
         if d:clearFetchFailures() then
             UIManager:nextTick(function()
                 local u = self.ui
+                -- Decode and refit here, outside the repaint that follows.
+                repairShownDims(u)
                 if u and u.dialog then
                     UIManager:setDirty(u.dialog, "full")
                 end
@@ -2310,6 +2383,8 @@ function Reader.install(plugin)
             page_error_handler(self, page)
         end
         local turned = page or (self.ui and currentPage(self.ui))
+        -- Before the crop colour ask, which may decode the page itself.
+        repairShownDims(self.ui or ui, turned)
         notePageTurn(self, turned)
         applyCropMarginColor(plugin, self.ui or ui, turned)
         flashPageTurn()
