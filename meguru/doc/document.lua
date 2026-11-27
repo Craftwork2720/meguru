@@ -1574,14 +1574,14 @@ function MeguruDocument:takeDimsRepair(pageno)
     return true
 end
 
--- Decode a stand-in page now; true when its size became real.
+-- Resolve a stand-in page's size now; true when it had one to resolve.
 function MeguruDocument:settleDims(pageno)
     if not pageno or not self.provisional_dims[pageno]
         or self.dims[pageno] then
         return false
     end
     self:getPageDims(pageno)
-    return self.provisional_dims[pageno] == nil
+    return true
 end
 
 -- Optional work asks this before touching a server that just failed.
@@ -1923,6 +1923,19 @@ function MeguruDocument:spreadOffsetHere(pageno)
     end
     return Spread.runStart(anchor, self.wide_list)
         == Spread.runStart(pageno or 0, self.wide_list)
+end
+
+-- The unit's pages whether or not both are decoded; the repair settles both.
+function MeguruDocument:spreadPagesFor(pageno)
+    local count = self.info and self.info.number_of_pages
+    if not (count and pageno and self:spreadActive()) then
+        return { pageno }
+    end
+    local unit = Spread.unitFor(pageno, count, self.wide_list, self:_spreadAnchor())
+    if unit and unit.b then
+        return { unit.a, unit.b }
+    end
+    return { (unit and unit.a) or pageno }
 end
 
 -- Unit shown: nil, {a=n} alone, or {a=n,b=m}; a pair needs both pages decoded.

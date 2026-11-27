@@ -558,18 +558,22 @@ local function repairShownDims(ui, page)
     if not page or page < 1 then
         return false
     end
-    local repaired = false
-    for _, p in ipairs(shownPages(doc, page)) do
+    -- Both halves: spreadUnitFor hides a partner whose size is a stand-in,
+    -- and a fit made without it is the mixed fit the ReZoom must replace.
+    local pages = type(doc.spreadPagesFor) == "function"
+        and doc:spreadPagesFor(page) or shownPages(doc, page)
+    local settled = false
+    for _, p in ipairs(pages) do
         local ok, did = pcall(doc.settleDims, doc, p)
         if ok and did then
-            repaired = true
+            settled = true
         end
     end
-    if repaired and ui.zooming.current_page == page then
+    if settled and ui.zooming.current_page == page then
         -- ReZoom, not setZoom: its wrapper re-asks the crop margin colour.
         pcall(ui.handleEvent, ui, Event:new("ReZoom"))
     end
-    return repaired
+    return settled
 end
 
 -- The class slot survives replaced paintTo; install it before our wrappers.

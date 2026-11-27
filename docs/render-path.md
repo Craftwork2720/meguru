@@ -677,9 +677,11 @@ provisional, never as a measurement. The retry drops that answer
 (`clearFetchFailures`, `clearRetryablePages`, and a successful `fetchPage`), and the
 handlers that clear it decode the real size and set the zoom **before** the repaint
 that follows: painting the real page into a screen-shaped fit is what stretches it
-along both axes. A repair that lands during a paint instead is caught by the paint
-stamp, the pair's own refit applied to one page, and the analyses computed in the
-stand-in's space are dropped with it.
+along both axes. In a pair both pages are settled first — `spreadUnitFor` hides a
+partner that has no size, and a fit made without it is not the pair's — while a
+repair that lands during a paint is caught by the paint stamp, the pair's own refit
+applied to one page; the analyses computed in the stand-in's space are dropped with
+it.
 
 **There was a drawing here — Meguru-chan lying across a big "404" — and it was
 removed deliberately.** The reason is the one thing a picture cannot carry, and the
