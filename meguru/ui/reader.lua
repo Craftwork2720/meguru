@@ -815,7 +815,7 @@ local function meguruPanelZoom(self, arg, ges, fallback, from_start)
     local doc = ui and ui.document
     if not (doc and doc.provider == "meguru"
         and type(doc.getPanelsFromPage) == "function") then
-        fallback(self, arg, ges)
+        return fallback(self, arg, ges)
     end
     self:clear()
     local view = ui.view
@@ -823,7 +823,7 @@ local function meguruPanelZoom(self, arg, ges, fallback, from_start)
         and view:screenToPageTransform(ges.pos)
 -- page as well as the point: the document would fetch page nil, a socket call.
     if not (pos and pos.page) then
-        fallback(self, arg, ges)
+        return fallback(self, arg, ges)
     end
 -- The press belongs to the page under the finger; map the pair point onto it.
     if pos and type(doc.spreadPageAt) == "function" then
@@ -840,7 +840,7 @@ local function meguruPanelZoom(self, arg, ges, fallback, from_start)
         if not ok_dims or not dims then
             logger.dbg("Meguru: page", pos.page, "panel zoom: no page ("
                 .. tostring(dims) .. ")")
-            fallback(self, arg, ges)
+            return fallback(self, arg, ges)
         end
         logger.dbg(string.format(
             "Meguru: page %d panel zoom: free view (%s) in %d ms",
@@ -854,7 +854,7 @@ local function meguruPanelZoom(self, arg, ges, fallback, from_start)
         if not ok_free or not shown_free then
             logger.warn("Meguru: panel zoom viewer failed:",
                 ok_free and "not shown" or tostring(shown_free))
-            fallback(self, arg, ges)
+            return fallback(self, arg, ges)
         end
         return
     end
@@ -863,13 +863,13 @@ local function meguruPanelZoom(self, arg, ges, fallback, from_start)
         doc, pos.page, mode)
     if not ok_detect then
         logger.warn("Meguru: panel zoom detection failed:", panels)
-        fallback(self, arg, ges)
+        return fallback(self, arg, ges)
     end
     if not panels then
         -- nil panels means exactly one thing: the page would not decode.
         logger.dbg("Meguru: page", pos.page, "panel zoom: no page ("
             .. tostring(reason) .. ")")
-        fallback(self, arg, ges)
+        return fallback(self, arg, ges)
     end
     -- The count cannot tell a real sequence from the whole-page fallback.
     logger.dbg(string.format(
@@ -892,7 +892,7 @@ local function meguruPanelZoom(self, arg, ges, fallback, from_start)
     if not ok_show or not shown then
         logger.warn("Meguru: panel zoom viewer failed:",
             ok_show and "not shown" or tostring(shown))
-        fallback(self, arg, ges)
+        return fallback(self, arg, ges)
     end
     return true
 end
